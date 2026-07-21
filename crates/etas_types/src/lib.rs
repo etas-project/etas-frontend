@@ -1,0 +1,84 @@
+pub mod api;
+pub mod constraint;
+pub mod diagnostic;
+pub mod facts;
+pub mod lower;
+pub mod pipeline;
+pub mod solver;
+pub mod ty;
+
+pub use api::{
+    CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest, ExternalActionArgKindInput,
+    ExternalActionBindingInput, ExternalActionSignatureInput, ExternalAgentSignatureInput,
+    ExternalCallableSpecSatisfactionInput, ExternalEffectArgInput, ExternalEffectRefInput,
+    ExternalEffectRowInput, ExternalFlowSignatureInput, ExternalNamedSignatureInput,
+    ExternalPackageKey, ExternalPublicMetadataInput, ExternalRecordFieldInput,
+    ExternalSignatureInput, ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput,
+    ExternalSpecMethodInput, ExternalSpecSignatureInput, ExternalSymbolBindingInput,
+    ExternalToolSignatureInput, ExternalTraceSpecConformanceInput,
+    ExternalTraceSpecConformanceTargetInput, ExternalTypeInput, ExternalTypeSpecSatisfactionInput,
+    SignaturePipelineInput, SourceSignatureInput, SourceSymbolBindingInput, StdSignatureInput,
+    StdSymbolBindingInput, TypeOutput, check_body, check_project, check_signatures,
+};
+pub use constraint::{
+    AssignabilityReason, ConstraintOrigin, NumericLiteralKind, SpecObligation, TypeConstraint,
+    ValidationRequest,
+};
+pub use facts::{
+    AgentSignature, CallableSignature, CallableSpecSatisfactionFact, CheckedIndexKind,
+    CheckedSliceKind, EffectActionArgKind, EffectActionSignature,
+    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
+    ExternalTraceSpecConformanceTarget, FlowSignature, ItemSignature, KnownStdTypes,
+    ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact,
+    SpecMethodIdentity, SpecSignature, SpecSuperBoundFact, SymbolTypeFact, ToolSignature,
+    TopLevelLetSignature, TraceSpecConformanceFact, TraceSpecConformanceTarget, TryExprTypeFact,
+    TypeFacts, TypeParamBoundFact, TypeSpecSatisfactionFact,
+};
+pub use solver::{
+    Assignable, GenericInstantiationFact, SolverFailure, SolverReport, Substitution, TypeRelation,
+    TypeSolver, TypeUnifier, UnifyError,
+};
+pub use ty::{
+    EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef, FieldType, FlowType,
+    HandlerProducedEffects, HandlerType, MemoryPlaceType, NamedTypeRef, NominalTypeRef,
+    PrimitiveType, RecordType, RefinementId, ResourceHandleType, TrustWrapper, Type,
+    TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore, TypeVarId,
+    applied_representation, nominal_representation_parts, record_fields_with_applied_params,
+    substitute_named_params,
+};
+
+pub fn check_program(hir: &etas_hir::HirProgram) -> TypeOutput {
+    check_project(CheckProjectRequest { hir })
+}
+
+pub fn check_top_level_items(hir: &etas_hir::HirProgram, output: TypeOutput) -> TypeOutput {
+    let body_outputs = hir
+        .items
+        .iter()
+        .filter_map(|(item, data)| {
+            matches!(data, etas_hir::HirItem::TopLevelLet(_)).then_some(item)
+        })
+        .map(|item| pipeline::check_body_with_seed(hir, output.clone(), item))
+        .collect();
+    pipeline::finalize_type_outputs(output, body_outputs)
+}
+
+pub fn build_signature_facts(hir: &etas_hir::HirProgram) -> TypeOutput {
+    check_signatures(CheckSignaturesRequest { hir })
+}
+
+pub fn run_signature_pipeline(input: SignaturePipelineInput<'_>) -> TypeOutput {
+    pipeline::run_signature_pipeline(input)
+}
+
+pub fn check_body_item(
+    hir: &etas_hir::HirProgram,
+    seed: TypeOutput,
+    item: etas_hir::HirItemId,
+) -> TypeOutput {
+    pipeline::check_body_with_seed(hir, seed, item)
+}
+
+pub fn finalize_type_outputs(signatures: TypeOutput, body_outputs: Vec<TypeOutput>) -> TypeOutput {
+    pipeline::finalize_type_outputs(signatures, body_outputs)
+}

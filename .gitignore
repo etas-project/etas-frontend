@@ -1,0 +1,24 @@
+# macOS
+.DS_Store
+
+# Rust / Cargo build output
+/target/
+
+# Local Cargo overrides for cross-repository development
+/.cargo/config.toml
+
+# Local editor and IDE state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment files
+.env
+.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp

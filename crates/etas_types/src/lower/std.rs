@@ -1,0 +1,789 @@
+use etas_std::{
+    StdDecl, StdPrimitiveType, StdRegistry, StdSymbol, StdSymbolKind, StdType, TypeDeclKind,
+};
+
+use crate::{
+    CallableSignature, EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef,
+    EffectRowRef, FieldType, NamedTypeRef, NominalTypeRef, PrimitiveType, RecordType,
+    ResourceHandleType, SpecSignature, SymbolTypeFact, TrustWrapper, Type, TypeConstructorId,
+    TypeId, pipeline::context::TypePipelineContext,
+};
+
+pub fn lower_std_decl(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    symbol: etas_hir::SymbolId,
+    decl: &StdDecl,
+) -> SymbolTypeFact {
+    lower_std_decl_with_kind(ctx, registry, symbol, decl, None, None)
+}
+
+pub fn lower_std_symbol(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    symbol: etas_hir::SymbolId,
+    std_symbol: &StdSymbol,
+) -> SymbolTypeFact {
+    lower_std_decl_with_kind(
+        ctx,
+        registry,
+        symbol,
+        &std_symbol.decl,
+        Some(std_symbol.kind),
+        Some(std_symbol.qualified_path.join(".")),
+    )
+}
+
+fn lower_std_decl_with_kind(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    symbol: etas_hir::SymbolId,
+    decl: &StdDecl,
+    kind: Option<StdSymbolKind>,
+    qualified_name: Option<String>,
+) -> SymbolTypeFact {
+    let scope = qualified_name
+        .as_ref()
+        .map(|path| path.split('.').map(str::to_owned).collect::<Vec<_>>())
+        .and_then(|mut path| {
+            path.pop()?;
+            Some(path)
+        });
+    let scope = scope.as_deref();
+    match decl {
+        StdDecl::Type(decl) if kind == Some(StdSymbolKind::Constructor) => {
+            lower_std_constructor_decl(ctx, registry, decl, qualified_name.as_deref(), scope)
+        }
+        StdDecl::Type(decl) => match decl.kind {
+            TypeDeclKind::Spec => {
+                record_std_spec_signature(ctx, symbol, decl, true);
+                SymbolTypeFact::Spec { symbol }
+            }
+            TypeDeclKind::Wrapper => {
+                lower_std_constructor_decl(ctx, registry, decl, qualified_name.as_deref(), scope)
+            }
+            _ => {
+                if decl.derivable {
+                    record_std_spec_signature(ctx, symbol, decl, false);
+                }
+                let ty =
+                    lower_std_type_decl_with_name(ctx, registry, decl, qualified_name.as_deref());
+                match ctx.interner.store().get(ty) {
+                    Some(Type::Nominal(nominal)) => SymbolTypeFact::NominalType {
+                        constructor: TypeConstructorId(ty.0),
+                        params: nominal.params.clone(),
+                        representation: nominal.representation,
+                    },
+                    _ => SymbolTypeFact::Type {
+                        constructor: TypeConstructorId(ty.0),
+                    },
+                }
+            }
+        },
+        StdDecl::Flow(flow) => SymbolTypeFact::Flow {
+            signature: CallableSignature {
+                params: flow
+                    .params
+                    .iter()
+                    .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+                    .collect(),
+                output: lower_std_type_with_scope(ctx, registry, &flow.output, scope),
+                effects: std_effect_row_with_scope(ctx, registry, &flow.public_effects, scope),
+                requested_actions: std_effect_row_with_scope(
+                    ctx,
+                    registry,
+                    &flow.requested_actions,
+                    scope,
+                ),
+            },
+        },
+        StdDecl::Tool(tool) => SymbolTypeFact::Tool {
+            signature: CallableSignature {
+                params: tool
+                    .params
+                    .iter()
+                    .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+                    .collect(),
+                output: lower_std_type_with_scope(ctx, registry, &tool.output, scope),
+                effects: std_effect_row_with_scope(ctx, registry, &tool.effects, scope),
+                requested_actions: None,
+            },
+        },
+        StdDecl::Effect(_) => SymbolTypeFact::Effect { symbol },
+        StdDecl::EffectAction(action) => SymbolTypeFact::EffectAction {
+            signature: lower_std_effect_action_signature(ctx, registry, action),
+        },
+        StdDecl::Value(value) => SymbolTypeFact::Value {
+            ty: lower_std_type_with_scope(ctx, registry, &value.ty, scope),
+        },
+        StdDecl::Requirement(requirement) => SymbolTypeFact::Flow {
+            signature: CallableSignature {
+                params: requirement
+                    .params
+                    .iter()
+                    .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+                    .collect(),
+                output: lower_named_std_type_with_scope(ctx, registry, "Limit", scope),
+                effects: None,
+                requested_actions: None,
+            },
+        },
+        StdDecl::Impl(_) => SymbolTypeFact::Value {
+            ty: ctx.interner.primitive(PrimitiveType::Unit),
+        },
+    }
+}
+
+pub fn lower_std_effect_action_signature(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    action: &etas_std::EffectActionDecl,
+) -> EffectActionSignature {
+    let effect_args = action
+        .effect_args
+        .iter()
+        .map(lower_std_action_arg_kind)
+        .collect::<Vec<_>>();
+    let selector_len = effect_args.len();
+    let selector_param_names =
+        std_action_selector_param_names(&effect_args, &action.params, &action.output);
+    EffectActionSignature {
+        params: action
+            .params
+            .iter()
+            .map(|ty| lower_std_type(ctx, registry, ty))
+            .collect(),
+        output: lower_std_type(ctx, registry, &action.output),
+        effect_args,
+        selector_param_names,
+        selector_defaults: vec![None; selector_len],
+        returns_never: matches!(action.output, StdType::Primitive(StdPrimitiveType::Never)),
+    }
+}
+
+fn std_action_selector_param_names(
+    effect_args: &[EffectActionArgKind],
+    params: &[StdType],
+    output: &StdType,
+) -> Vec<String> {
+    let mut vars = Vec::new();
+    for ty in params.iter().chain(std::iter::once(output)) {
+        collect_std_type_vars(ty, &mut vars);
+    }
+    let mut vars = vars.into_iter();
+    effect_args
+        .iter()
+        .map(|kind| match kind {
+            EffectActionArgKind::Type => vars.next().unwrap_or_default(),
+            EffectActionArgKind::MemoryPlace
+            | EffectActionArgKind::StaticResourcePath { .. }
+            | EffectActionArgKind::StringPattern => String::new(),
+        })
+        .collect()
+}
+
+fn collect_std_type_vars(ty: &StdType, out: &mut Vec<String>) {
+    match ty {
+        StdType::Var(name) => {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        StdType::Array(inner)
+        | StdType::List(inner)
+        | StdType::Set(inner)
+        | StdType::Range(inner)
+        | StdType::Slice(inner)
+        | StdType::Option(inner)
+        | StdType::Schema(inner)
+        | StdType::Trust { inner, .. }
+        | StdType::Message(inner)
+        | StdType::MemorySelection(inner)
+        | StdType::MemoryRegion(inner)
+        | StdType::ResourceHandleMemoryRegion(inner) => collect_std_type_vars(inner, out),
+        StdType::Map { key, value } | StdType::Store { key, value } => {
+            collect_std_type_vars(key, out);
+            collect_std_type_vars(value, out);
+        }
+        StdType::Result { ok, err } => {
+            collect_std_type_vars(ok, out);
+            collect_std_type_vars(err, out);
+        }
+        StdType::Tuple(elements) => {
+            for element in elements {
+                collect_std_type_vars(element, out);
+            }
+        }
+        StdType::NamedApplied { args, .. } => {
+            for arg in args {
+                collect_std_type_vars(arg, out);
+            }
+        }
+        StdType::Record(fields) => {
+            for field in fields {
+                collect_std_type_vars(&field.ty, out);
+            }
+        }
+        StdType::Primitive(_)
+        | StdType::Support(_)
+        | StdType::Prompt
+        | StdType::PromptPart
+        | StdType::Named(_) => {}
+    }
+}
+
+fn record_std_spec_signature(
+    ctx: &mut TypePipelineContext<'_>,
+    symbol: etas_hir::SymbolId,
+    decl: &etas_std::TypeDecl,
+    include_decl_params: bool,
+) {
+    ctx.signature_facts.spec_signatures.insert(
+        symbol,
+        SpecSignature {
+            symbol,
+            name: decl.name.clone(),
+            kind: crate::SpecKind::TypeSpec,
+            params: Vec::new(),
+            param_names: if include_decl_params {
+                decl.params.iter().map(|param| param.name.clone()).collect()
+            } else {
+                Vec::new()
+            },
+            callable: None,
+            methods: Vec::new(),
+            super_specs: Vec::new(),
+        },
+    );
+}
+
+fn lower_std_constructor_decl(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    decl: &etas_std::TypeDecl,
+    qualified_name: Option<&str>,
+    scope: Option<&[String]>,
+) -> SymbolTypeFact {
+    let params = match decl.name.as_str() {
+        "Some" => vec![lower_std_type_with_scope(
+            ctx,
+            registry,
+            &StdType::Var("T".to_owned()),
+            scope,
+        )],
+        "Ok" => vec![lower_std_type_with_scope(
+            ctx,
+            registry,
+            &StdType::Var("T".to_owned()),
+            scope,
+        )],
+        "Err" => vec![lower_std_type_with_scope(
+            ctx,
+            registry,
+            &StdType::Var("E".to_owned()),
+            scope,
+        )],
+        "None" => Vec::new(),
+        _ => decl
+            .params
+            .iter()
+            .map(|param| {
+                lower_std_type_with_scope(ctx, registry, &StdType::Var(param.name.clone()), scope)
+            })
+            .collect::<Vec<_>>(),
+    };
+    let output = match decl.name.as_str() {
+        "Some" | "None" => {
+            let inner =
+                lower_std_type_with_scope(ctx, registry, &StdType::Var("T".to_owned()), scope);
+            ctx.interner.intern(Type::Option(inner))
+        }
+        "Ok" | "Err" => {
+            let ok = lower_std_type_with_scope(ctx, registry, &StdType::Var("T".to_owned()), scope);
+            let err =
+                lower_std_type_with_scope(ctx, registry, &StdType::Var("E".to_owned()), scope);
+            ctx.interner.intern(Type::Result { ok, err })
+        }
+        "Trusted" | "Untrusted" | "Secret" | "Public" | "Sanitized" => {
+            let inner =
+                lower_std_type_with_scope(ctx, registry, &StdType::Var("T".to_owned()), scope);
+            ctx.interner.intern(Type::Trust {
+                wrapper: trust_wrapper_from_name(&decl.name).expect("checked wrapper name"),
+                inner,
+            })
+        }
+        _ => lower_std_type_decl_with_name(ctx, registry, decl, qualified_name),
+    };
+    SymbolTypeFact::Flow {
+        signature: CallableSignature {
+            params,
+            output,
+            effects: None,
+            requested_actions: None,
+        },
+    }
+}
+
+pub fn lower_std_type_decl(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    decl: &etas_std::TypeDecl,
+) -> TypeId {
+    lower_std_type_decl_with_name(ctx, registry, decl, None)
+}
+
+pub fn lower_std_type_symbol(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    symbol: &StdSymbol,
+) -> Option<TypeId> {
+    let StdDecl::Type(decl) = &symbol.decl else {
+        return None;
+    };
+    Some(lower_std_type_decl_with_name(
+        ctx,
+        registry,
+        decl,
+        Some(&symbol.qualified_path.join(".")),
+    ))
+}
+
+fn lower_std_type_decl_with_name(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    decl: &etas_std::TypeDecl,
+    qualified_name: Option<&str>,
+) -> TypeId {
+    let scope = qualified_name.and_then(qualified_scope);
+    lower_std_type_constructor(
+        ctx,
+        registry,
+        qualified_name.unwrap_or(&decl.name),
+        &decl.params,
+        decl.representation.as_ref(),
+        scope.as_deref(),
+    )
+}
+
+pub fn lower_std_type(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    ty: &StdType,
+) -> TypeId {
+    lower_std_type_with_scope(ctx, registry, ty, None)
+}
+
+fn lower_std_type_with_scope(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    ty: &StdType,
+    scope: Option<&[String]>,
+) -> TypeId {
+    match ty {
+        StdType::Primitive(primitive) => ctx.interner.primitive(match primitive {
+            StdPrimitiveType::Bool => PrimitiveType::Bool,
+            StdPrimitiveType::I8 => PrimitiveType::I8,
+            StdPrimitiveType::I16 => PrimitiveType::I16,
+            StdPrimitiveType::I32 => PrimitiveType::I32,
+            StdPrimitiveType::I64 => PrimitiveType::I64,
+            StdPrimitiveType::I128 => PrimitiveType::I128,
+            StdPrimitiveType::ISize => PrimitiveType::ISize,
+            StdPrimitiveType::U8 => PrimitiveType::U8,
+            StdPrimitiveType::U16 => PrimitiveType::U16,
+            StdPrimitiveType::U32 => PrimitiveType::U32,
+            StdPrimitiveType::U64 => PrimitiveType::U64,
+            StdPrimitiveType::U128 => PrimitiveType::U128,
+            StdPrimitiveType::USize => PrimitiveType::USize,
+            StdPrimitiveType::F32 => PrimitiveType::F32,
+            StdPrimitiveType::F64 => PrimitiveType::F64,
+            StdPrimitiveType::Char => PrimitiveType::Char,
+            StdPrimitiveType::String => PrimitiveType::String,
+            StdPrimitiveType::Bytes => PrimitiveType::Bytes,
+            StdPrimitiveType::Unit => PrimitiveType::Unit,
+            StdPrimitiveType::Never => PrimitiveType::Never,
+        }),
+        StdType::Var(name) => ctx
+            .interner
+            .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+        StdType::Support(kind) => ctx.interner.intern(Type::Named(NamedTypeRef {
+            name: kind.source_name().to_owned(),
+        })),
+        StdType::Array(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Array(inner))
+        }
+        StdType::List(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::List(inner))
+        }
+        StdType::Map { key, value } => {
+            let key = lower_std_type_with_scope(ctx, registry, key, scope);
+            let value = lower_std_type_with_scope(ctx, registry, value, scope);
+            ctx.interner.intern(Type::Map { key, value })
+        }
+        StdType::Set(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Set(inner))
+        }
+        StdType::Range(inner) => {
+            let index = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Range { index })
+        }
+        StdType::Slice(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Slice(inner))
+        }
+        StdType::Option(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Option(inner))
+        }
+        StdType::Result { ok, err } => {
+            let ok = lower_std_type_with_scope(ctx, registry, ok, scope);
+            let err = lower_std_type_with_scope(ctx, registry, err, scope);
+            ctx.interner.intern(Type::Result { ok, err })
+        }
+        StdType::Tuple(elements) => {
+            let elements = elements
+                .iter()
+                .map(|element| lower_std_type_with_scope(ctx, registry, element, scope))
+                .collect();
+            ctx.interner.intern(Type::Tuple(elements))
+        }
+        StdType::Schema(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Schema(inner))
+        }
+        StdType::Trust { wrapper, inner } => {
+            let wrapper = lower_trust_wrapper(*wrapper);
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Trust { wrapper, inner })
+        }
+        StdType::Prompt => ctx.interner.intern(Type::Prompt),
+        StdType::PromptPart => ctx.interner.intern(Type::PromptPart),
+        StdType::Message(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::Message(inner))
+        }
+        StdType::MemorySelection(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::MemorySelection(inner))
+        }
+        StdType::Store { key, value } => {
+            let key = lower_std_type_with_scope(ctx, registry, key, scope);
+            let value = lower_std_type_with_scope(ctx, registry, value, scope);
+            ctx.interner.intern(Type::Store { key, value })
+        }
+        StdType::MemoryRegion(inner) => {
+            let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner.intern(Type::MemoryRegion(inner))
+        }
+        StdType::ResourceHandleMemoryRegion(inner) => {
+            let schema = lower_std_type_with_scope(ctx, registry, inner, scope);
+            ctx.interner
+                .intern(Type::ResourceHandle(ResourceHandleType::MemoryRegion {
+                    schema,
+                }))
+        }
+        StdType::Named(name) => lower_named_std_type_with_scope(ctx, registry, name, scope),
+        StdType::NamedApplied { name, args } => {
+            let constructor = lower_named_std_type_with_scope(ctx, registry, name, scope);
+            let args = args
+                .iter()
+                .map(|arg| lower_std_type_with_scope(ctx, registry, arg, scope))
+                .collect();
+            ctx.interner.intern(Type::Applied {
+                constructor: TypeConstructorId(constructor.0),
+                args,
+            })
+        }
+        StdType::Record(fields) => {
+            let fields = fields
+                .iter()
+                .map(|field| FieldType {
+                    name: field.name.clone(),
+                    ty: lower_std_type_with_scope(ctx, registry, &field.ty, scope),
+                })
+                .collect();
+            ctx.interner.intern(Type::Record(RecordType { fields }))
+        }
+    }
+}
+
+pub fn std_effect_row(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    effects: &[String],
+) -> Option<EffectRowRef> {
+    std_effect_row_with_scope(ctx, registry, effects, None)
+}
+
+fn std_effect_row_with_scope(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    effects: &[String],
+    scope: Option<&[String]>,
+) -> Option<EffectRowRef> {
+    (!effects.is_empty()).then(|| EffectRowRef {
+        effects: effects
+            .iter()
+            .map(|effect| parse_effect_ref(ctx, registry, effect, scope))
+            .collect(),
+        tail: None,
+    })
+}
+
+pub fn lower_std_action_arg_kind(kind: &etas_std::EffectActionArgKind) -> EffectActionArgKind {
+    match kind {
+        etas_std::EffectActionArgKind::Type => EffectActionArgKind::Type,
+        etas_std::EffectActionArgKind::MemoryPlace => EffectActionArgKind::MemoryPlace,
+        etas_std::EffectActionArgKind::StaticResourcePath { ty } => {
+            EffectActionArgKind::StaticResourcePath {
+                ty: (*ty).to_owned(),
+            }
+        }
+        etas_std::EffectActionArgKind::StringPattern => EffectActionArgKind::StringPattern,
+    }
+}
+
+fn lower_named_std_type_with_scope(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    name: &str,
+    scope: Option<&[String]>,
+) -> TypeId {
+    match name {
+        "bool" => return ctx.interner.primitive(PrimitiveType::Bool),
+        "string" => return ctx.interner.primitive(PrimitiveType::String),
+        "bytes" => return ctx.interner.primitive(PrimitiveType::Bytes),
+        "unit" => return ctx.interner.primitive(PrimitiveType::Unit),
+        "never" => return ctx.interner.primitive(PrimitiveType::Never),
+        _ => {}
+    }
+
+    if !name.contains('.')
+        && let Some(scope) = scope
+        && let Some((identity, decl)) = lookup_scoped_std_type_decl(registry, scope, name)
+    {
+        return lower_std_type_constructor(
+            ctx,
+            registry,
+            &identity,
+            &decl.params,
+            decl.representation.as_ref(),
+            Some(scope),
+        );
+    }
+
+    if let Some((identity, decl)) = lookup_std_type_decl(registry, name) {
+        let constructor_scope = qualified_scope(&identity);
+        return lower_std_type_constructor(
+            ctx,
+            registry,
+            &identity,
+            &decl.params,
+            decl.representation.as_ref(),
+            constructor_scope.as_deref(),
+        );
+    }
+
+    ctx.interner.intern(Type::Named(NamedTypeRef {
+        name: name.to_owned(),
+    }))
+}
+
+fn lookup_scoped_std_type_decl<'a>(
+    registry: &'a StdRegistry,
+    scope: &[String],
+    name: &str,
+) -> Option<(String, &'a etas_std::TypeDecl)> {
+    let mut path = scope.to_vec();
+    path.push(name.to_owned());
+    let symbol = registry.lookup_qualified(&path)?;
+    match &symbol.decl {
+        StdDecl::Type(decl) => Some((path.join("."), decl)),
+        _ => None,
+    }
+}
+
+fn lookup_std_type_decl<'a>(
+    registry: &'a StdRegistry,
+    name: &str,
+) -> Option<(String, &'a etas_std::TypeDecl)> {
+    let (identity, symbol) = if name.contains('.') {
+        let path = name.split('.').collect::<Vec<_>>();
+        (name.to_owned(), registry.lookup_qualified(&path)?)
+    } else {
+        let symbol = registry
+            .lookup_prelude(name)
+            .and_then(|symbol| registry.symbol(symbol.id))
+            .or_else(|| {
+                let mut matches = registry.symbols().filter(|symbol| symbol.name == name);
+                let first = matches.next()?;
+                matches.next().is_none().then_some(first)
+            })?;
+        let mut path = registry
+            .module(symbol.module)
+            .map_or_else(Vec::new, |module| module.path.clone());
+        path.push(symbol.name.clone());
+        let identity = path.join(".");
+        (identity, symbol)
+    };
+    match &symbol.decl {
+        StdDecl::Type(decl) => Some((identity, decl)),
+        _ => None,
+    }
+}
+
+fn lower_std_type_constructor(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    name: &str,
+    params: &[etas_std::TypeParam],
+    representation: Option<&StdType>,
+    scope: Option<&[String]>,
+) -> TypeId {
+    if let Some(representation) = representation {
+        let representation = lower_std_type_with_scope(ctx, registry, representation, scope);
+        return ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            name: name.to_owned(),
+            params: params.iter().map(|param| param.name.clone()).collect(),
+            representation: Some(representation),
+        }));
+    }
+
+    ctx.interner.intern(Type::Named(NamedTypeRef {
+        name: name.to_owned(),
+    }))
+}
+
+fn qualified_scope(name: &str) -> Option<Vec<String>> {
+    let mut path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
+    path.pop()?;
+    (!path.is_empty()).then_some(path)
+}
+
+fn lower_trust_wrapper(wrapper: etas_std::StdTrustWrapper) -> TrustWrapper {
+    match wrapper {
+        etas_std::StdTrustWrapper::Trusted => TrustWrapper::Trusted,
+        etas_std::StdTrustWrapper::Untrusted => TrustWrapper::Untrusted,
+        etas_std::StdTrustWrapper::Secret => TrustWrapper::Secret,
+        etas_std::StdTrustWrapper::Public => TrustWrapper::Public,
+        etas_std::StdTrustWrapper::Sanitized => TrustWrapper::Sanitized,
+    }
+}
+
+fn trust_wrapper_from_name(name: &str) -> Option<TrustWrapper> {
+    Some(match name {
+        "Trusted" => TrustWrapper::Trusted,
+        "Untrusted" => TrustWrapper::Untrusted,
+        "Secret" => TrustWrapper::Secret,
+        "Public" => TrustWrapper::Public,
+        "Sanitized" => TrustWrapper::Sanitized,
+        _ => return None,
+    })
+}
+
+fn parse_effect_ref(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    text: &str,
+    scope: Option<&[String]>,
+) -> EffectRef {
+    if let Some((name, args)) = text
+        .split_once('[')
+        .and_then(|(name, rest)| rest.strip_suffix(']').map(|args| (name, args)))
+    {
+        let action_arg_kinds = std_action_arg_kinds(registry, name);
+        let args = args
+            .split(',')
+            .map(str::trim)
+            .filter(|arg| !arg.is_empty())
+            .enumerate()
+            .map(|(index, arg)| {
+                std_effect_arg(
+                    ctx,
+                    registry,
+                    arg,
+                    scope,
+                    action_arg_kinds.as_ref().and_then(|kinds| kinds.get(index)),
+                )
+            })
+            .collect();
+        return EffectRef {
+            name: name.to_owned(),
+            args,
+        };
+    }
+    EffectRef {
+        name: text.to_owned(),
+        args: Vec::new(),
+    }
+}
+
+fn std_effect_arg(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    arg: &str,
+    scope: Option<&[String]>,
+    expected_kind: Option<&etas_std::EffectActionArgKind>,
+) -> EffectArgRef {
+    if matches!(
+        expected_kind,
+        Some(
+            etas_std::EffectActionArgKind::MemoryPlace
+                | etas_std::EffectActionArgKind::StaticResourcePath { .. }
+                | etas_std::EffectActionArgKind::StringPattern
+        )
+    ) {
+        return EffectArgRef::Path(std_effect_arg_path(arg, scope));
+    }
+    if !arg.contains('.')
+        && let Some(scope) = scope
+        && let Some((identity, decl)) = lookup_scoped_std_type_decl(registry, scope, arg)
+    {
+        return EffectArgRef::Type(lower_std_type_constructor(
+            ctx,
+            registry,
+            &identity,
+            &decl.params,
+            decl.representation.as_ref(),
+            Some(scope),
+        ));
+    }
+    if let Some((identity, decl)) = lookup_std_type_decl(registry, arg) {
+        let constructor_scope = qualified_scope(&identity);
+        return EffectArgRef::Type(lower_std_type_constructor(
+            ctx,
+            registry,
+            &identity,
+            &decl.params,
+            decl.representation.as_ref(),
+            constructor_scope.as_deref(),
+        ));
+    }
+    EffectArgRef::Path(std_effect_arg_path(arg, scope))
+}
+
+fn std_action_arg_kinds(
+    registry: &StdRegistry,
+    name: &str,
+) -> Option<Vec<etas_std::EffectActionArgKind>> {
+    let (owner, action_name) = name.split_once('.')?;
+    registry.symbols().find_map(|symbol| {
+        let StdDecl::EffectAction(action) = &symbol.decl else {
+            return None;
+        };
+        (action.owner == owner && action.name == action_name).then(|| action.effect_args.clone())
+    })
+}
+
+fn std_effect_arg_path(arg: &str, scope: Option<&[String]>) -> Vec<String> {
+    if !arg.contains('.')
+        && let Some(scope) = scope
+    {
+        let mut path = scope.to_vec();
+        path.push(arg.to_owned());
+        return path;
+    }
+    arg.split('.').map(str::to_owned).collect()
+}
