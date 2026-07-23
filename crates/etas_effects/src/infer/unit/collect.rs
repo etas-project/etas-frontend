@@ -23,9 +23,10 @@ impl EffectUnitCollector {
     ) -> Vec<EffectUnit> {
         let view = context.view(hir);
         let semantic_units = HirSemanticUnitCollector::collect_with_context(hir, context);
-        let mut collector = Self::default();
-        collector.static_anonymous_flow_symbols =
-            static_anonymous_flow_symbols(hir, &semantic_units);
+        let mut collector = Self {
+            static_anonymous_flow_symbols: static_anonymous_flow_symbols(hir, &semantic_units),
+            ..Self::default()
+        };
         collector.collect_semantic_units(&semantic_units);
         collector.collect_effect_specific_units(hir, &view);
         collector.units.into_iter().collect()

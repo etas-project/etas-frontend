@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{EffectPipelineError, RuntimeRequirementReason};
 use etas_hir::{HirEffectDecl, HirItem, HirProgram, ResolveResult, SymbolDef, SymbolId};
-use etas_std::{StdDecl, StdPrimitiveType, StdSymbolKind, StdType, standard_registry};
+use etas_std::{StdDecl, StdPrimitiveType, StdRegistry, StdSymbolKind, StdType, standard_registry};
 
 pub const AGENTIC_TAG: EffectTagId = EffectTagId(0);
 pub const NETWORK_TAG: EffectTagId = EffectTagId(1);
@@ -122,7 +122,17 @@ impl EffectRegistry {
         types: &etas_types::TypeOutput,
         dependency_metadata: &DependencyEffectMetadata,
     ) -> Result<Self, EffectPipelineError> {
-        let mut registry = Self::with_standard_effects();
+        let std_registry = standard_registry();
+        Self::from_hir_types_dependencies_and_std(hir, types, dependency_metadata, &std_registry)
+    }
+
+    pub fn from_hir_types_dependencies_and_std(
+        hir: &HirProgram,
+        types: &etas_types::TypeOutput,
+        dependency_metadata: &DependencyEffectMetadata,
+        std_registry: &StdRegistry,
+    ) -> Result<Self, EffectPipelineError> {
+        let mut registry = Self::with_standard_effects_from(std_registry);
         registry.register_dependency_metadata(dependency_metadata)?;
         registry.register_hir_effects(hir);
         registry.register_hir_effect_extensions(hir);
@@ -132,6 +142,11 @@ impl EffectRegistry {
     }
 
     pub fn with_standard_effects() -> Self {
+        let std_registry = standard_registry();
+        Self::with_standard_effects_from(&std_registry)
+    }
+
+    pub fn with_standard_effects_from(std_registry: &StdRegistry) -> Self {
         let mut registry = Self::default();
         registry.register_core("Agentic", AGENTIC_TAG, CoreEffect::Agentic);
         registry.register_core("Network", NETWORK_TAG, CoreEffect::Network);
@@ -142,12 +157,13 @@ impl EffectRegistry {
         registry.register_core("Time", TIME_TAG, CoreEffect::Time);
         registry.register_core("Human", HUMAN_TAG, CoreEffect::Human);
         registry.register_core("Error", ERROR_TAG, CoreEffect::Error);
-        registry.register_standard_library_descriptors();
+        registry.register_standard_library_descriptors(std_registry);
         registry
     }
 
     pub fn with_standard_effects_and_memory_places(types: &etas_types::TypeStore) -> Self {
-        let mut registry = Self::with_standard_effects();
+        let std_registry = standard_registry();
+        let mut registry = Self::with_standard_effects_from(&std_registry);
         registry.register_memory_places(types.iter());
         registry
     }
@@ -352,9 +368,8 @@ impl EffectRegistry {
         }
     }
 
-    fn register_standard_library_descriptors(&mut self) {
-        let std = standard_registry();
-        for symbol in std.symbols() {
+    fn register_standard_library_descriptors(&mut self, std_registry: &StdRegistry) {
+        for symbol in std_registry.symbols() {
             if symbol.kind != StdSymbolKind::Effect || !is_std_effect_symbol(&symbol.qualified_path)
             {
                 continue;
@@ -390,7 +405,7 @@ impl EffectRegistry {
             }
         }
 
-        for symbol in std.symbols() {
+        for symbol in std_registry.symbols() {
             if symbol.kind != StdSymbolKind::EffectAction
                 || !is_std_effect_action_symbol(&symbol.qualified_path)
             {
@@ -411,32 +426,38 @@ impl EffectRegistry {
                 .map(runtime_requirement_from_std)
                 .or_else(|| self.runtime_requirement_reason(owner));
             self.register_standard_action(
-                EffectActionId(stable_id),
-                owner,
-                &action.name,
-                runtime_requirement,
-                effect_action_args_from_std_decl(action),
-                action_returns_never(&action.output),
-                action.high_impact_ack,
+                StandardActionRegistration {
+                    id: EffectActionId(stable_id),
+                    owner,
+                    name: &action.name,
+                    runtime_requirement,
+                    effect_args: effect_action_args_from_std_decl(action),
+                    returns_never: action_returns_never(&action.output),
+                    high_impact_ack: action.high_impact_ack,
+                },
+                std_registry,
             );
         }
 
-        if let Some(symbol) = std.lookup_qualified(&["std", "runtime", "error", "raise"]) {
+        if let Some(symbol) = std_registry.lookup_qualified(&["std", "runtime", "error", "raise"]) {
             if let StdDecl::EffectAction(action) = &symbol.decl {
                 self.register_standard_local_action(
-                    action
-                        .stable_id
-                        .map(EffectActionId)
-                        .unwrap_or(ERROR_RAISE_ACTION),
-                    ERROR_TAG,
-                    &action.name,
-                    action
-                        .runtime_requirement
-                        .as_ref()
-                        .map(runtime_requirement_from_std),
-                    effect_action_args_from_std_decl(action),
-                    action_returns_never(&action.output),
-                    action.high_impact_ack,
+                    StandardActionRegistration {
+                        id: action
+                            .stable_id
+                            .map(EffectActionId)
+                            .unwrap_or(ERROR_RAISE_ACTION),
+                        owner: ERROR_TAG,
+                        name: &action.name,
+                        runtime_requirement: action
+                            .runtime_requirement
+                            .as_ref()
+                            .map(runtime_requirement_from_std),
+                        effect_args: effect_action_args_from_std_decl(action),
+                        returns_never: action_returns_never(&action.output),
+                        high_impact_ack: action.high_impact_ack,
+                    },
+                    std_registry,
                 );
             }
         }
@@ -444,23 +465,12 @@ impl EffectRegistry {
 
     fn register_standard_action(
         &mut self,
-        id: EffectActionId,
-        owner: EffectTagId,
-        name: &str,
-        runtime_requirement: Option<RuntimeRequirementReason>,
-        effect_args: Vec<EffectActionArgKind>,
-        returns_never: bool,
-        high_impact_ack: bool,
+        registration: StandardActionRegistration<'_>,
+        std_registry: &StdRegistry,
     ) {
-        self.register_standard_action_with_runtime(
-            id,
-            owner,
-            name,
-            runtime_requirement.clone(),
-            effect_args,
-            returns_never,
-            high_impact_ack,
-        );
+        let runtime_requirement = registration.runtime_requirement.clone();
+        let owner = registration.owner;
+        self.register_standard_action_with_runtime(registration, std_registry);
         if let Some(runtime_requirement) = runtime_requirement {
             self.tags.entry(owner).and_modify(|tag| {
                 tag.runtime_requirement = tag
@@ -473,15 +483,18 @@ impl EffectRegistry {
 
     fn register_standard_local_action(
         &mut self,
-        id: EffectActionId,
-        owner: EffectTagId,
-        name: &str,
-        runtime_requirement: Option<RuntimeRequirementReason>,
-        effect_args: Vec<EffectActionArgKind>,
-        returns_never: bool,
-        high_impact_ack: bool,
+        registration: StandardActionRegistration<'_>,
+        std_registry: &StdRegistry,
     ) {
-        self.register_standard_action_with_runtime(
+        self.register_standard_action_with_runtime(registration, std_registry);
+    }
+
+    fn register_standard_action_with_runtime(
+        &mut self,
+        registration: StandardActionRegistration<'_>,
+        std_registry: &StdRegistry,
+    ) {
+        let StandardActionRegistration {
             id,
             owner,
             name,
@@ -489,19 +502,7 @@ impl EffectRegistry {
             effect_args,
             returns_never,
             high_impact_ack,
-        );
-    }
-
-    fn register_standard_action_with_runtime(
-        &mut self,
-        id: EffectActionId,
-        owner: EffectTagId,
-        name: &str,
-        runtime_requirement: Option<RuntimeRequirementReason>,
-        effect_args: Vec<EffectActionArgKind>,
-        returns_never: bool,
-        high_impact_ack: bool,
-    ) {
+        } = registration;
         let Some(owner_tag) = self.tags.get(&owner) else {
             return;
         };
@@ -538,7 +539,12 @@ impl EffectRegistry {
             format!("std.runtime.effects.{}.{}", owner_name, name),
             action_ref.clone(),
         );
-        self.register_standard_action_owner_symbol_aliases(owner_name.as_str(), name, action_ref);
+        self.register_standard_action_owner_symbol_aliases(
+            owner_name.as_str(),
+            name,
+            action_ref,
+            std_registry,
+        );
     }
 
     fn register_standard_action_owner_symbol_aliases(
@@ -546,9 +552,9 @@ impl EffectRegistry {
         owner: &str,
         name: &str,
         action_ref: ActionRef,
+        std_registry: &StdRegistry,
     ) {
-        let std = standard_registry();
-        for symbol in std.symbols() {
+        for symbol in std_registry.symbols() {
             if symbol
                 .qualified_path
                 .last()
@@ -929,6 +935,16 @@ impl EffectRegistry {
             self.tag_by_name(&path.join("."))
         })
     }
+}
+
+struct StandardActionRegistration<'a> {
+    id: EffectActionId,
+    owner: EffectTagId,
+    name: &'a str,
+    runtime_requirement: Option<RuntimeRequirementReason>,
+    effect_args: Vec<EffectActionArgKind>,
+    returns_never: bool,
+    high_impact_ack: bool,
 }
 
 fn effect_action_arg_kind_from_types(

@@ -1,5 +1,5 @@
 pub mod body;
 pub(crate) mod collect;
-pub mod unit;
+pub mod model;
 
-pub use unit::{EffectAnonymousFlowBody, EffectUnit};
+pub use model::{EffectAnonymousFlowBody, EffectUnit};

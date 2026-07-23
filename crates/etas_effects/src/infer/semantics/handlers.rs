@@ -11,7 +11,7 @@ use crate::{
 
 use crate::infer::unit::EffectUnit;
 
-use super::semantics::EffectSemantics;
+use super::engine::EffectSemantics;
 use super::state::EffectState;
 
 impl EffectSemantics<'_> {
@@ -37,7 +37,7 @@ impl EffectSemantics<'_> {
                     return Control::normal(body_state);
                 };
                 let coverage = EffectCoverage {
-                    registry: &self.registry,
+                    registry: self.registry,
                     types: &self.types.store,
                 };
                 let remaining =
@@ -203,7 +203,7 @@ impl EffectSemantics<'_> {
 
             let expected_effect = EffectRow::closed(EffectSet::one(effect));
             let coverage = EffectCoverage {
-                registry: &self.registry,
+                registry: self.registry,
                 types: &self.types.store,
             };
             if !coverage.row_covers(&rows.handled, &expected_effect) {
@@ -219,7 +219,7 @@ impl EffectSemantics<'_> {
         let produced = match rows.produced {
             Some(explicit) => {
                 let coverage = EffectCoverage {
-                    registry: &self.registry,
+                    registry: self.registry,
                     types: &self.types.store,
                 };
                 if !coverage.row_covers(&explicit, &inferred_produced) {

@@ -5,7 +5,7 @@ use crate::EffectPipelineError;
 use crate::diagnostic_anchor::{DiagnosticAnchor, materialize_effect_diagnostic};
 use crate::facts::{EffectAnalysisOutput, EffectComponentConvergence, EffectConvergenceStatus};
 use crate::infer::domain::{EffectSummary, FrontendRejectionReason, InterpreterSupport};
-use crate::infer::semantics::semantics::EffectSemantics;
+use crate::infer::semantics::engine::EffectSemantics;
 use crate::infer::unit::EffectUnit;
 
 pub fn output_from_result(
@@ -44,8 +44,7 @@ pub fn output_from_result(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let (_, mut inputs, mut diagnostics, diagnostic_materialization_errors) =
-        semantics.into_parts();
+    let (mut inputs, mut diagnostics, diagnostic_materialization_errors) = semantics.into_parts();
     if let Some(error) = diagnostic_materialization_errors.into_iter().next() {
         return Err(error);
     }

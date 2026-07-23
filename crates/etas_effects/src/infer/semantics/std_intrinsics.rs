@@ -4,7 +4,7 @@ use etas_hir::{
     PartialResolutionReason, ResolveResult, SymbolDef,
 };
 use etas_hir_analysis::interprocedural::CallSite;
-use etas_std::{IntrinsicRuntimeRequirement, StdDecl, TypeDeclKind, standard_registry};
+use etas_std::{IntrinsicRuntimeRequirement, StdDecl, TypeDeclKind};
 use etas_types::{EffectArgRef, SymbolTypeFact, Type, TypeId};
 
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     EffectActionId, MEMORY_READ_ACTION, MEMORY_TAG, MEMORY_WRITE_ACTION,
 };
 
-use super::semantics::EffectSemantics;
+use super::engine::EffectSemantics;
 use super::state::EffectState;
 
 impl EffectSemantics<'_> {
@@ -51,9 +51,9 @@ impl EffectSemantics<'_> {
                 return state;
             }
             if path.first().is_some_and(|segment| segment == "std") {
-                let std = standard_registry();
-                if let Some(decl) =
-                    std.lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())
+                if let Some(decl) = self
+                    .std_registry
+                    .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())
                 {
                     if std_decl_is_pure_call_support(&decl.decl) {
                         return state;
@@ -65,9 +65,19 @@ impl EffectSemantics<'_> {
                     );
                 }
             }
-            if let Some(summary) = self.external_call_summary_for_path(path, &site, &state) {
-                state.summary.seq_assign(&summary);
-                return state;
+            match self.external_call_summary_for_path(path, &site, &state) {
+                Ok(Some(summary)) => {
+                    state.summary.seq_assign(&summary);
+                    return state;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return self.incomplete_at(
+                        site.span,
+                        format!("external call effect selector specialization failed: {error}"),
+                        state,
+                    );
+                }
             }
             return self.reject_effect_state(
                 site.span,
@@ -95,8 +105,9 @@ impl EffectSemantics<'_> {
         let Some(path) = self.std_qualified_path_for_expr(callee) else {
             return false;
         };
-        let std = standard_registry();
-        let Some(decl) = std.lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())
+        let Some(decl) = self
+            .std_registry
+            .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())
         else {
             return false;
         };
@@ -466,7 +477,7 @@ impl EffectSemantics<'_> {
                 let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
                     return None;
                 };
-                if !path.first().is_some_and(|segment| segment == "std") {
+                if path.first().is_none_or(|segment| segment != "std") {
                     return None;
                 }
                 let mut qualified = path.clone();
@@ -478,7 +489,7 @@ impl EffectSemantics<'_> {
     }
 
     fn std_method_name_is_pure_support(&self, method: &str) -> bool {
-        standard_registry().symbols().any(|symbol| {
+        self.std_registry.symbols().any(|symbol| {
             symbol.name == method
                 && matches!(
                     &symbol.decl,
@@ -649,8 +660,9 @@ impl EffectSemantics<'_> {
         let SymbolDef::ImportAlias { path, .. } = &symbol_data.def else {
             return None;
         };
-        let std = standard_registry();
-        let decl = std.lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let decl = self
+            .std_registry
+            .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())?;
         let StdDecl::Flow(flow) = &decl.decl else {
             return None;
         };
@@ -752,8 +764,7 @@ impl EffectSemantics<'_> {
             .iter()
             .filter_map(|(id, ty)| {
                 let name = type_effect_name(ty)?;
-                (name == qualified || (path.len() == 1 && !name.contains('.') && name == qualified))
-                    .then_some(id)
+                (name == qualified).then_some(id)
             })
             .collect::<Vec<_>>();
         matches.sort();
@@ -766,7 +777,7 @@ impl EffectSemantics<'_> {
     }
 
     fn is_standard_type_name(&self, name: &str) -> bool {
-        standard_registry()
+        self.std_registry
             .symbols()
             .any(|symbol| symbol.name == name && matches!(&symbol.decl, StdDecl::Type(_)))
     }

@@ -11,7 +11,7 @@ use crate::{
     FrontendRejectionReason, InterpreterSupport, PerformedActionFact,
 };
 
-use super::semantics::EffectSemantics;
+use super::engine::EffectSemantics;
 use super::state::EffectState;
 
 impl EffectSemantics<'_> {

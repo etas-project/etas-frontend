@@ -1,7 +1,7 @@
 use etas_hir::{HirExpr, HirExprId, HirItem, ResolveResult, SymbolDef, SymbolKind};
 use etas_hir_analysis::interprocedural::{CallTarget, UnitContext};
 
-use super::semantics::EffectSemantics;
+use super::engine::EffectSemantics;
 use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
@@ -96,9 +96,9 @@ impl EffectSemantics<'_> {
             ) => {
                 if let Some(item) = self.source_item_for_path(path) {
                     self.source_import_target(item)
-                } else if path.first().is_some_and(|segment| segment == "std") {
-                    CallTarget::External
-                } else if self.has_external_summary_for_path(path) {
+                } else if path.first().is_some_and(|segment| segment == "std")
+                    || self.has_external_summary_for_path(path)
+                {
                     CallTarget::External
                 } else {
                     CallTarget::Incomplete

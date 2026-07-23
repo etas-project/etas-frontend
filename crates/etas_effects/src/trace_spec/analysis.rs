@@ -1,5 +1,7 @@
 use etas_hir_analysis::HirAnalysisContext;
-use etas_hir_analysis::interprocedural::{InterproceduralAnalysis, SummaryStore};
+use etas_hir_analysis::interprocedural::{
+    InterproceduralAnalysis, InterproceduralAnalysisResult, SummaryStore,
+};
 
 use crate::{EffectOutput, EffectPipelineError, EffectRegistry, EffectUnit};
 
@@ -19,23 +21,35 @@ pub fn analyze_trace_spec_monitors(
     registry: &EffectRegistry,
     effects: &mut EffectOutput,
     models: &TraceSpecModelStore,
-    units: Vec<EffectUnit>,
+    units: &[EffectUnit],
     context: HirAnalysisContext,
 ) -> Result<TraceSpecAnalysisOutput, EffectPipelineError> {
     let trace_spec_items = models.referenced_by_item.keys().copied().collect();
-    let facts = effects.facts.clone();
     let result = InterproceduralAnalysis::new(
-        units,
-        TraceSpecSemantics::with_context(hir, context, types, registry, &facts, trace_spec_items),
+        units.iter().copied(),
+        TraceSpecSemantics::with_context(
+            hir,
+            context,
+            types,
+            registry,
+            &effects.facts,
+            trace_spec_items,
+        ),
     )
     .solve();
-    let (diagnostics, rejected_items, diagnostic_materialization_errors) =
-        result.semantics.into_parts();
+    let InterproceduralAnalysisResult {
+        semantics,
+        summaries,
+        convergence,
+        diagnostics: analysis_diagnostics,
+        ..
+    } = result;
+    let (diagnostics, rejected_items, diagnostic_materialization_errors) = semantics.into_parts();
     if let Some(error) = diagnostic_materialization_errors.into_iter().next() {
         return Err(error);
     }
     effects.diagnostics.extend(diagnostics);
-    for diagnostic in result.diagnostics {
+    for diagnostic in analysis_diagnostics {
         let anchor = match &diagnostic {
             etas_hir_analysis::interprocedural::InterproceduralDiagnostic::InvalidCondensationGraph => DiagnosticAnchor::Project,
             etas_hir_analysis::interprocedural::InterproceduralDiagnostic::MissingBody { unit } => DiagnosticAnchor::Unit(*unit),
@@ -49,7 +63,7 @@ pub fn analyze_trace_spec_monitors(
             format!("trace spec interprocedural analysis failed: {diagnostic:?}"),
         )?);
     }
-    for convergence in result.convergence {
+    for convergence in convergence {
         if convergence.status == etas_utils::ConvergenceStatus::IterationLimitReached {
             for unit in &convergence.units {
                 if let Some(owner) = unit.owner() {
@@ -74,7 +88,5 @@ pub fn analyze_trace_spec_monitors(
         reject_item_for_trace_spec(effects, item);
     }
 
-    Ok(TraceSpecAnalysisOutput {
-        summaries: result.summaries,
-    })
+    Ok(TraceSpecAnalysisOutput { summaries })
 }

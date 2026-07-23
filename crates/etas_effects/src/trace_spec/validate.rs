@@ -17,16 +17,29 @@ use super::model::{TraceSpecClause, TraceSpecClauseAlternatives, TraceSpecModelS
 use super::monitor::{self, TemporalMonitorResult};
 use crate::diagnostic_anchor::{DiagnosticAnchor, materialize_effect_diagnostic, resolve_anchor};
 
+pub struct TraceSpecValidationInput<'a> {
+    pub hir: &'a etas_hir::HirProgram,
+    pub types: &'a etas_types::TypeOutput,
+    pub registry: &'a EffectRegistry,
+    pub models: &'a TraceSpecModelStore,
+    pub analysis: &'a TraceSpecAnalysisOutput,
+    pub external_summaries: &'a [crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
+    pub reachable_items: Option<&'a BTreeSet<HirItemId>>,
+}
+
 pub fn validate_trace_spec_facts(
-    hir: &etas_hir::HirProgram,
-    types: &etas_types::TypeOutput,
-    registry: &EffectRegistry,
     effects: &mut EffectOutput,
-    models: &TraceSpecModelStore,
-    analysis: &TraceSpecAnalysisOutput,
-    external_summaries: &[crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
-    reachable_items: Option<&BTreeSet<HirItemId>>,
+    input: TraceSpecValidationInput<'_>,
 ) -> Result<(), EffectPipelineError> {
+    let TraceSpecValidationInput {
+        hir,
+        types,
+        registry,
+        models,
+        analysis,
+        external_summaries,
+        reachable_items,
+    } = input;
     validate_item_policies(
         hir,
         types,
@@ -74,18 +87,21 @@ fn validate_item_policies(
         }
         let action_trace = trace_spec_summary.action_trace.clone();
         let requested_actions = trace_spec_summary.requested_actions.clone();
-        let allow_requested_actions = effects
-            .facts
-            .item_effects
-            .get(item)
-            .map(|summary| {
-                EffectCoverage {
-                    registry,
-                    types: &types.store,
-                }
-                .subtract_handled(&requested_actions, &summary.default_actions)
-            })
-            .unwrap_or_else(|| requested_actions.clone());
+        let Some(item_effect_summary) = effects.facts.item_effects.get(item) else {
+            effects.diagnostics.push(materialize_effect_diagnostic(
+                hir,
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                DiagnosticAnchor::Unit(EffectUnit::Item(*item)),
+                "trace spec validation requires materialized item effect facts",
+            )?);
+            reject_item_for_trace_spec(effects, *item);
+            continue;
+        };
+        let allow_requested_actions = EffectCoverage {
+            registry,
+            types: &types.store,
+        }
+        .subtract_handled(&requested_actions, &item_effect_summary.default_actions);
         let fallback_span = resolve_anchor(hir, &DiagnosticAnchor::Unit(EffectUnit::Item(*item)))
             .ok_or_else(|| EffectPipelineError::MissingDiagnosticAnchor {
             artifact: format!("trace spec item {item:?}"),
@@ -465,5 +481,57 @@ pub(crate) fn reject_item_for_trace_spec(effects: &mut EffectOutput, item: etas_
             .interpreter_support
             .items
             .insert(item, summary.support.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use etas_core::{DiagnosticCode, EffectDiagnosticCode, SourceFile, SourceId};
+    use etas_hir::{HirItem, lower_program};
+    use etas_hir_analysis::interprocedural::SummaryStore;
+
+    use super::{TraceSpecModelStore, TraceSpecSummary, validate_item_policies};
+    use crate::{EffectOutput, EffectRegistry, EffectUnit};
+
+    #[test]
+    fn missing_materialized_item_effect_facts_fail_closed() {
+        let parsed = etas_syntax::parse_program(SourceFile::new(
+            SourceId(0),
+            None,
+            "flow main() -> unit { return; }",
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let item = hir
+            .items
+            .iter()
+            .find_map(|(item, data)| matches!(data, HirItem::Flow(_)).then_some(item))
+            .expect("flow item");
+        let mut models = TraceSpecModelStore::default();
+        models.referenced_by_item.insert(item, vec![vec![]]);
+        let mut summaries = SummaryStore::new();
+        summaries.insert(
+            EffectUnit::Item(item),
+            TraceSpecSummary::for_unit(EffectUnit::Item(item)),
+        );
+        let mut effects = EffectOutput::default();
+
+        validate_item_policies(
+            &hir,
+            &etas_types::TypeOutput::default(),
+            &EffectRegistry::with_standard_effects(),
+            &mut effects,
+            &models,
+            &summaries,
+            None,
+        )
+        .expect("missing facts should become a diagnostic");
+
+        assert!(effects.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+                && diagnostic
+                    .message
+                    .contains("materialized item effect facts")
+        }));
     }
 }

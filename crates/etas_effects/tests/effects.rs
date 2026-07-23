@@ -16,6 +16,11 @@ use etas_hir::{
 };
 use etas_utils::JoinSemiLattice;
 
+fn test_std_registry() -> &'static etas_std::StdRegistry {
+    static REGISTRY: std::sync::OnceLock<etas_std::StdRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(etas_std::standard_registry)
+}
+
 fn check_program(
     hir: &etas_hir::HirProgram,
     types: &etas_types::TypeOutput,
@@ -23,6 +28,7 @@ fn check_program(
     RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir,
         types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -2218,6 +2224,7 @@ tool search(q: string) -> string ![Network];
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: std::slice::from_ref(&binding),
         external_summaries: &[],
@@ -3726,6 +3733,7 @@ flow main() -> unit ![] {
     let units = RunEffectPipeline::artifacts(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -3786,6 +3794,7 @@ flow helper() -> unit {
     let plan = RunEffectPipeline::plan(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -3799,6 +3808,7 @@ flow helper() -> unit {
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -3873,6 +3883,7 @@ flow main() -> unit ![Network] {
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -3995,6 +4006,7 @@ flow main() -> unit ![Transport] {
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -4095,6 +4107,7 @@ flow main() -> unit ![Transport] {
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
@@ -4231,6 +4244,7 @@ flow main() -> unit {
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: Some(&metadata),
         tool_bindings: &[],
         external_summaries: &[],
@@ -4295,6 +4309,7 @@ flow main() -> unit {
     let missing_anchor_error = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: Some(&metadata),
         tool_bindings: &[],
         external_summaries: &[],
@@ -4310,6 +4325,7 @@ flow main() -> unit {
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: Some(&metadata),
         tool_bindings: &[],
         external_summaries: &[],
@@ -4785,6 +4801,7 @@ flow main(path: string) -> string ![Workspace.read<_>]
     let pipeline = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
         hir: &hir,
         types: &types,
+        std_registry: test_std_registry(),
         dependency_metadata: None,
         tool_bindings: &[],
         external_summaries: &[],
