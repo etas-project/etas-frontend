@@ -118,8 +118,9 @@ impl JoinSemiLattice for AliasValue {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AliasSet {
+    #[default]
     Bottom,
     Known(BTreeSet<Place>),
     Unknown,
@@ -151,12 +152,6 @@ impl AliasSet {
             Self::Known(places) => Some(places),
             Self::Bottom | Self::Unknown => None,
         }
-    }
-}
-
-impl Default for AliasSet {
-    fn default() -> Self {
-        Self::Bottom
     }
 }
 

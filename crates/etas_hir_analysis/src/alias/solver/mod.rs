@@ -117,7 +117,7 @@ impl AliasConstraintFrame {
 enum ConfiguredAliasSolver {
     Inclusion(InclusionAliasSolver),
     Unification(UnificationAliasSolver),
-    Hybrid(HybridAliasSolver),
+    Hybrid(Box<HybridAliasSolver>),
 }
 
 impl ConfiguredAliasSolver {
@@ -130,7 +130,7 @@ impl ConfiguredAliasSolver {
                 Self::Unification(UnificationAliasSolver::new(config))
             }
             super::config::AliasConstraintModel::Hybrid { .. } => {
-                Self::Hybrid(HybridAliasSolver::new(config))
+                Self::Hybrid(Box::new(HybridAliasSolver::new(config)))
             }
         }
     }

@@ -81,8 +81,11 @@ impl AliasOracle for NoAliasOracle {
 
 impl AliasIntrinsicSummary {
     pub fn returns(value: AliasValueExpr) -> Self {
-        let mut summary = AliasSummary::default();
-        summary.return_alias = value;
-        Self { summary }
+        Self {
+            summary: AliasSummary {
+                return_alias: value,
+                ..AliasSummary::default()
+            },
+        }
     }
 }
