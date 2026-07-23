@@ -385,7 +385,7 @@ impl Parser<'_> {
             while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
                 let before = self.cursor.position();
                 if self.cursor.at_keyword(Keyword::Flow) {
-                    items.push(SpecItem::FlowSignature(self.flow_signature()));
+                    items.push(SpecItem::FlowSignature(Box::new(self.flow_signature())));
                 } else {
                     let span = self.cursor.peek().span;
                     self.diagnostics.push(Diagnostic::syntax(
@@ -650,7 +650,9 @@ impl Parser<'_> {
         while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
             let before = self.cursor.position();
             if self.cursor.at_keyword(Keyword::Flow) {
-                items.push(ImplItem::Flow(self.flow_decl(Visibility::Private)));
+                items.push(ImplItem::Flow(Box::new(
+                    self.flow_decl(Visibility::Private),
+                )));
             } else if self.cursor.at_keyword(Keyword::Action) {
                 let owner = owner_path.as_ref().and_then(|owner_path| {
                     owner_path
@@ -658,7 +660,7 @@ impl Parser<'_> {
                         .last()
                         .map(|segment| segment.text.as_str())
                 });
-                items.push(ImplItem::Action(self.effect_action_decl(owner)));
+                items.push(ImplItem::Action(Box::new(self.effect_action_decl(owner))));
             } else {
                 let span = self.cursor.peek().span;
                 self.diagnostics.push(Diagnostic::syntax(

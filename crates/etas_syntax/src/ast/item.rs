@@ -277,7 +277,7 @@ impl SpecExpr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpecItem {
-    FlowSignature(FlowSignature),
+    FlowSignature(Box<FlowSignature>),
     Error(Span),
 }
 
@@ -344,8 +344,8 @@ impl ImplTarget {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ImplItem {
-    Flow(FlowDecl),
-    Action(EffectActionDecl),
+    Flow(Box<FlowDecl>),
+    Action(Box<EffectActionDecl>),
     Error(Span),
 }
 
