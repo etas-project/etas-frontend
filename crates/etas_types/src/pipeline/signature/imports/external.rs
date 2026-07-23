@@ -172,10 +172,7 @@ pub fn apply_external_signature_input(
             ctx.signature_facts
                 .spec_signatures
                 .insert(binding.symbol, lowered);
-        } else if trace_specs
-            .get(&(binding.package, binding.path.clone()))
-            .is_some()
-        {
+        } else if trace_specs.contains_key(&(binding.package, binding.path.clone())) {
             ctx.signature_facts.symbol_types.insert(
                 binding.symbol,
                 SymbolTypeFact::Spec {

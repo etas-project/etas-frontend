@@ -132,9 +132,7 @@ fn receiver_expected_from_candidates(
         let Some(crate::Type::Function(flow)) = ctx.ctx.interner.store().get(*candidate) else {
             return None;
         };
-        let Some(receiver) = flow.input.first().copied() else {
-            return None;
-        };
+        let receiver = flow.input.first().copied()?;
         if let Some(existing) = expected {
             if existing != receiver {
                 return None;

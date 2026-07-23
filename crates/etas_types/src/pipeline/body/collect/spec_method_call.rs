@@ -7,16 +7,29 @@ use crate::{
     pipeline::{body::collect::expr::collect_expr, context::BodyCollectContext},
 };
 
+pub struct SpecMethodCallInput<'a> {
+    pub receiver: etas_hir::HirExprId,
+    pub spec_path: &'a ResolvedPath,
+    pub spec_args: &'a [etas_hir::HirTypeId],
+    pub method: &'a str,
+    pub args: &'a [HirArg],
+    pub span: etas_core::Span,
+    pub expected: Option<TypeId>,
+}
+
 pub fn collect_spec_method_call(
     ctx: &mut BodyCollectContext<'_, '_>,
-    receiver: etas_hir::HirExprId,
-    spec_path: &ResolvedPath,
-    spec_args: &[etas_hir::HirTypeId],
-    method: &str,
-    args: &[HirArg],
-    span: etas_core::Span,
-    expected: Option<TypeId>,
+    input: SpecMethodCallInput<'_>,
 ) -> TypeId {
+    let SpecMethodCallInput {
+        receiver,
+        spec_path,
+        spec_args,
+        method,
+        args,
+        span,
+        expected,
+    } = input;
     let receiver_ty = collect_expr(ctx, receiver, None);
     let explicit_arg_tys = args
         .iter()
@@ -157,9 +170,7 @@ fn method_callable_type(
     let signature = if let Some(signature) = &method.signature {
         signature.clone()
     } else {
-        let Some(symbol) = method.source_symbol() else {
-            return None;
-        };
+        let symbol = method.source_symbol()?;
         let fact = ctx
             .ctx
             .symbols

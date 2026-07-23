@@ -1,11 +1,12 @@
 use etas_core::{Diagnostic, TypeDiagnosticCode};
 use etas_hir::HirProgram;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{TypeFacts, TypeInterner, TypeOutput, pipeline::symbols::TypeSymbolIndex};
 
 pub struct TypePipelineContext<'a> {
     pub hir: &'a HirProgram,
+    pub std_registry: Arc<etas_std::StdRegistry>,
     pub interner: TypeInterner,
     pub signature_facts: TypeFacts,
     pub symbols: TypeSymbolIndex,
@@ -76,8 +77,16 @@ impl BodyCollectContext<'_, '_> {
 
 impl<'a> TypePipelineContext<'a> {
     pub fn new(hir: &'a HirProgram) -> Self {
+        Self::new_with_std_registry(hir, Arc::new(etas_std::standard_registry()))
+    }
+
+    pub fn new_with_std_registry(
+        hir: &'a HirProgram,
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Self {
         Self {
             hir,
+            std_registry,
             interner: TypeInterner::new(),
             signature_facts: TypeFacts::default(),
             symbols: TypeSymbolIndex::build(hir),

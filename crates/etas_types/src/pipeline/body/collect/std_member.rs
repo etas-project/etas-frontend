@@ -40,7 +40,7 @@ fn std_qualified_path_value_type_with_instantiation(
     if segments.first().copied() != Some("std") {
         return None;
     }
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     let symbol = registry.lookup_qualified(&segments)?;
     let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
     if instantiate_schematics {
@@ -88,7 +88,7 @@ fn std_qualified_member_value_type(
         return None;
     }
     segments.push(member);
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     let symbol = registry.lookup_qualified(&segments)?;
     let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
     value_type_from_fact(ctx, fact)
@@ -120,7 +120,7 @@ pub fn raw_std_member_value_type_for_symbol(
 }
 
 pub fn std_method_candidates(ctx: &mut BodyCollectContext<'_, '_>, method: &str) -> Vec<TypeId> {
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
@@ -135,7 +135,7 @@ pub fn raw_std_method_candidates(
     ctx: &mut BodyCollectContext<'_, '_>,
     method: &str,
 ) -> Vec<TypeId> {
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
@@ -178,7 +178,7 @@ fn std_declared_message_field_type(
     inner: TypeId,
     field: &str,
 ) -> Option<TypeId> {
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     let symbol = registry.lookup_qualified(&["std", "agent", "message", "Message"])?;
     let StdDecl::Type(decl) = &symbol.decl else {
         return None;
@@ -231,7 +231,7 @@ fn std_source_type_member_value_type_for_symbol(
     member: &str,
     instantiate_schematics: bool,
 ) -> Option<TypeId> {
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     let base_std_symbol = std_type_symbol_for_hir_symbol(ctx, &registry, base_symbol)?;
     let member_symbol = registry.symbols().find(|symbol| {
         std_symbol_is_type_member_candidate(symbol, member)
@@ -345,7 +345,7 @@ fn std_member_fact(
         return None;
     }
 
-    let registry = etas_std::standard_registry();
+    let registry = ctx.ctx.std_registry.clone();
     let base_std_symbol = registry.lookup_qualified(path)?;
     if !matches!(base_std_symbol.decl, etas_std::StdDecl::Type(_)) {
         return None;

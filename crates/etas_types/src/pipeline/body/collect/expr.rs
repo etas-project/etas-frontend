@@ -14,7 +14,7 @@ use crate::{
             method_call::collect_method_call,
             perform::collect_perform,
             record::collect_record,
-            spec_method_call::collect_spec_method_call,
+            spec_method_call::{SpecMethodCallInput, collect_spec_method_call},
             std_member::{
                 std_declared_field_type, std_member_value_type, std_member_value_type_for_symbol,
                 std_qualified_path_value_type,
@@ -334,7 +334,16 @@ pub fn collect_expr(
             args,
             span,
         } => collect_spec_method_call(
-            ctx, receiver, &spec_path, &spec_args, &method, &args, span, expected,
+            ctx,
+            SpecMethodCallInput {
+                receiver,
+                spec_path: &spec_path,
+                spec_args: &spec_args,
+                method: &method,
+                args: &args,
+                span,
+                expected,
+            },
         ),
         HirExpr::Handle {
             body,

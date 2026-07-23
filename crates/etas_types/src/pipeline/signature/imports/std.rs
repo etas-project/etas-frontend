@@ -30,7 +30,7 @@ pub fn apply_hir_std_prelude(ctx: &mut TypePipelineContext<'_>) {
 }
 
 pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdSignatureInput) {
-    let registry = etas_std::standard_registry();
+    let registry = ctx.std_registry.clone();
     record_known_std_types(ctx, &registry);
     for binding in &input.symbol_bindings {
         let Some(symbol) = registry.lookup_qualified(&binding.qualified_path) else {

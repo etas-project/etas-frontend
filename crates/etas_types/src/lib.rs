@@ -79,6 +79,15 @@ pub fn check_body_item(
     pipeline::check_body_with_seed(hir, seed, item)
 }
 
+pub fn check_body_item_with_std_registry(
+    hir: &etas_hir::HirProgram,
+    seed: TypeOutput,
+    item: etas_hir::HirItemId,
+    std_registry: std::sync::Arc<etas_std::StdRegistry>,
+) -> TypeOutput {
+    pipeline::check_body_with_seed_and_std_registry(hir, seed, item, std_registry)
+}
+
 pub fn finalize_type_outputs(signatures: TypeOutput, body_outputs: Vec<TypeOutput>) -> TypeOutput {
     pipeline::finalize_type_outputs(signatures, body_outputs)
 }

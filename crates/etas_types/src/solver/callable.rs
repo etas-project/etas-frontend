@@ -19,14 +19,26 @@ pub fn solve_callable(
 ) -> SolverReport {
     solve_callable_with_named_substitutions(
         store,
-        callee,
-        &[],
-        &[],
-        args,
-        output,
-        origin,
-        HashMap::new(),
+        CallableSolveInput {
+            callee,
+            generic_param_names: &[],
+            explicit_generic_args: &[],
+            args,
+            output,
+            origin,
+            initial_named_substitutions: HashMap::new(),
+        },
     )
+}
+
+pub struct CallableSolveInput<'a> {
+    pub callee: TypeId,
+    pub generic_param_names: &'a [String],
+    pub explicit_generic_args: &'a [TypeId],
+    pub args: &'a [TypeId],
+    pub output: TypeId,
+    pub origin: ConstraintOrigin,
+    pub initial_named_substitutions: HashMap<String, TypeId>,
 }
 
 pub fn callable_schematic_param_names(store: &TypeStore, callee: TypeId) -> Vec<String> {
@@ -47,14 +59,17 @@ pub fn callable_schematic_param_names(store: &TypeStore, callee: TypeId) -> Vec<
 
 pub fn solve_callable_with_named_substitutions(
     store: &TypeStore,
-    callee: TypeId,
-    generic_param_names: &[String],
-    explicit_generic_args: &[TypeId],
-    args: &[TypeId],
-    output: TypeId,
-    origin: ConstraintOrigin,
-    initial_named_substitutions: HashMap<String, TypeId>,
+    input: CallableSolveInput<'_>,
 ) -> SolverReport {
+    let CallableSolveInput {
+        callee,
+        generic_param_names,
+        explicit_generic_args,
+        args,
+        output,
+        origin,
+        initial_named_substitutions,
+    } = input;
     let mut report = SolverReport::default();
     if let Some(constructor) = nominal_constructor_signature(store, callee, explicit_generic_args) {
         return solve_nominal_constructor_call(store, constructor, args, output, origin);
@@ -637,12 +652,11 @@ fn infer_type_substitution(
                 infer_type_substitution(store, *expected, *actual, substitutions);
             }
         }
-        Some(Type::Range { index: expected }) => match store.get(actual) {
-            Some(Type::Range { index: actual }) => {
+        Some(Type::Range { index: expected }) => {
+            if let Some(Type::Range { index: actual }) = store.get(actual) {
                 infer_type_substitution(store, *expected, *actual, substitutions);
             }
-            _ => {}
-        },
+        }
         Some(Type::Result {
             ok: expected_ok,
             err: expected_err,

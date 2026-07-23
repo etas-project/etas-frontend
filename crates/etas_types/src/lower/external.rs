@@ -441,13 +441,13 @@ pub fn external_type_id_from_output(
                     .iter()
                     .map(|arg| external_type_id_from_output(types, arg))
                     .collect::<Result<Vec<_>, _>>()?;
-                return Ok(find_type(
+                return find_type(
                     &types.store,
                     &Type::Applied {
                         constructor: TypeConstructorId(id.0),
                         args,
                     },
-                )?);
+                );
             }
             Ok(id)
         }

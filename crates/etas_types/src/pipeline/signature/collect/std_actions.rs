@@ -1,5 +1,5 @@
 use etas_hir::{SymbolDef, SyntheticSymbolReason};
-use etas_std::{StdDecl, StdSymbolKind, standard_registry};
+use etas_std::{StdDecl, StdSymbolKind};
 
 use crate::{
     SymbolTypeFact,
@@ -10,7 +10,7 @@ use crate::{
 use super::super::state::SignaturePipelineState;
 
 pub fn collect_std_actions(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePipelineState) {
-    let registry = standard_registry();
+    let registry = ctx.std_registry.clone();
     for symbol in registry.symbols() {
         if symbol.kind != StdSymbolKind::EffectAction {
             continue;

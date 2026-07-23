@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use etas_hir::{HirItemId, HirProgram, SymbolId};
 
 #[derive(Clone, Copy)]
@@ -18,6 +20,7 @@ pub struct CheckBodyRequest<'a> {
 
 pub struct SignaturePipelineInput<'a> {
     pub program: &'a HirProgram,
+    pub std_registry: Arc<etas_std::StdRegistry>,
     pub source: SourceSignatureInput,
     pub std: StdSignatureInput,
     pub external: ExternalSignatureInput,
@@ -27,6 +30,7 @@ impl<'a> SignaturePipelineInput<'a> {
     pub fn new(program: &'a HirProgram) -> Self {
         Self {
             program,
+            std_registry: Arc::new(etas_std::standard_registry()),
             source: SourceSignatureInput::default(),
             std: StdSignatureInput::default(),
             external: ExternalSignatureInput::default(),

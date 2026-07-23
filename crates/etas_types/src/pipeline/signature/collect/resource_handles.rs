@@ -1,5 +1,5 @@
 use etas_hir::{HirArg, HirExpr, HirGenericArg, HirLiteral, ResolveResult, SymbolDef};
-use etas_std::{FlowDecl, StdDecl, StdSymbol, StdType, standard_registry};
+use etas_std::{FlowDecl, StdDecl, StdSymbol, StdType};
 
 use crate::{
     ResourceHandleFact, ResourceHandleType, Type, TypeId, lower::type_ref::lower_type_ref,
@@ -26,7 +26,7 @@ pub fn top_level_resource_handle_signature(
         .iter()
         .map(|segment| segment.name.clone())
         .collect::<Vec<_>>();
-    let registry = standard_registry();
+    let registry = ctx.std_registry.clone();
     let std_symbol = registry.lookup_qualified(&path_segments)?;
     if !is_checked_std_path(ctx, &path_segments, &path.resolution, std_symbol) {
         return None;

@@ -103,13 +103,15 @@ impl TypeSolver {
                         };
                     report.append(callable::solve_callable_with_named_substitutions(
                         input.store,
-                        callee,
-                        generic_param_names,
-                        generic_args,
-                        &args,
-                        output,
-                        *origin,
-                        HashMap::new(),
+                        callable::CallableSolveInput {
+                            callee,
+                            generic_param_names,
+                            explicit_generic_args: generic_args,
+                            args: &args,
+                            output,
+                            origin: *origin,
+                            initial_named_substitutions: HashMap::new(),
+                        },
                     ));
                 }
                 TypeConstraint::MethodCall {
@@ -148,15 +150,19 @@ impl TypeSolver {
                         {
                             continue;
                         }
+                        let generic_param_names =
+                            callable::callable_schematic_param_names(input.store, *candidate);
                         let candidate_report = callable::solve_callable_with_named_substitutions(
                             input.store,
-                            *candidate,
-                            &callable::callable_schematic_param_names(input.store, *candidate),
-                            generic_args,
-                            &args,
-                            output,
-                            *origin,
-                            HashMap::new(),
+                            callable::CallableSolveInput {
+                                callee: *candidate,
+                                generic_param_names: &generic_param_names,
+                                explicit_generic_args: generic_args,
+                                args: &args,
+                                output,
+                                origin: *origin,
+                                initial_named_substitutions: HashMap::new(),
+                            },
                         );
                         if candidate_report.failures.is_empty() {
                             solved = Some(candidate_report);
@@ -379,7 +385,7 @@ fn solve_or_defer_access_constraint(
     pending: &mut Vec<TypeConstraint>,
 ) {
     match solve_access_constraint(store, report, constraint) {
-        AccessConstraintOutcome::Solved(solved) => report.append(solved),
+        AccessConstraintOutcome::Solved(solved) => report.append(*solved),
         AccessConstraintOutcome::Pending => pending.push(constraint.clone()),
     }
 }
@@ -396,7 +402,7 @@ fn solve_pending_access_constraints(
             match solve_access_constraint(store, report, &constraint) {
                 AccessConstraintOutcome::Solved(solved) => {
                     solved_any = true;
-                    report.append(solved);
+                    report.append(*solved);
                 }
                 AccessConstraintOutcome::Pending => next.push(constraint),
             }
@@ -412,7 +418,7 @@ fn solve_pending_access_constraints(
 }
 
 enum AccessConstraintOutcome {
-    Solved(SolverReport),
+    Solved(Box<SolverReport>),
     Pending,
 }
 
@@ -433,9 +439,9 @@ fn solve_access_constraint(
                 return AccessConstraintOutcome::Pending;
             }
             let output = resolve_known_substitutions(store, report, *output);
-            AccessConstraintOutcome::Solved(field::solve_field_access(
+            AccessConstraintOutcome::Solved(Box::new(field::solve_field_access(
                 store, base, field, output, *origin,
-            ))
+            )))
         }
         TypeConstraint::IndexAccess {
             expr,
@@ -451,16 +457,18 @@ fn solve_access_constraint(
                 return AccessConstraintOutcome::Pending;
             }
             let output = resolve_known_substitutions(store, report, *output);
-            AccessConstraintOutcome::Solved(index::solve_index_access(
+            AccessConstraintOutcome::Solved(Box::new(index::solve_index_access(
                 store,
-                *expr,
-                base,
-                index,
-                output,
-                *index_error,
-                *origin,
-                &report.substitutions,
-            ))
+                index::IndexAccessSolveInput {
+                    expr: *expr,
+                    base,
+                    index,
+                    output,
+                    index_error: *index_error,
+                    origin: *origin,
+                    substitutions: &report.substitutions,
+                },
+            )))
         }
         TypeConstraint::SliceAccess {
             expr,
@@ -480,16 +488,18 @@ fn solve_access_constraint(
                 return AccessConstraintOutcome::Pending;
             }
             let output = resolve_known_substitutions(store, report, *output);
-            AccessConstraintOutcome::Solved(index::solve_slice_access(
+            AccessConstraintOutcome::Solved(Box::new(index::solve_slice_access(
                 store,
-                *expr,
-                base,
-                start,
-                end,
-                output,
-                *origin,
-                &report.substitutions,
-            ))
+                index::SliceAccessSolveInput {
+                    expr: *expr,
+                    base,
+                    start,
+                    end,
+                    output,
+                    origin: *origin,
+                    substitutions: &report.substitutions,
+                },
+            )))
         }
         _ => unreachable!("only access constraints can be solved by the access worklist"),
     }

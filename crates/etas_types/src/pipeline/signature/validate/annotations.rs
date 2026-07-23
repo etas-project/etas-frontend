@@ -262,8 +262,7 @@ fn is_known_limit_constructor(ctx: &TypePipelineContext<'_>, callee: HirExprId) 
     let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
         return false;
     };
-    let registry = etas_std::standard_registry();
-    let Some(std_symbol) = registry.lookup_qualified(path) else {
+    let Some(std_symbol) = ctx.std_registry.lookup_qualified(path) else {
         return false;
     };
     let StdDecl::Requirement(requirement) = &std_symbol.decl else {
@@ -285,8 +284,7 @@ fn is_known_trace_constructor(ctx: &TypePipelineContext<'_>, callee: HirExprId) 
     let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
         return false;
     };
-    let registry = etas_std::standard_registry();
-    let Some(std_symbol) = registry.lookup_qualified(path) else {
+    let Some(std_symbol) = ctx.std_registry.lookup_qualified(path) else {
         return false;
     };
     if std_symbol.qualified_path.as_slice() != ["std", "runtime", "trace", std_symbol.name.as_str()]
@@ -562,8 +560,7 @@ fn is_derivable_capability(ctx: &TypePipelineContext<'_>, expr: HirExprId) -> bo
     let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
         return false;
     };
-    let registry = etas_std::standard_registry();
-    let Some(std_symbol) = registry.lookup_qualified(path) else {
+    let Some(std_symbol) = ctx.std_registry.lookup_qualified(path) else {
         return false;
     };
     let StdDecl::Type(decl) = &std_symbol.decl else {

@@ -7,16 +7,26 @@ use crate::{
     },
 };
 
-pub fn solve_index_access(
-    store: &TypeStore,
-    expr: etas_hir::HirExprId,
-    base: TypeId,
-    index: TypeId,
-    output: TypeId,
-    index_error: Option<TypeId>,
-    origin: ConstraintOrigin,
-    substitutions: &Substitution,
-) -> SolverReport {
+pub struct IndexAccessSolveInput<'a> {
+    pub expr: etas_hir::HirExprId,
+    pub base: TypeId,
+    pub index: TypeId,
+    pub output: TypeId,
+    pub index_error: Option<TypeId>,
+    pub origin: ConstraintOrigin,
+    pub substitutions: &'a Substitution,
+}
+
+pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -> SolverReport {
+    let IndexAccessSolveInput {
+        expr,
+        base,
+        index,
+        output,
+        index_error,
+        origin,
+        substitutions,
+    } = input;
     let mut report = SolverReport::default();
     let base = resolve_substitution(store, substitutions, base);
     let index = resolve_substitution(store, substitutions, index);
@@ -110,16 +120,26 @@ pub fn solve_index_access(
     report
 }
 
-pub fn solve_slice_access(
-    store: &TypeStore,
-    expr: etas_hir::HirExprId,
-    base: TypeId,
-    start: TypeId,
-    end: TypeId,
-    output: TypeId,
-    origin: ConstraintOrigin,
-    substitutions: &Substitution,
-) -> SolverReport {
+pub struct SliceAccessSolveInput<'a> {
+    pub expr: etas_hir::HirExprId,
+    pub base: TypeId,
+    pub start: TypeId,
+    pub end: TypeId,
+    pub output: TypeId,
+    pub origin: ConstraintOrigin,
+    pub substitutions: &'a Substitution,
+}
+
+pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -> SolverReport {
+    let SliceAccessSolveInput {
+        expr,
+        base,
+        start,
+        end,
+        output,
+        origin,
+        substitutions,
+    } = input;
     let mut report = SolverReport::default();
     let base = resolve_substitution(store, substitutions, base);
     let start = resolve_substitution(store, substitutions, start);

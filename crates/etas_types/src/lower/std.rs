@@ -360,6 +360,7 @@ fn lower_std_type_decl_with_name(
         registry,
         qualified_name.unwrap_or(&decl.name),
         &decl.params,
+        decl.kind,
         decl.representation.as_ref(),
         scope.as_deref(),
     )
@@ -569,6 +570,7 @@ fn lower_named_std_type_with_scope(
             registry,
             &identity,
             &decl.params,
+            decl.kind,
             decl.representation.as_ref(),
             Some(scope),
         );
@@ -581,6 +583,7 @@ fn lower_named_std_type_with_scope(
             registry,
             &identity,
             &decl.params,
+            decl.kind,
             decl.representation.as_ref(),
             constructor_scope.as_deref(),
         );
@@ -639,6 +642,7 @@ fn lower_std_type_constructor(
     registry: &StdRegistry,
     name: &str,
     params: &[etas_std::TypeParam],
+    kind: TypeDeclKind,
     representation: Option<&StdType>,
     scope: Option<&[String]>,
 ) -> TypeId {
@@ -651,9 +655,23 @@ fn lower_std_type_constructor(
         }));
     }
 
-    ctx.interner.intern(Type::Named(NamedTypeRef {
-        name: name.to_owned(),
-    }))
+    match kind {
+        TypeDeclKind::Enum => ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
+            name: name.to_owned(),
+        })),
+        TypeDeclKind::Struct | TypeDeclKind::Wrapper => {
+            ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                name: name.to_owned(),
+                params: params.iter().map(|param| param.name.clone()).collect(),
+                representation: None,
+            }))
+        }
+        TypeDeclKind::Primitive | TypeDeclKind::Support | TypeDeclKind::Spec => {
+            ctx.interner.intern(Type::Named(NamedTypeRef {
+                name: name.to_owned(),
+            }))
+        }
+    }
 }
 
 fn qualified_scope(name: &str) -> Option<Vec<String>> {
@@ -746,6 +764,7 @@ fn std_effect_arg(
             registry,
             &identity,
             &decl.params,
+            decl.kind,
             decl.representation.as_ref(),
             Some(scope),
         ));
@@ -757,6 +776,7 @@ fn std_effect_arg(
             registry,
             &identity,
             &decl.params,
+            decl.kind,
             decl.representation.as_ref(),
             constructor_scope.as_deref(),
         ));
