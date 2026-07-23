@@ -180,7 +180,7 @@ impl HirSpecExpr {
 
 #[derive(Clone, Debug)]
 pub enum HirSpecItem {
-    FlowSignature(HirFlowSignature),
+    FlowSignature(Box<HirFlowSignature>),
     Error { span: Span },
 }
 

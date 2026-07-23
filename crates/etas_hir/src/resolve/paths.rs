@@ -1,5 +1,5 @@
 use etas_core::Span;
-use etas_std::{StdDecl, standard_registry};
+use etas_std::{StdDecl, StdRegistry};
 use etas_syntax::ast;
 
 use crate::{HirDiagnostics, HirEffectRef, ScopeId, ScopeTree, SymbolId, SymbolKind, SymbolTable};
@@ -107,12 +107,39 @@ pub fn resolve_path(
     diagnostics: &mut HirDiagnostics,
     report: bool,
 ) -> ResolvedPath {
+    let std_registry = etas_std::standard_registry();
+    resolve_path_with_std_registry(
+        path,
+        scope,
+        scopes,
+        symbols,
+        diagnostics,
+        report,
+        &std_registry,
+    )
+}
+
+pub fn resolve_path_with_std_registry(
+    path: &ast::Path,
+    scope: ScopeId,
+    scopes: &ScopeTree,
+    symbols: &SymbolTable,
+    diagnostics: &mut HirDiagnostics,
+    report: bool,
+    std_registry: &StdRegistry,
+) -> ResolvedPath {
     let full_path = path_text(path);
     let resolution = if path.segments.len() > 1 {
         match resolve_name(&full_path, path.span, scope, scopes, diagnostics, false) {
-            ResolveResult::Unresolved => {
-                resolve_qualified_prefix(path, scope, scopes, symbols, diagnostics, report)
-            }
+            ResolveResult::Unresolved => resolve_qualified_prefix(
+                path,
+                scope,
+                scopes,
+                symbols,
+                diagnostics,
+                report,
+                std_registry,
+            ),
             ResolveResult::Ambiguous(symbols) => {
                 if report {
                     diagnostics.ambiguous_name(&full_path, path.span);
@@ -144,6 +171,7 @@ fn resolve_qualified_prefix(
     symbols: &SymbolTable,
     diagnostics: &mut HirDiagnostics,
     report: bool,
+    std_registry: &StdRegistry,
 ) -> ResolveResult {
     let full_path = path_text(path);
     for prefix_len in (1..path.segments.len()).rev() {
@@ -162,7 +190,7 @@ fn resolve_qualified_prefix(
                     resolved_prefix: Some(symbol),
                     resolved_segments: prefix_len.min(u32::MAX as usize) as u32,
                     remaining,
-                    reason: partial_reason_for_prefix(symbol, symbols),
+                    reason: partial_reason_for_prefix(symbol, symbols, std_registry),
                 });
             }
             ResolveResult::Ambiguous(symbols) => {
@@ -211,12 +239,13 @@ fn resolve_qualified_prefix(
 pub(crate) fn partial_reason_for_prefix(
     symbol: SymbolId,
     symbols: &SymbolTable,
+    std_registry: &StdRegistry,
 ) -> PartialResolutionReason {
     match symbols.get(symbol) {
         Some(symbol) if symbol.kind == SymbolKind::Module => {
             PartialResolutionReason::ModuleMemberMissing
         }
-        Some(symbol) if import_alias_points_to_std_type(&symbol.def) => {
+        Some(symbol) if import_alias_points_to_std_type(&symbol.def, std_registry) => {
             PartialResolutionReason::MemberRequiresTypeChecking
         }
         Some(symbol) if matches!(symbol.def, crate::SymbolDef::ImportAlias { .. }) => {
@@ -226,7 +255,7 @@ pub(crate) fn partial_reason_for_prefix(
     }
 }
 
-fn import_alias_points_to_std_type(def: &crate::SymbolDef) -> bool {
+fn import_alias_points_to_std_type(def: &crate::SymbolDef, std_registry: &StdRegistry) -> bool {
     let crate::SymbolDef::ImportAlias { path, .. } = def else {
         return false;
     };
@@ -236,8 +265,7 @@ fn import_alias_points_to_std_type(def: &crate::SymbolDef) -> bool {
     if first != "std" {
         return false;
     }
-    let registry = standard_registry();
-    registry
+    std_registry
         .lookup_qualified(path)
         .is_some_and(|symbol| matches!(symbol.decl, StdDecl::Type(_)))
 }

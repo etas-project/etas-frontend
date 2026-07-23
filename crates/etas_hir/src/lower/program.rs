@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use etas_core::SourceFile;
 use etas_syntax::{ast, parse_program};
@@ -51,7 +51,14 @@ struct HirProjectLoweringModule {
 
 impl HirProjectLowering {
     pub fn new(modules: &[HirProjectModule<'_>]) -> Self {
-        let mut ctx = LowerCtx::new();
+        Self::new_with_std_registry(modules, Arc::new(etas_std::standard_registry()))
+    }
+
+    pub fn new_with_std_registry(
+        modules: &[HirProjectModule<'_>],
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Self {
+        let mut ctx = LowerCtx::new_with_std_registry(std_registry);
         let mut shells = Vec::new();
         for module in modules {
             let first_part = module
@@ -225,6 +232,7 @@ pub(super) struct LowerCtx {
     pub(super) std_prelude_aliases: HashMap<(HirModuleId, String), SymbolId>,
     pub(super) std_qualified_aliases: HashMap<(HirModuleId, Vec<String>), SymbolId>,
     pub(super) std_action_aliases: HashMap<(HirModuleId, String), SymbolId>,
+    pub(super) std_registry: Arc<etas_std::StdRegistry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -250,6 +258,10 @@ pub(super) struct PatternBindingContext {
 
 impl LowerCtx {
     pub(super) fn new() -> Self {
+        Self::new_with_std_registry(Arc::new(etas_std::standard_registry()))
+    }
+
+    pub(super) fn new_with_std_registry(std_registry: Arc<etas_std::StdRegistry>) -> Self {
         Self {
             hir: HirProgram::default(),
             diagnostics: HirDiagnostics::default(),
@@ -265,6 +277,7 @@ impl LowerCtx {
             std_prelude_aliases: HashMap::new(),
             std_qualified_aliases: HashMap::new(),
             std_action_aliases: HashMap::new(),
+            std_registry,
         }
     }
 
@@ -503,9 +516,12 @@ impl LowerCtx {
             return Some(*symbol);
         }
 
-        let registry = etas_std::standard_registry();
-        let symbol_ref = registry.lookup_prelude(name)?;
-        let std_symbol = registry.symbol(symbol_ref.id)?;
+        let symbol_ref = self.std_registry.lookup_prelude(name)?;
+        let qualified_path = self
+            .std_registry
+            .symbol(symbol_ref.id)?
+            .qualified_path
+            .clone();
         let symbol = self.alloc_symbol_with_def(SymbolData {
             name: name.to_owned(),
             kind: SymbolKind::StdPreludeAlias,
@@ -513,7 +529,7 @@ impl LowerCtx {
             defining_module: self.current_module,
             defining_item: None,
             def: SymbolDef::ImportAlias {
-                path: std_symbol.qualified_path.clone(),
+                path: qualified_path,
                 origin: ImportAliasOrigin::StdPrelude,
             },
             declared_type: None,
@@ -535,8 +551,11 @@ impl LowerCtx {
             return Some(*symbol);
         }
 
-        let registry = etas_std::standard_registry();
-        let std_symbol = registry.lookup_qualified(path)?;
+        let qualified_path = self
+            .std_registry
+            .lookup_qualified(path)?
+            .qualified_path
+            .clone();
         let name = path.join(".");
         let symbol = self.alloc_symbol_with_def(SymbolData {
             name,
@@ -545,7 +564,7 @@ impl LowerCtx {
             defining_module: self.current_module,
             defining_item: None,
             def: SymbolDef::ImportAlias {
-                path: std_symbol.qualified_path.clone(),
+                path: qualified_path,
                 origin: ImportAliasOrigin::StdPrelude,
             },
             declared_type: None,

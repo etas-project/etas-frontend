@@ -260,7 +260,7 @@ impl LowerCtx {
         if decl
             .target
             .owner_path()
-            .map_or(true, |path| path.segments.is_empty())
+            .is_none_or(|path| path.segments.is_empty())
         {
             self.diagnostics.invalid_impl_target(decl.span);
         }
@@ -384,9 +384,9 @@ impl LowerCtx {
             .iter()
             .enumerate()
             .map(|(item_index, item)| match item {
-                ast::SpecItem::FlowSignature(signature) => HirSpecItem::FlowSignature(
+                ast::SpecItem::FlowSignature(signature) => HirSpecItem::FlowSignature(Box::new(
                     self.lower_flow_signature(signature, item_id, scope, item_index),
-                ),
+                )),
                 ast::SpecItem::Error(span) => HirSpecItem::Error { span: *span },
             })
             .collect();

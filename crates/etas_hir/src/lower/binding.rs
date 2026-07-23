@@ -172,8 +172,7 @@ impl LowerCtx {
             return None;
         }
 
-        let registry = etas_std::standard_registry();
-        let is_standard_action = registry.symbols().any(|symbol| {
+        let is_standard_action = self.std_registry.symbols().any(|symbol| {
             if symbol.kind != StdSymbolKind::EffectAction {
                 return false;
             }
@@ -374,7 +373,11 @@ impl LowerCtx {
                         resolved_prefix: Some(symbol),
                         resolved_segments: prefix_len.min(u32::MAX as usize) as u32,
                         remaining,
-                        reason: partial_reason_for_prefix(symbol, &self.symbols),
+                        reason: partial_reason_for_prefix(
+                            symbol,
+                            &self.symbols,
+                            self.std_registry.as_ref(),
+                        ),
                     });
                 }
                 ResolveResult::Ambiguous(symbols) => {
@@ -452,7 +455,11 @@ impl LowerCtx {
                         resolved_prefix: Some(symbol),
                         resolved_segments: prefix_len.min(u32::MAX as usize) as u32,
                         remaining,
-                        reason: partial_reason_for_prefix(symbol, &self.symbols),
+                        reason: partial_reason_for_prefix(
+                            symbol,
+                            &self.symbols,
+                            self.std_registry.as_ref(),
+                        ),
                     });
                 }
                 ResolveResult::Ambiguous(symbols) => {
