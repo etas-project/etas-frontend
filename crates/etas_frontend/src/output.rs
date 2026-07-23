@@ -1130,6 +1130,7 @@ impl ProjectOutput {
 #[derive(Clone, Debug)]
 pub struct CheckedProgram {
     pub compiler_version: String,
+    pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
     pub project_environment_fingerprint: String,
     pub dependency_metadata_fingerprints: Vec<(String, String)>,
     pub sources: SourceBundle,
@@ -1147,6 +1148,7 @@ pub struct CheckedProgram {
     pub external_tool_schemas: Vec<ProjectExternalToolSchemaInput>,
     pub entry_fact: ProjectEntryFact,
     pub entry: Option<HirItemId>,
+    pub reachability: crate::ReachabilityFacts,
 }
 
 pub type CheckedProject = CheckedProgram;

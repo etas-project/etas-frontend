@@ -3,7 +3,7 @@ use etas_utils::{PassControl, PassManager, PassRunRecord, PipelineConfig};
 
 use crate::incremental::{BodyArtifactReuseInput, CheckScope};
 use crate::{ParsedSource, ProjectContext, ProjectInput, ProjectOutput};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use super::adapters::project_output_from_context;
 use super::passes::project_pipeline;
@@ -15,26 +15,41 @@ pub(crate) struct FrontendPipelineRun {
     pub(crate) records: Vec<PassRunRecord>,
 }
 
-pub(crate) fn run_check_pipeline(
-    input: ProjectInput,
-    incremental: bool,
-    changed_sources: Vec<SourceId>,
-    project_wide_change: bool,
-    body_artifact_reuse: BodyArtifactReuseInput,
-    parsed_source_reuse: HashMap<SourceId, ParsedSource>,
-    check_scope: CheckScope,
-    collect_timing: bool,
-) -> FrontendPipelineRun {
+pub(crate) struct FrontendPipelineRequest {
+    pub(crate) input: ProjectInput,
+    pub(crate) incremental: bool,
+    pub(crate) changed_sources: Vec<SourceId>,
+    pub(crate) project_wide_change: bool,
+    pub(crate) body_artifact_reuse: BodyArtifactReuseInput,
+    pub(crate) parsed_source_reuse: HashMap<SourceId, ParsedSource>,
+    pub(crate) check_scope: CheckScope,
+    pub(crate) collect_timing: bool,
+    pub(crate) std_registry: Arc<etas_std::StdRegistry>,
+}
+
+pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPipelineRun {
+    let FrontendPipelineRequest {
+        input,
+        incremental,
+        changed_sources,
+        project_wide_change,
+        body_artifact_reuse,
+        parsed_source_reuse,
+        check_scope,
+        collect_timing,
+        std_registry,
+    } = request;
     let mut context = if incremental {
-        ProjectContext::new_incremental_with_reuse(
+        ProjectContext::new_incremental_with_reuse_and_std_registry(
             input,
             changed_sources,
             project_wide_change,
             body_artifact_reuse,
             parsed_source_reuse,
+            std_registry,
         )
     } else {
-        ProjectContext::new(input)
+        ProjectContext::new_with_std_registry(input, std_registry)
     }
     .with_check_scope(check_scope);
     let mut pipeline = project_pipeline();

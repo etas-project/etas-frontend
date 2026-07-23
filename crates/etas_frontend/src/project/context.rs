@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use etas_cache::{ArtifactKey as CacheArtifactKey, ProjectRevision};
 use etas_core::{Diagnostic, SourceId};
@@ -25,6 +25,7 @@ pub const ENTRY_REACHABLE_UNIT_FILTER: UnitFilterKey =
 
 pub struct ProjectContext {
     pub input: ProjectInput,
+    pub std_registry: Arc<etas_std::StdRegistry>,
     pub incremental: bool,
     pub check_scope: CheckScope,
     pub project_wide_change: bool,
@@ -62,9 +63,18 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    #[cfg(test)]
     pub fn new(input: ProjectInput) -> Self {
+        Self::new_with_std_registry(input, Arc::new(etas_std::standard_registry()))
+    }
+
+    pub(crate) fn new_with_std_registry(
+        input: ProjectInput,
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Self {
         Self {
             input,
+            std_registry,
             incremental: false,
             check_scope: CheckScope::FullProject,
             project_wide_change: false,
@@ -102,6 +112,7 @@ impl ProjectContext {
         }
     }
 
+    #[cfg(test)]
     pub fn new_incremental(
         input: ProjectInput,
         changed_sources: Vec<SourceId>,
@@ -114,6 +125,7 @@ impl ProjectContext {
         context
     }
 
+    #[cfg(test)]
     pub(crate) fn new_incremental_with_reuse(
         input: ProjectInput,
         changed_sources: Vec<SourceId>,
@@ -122,6 +134,23 @@ impl ProjectContext {
         parsed_source_reuse: HashMap<SourceId, crate::ParsedSource>,
     ) -> Self {
         let mut context = Self::new_incremental(input, changed_sources, project_wide_change);
+        context.body_artifact_reuse = body_artifact_reuse;
+        context.parsed_source_reuse = parsed_source_reuse;
+        context
+    }
+
+    pub(crate) fn new_incremental_with_reuse_and_std_registry(
+        input: ProjectInput,
+        changed_sources: Vec<SourceId>,
+        project_wide_change: bool,
+        body_artifact_reuse: BodyArtifactReuseInput,
+        parsed_source_reuse: HashMap<SourceId, crate::ParsedSource>,
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Self {
+        let mut context = Self::new_with_std_registry(input, std_registry);
+        context.incremental = true;
+        context.project_wide_change = project_wide_change;
+        context.changed_sources = changed_sources;
         context.body_artifact_reuse = body_artifact_reuse;
         context.parsed_source_reuse = parsed_source_reuse;
         context

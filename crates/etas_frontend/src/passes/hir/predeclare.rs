@@ -74,7 +74,10 @@ impl Pass<ProjectContext> for PredeclareProjectSymbolsPass {
         }
 
         context.hir_lowering = Some(ProjectHirLoweringState {
-            lowering: etas_hir::HirProjectLowering::new(&project_modules),
+            lowering: etas_hir::HirProjectLowering::new_with_std_registry(
+                &project_modules,
+                context.std_registry.clone(),
+            ),
             module_part_to_module_index,
             normalized_parts: Default::default(),
             lowered_parts: Default::default(),

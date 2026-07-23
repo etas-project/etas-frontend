@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use etas_cache::{
     ArtifactFingerprint, ArtifactKey, ArtifactMeta, CachedArtifact, InvalidationReport,
@@ -18,10 +21,10 @@ use crate::artifact::{
 };
 use crate::incremental::{
     BodyArtifactIdentity, BodyArtifactReuseInput, CacheReuseReport, CachedEffectBodyArtifact,
-    CachedTypeBodyArtifact, CheckRequest, CheckResponse, CheckScope, DiagnosticSet, SourceVersion,
+    CachedTypeBodyArtifact, CheckRequest, CheckResponse, DiagnosticSet, SourceVersion,
     artifact_meta_matches,
 };
-use crate::pipeline::{FrontendPipelineRun, run_check_pipeline};
+use crate::pipeline::{FrontendPipelineRequest, FrontendPipelineRun, run_check_pipeline};
 use crate::{BODY_UNIT_KIND, ParsedSource, ProjectInput, ProjectOutput, SourceSet, UnitKind};
 
 use super::snapshot::diagnostic_sources;
@@ -46,6 +49,7 @@ where
     pub(super) pending_body_artifact_reuse: BodyArtifactReuseInput,
     pub(super) std_version: String,
     pub(super) options_hash: String,
+    pub(super) std_registry: Arc<etas_std::StdRegistry>,
 }
 
 struct MetadataSummaryArtifact<T> {
@@ -59,7 +63,11 @@ impl<S> FrontendProjectState<S>
 where
     S: FrontendArtifactStore,
 {
-    pub(super) fn new(input: ProjectInput, store: S) -> Self {
+    pub(super) fn new(
+        input: ProjectInput,
+        store: S,
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Self {
         let sources = source_set_from_input(&input);
         let options_hash = input.options.canonical_options_fingerprint();
         let source_versions = input
@@ -79,8 +87,9 @@ where
             pending_project_wide_change: false,
             pending_invalidation: InvalidationReport::default(),
             pending_body_artifact_reuse: BodyArtifactReuseInput::default(),
-            std_version: frontend_std_version(),
+            std_version: frontend_std_version(&std_registry),
             options_hash,
+            std_registry,
         }
     }
 
@@ -94,16 +103,7 @@ where
     fn check_with_pipeline(
         &mut self,
         request: CheckRequest,
-        run_pipeline: impl FnOnce(
-            ProjectInput,
-            bool,
-            Vec<SourceId>,
-            bool,
-            BodyArtifactReuseInput,
-            HashMap<SourceId, ParsedSource>,
-            CheckScope,
-            bool,
-        ) -> FrontendPipelineRun,
+        run_pipeline: impl FnOnce(FrontendPipelineRequest) -> FrontendPipelineRun,
     ) -> Result<CheckResponse, FrontendSessionError> {
         let incremental = request.incremental_enabled();
         let disk_artifact_access = request.disk_artifact_access;
@@ -135,16 +135,17 @@ where
         } else {
             HashMap::new()
         };
-        let pipeline_run = run_pipeline(
-            self.input.clone(),
+        let pipeline_run = run_pipeline(FrontendPipelineRequest {
+            input: self.input.clone(),
             incremental,
-            self.pending_changed_sources.clone(),
+            changed_sources: self.pending_changed_sources.clone(),
             project_wide_change,
             body_artifact_reuse,
             parsed_source_reuse,
-            request.scope,
-            request.collect_pipeline_timing,
-        );
+            check_scope: request.scope,
+            collect_timing: request.collect_pipeline_timing,
+            std_registry: self.std_registry.clone(),
+        });
         if let PassControl::Failed(failure) = &pipeline_run.control {
             return Err(FrontendSessionError::Pipeline(failure.message.clone()));
         }
@@ -1136,7 +1137,7 @@ mod tests {
     use etas_utils::{PassControl, PassFailure};
 
     use crate::incremental::{CheckMode, SourceVersion};
-    use crate::pipeline::FrontendPipelineRun;
+    use crate::pipeline::{FrontendPipelineRequest, FrontendPipelineRun};
     use crate::{
         ProjectChangeSet, ProjectInput, SourceChange, SourceInput, SourceKind,
         session::FrontendSessionError,
@@ -1155,6 +1156,7 @@ mod tests {
                 kind: SourceKind::SingleFileInput,
             }),
             etas_cache::MemoryArtifactStore::new(),
+            std::sync::Arc::new(etas_std::standard_registry()),
         );
         state
             .apply_changes(ProjectChangeSet {
@@ -1176,14 +1178,17 @@ mod tests {
                     mode: CheckMode::Incremental,
                     ..Default::default()
                 },
-                |input,
-                 incremental,
-                 changed_sources,
-                 project_wide_change,
-                 _reuse,
-                 parsed_reuse,
-                 _scope,
-                 collect_timing| {
+                |FrontendPipelineRequest {
+                     input,
+                     incremental,
+                     changed_sources,
+                     project_wide_change,
+                     body_artifact_reuse: _reuse,
+                     parsed_source_reuse: parsed_reuse,
+                     check_scope: _scope,
+                     collect_timing,
+                     std_registry: _,
+                 }| {
                     assert_eq!(
                         input.sources[0].text,
                         "flow main() -> unit { let value = 1; return; }"

@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use etas_hir::{
-    ExprView, HirExpr, HirExprId, HirItemId, HirTreeView, HirVisitor, SymbolDef, walk_item,
+    ExprView, HirExpr, HirExprId, HirItem, HirItemId, HirTreeView, HirVisitor, SymbolDef,
+    walk_expr, walk_item,
 };
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -375,6 +376,7 @@ impl ReachableExprCollector<'_> {
             if !self.visited_items.insert(item) {
                 continue;
             }
+            self.enqueue_runtime_annotation_items(item);
             let mut visitor = ReachableItemVisitor {
                 hir: self.hir,
                 resolved_paths: self.resolved_paths,
@@ -383,6 +385,57 @@ impl ReachableExprCollector<'_> {
                 pending_items: &mut self.pending_items,
             };
             walk_item(self.view, item, &mut visitor);
+        }
+    }
+
+    fn enqueue_runtime_annotation_items(&mut self, item: HirItemId) {
+        let tool_values = self
+            .hir
+            .item_annotations
+            .get(&item)
+            .into_iter()
+            .flatten()
+            .filter(|annotation| {
+                annotation
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.name == "tools")
+            })
+            .flat_map(|annotation| annotation.args.iter())
+            .map(|arg| match arg {
+                etas_hir::HirAnnotationArg::Positional { value, .. }
+                | etas_hir::HirAnnotationArg::Named { value, .. } => *value,
+            })
+            .collect::<Vec<_>>();
+        for value in tool_values {
+            let mut visitor = ToolAnnotationReachabilityVisitor {
+                hir: self.hir,
+                resolved_paths: self.resolved_paths,
+                item_bindings: self.item_bindings,
+                pending_items: &mut self.pending_items,
+            };
+            walk_expr(self.view, value, &mut visitor);
+        }
+    }
+}
+
+struct ToolAnnotationReachabilityVisitor<'a> {
+    hir: &'a etas_hir::HirProgram,
+    resolved_paths: &'a crate::ResolvedPaths,
+    item_bindings: &'a HirItemBindings,
+    pending_items: &'a mut Vec<HirItemId>,
+}
+
+impl<'view, 'hir> HirVisitor<'view, 'hir> for ToolAnnotationReachabilityVisitor<'_> {
+    fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
+        let Some(item) =
+            local_item_for_expr_path(self.hir, self.resolved_paths, self.item_bindings, expr.id())
+        else {
+            return;
+        };
+        if matches!(self.hir.items.get(item), Some(HirItem::Tool(_))) {
+            self.pending_items.push(item);
         }
     }
 }
@@ -402,6 +455,9 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
         match self.hir.exprs.get(expr_id) {
             Some(HirExpr::Call { callee, .. }) => {
                 self.enqueue_local_item_for_expr_path(*callee);
+            }
+            Some(HirExpr::MethodCall { receiver, .. }) => {
+                self.enqueue_local_item_for_expr_path(*receiver);
             }
             Some(HirExpr::Handle { handler, .. }) => {
                 self.enqueue_local_item_for_expr_path(*handler);

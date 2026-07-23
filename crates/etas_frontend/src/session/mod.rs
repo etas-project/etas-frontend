@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use etas_cache::{CacheError, MemoryArtifactStore, ProjectRevision};
 use etas_core::{SourceId, id_type};
@@ -70,6 +70,7 @@ where
     next_project: u32,
     projects: HashMap<ProjectSessionId, FrontendProjectState<S>>,
     new_store: Box<dyn Fn() -> Result<S, FrontendSessionError>>,
+    std_registry: Arc<etas_std::StdRegistry>,
 }
 
 impl Default for FrontendSession<MemoryArtifactStore> {
@@ -93,6 +94,7 @@ impl FrontendSession<FrontendSessionStore> {
             new_store: Box::new(move || {
                 FrontendSessionStore::from_options(&options).map_err(cache_error)
             }),
+            std_registry: Arc::new(etas_std::standard_registry()),
         })
     }
 }
@@ -106,6 +108,7 @@ where
             next_project: 0,
             projects: HashMap::new(),
             new_store: Box::new(move || Ok(new_store())),
+            std_registry: Arc::new(etas_std::standard_registry()),
         }
     }
 
@@ -125,8 +128,10 @@ where
     pub fn open_project_with_store(&mut self, input: ProjectInput, store: S) -> ProjectSessionId {
         let id = ProjectSessionId(self.next_project);
         self.next_project += 1;
-        self.projects
-            .insert(id, FrontendProjectState::new(input, store));
+        self.projects.insert(
+            id,
+            FrontendProjectState::new(input, store, self.std_registry.clone()),
+        );
         id
     }
 

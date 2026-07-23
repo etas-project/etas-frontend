@@ -58,7 +58,12 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
             .cloned()
             .expect("signature facts should exist before body type checking");
         seed.diagnostics.clear();
-        let output = etas_types::check_body_item(&hir.hir, seed, item);
+        let output = etas_types::check_body_item_with_std_registry(
+            &hir.hir,
+            seed,
+            item,
+            context.std_registry.clone(),
+        );
         context
             .diagnostics
             .extend(output.diagnostics.iter().cloned());

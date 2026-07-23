@@ -153,7 +153,6 @@ fn flow_items_in_module(
     };
     module
         .items()
-        .into_iter()
         .filter_map(|item| {
             let HirItem::Flow(flow) = item.data() else {
                 return None;

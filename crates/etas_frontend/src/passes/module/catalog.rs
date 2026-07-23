@@ -69,7 +69,7 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
             .iter()
             .any(|package| package.import_root == "std")
         {
-            add_std_modules(&mut catalog);
+            add_std_modules(&mut catalog, &context.std_registry);
         }
         add_external_modules(&mut catalog, context);
 
@@ -78,8 +78,7 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
     }
 }
 
-fn add_std_modules(catalog: &mut ModuleCatalog) {
-    let registry = etas_std::standard_registry();
+fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry) {
     for module in registry.modules() {
         let path = crate::ModulePath {
             segments: module.path.clone(),

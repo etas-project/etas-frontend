@@ -23,6 +23,7 @@ pub(super) fn build_signature_pipeline_input<'a>(
     let mut diagnostics = Vec::new();
     let input = etas_types::SignaturePipelineInput {
         program,
+        std_registry: context.std_registry.clone(),
         source: source_signature_input(context),
         std: std_signature_input(context, hir),
         external: external_signature_input(context, hir, &mut diagnostics),
@@ -623,7 +624,7 @@ fn std_signature_input(
     context: &ProjectContext,
     hir: &etas_hir::HirProgram,
 ) -> etas_types::StdSignatureInput {
-    let registry = etas_std::standard_registry();
+    let registry = context.std_registry.as_ref();
     let mut input = etas_types::StdSignatureInput::default();
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {

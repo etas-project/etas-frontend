@@ -77,13 +77,14 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             external_artifact_anchors(&context.input, &external_anchors);
         let tool_bindings = tool_provider_bindings(&context.input);
         let reachable_items = (context.check_scope == CheckScope::EntryReachable)
-            .then(|| context.reachability.as_ref())
+            .then_some(context.reachability.as_ref())
             .flatten()
             .map(|reachability| &reachability.reachable_items);
         let pipeline_output =
             match etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
                 hir: &hir.hir,
                 types,
+                std_registry: context.std_registry.as_ref(),
                 dependency_metadata: Some(&external_effect_metadata),
                 tool_bindings: &tool_bindings,
                 external_summaries: &external_summaries,

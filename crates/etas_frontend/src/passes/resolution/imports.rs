@@ -243,8 +243,10 @@ fn apply_re_exports_to_catalog(
     let mut changed = false;
     for (from_key, name, export) in explicit_exports.into_iter().chain(wildcard_exports) {
         if let Some(record) = catalog.modules.get_mut(from_key) {
-            if !record.exports.items.contains_key(&name) {
-                record.exports.items.insert(name, export);
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                record.exports.items.entry(name)
+            {
+                entry.insert(export);
                 changed = true;
             }
         }

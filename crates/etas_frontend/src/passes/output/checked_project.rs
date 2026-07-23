@@ -9,7 +9,7 @@ use crate::{CheckedProject, ProjectContext, SourceBundle};
 
 use crate::passes::artifacts::{
     CHECKED_PROJECT, EFFECT_OUTPUT, HIR_OUTPUT, INTERPRETER_SUPPORT, MODULE_INDEX, PROJECT_ENTRY,
-    TOP_LEVEL_LET_FACTS, TYPE_OUTPUT,
+    REACHABILITY_FACTS, TOP_LEVEL_LET_FACTS, TYPE_OUTPUT,
 };
 
 pub struct BuildCheckedProjectPass;
@@ -25,6 +25,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 EFFECT_OUTPUT,
                 INTERPRETER_SUPPORT,
                 PROJECT_ENTRY,
+                REACHABILITY_FACTS,
             ]))
             .produces(ArtifactSet::one(CHECKED_PROJECT))
     }
@@ -55,8 +56,13 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 .entry
                 .as_ref()
                 .expect("project entry fact should exist");
+            let reachability = context
+                .reachability
+                .as_ref()
+                .expect("reachability facts should exist");
             context.checked = Some(CheckedProject {
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
+                std_registry: context.std_registry.clone(),
                 project_environment_fingerprint: context
                     .input
                     .environment
@@ -98,6 +104,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                     .collect(),
                 entry_fact: entry.clone(),
                 entry: entry.resolved.as_ref().map(|entry| entry.item),
+                reachability: reachability.clone(),
             });
         }
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(CHECKED_PROJECT))
