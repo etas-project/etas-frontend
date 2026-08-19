@@ -499,6 +499,9 @@ pub(super) fn convert_external_effect_arg(
         ProjectExternalEffectArgInput::String(value) => {
             etas_types::ExternalEffectArgInput::String(value.clone())
         }
+        ProjectExternalEffectArgInput::Int(value) => {
+            etas_types::ExternalEffectArgInput::Int(value.clone())
+        }
         ProjectExternalEffectArgInput::Wildcard => etas_types::ExternalEffectArgInput::Wildcard,
     }
 }

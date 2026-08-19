@@ -8198,11 +8198,19 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
                 "request".to_owned(),
             ],
             params: Vec::new(),
-            effect_args: vec![ProjectExternalActionArgKindInput::StringPattern],
-            selector_param_names: vec!["method".to_owned()],
-            selector_defaults: vec![Some(ProjectExternalEffectArgInput::String(
-                "GET".to_owned(),
-            ))],
+            effect_args: vec![
+                ProjectExternalActionArgKindInput::StringPattern,
+                ProjectExternalActionArgKindInput::Type,
+            ],
+            selector_param_names: vec!["method".to_owned(), "resource".to_owned()],
+            selector_defaults: vec![
+                Some(ProjectExternalEffectArgInput::String("GET".to_owned())),
+                Some(ProjectExternalEffectArgInput::Type(
+                    ProjectExternalTypeInput::Array(Box::new(ProjectExternalTypeInput::Primitive(
+                        "i32".to_owned(),
+                    ))),
+                )),
+            ],
             output: ProjectExternalTypeInput::Primitive("unit".to_owned()),
             returns_never: false,
             visibility: "public".to_owned(),
@@ -8296,18 +8304,30 @@ flow main() -> unit {
         .item_effects
         .get(&main)
         .expect("main effect summary should exist");
-    assert!(
-        summary
-            .requested_actions
-            .effects
-            .iter()
-            .any(|effect| matches!(
-                effect,
-                Effect::AppliedAction(action)
-                    if action.args
-                        == vec![etas_types::EffectArgRef::String("GET".to_owned())]
-            )),
-        "external metadata replay must preserve selector defaults in requested actions: {summary:?}"
+    let action = summary
+        .requested_actions
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::AppliedAction(action) => Some(action),
+            _ => None,
+        })
+        .expect("external requested action");
+    let [
+        etas_types::EffectArgRef::String(method),
+        etas_types::EffectArgRef::Type(resource),
+    ] = action.args.as_slice()
+    else {
+        panic!("typed selector defaults must not be widened: {action:?}");
+    };
+    assert_eq!(method, "GET");
+    let types = output.types.as_ref().expect("type output");
+    let Some(Type::Array(element)) = types.store.get(*resource) else {
+        panic!("type selector must preserve Array<i32>: {resource:?}");
+    };
+    assert_eq!(
+        types.store.get(*element),
+        Some(&Type::Primitive(PrimitiveType::I32))
     );
 }
 

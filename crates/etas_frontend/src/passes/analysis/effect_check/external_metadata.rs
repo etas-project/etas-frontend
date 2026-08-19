@@ -18,9 +18,6 @@ pub(super) fn external_effect_metadata(
 ) -> Result<etas_effects::DependencyEffectMetadata, String> {
     let mut metadata = input.environment.external_effect_metadata.clone();
     for public_metadata in &input.environment.external_public_metadata {
-        if anchors.package_span(public_metadata.package).is_none() {
-            continue;
-        }
         metadata
             .tags
             .extend(public_metadata.effects.iter().map(|effect| {
@@ -31,7 +28,22 @@ pub(super) fn external_effect_metadata(
             }));
         for action in &public_metadata.actions {
             match external_dependency_action(action, types) {
-                Ok(action) => metadata.actions.push(action),
+                Ok(action) => {
+                    if let Some(existing) = metadata
+                        .actions
+                        .iter()
+                        .find(|existing| existing.path == action.path)
+                    {
+                        if existing != &action {
+                            return Err(format!(
+                                "conflicting external metadata for action `{}`",
+                                action.path.join(".")
+                            ));
+                        }
+                        continue;
+                    }
+                    metadata.actions.push(action);
+                }
                 Err(message) => match anchors.item_span(public_metadata.package, &action.path) {
                     Some(span) => push_external_metadata_diagnostic(diagnostics, span, message),
                     None => {
@@ -122,7 +134,9 @@ fn external_selector_default_matches_kind(
         }
         ProjectExternalActionArgKindInput::StringPattern => matches!(
             default,
-            ProjectExternalEffectArgInput::String(_) | ProjectExternalEffectArgInput::Path(_)
+            ProjectExternalEffectArgInput::String(_)
+                | ProjectExternalEffectArgInput::Int(_)
+                | ProjectExternalEffectArgInput::Path(_)
         ),
     }
 }

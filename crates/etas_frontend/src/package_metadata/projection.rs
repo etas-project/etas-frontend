@@ -494,8 +494,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 reason: "annotation limit constructor must be imported from std".to_owned(),
             });
         };
-        let registry = etas_std::standard_registry();
-        let Some(std_symbol) = registry.lookup_qualified(path) else {
+        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
             return Err(PackageMetadataError::InvalidMetadataType {
                 reason: "annotation limit constructor is not present in the std registry"
                     .to_owned(),
@@ -535,8 +534,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 reason: "annotation trace constructor must reference std.runtime.trace".to_owned(),
             });
         };
-        let registry = etas_std::standard_registry();
-        let Some(std_symbol) = registry.lookup_qualified(path) else {
+        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
             return Err(PackageMetadataError::InvalidMetadataType {
                 reason: "annotation trace constructor is not present in the std registry"
                     .to_owned(),
@@ -2257,8 +2255,14 @@ fn metadata_effect_arg(
             path: Vec::new(),
             value: String::new(),
         }),
-        EffectArgRef::String(value) | EffectArgRef::Int(value) => Ok(MetadataEffectArg {
+        EffectArgRef::String(value) => Ok(MetadataEffectArg {
             kind: MetadataEffectArgKind::String,
+            ty: None,
+            path: Vec::new(),
+            value: value.clone(),
+        }),
+        EffectArgRef::Int(value) => Ok(MetadataEffectArg {
+            kind: MetadataEffectArgKind::Int,
             ty: None,
             path: Vec::new(),
             value: value.clone(),

@@ -1,24 +1,27 @@
 use etas_types::{
-    AgentSignature, EffectArgRef, EffectRef, EffectRowRef, FlowSignature, ItemSignature,
-    ToolSignature, TopLevelLetSignature, TypeId,
+    AgentSignature, CallableGenericParam, EffectArgRef, EffectRef, EffectRowRef, FlowSignature,
+    ItemSignature, ToolSignature, TopLevelLetSignature, TypeId,
 };
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) enum PersistedItemSignature {
     Flow {
+        generic_params: Vec<CallableGenericParam>,
         input: Vec<TypeId>,
         output: TypeId,
         effects: Option<PersistedEffectRowRef>,
         requested_actions: Option<PersistedEffectRowRef>,
     },
     Agent {
+        generic_params: Vec<CallableGenericParam>,
         input: Vec<TypeId>,
         output: TypeId,
         effects: Option<PersistedEffectRowRef>,
         requested_actions: Option<PersistedEffectRowRef>,
     },
     Tool {
+        generic_params: Vec<CallableGenericParam>,
         input: Vec<TypeId>,
         output: TypeId,
         effects: Option<PersistedEffectRowRef>,
@@ -33,6 +36,7 @@ impl PersistedItemSignature {
     pub(crate) fn from_frontend(signature: &ItemSignature) -> Self {
         match signature {
             ItemSignature::Flow(signature) => Self::Flow {
+                generic_params: signature.generic_params.clone(),
                 input: signature.params.clone(),
                 output: signature.output,
                 effects: signature
@@ -45,6 +49,7 @@ impl PersistedItemSignature {
                     .map(PersistedEffectRowRef::from_frontend),
             },
             ItemSignature::Agent(signature) => Self::Agent {
+                generic_params: signature.generic_params.clone(),
                 input: signature.params.clone(),
                 output: signature.output,
                 effects: signature
@@ -57,6 +62,7 @@ impl PersistedItemSignature {
                     .map(PersistedEffectRowRef::from_frontend),
             },
             ItemSignature::Tool(signature) => Self::Tool {
+                generic_params: signature.generic_params.clone(),
                 input: signature.params.clone(),
                 output: signature.output,
                 effects: signature
@@ -75,33 +81,39 @@ impl PersistedItemSignature {
     pub(crate) fn into_frontend(self) -> ItemSignature {
         match self {
             Self::Flow {
+                generic_params,
                 input,
                 output,
                 effects,
                 requested_actions,
             } => ItemSignature::Flow(FlowSignature {
+                generic_params,
                 params: input,
                 output,
                 effects: effects.map(PersistedEffectRowRef::into_frontend),
                 requested_actions: requested_actions.map(PersistedEffectRowRef::into_frontend),
             }),
             Self::Agent {
+                generic_params,
                 input,
                 output,
                 effects,
                 requested_actions,
             } => ItemSignature::Agent(AgentSignature {
+                generic_params,
                 params: input,
                 output,
                 effects: effects.map(PersistedEffectRowRef::into_frontend),
                 requested_actions: requested_actions.map(PersistedEffectRowRef::into_frontend),
             }),
             Self::Tool {
+                generic_params,
                 input,
                 output,
                 effects,
                 requested_actions,
             } => ItemSignature::Tool(ToolSignature {
+                generic_params,
                 params: input,
                 output,
                 effects: effects.map(PersistedEffectRowRef::into_frontend),

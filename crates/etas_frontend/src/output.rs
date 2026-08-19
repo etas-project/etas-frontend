@@ -488,6 +488,7 @@ fn external_effect_arg_fingerprint(arg: &ProjectExternalEffectArgInput) -> Strin
         }
         ProjectExternalEffectArgInput::Path(path) => format!("path:{}", path.join(".")),
         ProjectExternalEffectArgInput::String(value) => format!("string:{value:?}"),
+        ProjectExternalEffectArgInput::Int(value) => format!("int:{value}"),
         ProjectExternalEffectArgInput::Wildcard => "wildcard:_".to_owned(),
     }
 }
@@ -817,6 +818,7 @@ pub enum ProjectExternalEffectArgInput {
     Type(ProjectExternalTypeInput),
     Path(Vec<String>),
     String(String),
+    Int(String),
     Wildcard,
 }
 

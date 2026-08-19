@@ -464,6 +464,41 @@ impl UnitProvider for ProjectContext {
     }
 }
 
+fn unit_node<'a>(
+    tree: &'a UnitTree,
+    sources: Option<&SourceSet>,
+    unit: UnitKey,
+) -> Option<&'a UnitNode> {
+    let id = if unit.kind == SOURCE_FILE_UNIT_KIND {
+        let source = sources?
+            .files
+            .iter()
+            .find(|source| source.id.0 as u64 == unit.id)?;
+        *tree.by_target.get(&UnitTarget::Source(source.id))?
+    } else {
+        UnitId(unit.id as u32)
+    };
+    tree.nodes.get(id)
+}
+
+fn unit_key_for_node(node: &UnitNode) -> UnitKey {
+    let kind = match node.kind {
+        UnitKind::Project => PROJECT_UNIT_KIND,
+        UnitKind::SourceFile => SOURCE_FILE_UNIT_KIND,
+        UnitKind::Module => MODULE_UNIT_KIND,
+        UnitKind::ModulePart => MODULE_PART_UNIT_KIND,
+        UnitKind::Item => ITEM_UNIT_KIND,
+        UnitKind::Body => BODY_UNIT_KIND,
+        UnitKind::Block => BLOCK_UNIT_KIND,
+        UnitKind::Expression => EXPRESSION_UNIT_KIND,
+    };
+    let id = match node.target {
+        UnitTarget::Source(source) => source.0 as u64,
+        _ => node.id.0 as u64,
+    };
+    UnitKey::new(kind, id)
+}
+
 #[cfg(test)]
 mod tests {
     use etas_utils::{PassManager, UnitKey, UnitOrder, UnitProvider, UnitSelector};
@@ -528,39 +563,4 @@ flow main() -> i64 {
         );
         assert_eq!(type_missing_bodies, body_units);
     }
-}
-
-fn unit_node<'a>(
-    tree: &'a UnitTree,
-    sources: Option<&SourceSet>,
-    unit: UnitKey,
-) -> Option<&'a UnitNode> {
-    let id = if unit.kind == SOURCE_FILE_UNIT_KIND {
-        let source = sources?
-            .files
-            .iter()
-            .find(|source| source.id.0 as u64 == unit.id)?;
-        *tree.by_target.get(&UnitTarget::Source(source.id))?
-    } else {
-        UnitId(unit.id as u32)
-    };
-    tree.nodes.get(id)
-}
-
-fn unit_key_for_node(node: &UnitNode) -> UnitKey {
-    let kind = match node.kind {
-        UnitKind::Project => PROJECT_UNIT_KIND,
-        UnitKind::SourceFile => SOURCE_FILE_UNIT_KIND,
-        UnitKind::Module => MODULE_UNIT_KIND,
-        UnitKind::ModulePart => MODULE_PART_UNIT_KIND,
-        UnitKind::Item => ITEM_UNIT_KIND,
-        UnitKind::Body => BODY_UNIT_KIND,
-        UnitKind::Block => BLOCK_UNIT_KIND,
-        UnitKind::Expression => EXPRESSION_UNIT_KIND,
-    };
-    let id = match node.target {
-        UnitTarget::Source(source) => source.0 as u64,
-        _ => node.id.0 as u64,
-    };
-    UnitKey::new(kind, id)
 }
