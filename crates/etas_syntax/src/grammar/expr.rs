@@ -1086,6 +1086,7 @@ pub(super) fn unquote_string(text: &str) -> String {
     let text = text.strip_suffix('"').unwrap_or(text);
     text.replace("\\\"", "\"")
         .replace("\\n", "\n")
+        .replace("\\r", "\r")
         .replace("\\t", "\t")
 }
 
@@ -1093,6 +1094,7 @@ pub(super) fn unquote_char(text: &str) -> Option<char> {
     let inner = text.strip_prefix('\'')?.strip_suffix('\'')?;
     match inner {
         "\\n" => Some('\n'),
+        "\\r" => Some('\r'),
         "\\t" => Some('\t'),
         "\\'" => Some('\''),
         "\\\\" => Some('\\'),
