@@ -1,9 +1,11 @@
 use etas_std::{
-    StdDecl, StdPrimitiveType, StdRegistry, StdSymbol, StdSymbolKind, StdType, TypeDeclKind,
+    StdDecl, StdEffectRef, StdPrimitiveType, StdRegistry, StdStaticArg, StdSymbol, StdSymbolKind,
+    StdType, TypeDeclKind,
 };
 
 use crate::{
-    CallableSignature, EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef,
+    CallableGenericParam, CallableSignature, CheckedSpecBound, CheckedSpecRef,
+    CheckedStdSpecImplFact, EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef,
     EffectRowRef, FieldType, NamedTypeRef, NominalTypeRef, PrimitiveType, RecordType,
     ResourceHandleType, SpecSignature, SymbolTypeFact, TrustWrapper, Type, TypeConstructorId,
     TypeId, pipeline::context::TypePipelineContext,
@@ -82,6 +84,7 @@ fn lower_std_decl_with_kind(
         },
         StdDecl::Flow(flow) => SymbolTypeFact::Flow {
             signature: CallableSignature {
+                generic_params: lower_std_generic_params(ctx, registry, &flow.type_params),
                 params: flow
                     .params
                     .iter()
@@ -99,6 +102,7 @@ fn lower_std_decl_with_kind(
         },
         StdDecl::Tool(tool) => SymbolTypeFact::Tool {
             signature: CallableSignature {
+                generic_params: Vec::new(),
                 params: tool
                     .params
                     .iter()
@@ -118,6 +122,7 @@ fn lower_std_decl_with_kind(
         },
         StdDecl::Requirement(requirement) => SymbolTypeFact::Flow {
             signature: CallableSignature {
+                generic_params: Vec::new(),
                 params: requirement
                     .params
                     .iter()
@@ -128,10 +133,54 @@ fn lower_std_decl_with_kind(
                 requested_actions: None,
             },
         },
-        StdDecl::Impl(_) => SymbolTypeFact::Value {
-            ty: ctx.interner.primitive(PrimitiveType::Unit),
-        },
     }
+}
+
+pub fn lower_std_spec_impls(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+) -> Vec<CheckedStdSpecImplFact> {
+    registry
+        .spec_impls()
+        .map(|implementation| CheckedStdSpecImplFact {
+            self_type: lower_std_type(ctx, registry, &implementation.self_type),
+            spec: implementation.spec.path.clone(),
+            args: implementation
+                .spec
+                .args
+                .iter()
+                .map(|arg| lower_std_type(ctx, registry, arg))
+                .collect(),
+        })
+        .collect()
+}
+
+fn lower_std_generic_params(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    params: &[etas_std::StdGenericParam],
+) -> Vec<CallableGenericParam> {
+    params
+        .iter()
+        .map(|param| CallableGenericParam {
+            subject: ctx.interner.intern(Type::Named(NamedTypeRef {
+                name: param.name.clone(),
+            })),
+            name: param.name.clone(),
+            bounds: param
+                .bounds
+                .iter()
+                .map(|bound| CheckedSpecBound {
+                    spec: CheckedSpecRef::Std(bound.path.clone()),
+                    args: bound
+                        .args
+                        .iter()
+                        .map(|arg| lower_std_type(ctx, registry, arg))
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 pub fn lower_std_effect_action_signature(
@@ -316,6 +365,7 @@ fn lower_std_constructor_decl(
     };
     SymbolTypeFact::Flow {
         signature: CallableSignature {
+            generic_params: lower_std_generic_params(ctx, registry, &decl.params),
             params,
             output,
             effects: None,
@@ -513,7 +563,7 @@ fn lower_std_type_with_scope(
 pub fn std_effect_row(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
-    effects: &[String],
+    effects: &[StdEffectRef],
 ) -> Option<EffectRowRef> {
     std_effect_row_with_scope(ctx, registry, effects, None)
 }
@@ -521,13 +571,13 @@ pub fn std_effect_row(
 fn std_effect_row_with_scope(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
-    effects: &[String],
+    effects: &[StdEffectRef],
     scope: Option<&[String]>,
 ) -> Option<EffectRowRef> {
     (!effects.is_empty()).then(|| EffectRowRef {
         effects: effects
             .iter()
-            .map(|effect| parse_effect_ref(ctx, registry, effect, scope))
+            .map(|effect| lower_std_effect_ref(ctx, registry, effect, scope))
             .collect(),
         tail: None,
     })
@@ -641,7 +691,7 @@ fn lower_std_type_constructor(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
     name: &str,
-    params: &[etas_std::TypeParam],
+    params: &[etas_std::StdGenericParam],
     kind: TypeDeclKind,
     representation: Option<&StdType>,
     scope: Option<&[String]>,
@@ -701,109 +751,35 @@ fn trust_wrapper_from_name(name: &str) -> Option<TrustWrapper> {
     })
 }
 
-fn parse_effect_ref(
+fn lower_std_effect_ref(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
-    text: &str,
+    effect: &StdEffectRef,
     scope: Option<&[String]>,
 ) -> EffectRef {
-    if let Some((name, args)) = text
-        .split_once('[')
-        .and_then(|(name, rest)| rest.strip_suffix(']').map(|args| (name, args)))
-    {
-        let action_arg_kinds = std_action_arg_kinds(registry, name);
-        let args = args
-            .split(',')
-            .map(str::trim)
-            .filter(|arg| !arg.is_empty())
-            .enumerate()
-            .map(|(index, arg)| {
-                std_effect_arg(
-                    ctx,
-                    registry,
-                    arg,
-                    scope,
-                    action_arg_kinds.as_ref().and_then(|kinds| kinds.get(index)),
-                )
-            })
-            .collect();
-        return EffectRef {
-            name: name.to_owned(),
-            args,
-        };
-    }
     EffectRef {
-        name: text.to_owned(),
-        args: Vec::new(),
+        name: effect.path.join("."),
+        args: effect
+            .args
+            .iter()
+            .map(|arg| lower_std_static_arg(ctx, registry, arg, scope))
+            .collect(),
     }
 }
 
-fn std_effect_arg(
+fn lower_std_static_arg(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
-    arg: &str,
+    arg: &StdStaticArg,
     scope: Option<&[String]>,
-    expected_kind: Option<&etas_std::EffectActionArgKind>,
 ) -> EffectArgRef {
-    if matches!(
-        expected_kind,
-        Some(
-            etas_std::EffectActionArgKind::MemoryPlace
-                | etas_std::EffectActionArgKind::StaticResourcePath { .. }
-                | etas_std::EffectActionArgKind::StringPattern
-        )
-    ) {
-        return EffectArgRef::Path(std_effect_arg_path(arg, scope));
+    match arg {
+        StdStaticArg::Type(ty) => {
+            EffectArgRef::Type(lower_std_type_with_scope(ctx, registry, ty, scope))
+        }
+        StdStaticArg::Path(path) => EffectArgRef::Path(path.clone()),
+        StdStaticArg::String(value) => EffectArgRef::String(value.clone()),
+        StdStaticArg::Int(value) => EffectArgRef::Int(value.clone()),
+        StdStaticArg::Wildcard => EffectArgRef::Wildcard,
     }
-    if !arg.contains('.')
-        && let Some(scope) = scope
-        && let Some((identity, decl)) = lookup_scoped_std_type_decl(registry, scope, arg)
-    {
-        return EffectArgRef::Type(lower_std_type_constructor(
-            ctx,
-            registry,
-            &identity,
-            &decl.params,
-            decl.kind,
-            decl.representation.as_ref(),
-            Some(scope),
-        ));
-    }
-    if let Some((identity, decl)) = lookup_std_type_decl(registry, arg) {
-        let constructor_scope = qualified_scope(&identity);
-        return EffectArgRef::Type(lower_std_type_constructor(
-            ctx,
-            registry,
-            &identity,
-            &decl.params,
-            decl.kind,
-            decl.representation.as_ref(),
-            constructor_scope.as_deref(),
-        ));
-    }
-    EffectArgRef::Path(std_effect_arg_path(arg, scope))
-}
-
-fn std_action_arg_kinds(
-    registry: &StdRegistry,
-    name: &str,
-) -> Option<Vec<etas_std::EffectActionArgKind>> {
-    let (owner, action_name) = name.split_once('.')?;
-    registry.symbols().find_map(|symbol| {
-        let StdDecl::EffectAction(action) = &symbol.decl else {
-            return None;
-        };
-        (action.owner == owner && action.name == action_name).then(|| action.effect_args.clone())
-    })
-}
-
-fn std_effect_arg_path(arg: &str, scope: Option<&[String]>) -> Vec<String> {
-    if !arg.contains('.')
-        && let Some(scope) = scope
-    {
-        let mut path = scope.to_vec();
-        path.push(arg.to_owned());
-        return path;
-    }
-    arg.split('.').map(str::to_owned).collect()
 }

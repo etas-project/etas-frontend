@@ -44,6 +44,8 @@ pub fn run(ctx: &mut TypePipelineContext<'_>, item: etas_hir::HirItemId) {
             .clone(),
         external_trace_conformances: ctx.signature_facts.external_trace_spec_conformances.clone(),
         type_param_bounds: ctx.signature_facts.type_param_bounds.clone(),
+        std_impls: ctx.signature_facts.std_spec_impls.clone(),
+        std_spec_aliases: ctx.signature_facts.std_spec_aliases.clone(),
     };
     solve::run(&mut state, ctx.interner.store(), &spec_facts);
     validate::run(ctx, &state);

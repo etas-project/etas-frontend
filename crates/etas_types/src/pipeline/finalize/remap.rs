@@ -157,11 +157,23 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     }
 
     fn callable(&mut self, signature: &mut CallableSignature) {
+        for generic in &mut signature.generic_params {
+            generic.subject = self.ty(generic.subject);
+            for bound in &mut generic.bounds {
+                for arg in &mut bound.args {
+                    *arg = self.ty(*arg);
+                }
+            }
+        }
         for param in &mut signature.params {
             *param = self.ty(*param);
         }
         signature.output = self.ty(signature.output);
         signature.effects = signature.effects.take().map(|row| self.effect_row(row));
+        signature.requested_actions = signature
+            .requested_actions
+            .take()
+            .map(|row| self.effect_row(row));
     }
 
     fn item_signature(&mut self, signature: &mut ItemSignature) {
@@ -392,6 +404,12 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for implementation in &mut facts.spec_impls {
         remapper.spec_impl(implementation);
+    }
+    for implementation in &mut facts.std_spec_impls {
+        implementation.self_type = remapper.ty(implementation.self_type);
+        for arg in &mut implementation.args {
+            *arg = remapper.ty(*arg);
+        }
     }
     for fact in &mut facts.type_spec_satisfactions {
         remapper.type_spec_satisfaction(fact);

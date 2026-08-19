@@ -1,8 +1,9 @@
 use etas_hir::{HirItem, HirToolBody};
 
 use crate::{
-    CallableSignature, ItemSignature, PrimitiveType, ResourceHandleFact, SymbolTypeFact,
-    ToolSignature, TopLevelLetSignature, TypeId,
+    CallableGenericParam, CallableSignature, CheckedSpecBound, CheckedSpecRef, ItemSignature,
+    NamedTypeRef, PrimitiveType, ResourceHandleFact, SymbolTypeFact, ToolSignature,
+    TopLevelLetSignature, Type, TypeId,
     lower::{effect_row::lower_effect_row, type_ref::lower_type_ref},
     pipeline::{
         context::TypePipelineContext,
@@ -21,6 +22,7 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
         match item {
             HirItem::Flow(flow) => {
                 let signature = CallableSignature {
+                    generic_params: callable_generic_params(ctx, state, &flow.type_params),
                     params: lower_params(ctx, &flow.params),
                     output: flow
                         .return_type
@@ -41,6 +43,7 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                     continue;
                 };
                 let signature = CallableSignature {
+                    generic_params: Vec::new(),
                     params: lower_params(ctx, &agent.params),
                     output: lower_type_ref(ctx, output_type)
                         .unwrap_or_else(|| ctx.interner.primitive(PrimitiveType::Never)),
@@ -56,6 +59,7 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
             }
             HirItem::Tool(tool) => {
                 let signature = ToolSignature {
+                    generic_params: callable_generic_params(ctx, state, &tool.type_params),
                     params: lower_params(ctx, &tool.params),
                     output: lower_type_ref(ctx, tool.return_type)
                         .unwrap_or_else(|| ctx.interner.primitive(PrimitiveType::Never)),
@@ -92,6 +96,37 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
             _ => {}
         }
     }
+}
+
+fn callable_generic_params(
+    ctx: &mut TypePipelineContext<'_>,
+    state: &SignaturePipelineState,
+    params: &[etas_hir::SymbolId],
+) -> Vec<CallableGenericParam> {
+    params
+        .iter()
+        .filter_map(|param| {
+            let name = ctx.hir.symbols.get(*param)?.name.clone();
+            let bounds = state
+                .type_param_bounds
+                .get(param)
+                .cloned()
+                .unwrap_or_default();
+            Some(CallableGenericParam {
+                subject: ctx
+                    .interner
+                    .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+                name,
+                bounds: bounds
+                    .into_iter()
+                    .map(|bound| CheckedSpecBound {
+                        spec: CheckedSpecRef::Source(bound.spec_symbol),
+                        args: bound.args,
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
 }
 
 fn top_level_let_signature_type(

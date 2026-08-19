@@ -80,7 +80,7 @@ impl TypeSolver {
                 }
                 TypeConstraint::Callable {
                     callee,
-                    generic_param_names,
+                    generic_params,
                     generic_args,
                     args,
                     output,
@@ -92,25 +92,16 @@ impl TypeSolver {
                         .iter()
                         .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
                         .collect::<Vec<_>>();
-                    let inferred_generic_param_names;
-                    let generic_param_names =
-                        if generic_param_names.is_empty() && !generic_args.is_empty() {
-                            inferred_generic_param_names =
-                                callable::callable_schematic_param_names(input.store, callee);
-                            inferred_generic_param_names.as_slice()
-                        } else {
-                            generic_param_names.as_slice()
-                        };
-                    report.append(callable::solve_callable_with_named_substitutions(
+                    report.append(solve_callable_constraint(
                         input.store,
-                        callable::CallableSolveInput {
+                        input.spec_facts,
+                        CallableConstraintSolveInput {
                             callee,
-                            generic_param_names,
+                            generic_params,
                             explicit_generic_args: generic_args,
                             args: &args,
                             output,
                             origin: *origin,
-                            initial_named_substitutions: HashMap::new(),
                         },
                     ));
                 }
@@ -131,7 +122,7 @@ impl TypeSolver {
                             .collect::<Vec<_>>();
                         if method == "cast"
                             && candidates.iter().any(|candidate| {
-                                is_checked_message_cast_candidate(input.store, *candidate)
+                                is_checked_message_cast_candidate(input.store, candidate.ty)
                             })
                         {
                             solved = Some(solve_checked_message_cast(
@@ -150,18 +141,16 @@ impl TypeSolver {
                         {
                             continue;
                         }
-                        let generic_param_names =
-                            callable::callable_schematic_param_names(input.store, *candidate);
-                        let candidate_report = callable::solve_callable_with_named_substitutions(
+                        let candidate_report = solve_callable_constraint(
                             input.store,
-                            callable::CallableSolveInput {
-                                callee: *candidate,
-                                generic_param_names: &generic_param_names,
+                            input.spec_facts,
+                            CallableConstraintSolveInput {
+                                callee: candidate.ty,
+                                generic_params: &candidate.generic_params,
                                 explicit_generic_args: generic_args,
                                 args: &args,
                                 output,
                                 origin: *origin,
-                                initial_named_substitutions: HashMap::new(),
                             },
                         );
                         if candidate_report.failures.is_empty() {
@@ -260,6 +249,94 @@ impl TypeSolver {
         ));
         report
     }
+}
+
+struct CallableConstraintSolveInput<'a> {
+    callee: TypeId,
+    generic_params: &'a [crate::CallableGenericParam],
+    explicit_generic_args: &'a [TypeId],
+    args: &'a [TypeId],
+    output: TypeId,
+    origin: ConstraintOrigin,
+}
+
+fn solve_callable_constraint(
+    store: &TypeStore,
+    spec_facts: &SpecFacts,
+    input: CallableConstraintSolveInput<'_>,
+) -> SolverReport {
+    let inferred_names;
+    let declared_names;
+    let generic_param_names = if input.generic_params.is_empty() {
+        inferred_names = callable::callable_schematic_param_names(store, input.callee);
+        inferred_names.as_slice()
+    } else {
+        declared_names = input
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>();
+        declared_names.as_slice()
+    };
+    let mut report = callable::solve_callable_with_named_substitutions(
+        store,
+        callable::CallableSolveInput {
+            callee: input.callee,
+            generic_param_names,
+            explicit_generic_args: input.explicit_generic_args,
+            args: input.args,
+            output: input.output,
+            origin: input.origin,
+            initial_named_substitutions: HashMap::new(),
+        },
+    );
+    if report.failures.is_empty() {
+        let mut obligations = Vec::new();
+        for param in input.generic_params {
+            if param.bounds.is_empty() {
+                continue;
+            }
+            let solved_subject = resolve_substitution(store, &report.substitutions, param.subject);
+            let ty = report
+                .named_substitutions
+                .get(&param.name)
+                .copied()
+                .or_else(|| {
+                    (solved_subject != param.subject
+                        || !matches!(store.get(param.subject), Some(Type::Var(_))))
+                    .then_some(solved_subject)
+                });
+            let Some(ty) = ty else {
+                report.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span: input.origin.span,
+                    message: format!(
+                        "bounded generic parameter `{}` could not be inferred for this call",
+                        param.name
+                    ),
+                });
+                continue;
+            };
+            obligations.extend(param.bounds.iter().map(|bound| SpecObligation {
+                ty,
+                spec: bound.spec.clone(),
+                args: bound.args.clone(),
+                span: input.origin.span,
+            }));
+        }
+        if report.failures.is_empty() {
+            report.append(spec_solver::solve_spec_obligations(
+                store,
+                spec_facts,
+                &obligations,
+                &report.named_substitutions,
+            ));
+        }
+    }
+    // Generic names belong to this call only. Type-variable substitutions carry
+    // the solved result into the surrounding body without cross-call collisions.
+    report.named_substitutions.clear();
+    report
 }
 
 fn solve_unary_constraints(

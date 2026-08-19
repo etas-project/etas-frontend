@@ -21,18 +21,19 @@ pub use api::{
     StdSymbolBindingInput, TypeOutput, check_body, check_project, check_signatures,
 };
 pub use constraint::{
-    AssignabilityReason, ConstraintOrigin, NumericLiteralKind, SpecObligation, TypeConstraint,
-    ValidationRequest,
+    AssignabilityReason, CallableCandidate, ConstraintOrigin, NumericLiteralKind, SpecObligation,
+    TypeConstraint, ValidationRequest,
 };
 pub use facts::{
-    AgentSignature, CallableSignature, CallableSpecSatisfactionFact, CheckedIndexKind,
-    CheckedSliceKind, EffectActionArgKind, EffectActionSignature,
-    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
-    ExternalTraceSpecConformanceTarget, FlowSignature, ItemSignature, KnownStdTypes,
-    ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact,
-    SpecMethodIdentity, SpecSignature, SpecSuperBoundFact, SymbolTypeFact, ToolSignature,
-    TopLevelLetSignature, TraceSpecConformanceFact, TraceSpecConformanceTarget, TryExprTypeFact,
-    TypeFacts, TypeParamBoundFact, TypeSpecSatisfactionFact,
+    AgentSignature, CallableGenericParam, CallableSignature, CallableSpecSatisfactionFact,
+    CheckedIndexKind, CheckedSliceKind, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
+    EffectActionArgKind, EffectActionSignature, ExternalCallableSpecSatisfactionFact,
+    ExternalTraceSpecConformanceFact, ExternalTraceSpecConformanceTarget, FlowSignature,
+    ItemSignature, KnownStdTypes, ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact,
+    SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
+    SymbolTypeFact, ToolSignature, TopLevelLetSignature, TraceSpecConformanceFact,
+    TraceSpecConformanceTarget, TryExprTypeFact, TypeFacts, TypeParamBoundFact,
+    TypeSpecSatisfactionFact,
 };
 pub use solver::{
     Assignable, GenericInstantiationFact, SolverFailure, SolverReport, Substitution, TypeRelation,

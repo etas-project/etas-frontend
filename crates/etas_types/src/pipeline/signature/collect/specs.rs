@@ -201,6 +201,7 @@ fn callable_signature_from_spec_item(
     signature: &etas_hir::HirFlowSignature,
 ) -> CallableSignature {
     CallableSignature {
+        generic_params: Vec::new(),
         params: lower_param_types(ctx, &signature.params),
         output: signature
             .return_type
@@ -226,6 +227,7 @@ fn callable_signature_from_spec_callable(
         })
         .unwrap_or_default();
     CallableSignature {
+        generic_params: Vec::new(),
         params: input,
         output: lower_type_ref(ctx, signature.output)
             .unwrap_or_else(|| ctx.interner.primitive(PrimitiveType::Never)),
@@ -242,6 +244,7 @@ fn callable_signature_from_flow(
     flow: &etas_hir::HirFlowDecl,
 ) -> CallableSignature {
     CallableSignature {
+        generic_params: Vec::new(),
         params: lower_param_types(ctx, &flow.params),
         output: flow
             .return_type

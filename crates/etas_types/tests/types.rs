@@ -184,6 +184,7 @@ fn type_facts_store_symbol_and_item_contracts() {
     facts.item_signatures.insert(
         etas_hir::HirItemId(0),
         etas_types::ItemSignature::Flow(FlowSignature {
+            generic_params: Vec::new(),
             params: vec![record],
             output: string,
             effects: None,
@@ -4180,6 +4181,87 @@ flow read(stream: TlsStream, limit: ByteLimit, timeout: Option<Timeout>) -> byte
 }
 
 #[test]
+fn check_program_accepts_tcp_and_tls_stream_std_spec_impls() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.net.tcp.TcpStream;
+import std.stream.{StreamError, write_all};
+import std.tls.TlsStream;
+
+flow write_tcp(stream: TcpStream, payload: bytes) -> unit ![Error<StreamError>] {
+  return write_all(stream, payload);
+}
+
+flow write_tls(stream: TlsStream, payload: bytes) -> unit ![Error<StreamError>] {
+  return write_all(stream, payload);
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_rejects_string_for_std_byte_stream_bound() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.stream.{StreamError, StreamRead, Timeout, read};
+
+flow bad(stream: string, count: usize, timeout: Option<Timeout>) -> StreamRead ![Error<StreamError>] {
+  return read(stream, count, timeout);
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)
+                && diagnostic
+                    .message
+                    .contains("does not satisfy spec bound `std.stream.ByteStream`")
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn check_program_rejects_integer_for_std_byte_stream_bound() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.stream.{StreamError, write_all};
+
+flow bad(stream: i32, payload: bytes) -> unit ![Error<StreamError>] {
+  return write_all(stream, payload);
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)
+                && diagnostic
+                    .message
+                    .contains("does not satisfy spec bound `std.stream.ByteStream`")
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn check_program_types_source_visible_stream_error_variants() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -4893,4 +4975,42 @@ type Review = {
         "{:?}",
         output.diagnostics
     );
+}
+
+#[test]
+fn check_program_instantiates_nested_generic_wrapper_calls_per_call() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow content() -> string {
+  return "hello";
+}
+
+flow main() -> Prompt {
+  return Prompt.new().user(Public(content()));
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_propagates_explicit_generic_args_through_method_chain() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow main() -> Deque<i32> {
+  return Deque.new<i32>().push_back(2).push_front(1);
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }

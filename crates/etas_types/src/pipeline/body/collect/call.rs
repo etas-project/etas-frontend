@@ -8,10 +8,11 @@ use crate::{
     lower::type_ref::lower_type_ref,
     pipeline::{
         body::collect::{
-            expr::{collect_expr, raw_value_type_from_fact, value_type_from_fact},
+            expr::{callable_candidate_from_fact, collect_expr, value_type_from_fact},
             std_member::{
                 raw_std_member_value_type_for_symbol, raw_std_qualified_path_value_type,
-                std_member_value_type_for_symbol, std_method_candidates,
+                std_member_callable_signature_for_symbol, std_member_value_type_for_symbol,
+                std_method_candidates, std_qualified_path_callable_candidate,
                 std_qualified_path_value_type,
             },
         },
@@ -29,6 +30,7 @@ pub fn collect_call(
     expected: Option<TypeId>,
 ) -> TypeId {
     validate_generic_args(ctx, callee, generic_args, span);
+    let callable_signature = callee_callable_signature(ctx, callee);
     let type_generic_args = generic_args
         .iter()
         .filter_map(|arg| match arg {
@@ -36,7 +38,6 @@ pub fn collect_call(
             HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
         })
         .collect::<Vec<_>>();
-    emit_callee_spec_obligations(ctx, callee, &type_generic_args, span);
     if let Some(output) =
         collect_std_qualified_call(ctx, callee, &type_generic_args, args, span, expected)
     {
@@ -62,12 +63,20 @@ pub fn collect_call(
     ) {
         return output;
     }
+    let callable_candidate = collect_callable_callee(
+        ctx,
+        callee,
+        callable_signature.is_some() && type_generic_args.is_empty(),
+    );
+    let generic_params = callable_candidate
+        .as_ref()
+        .map(|candidate| candidate.generic_params.clone())
+        .unwrap_or_default();
     let callee_ty =
         if let Some(ty) = collect_type_constructor_callee(ctx, callee, &type_generic_args, span) {
             ctx.record_expr_type(callee, ty)
-        } else if !type_generic_args.is_empty() {
-            collect_raw_generic_callable_callee(ctx, callee)
-                .unwrap_or_else(|| collect_expr(ctx, callee, None))
+        } else if let Some(candidate) = callable_candidate {
+            candidate.ty
         } else {
             collect_expr(ctx, callee, None)
         };
@@ -85,7 +94,7 @@ pub fn collect_call(
     });
     ctx.emit(TypeConstraint::Callable {
         callee: callee_ty,
-        generic_param_names: callee_type_param_names(ctx, callee),
+        generic_params,
         generic_args: type_generic_args,
         args: arg_tys,
         output,
@@ -105,10 +114,13 @@ fn collect_std_qualified_call(
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
         return None;
     };
-    let callee_ty = if type_generic_args.is_empty() {
-        std_qualified_path_value_type(ctx, path)?
+    let candidate = std_qualified_path_callable_candidate(ctx, path, type_generic_args.is_empty());
+    let (callee_ty, generic_params) = if let Some(candidate) = candidate {
+        (candidate.ty, candidate.generic_params)
+    } else if type_generic_args.is_empty() {
+        (std_qualified_path_value_type(ctx, path)?, Vec::new())
     } else {
-        raw_std_qualified_path_value_type(ctx, path)?
+        (raw_std_qualified_path_value_type(ctx, path)?, Vec::new())
     };
     let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args);
     let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
@@ -127,7 +139,7 @@ fn collect_std_qualified_call(
     });
     ctx.emit(TypeConstraint::Callable {
         callee: callee_ty,
-        generic_param_names: Vec::new(),
+        generic_params,
         generic_args: type_generic_args.to_vec(),
         args: arg_tys,
         output,
@@ -195,10 +207,11 @@ fn infer_unwrap_output_from_args(
     }
 }
 
-fn collect_raw_generic_callable_callee(
+fn collect_callable_callee(
     ctx: &mut BodyCollectContext<'_, '_>,
     callee: etas_hir::HirExprId,
-) -> Option<TypeId> {
+    instantiate_schematics: bool,
+) -> Option<crate::CallableCandidate> {
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
         return None;
     };
@@ -208,8 +221,35 @@ fn collect_raw_generic_callable_callee(
         .symbols
         .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)?
         .clone();
-    let ty = raw_value_type_from_fact(ctx, fact)?;
-    Some(ctx.record_expr_type(callee, ty))
+    let candidate = callable_candidate_from_fact(ctx, fact, instantiate_schematics)?;
+    ctx.record_expr_type(callee, candidate.ty);
+    Some(candidate)
+}
+
+fn callee_callable_signature(
+    ctx: &BodyCollectContext<'_, '_>,
+    callee: etas_hir::HirExprId,
+) -> Option<crate::CallableSignature> {
+    let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
+        return None;
+    };
+    let symbol = resolved_callee_symbol(path)?;
+    let fact = ctx
+        .state
+        .provisional
+        .symbol_types
+        .get(&symbol)
+        .or_else(|| {
+            ctx.ctx
+                .symbols
+                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
+        })?;
+    match fact {
+        SymbolTypeFact::Flow { signature }
+        | SymbolTypeFact::Agent { signature }
+        | SymbolTypeFact::Tool { signature } => Some(signature.clone()),
+        _ => None,
+    }
 }
 
 fn collect_type_constructor_callee(
@@ -305,7 +345,10 @@ fn collect_partially_resolved_method_call(
     let [method] = partial.remaining.as_slice() else {
         return None;
     };
-    let std_member = if type_generic_args.is_empty() {
+    let generic_params = std_member_callable_signature_for_symbol(ctx, receiver_symbol, method)
+        .map(|signature| signature.generic_params)
+        .unwrap_or_default();
+    let std_member = if type_generic_args.is_empty() && generic_params.is_empty() {
         std_member_value_type_for_symbol(ctx, receiver_symbol, method)
     } else {
         raw_std_member_value_type_for_symbol(ctx, receiver_symbol, method)
@@ -325,7 +368,7 @@ fn collect_partially_resolved_method_call(
         });
         ctx.emit(TypeConstraint::Callable {
             callee: callee_ty,
-            generic_param_names: Vec::new(),
+            generic_params,
             generic_args: type_generic_args.to_vec(),
             args: arg_tys,
             output,
@@ -416,14 +459,14 @@ pub fn specialized_callable_output_for_args(
 
 pub fn specialized_method_output_for_args(
     ctx: &mut BodyCollectContext<'_, '_>,
-    candidates: &[TypeId],
+    candidates: &[crate::CallableCandidate],
     explicit_generic_args: &[TypeId],
     arg_tys: &[TypeId],
 ) -> Option<TypeId> {
     let mut selected = None;
     for candidate in candidates {
         let Some(output) =
-            specialized_callable_output_for_args(ctx, *candidate, explicit_generic_args, arg_tys)
+            specialized_callable_output_for_args(ctx, candidate.ty, explicit_generic_args, arg_tys)
         else {
             continue;
         };
@@ -1054,70 +1097,6 @@ fn callee_effect_param_count(
         .count()
 }
 
-fn emit_callee_spec_obligations(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    callee: etas_hir::HirExprId,
-    explicit_type_args: &[TypeId],
-    span: etas_core::Span,
-) {
-    let Some(item) = callee_item(ctx, callee) else {
-        return;
-    };
-    let type_params = item_type_params(ctx, item);
-    let explicit_substitutions = type_params
-        .iter()
-        .filter_map(|type_param| {
-            let symbol = ctx.ctx.hir.symbols.get(*type_param)?;
-            matches!(symbol.def, SymbolDef::TypeParam { .. }).then_some(symbol.name.clone())
-        })
-        .zip(explicit_type_args.iter().copied())
-        .collect::<HashMap<_, _>>();
-    for type_param in type_params {
-        let Some(symbol) = ctx.ctx.hir.symbols.get(type_param) else {
-            continue;
-        };
-        if !matches!(symbol.def, SymbolDef::TypeParam { .. }) {
-            continue;
-        }
-        let ty = explicit_substitutions
-            .get(&symbol.name)
-            .copied()
-            .unwrap_or_else(|| {
-                ctx.ctx
-                    .interner
-                    .intern(crate::Type::Named(crate::NamedTypeRef {
-                        name: symbol.name.clone(),
-                    }))
-            });
-        for bound in ctx
-            .ctx
-            .signature_facts
-            .type_param_bounds
-            .get(&type_param)
-            .cloned()
-            .unwrap_or_default()
-        {
-            ctx.state.spec_obligations.push(crate::SpecObligation {
-                ty,
-                spec_symbol: bound.spec_symbol,
-                args: bound
-                    .args
-                    .iter()
-                    .copied()
-                    .map(|arg| {
-                        crate::substitute_named_params(
-                            &mut ctx.ctx.interner,
-                            arg,
-                            &explicit_substitutions,
-                        )
-                    })
-                    .collect(),
-                span,
-            });
-        }
-    }
-}
-
 fn item_type_params(
     ctx: &BodyCollectContext<'_, '_>,
     item: etas_hir::HirItemId,
@@ -1131,22 +1110,6 @@ fn item_type_params(
         etas_hir::HirItem::Effect(decl) => decl.type_params.clone(),
         _ => Vec::new(),
     }
-}
-
-fn callee_type_param_names(
-    ctx: &BodyCollectContext<'_, '_>,
-    callee: etas_hir::HirExprId,
-) -> Vec<String> {
-    let Some(item) = callee_item(ctx, callee) else {
-        return Vec::new();
-    };
-    item_type_params(ctx, item)
-        .into_iter()
-        .filter_map(|symbol| {
-            let symbol = ctx.ctx.hir.symbols.get(symbol)?;
-            matches!(symbol.def, SymbolDef::TypeParam { .. }).then(|| symbol.name.clone())
-        })
-        .collect()
 }
 
 fn callee_item(

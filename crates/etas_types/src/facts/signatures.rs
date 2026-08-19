@@ -1,6 +1,6 @@
 use etas_hir::{HirItemId, SymbolId};
 
-use crate::{EffectRowRef, TypeId};
+use crate::{CheckedSpecBound, EffectRowRef, TypeId};
 
 pub type FlowSignature = CallableSignature;
 pub type AgentSignature = CallableSignature;
@@ -16,11 +16,20 @@ pub enum ItemSignature {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallableSignature {
+    #[serde(default)]
+    pub generic_params: Vec<CallableGenericParam>,
     pub params: Vec<TypeId>,
     pub output: TypeId,
     pub effects: Option<EffectRowRef>,
     #[serde(default)]
     pub requested_actions: Option<EffectRowRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CallableGenericParam {
+    pub name: String,
+    pub subject: TypeId,
+    pub bounds: Vec<CheckedSpecBound>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

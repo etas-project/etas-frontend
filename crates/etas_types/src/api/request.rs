@@ -236,6 +236,7 @@ pub enum ExternalEffectArgInput {
     Type(ExternalTypeInput),
     Path(Vec<String>),
     String(String),
+    Int(String),
     Wildcard,
 }
 

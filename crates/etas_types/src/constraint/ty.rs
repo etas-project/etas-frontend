@@ -1,4 +1,4 @@
-use crate::{ConstraintOrigin, TypeId};
+use crate::{CallableGenericParam, ConstraintOrigin, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericLiteralKind {
@@ -43,7 +43,7 @@ pub enum TypeConstraint {
     },
     Callable {
         callee: TypeId,
-        generic_param_names: Vec<String>,
+        generic_params: Vec<CallableGenericParam>,
         generic_args: Vec<TypeId>,
         args: Vec<TypeId>,
         output: TypeId,
@@ -51,7 +51,7 @@ pub enum TypeConstraint {
     },
     MethodCall {
         method: String,
-        candidates: Vec<TypeId>,
+        candidates: Vec<CallableCandidate>,
         generic_args: Vec<TypeId>,
         args: Vec<TypeId>,
         output: TypeId,
@@ -96,4 +96,10 @@ pub enum TypeConstraint {
         error: TypeId,
         origin: ConstraintOrigin,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallableCandidate {
+    pub ty: TypeId,
+    pub generic_params: Vec<CallableGenericParam>,
 }

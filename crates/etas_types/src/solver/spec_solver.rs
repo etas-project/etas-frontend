@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    NamedTypeRef, SpecFacts, SpecObligation, Type, TypeId, TypeStore, TypeUnifier,
+    CheckedSpecRef, NamedTypeRef, SpecFacts, SpecObligation, Type, TypeId, TypeStore, TypeUnifier,
     solver::report::{SolverFailure, SolverReport},
 };
 
@@ -21,21 +21,20 @@ pub fn solve_spec_obligations(
             .map(|arg| resolve_named(store, arg, named_substitutions))
             .collect::<Vec<_>>();
         let mut visited = HashSet::new();
-        if !type_satisfies_spec(
-            store,
-            facts,
-            ty,
-            obligation.spec_symbol,
-            &args,
-            &mut visited,
-        ) {
+        let satisfied = match &obligation.spec {
+            CheckedSpecRef::Source(spec_symbol) => {
+                type_satisfies_spec(store, facts, ty, *spec_symbol, &args, &mut visited)
+            }
+            CheckedSpecRef::Std(path) => std_type_satisfies_spec(store, facts, ty, path, &args),
+        };
+        if !satisfied {
             report.push(SolverFailure {
                 code: etas_core::TypeDiagnosticCode::TypeMismatch,
                 span: obligation.span,
                 message: format!(
                     "{} does not satisfy spec bound `{}`",
                     display_type_name(store, ty),
-                    spec_name(facts, obligation.spec_symbol)
+                    checked_spec_name(facts, &obligation.spec)
                 ),
             });
         }
@@ -67,6 +66,11 @@ fn type_satisfies_spec(
     if type_param_bound_satisfies_spec(store, facts, ty, spec_symbol, args) {
         return true;
     }
+    if let Some(path) = facts.std_spec_aliases.get(&spec_symbol)
+        && std_type_satisfies_spec(store, facts, ty, path, args)
+    {
+        return true;
+    }
     facts.impls.iter().any(|impl_fact| {
         type_same(store, impl_fact.self_type, ty)
             && spec_entails(
@@ -79,6 +83,46 @@ fn type_satisfies_spec(
                 &mut HashSet::new(),
             )
     })
+}
+
+fn std_type_satisfies_spec(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    spec: &[String],
+    args: &[TypeId],
+) -> bool {
+    if std_type_param_bound_satisfies_spec(store, facts, ty, spec, args) {
+        return true;
+    }
+    facts.std_impls.iter().any(|implementation| {
+        implementation.spec == spec
+            && type_same(store, implementation.self_type, ty)
+            && args_match(store, &implementation.args, args)
+    })
+}
+
+fn std_type_param_bound_satisfies_spec(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    ty: TypeId,
+    spec: &[String],
+    args: &[TypeId],
+) -> bool {
+    let Some(Type::Named(NamedTypeRef { name })) = store.get(ty) else {
+        return false;
+    };
+    facts
+        .type_param_bounds
+        .values()
+        .flatten()
+        .filter(|bound| bound.param_name == *name)
+        .any(|bound| {
+            facts
+                .std_spec_aliases
+                .get(&bound.spec_symbol)
+                .is_some_and(|path| path == spec && args_match(store, &bound.args, args))
+        })
 }
 
 fn type_param_bound_satisfies_spec(
@@ -194,6 +238,13 @@ fn spec_name(facts: &SpecFacts, symbol: etas_hir::SymbolId) -> String {
         .get(&symbol)
         .map(|signature| signature.name.clone())
         .unwrap_or_else(|| format!("symbol{}", symbol.0))
+}
+
+fn checked_spec_name(facts: &SpecFacts, spec: &CheckedSpecRef) -> String {
+    match spec {
+        CheckedSpecRef::Source(symbol) => spec_name(facts, *symbol),
+        CheckedSpecRef::Std(path) => path.join("."),
+    }
 }
 
 fn display_type_name(store: &TypeStore, ty: TypeId) -> String {

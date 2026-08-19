@@ -109,7 +109,9 @@ fn external_effect_arg_matches_action_arg_kind(
         crate::ExternalActionArgKindInput::StringPattern => {
             matches!(
                 arg,
-                crate::ExternalEffectArgInput::String(_) | crate::ExternalEffectArgInput::Path(_)
+                crate::ExternalEffectArgInput::String(_)
+                    | crate::ExternalEffectArgInput::Int(_)
+                    | crate::ExternalEffectArgInput::Path(_)
             )
         }
     }
@@ -371,6 +373,7 @@ fn lower_external_effect_arg(
         crate::ExternalEffectArgInput::Type(ty) => EffectArgRef::Type(lower_external_type(ctx, ty)),
         crate::ExternalEffectArgInput::Path(path) => EffectArgRef::Path(path.clone()),
         crate::ExternalEffectArgInput::String(value) => EffectArgRef::String(value.clone()),
+        crate::ExternalEffectArgInput::Int(value) => EffectArgRef::Int(value.clone()),
         crate::ExternalEffectArgInput::Wildcard => EffectArgRef::Wildcard,
     }
 }
@@ -413,6 +416,7 @@ pub fn lower_external_effect_arg_from_output(
         }
         crate::ExternalEffectArgInput::Path(path) => Ok(EffectArgRef::Path(path.clone())),
         crate::ExternalEffectArgInput::String(value) => Ok(EffectArgRef::String(value.clone())),
+        crate::ExternalEffectArgInput::Int(value) => Ok(EffectArgRef::Int(value.clone())),
         crate::ExternalEffectArgInput::Wildcard => Ok(EffectArgRef::Wildcard),
     }
 }

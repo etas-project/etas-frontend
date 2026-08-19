@@ -73,6 +73,7 @@ pub fn apply_external_signature_input(
         }
         for item in &metadata.flows {
             let signature = CallableSignature {
+                generic_params: Vec::new(),
                 params: item
                     .params
                     .iter()
@@ -92,6 +93,7 @@ pub fn apply_external_signature_input(
         }
         for item in &metadata.agents {
             let signature = CallableSignature {
+                generic_params: Vec::new(),
                 params: item
                     .input
                     .iter()
@@ -111,6 +113,7 @@ pub fn apply_external_signature_input(
         }
         for item in &metadata.tools {
             let signature = CallableSignature {
+                generic_params: Vec::new(),
                 params: item
                     .input
                     .iter()
@@ -334,6 +337,7 @@ fn lower_external_spec_signature(
                 .signature
                 .as_ref()
                 .map(|signature| CallableSignature {
+                    generic_params: Vec::new(),
                     params: signature
                         .params
                         .iter()
@@ -391,6 +395,7 @@ fn lower_external_spec_signature(
             .callable
             .as_ref()
             .map(|callable| CallableSignature {
+                generic_params: Vec::new(),
                 params: callable
                     .params
                     .iter()

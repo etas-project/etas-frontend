@@ -107,7 +107,7 @@ pub fn collect_spec_method_call(
 
     ctx.state.spec_obligations.push(SpecObligation {
         ty: receiver_ty,
-        spec_symbol,
+        spec: crate::CheckedSpecRef::Source(spec_symbol),
         args: spec_arg_tys.clone(),
         span,
     });
@@ -118,7 +118,16 @@ pub fn collect_spec_method_call(
     let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
     ctx.emit(TypeConstraint::Callable {
         callee: callee_ty,
-        generic_param_names: signature.param_names,
+        generic_params: signature
+            .param_names
+            .into_iter()
+            .zip(spec_arg_tys.iter().copied())
+            .map(|(name, subject)| crate::CallableGenericParam {
+                name,
+                subject,
+                bounds: Vec::new(),
+            })
+            .collect(),
         generic_args: spec_arg_tys,
         args: call_args,
         output,

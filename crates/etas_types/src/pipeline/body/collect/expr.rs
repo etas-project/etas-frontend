@@ -563,7 +563,7 @@ fn collect_stage_composition(
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
             callee: stage_ty,
-            generic_param_names: Vec::new(),
+            generic_params: Vec::new(),
             generic_args: Vec::new(),
             args: vec![current],
             output,
@@ -603,7 +603,7 @@ fn collect_pipeline(
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
             callee: stage_ty,
-            generic_param_names: Vec::new(),
+            generic_params: Vec::new(),
             generic_args: Vec::new(),
             args: vec![current],
             output,
@@ -830,6 +830,77 @@ pub fn raw_value_type_from_fact(
     value_type_from_fact_with_instantiation(ctx, fact, false)
 }
 
+pub fn callable_candidate_from_fact(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    fact: SymbolTypeFact,
+    instantiate_schematics: bool,
+) -> Option<crate::CallableCandidate> {
+    let signature = match fact {
+        SymbolTypeFact::Flow { signature }
+        | SymbolTypeFact::Agent { signature }
+        | SymbolTypeFact::Tool { signature } => signature,
+        _ => return None,
+    };
+    let mut schematic_vars = std::collections::HashMap::new();
+    if instantiate_schematics {
+        for param in &signature.generic_params {
+            schematic_vars
+                .entry(param.name.clone())
+                .or_insert_with(|| ctx.fresh_type_var());
+        }
+    }
+    let params = if instantiate_schematics {
+        signature
+            .params
+            .into_iter()
+            .map(|ty| instantiate_callable_schematic_type(ctx, ty, &mut schematic_vars))
+            .collect()
+    } else {
+        signature.params
+    };
+    let output = if instantiate_schematics {
+        instantiate_callable_schematic_type(ctx, signature.output, &mut schematic_vars)
+    } else {
+        signature.output
+    };
+    let generic_params = if instantiate_schematics {
+        signature
+            .generic_params
+            .into_iter()
+            .map(|param| crate::CallableGenericParam {
+                name: param.name,
+                subject: instantiate_callable_schematic_type(
+                    ctx,
+                    param.subject,
+                    &mut schematic_vars,
+                ),
+                bounds: param
+                    .bounds
+                    .into_iter()
+                    .map(|bound| crate::CheckedSpecBound {
+                        spec: bound.spec,
+                        args: bound
+                            .args
+                            .into_iter()
+                            .map(|arg| {
+                                instantiate_callable_schematic_type(ctx, arg, &mut schematic_vars)
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    } else {
+        signature.generic_params
+    };
+    let ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+        input: params,
+        output,
+        effects: signature.effects,
+    }));
+    Some(crate::CallableCandidate { ty, generic_params })
+}
+
 fn value_type_from_fact_with_instantiation(
     ctx: &mut BodyCollectContext<'_, '_>,
     fact: SymbolTypeFact,
@@ -843,26 +914,12 @@ fn value_type_from_fact_with_instantiation(
         | SymbolTypeFact::TopLevelLet { ty, .. } => Some(ty),
         SymbolTypeFact::Flow { signature }
         | SymbolTypeFact::Agent { signature }
-        | SymbolTypeFact::Tool { signature } => {
-            let (input, output) = if instantiate_schematics {
-                let mut schematic_vars = std::collections::HashMap::new();
-                let input = signature
-                    .params
-                    .into_iter()
-                    .map(|ty| instantiate_callable_schematic_type(ctx, ty, &mut schematic_vars))
-                    .collect();
-                let output =
-                    instantiate_callable_schematic_type(ctx, signature.output, &mut schematic_vars);
-                (input, output)
-            } else {
-                (signature.params, signature.output)
-            };
-            Some(ctx.ctx.interner.intern(Type::Function(FlowType {
-                input,
-                output,
-                effects: signature.effects,
-            })))
-        }
+        | SymbolTypeFact::Tool { signature } => callable_candidate_from_fact(
+            ctx,
+            SymbolTypeFact::Flow { signature },
+            instantiate_schematics,
+        )
+        .map(|candidate| candidate.ty),
         _ => None,
     }
 }

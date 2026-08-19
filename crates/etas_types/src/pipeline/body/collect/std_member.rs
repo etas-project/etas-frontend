@@ -4,10 +4,12 @@ use etas_hir::{HirExpr, ImportAliasOrigin, ResolveResult, SymbolDef};
 use etas_std::{FlowSourceMethodKind, StdDecl, StdRegistry, StdSymbol, StdType};
 
 use crate::{
-    FlowType, SymbolTypeFact, Type, TypeId,
+    CallableCandidate, CallableSignature, FlowType, SymbolTypeFact, Type, TypeId,
     lower::std::{lower_std_symbol, lower_std_type},
     pipeline::{
-        body::collect::expr::{raw_value_type_from_fact, value_type_from_fact},
+        body::collect::expr::{
+            callable_candidate_from_fact, raw_value_type_from_fact, value_type_from_fact,
+        },
         context::BodyCollectContext,
     },
     substitute_named_params,
@@ -79,6 +81,15 @@ fn std_qualified_member_value_type(
     path: &etas_hir::ResolvedPath,
     member: &str,
 ) -> Option<TypeId> {
+    std_qualified_member_value_type_with_instantiation(ctx, path, member, true)
+}
+
+fn std_qualified_member_value_type_with_instantiation(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    path: &etas_hir::ResolvedPath,
+    member: &str,
+    instantiate_schematics: bool,
+) -> Option<TypeId> {
     let mut segments = path
         .segments
         .iter()
@@ -91,7 +102,11 @@ fn std_qualified_member_value_type(
     let registry = ctx.ctx.std_registry.clone();
     let symbol = registry.lookup_qualified(&segments)?;
     let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
-    value_type_from_fact(ctx, fact)
+    if instantiate_schematics {
+        value_type_from_fact(ctx, fact)
+    } else {
+        raw_value_type_from_fact(ctx, fact)
+    }
 }
 
 pub fn std_member_value_type_for_symbol(
@@ -119,14 +134,17 @@ pub fn raw_std_member_value_type_for_symbol(
     raw_value_type_from_fact(ctx, fact)
 }
 
-pub fn std_method_candidates(ctx: &mut BodyCollectContext<'_, '_>, method: &str) -> Vec<TypeId> {
+pub fn std_method_candidates(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    method: &str,
+) -> Vec<CallableCandidate> {
     let registry = ctx.ctx.std_registry.clone();
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
         .filter_map(|symbol| {
             let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
-            value_type_from_fact(ctx, fact)
+            callable_candidate_from_fact(ctx, fact, true)
         })
         .collect()
 }
@@ -134,16 +152,106 @@ pub fn std_method_candidates(ctx: &mut BodyCollectContext<'_, '_>, method: &str)
 pub fn raw_std_method_candidates(
     ctx: &mut BodyCollectContext<'_, '_>,
     method: &str,
-) -> Vec<TypeId> {
+) -> Vec<CallableCandidate> {
     let registry = ctx.ctx.std_registry.clone();
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
         .filter_map(|symbol| {
             let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
-            raw_value_type_from_fact(ctx, fact)
+            callable_candidate_from_fact(ctx, fact, false)
         })
         .collect()
+}
+
+pub fn std_qualified_path_callable_signature(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    path: &etas_hir::ResolvedPath,
+) -> Option<CallableSignature> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.name.as_str())
+        .collect::<Vec<_>>();
+    if segments.first().copied() != Some("std") {
+        return None;
+    }
+    let registry = ctx.ctx.std_registry.clone();
+    let symbol = registry.lookup_qualified(&segments)?;
+    std_symbol_callable_signature(ctx, &registry, symbol)
+}
+
+pub fn std_qualified_path_callable_candidate(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    path: &etas_hir::ResolvedPath,
+    instantiate_schematics: bool,
+) -> Option<CallableCandidate> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.name.as_str())
+        .collect::<Vec<_>>();
+    if segments.first().copied() != Some("std") {
+        return None;
+    }
+    let registry = ctx.ctx.std_registry.clone();
+    let symbol = registry.lookup_qualified(&segments)?;
+    let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
+    callable_candidate_from_fact(ctx, fact, instantiate_schematics)
+}
+
+pub fn std_member_callable_signature_for_symbol(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    base_symbol: etas_hir::SymbolId,
+    member: &str,
+) -> Option<CallableSignature> {
+    let registry = ctx.ctx.std_registry.clone();
+    let base_std_symbol = std_type_symbol_for_hir_symbol(ctx, &registry, base_symbol)?;
+    let member_symbol = registry.symbols().find(|symbol| {
+        std_symbol_is_type_member_candidate(symbol, member)
+            && std_source_method_receiver_matches(symbol, base_std_symbol)
+    })?;
+    std_symbol_callable_signature(ctx, &registry, member_symbol)
+}
+
+pub fn std_member_callable_signature(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    base: etas_hir::HirExprId,
+    member: &str,
+) -> Option<CallableSignature> {
+    let HirExpr::Path(path) = &ctx.ctx.hir.exprs[base] else {
+        return None;
+    };
+    if let ResolveResult::Resolved(symbol) = path.resolution
+        && let Some(signature) = std_member_callable_signature_for_symbol(ctx, symbol, member)
+    {
+        return Some(signature);
+    }
+    let mut segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.name.as_str())
+        .collect::<Vec<_>>();
+    if segments.first().copied() != Some("std") {
+        return None;
+    }
+    segments.push(member);
+    let registry = ctx.ctx.std_registry.clone();
+    let symbol = registry.lookup_qualified(&segments)?;
+    std_symbol_callable_signature(ctx, &registry, symbol)
+}
+
+fn std_symbol_callable_signature(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    registry: &StdRegistry,
+    symbol: &StdSymbol,
+) -> Option<CallableSignature> {
+    match lower_std_symbol(ctx.ctx, registry, etas_hir::SymbolId(0), symbol) {
+        SymbolTypeFact::Flow { signature }
+        | SymbolTypeFact::Agent { signature }
+        | SymbolTypeFact::Tool { signature } => Some(signature),
+        _ => None,
+    }
 }
 
 pub fn raw_std_member_value_type(
@@ -152,6 +260,12 @@ pub fn raw_std_member_value_type(
     member: &str,
 ) -> Option<TypeId> {
     if let Some(ty) = std_source_type_member_value_type(ctx, base, member, false) {
+        return Some(ty);
+    }
+    if let HirExpr::Path(path) = &ctx.ctx.hir.exprs[base]
+        && let Some(ty) =
+            std_qualified_member_value_type_with_instantiation(ctx, path, member, false)
+    {
         return Some(ty);
     }
     std_member_value_type(ctx, base, member)

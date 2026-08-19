@@ -116,16 +116,15 @@ pub fn solve_callable_with_named_substitutions(
                     display_type(store, expected)
                 ),
             });
-        } else if let Some(unification_target) =
-            unification_target_for_schematic_expected(store, expected, &type_substitutions)
-        {
+        } else {
             let mut arg_unifier = TypeUnifier::new(store);
-            let unified = if contains_fresh_type_var(store, unification_target) {
-                arg_unifier.unify(unification_target, actual)
-            } else {
-                arg_unifier.unify(actual, unification_target)
-            };
-            if unified.is_ok() {
+            if unify_schematic_type(
+                store,
+                expected,
+                actual,
+                &type_substitutions,
+                &mut arg_unifier,
+            ) {
                 merge_substitution_or_report(
                     store,
                     &mut report,
@@ -153,21 +152,18 @@ pub fn solve_callable_with_named_substitutions(
         });
         return report;
     }
-    let actual_output =
-        unification_target_for_schematic_expected(store, flow.output, &type_substitutions)
-            .unwrap_or(flow.output);
-    let actual_output = resolve_local_substitution(store, &report.substitutions, actual_output);
     let mut output_unifier = TypeUnifier::new(store);
-    let output_unified = if matches!(store.get(output), Some(Type::Var(_))) {
-        output_unifier.unify(output, actual_output)
-    } else {
-        output_unifier.unify(actual_output, output)
-    };
-    if output_unified.is_ok() {
+    if unify_schematic_type(
+        store,
+        flow.output,
+        output,
+        &type_substitutions,
+        &mut output_unifier,
+    ) {
         merge_substitution_or_report(store, &mut report, output_unifier.substitution(), origin);
     } else if !is_schematic_assignable_to(
         store,
-        actual_output,
+        flow.output,
         output,
         &mut type_substitutions,
         &report.substitutions,
@@ -177,12 +173,121 @@ pub fn solve_callable_with_named_substitutions(
             span: origin.span,
             message: format!(
                 "call result type `{}` does not match expected output `{}`",
-                display_type(store, actual_output),
+                display_type(store, flow.output),
                 display_type(store, output)
             ),
         });
     }
+    report.named_substitutions = type_substitutions;
     report
+}
+
+fn unify_schematic_type(
+    store: &TypeStore,
+    schematic: TypeId,
+    actual: TypeId,
+    named_substitutions: &HashMap<String, TypeId>,
+    unifier: &mut TypeUnifier<'_>,
+) -> bool {
+    if let Some(Type::Named(name)) = store.get(schematic)
+        && is_type_variable_name(&name.name)
+    {
+        return named_substitutions
+            .get(&name.name)
+            .copied()
+            .is_some_and(|bound| unifier.unify(bound, actual).is_ok());
+    }
+
+    match (store.get(schematic), store.get(actual)) {
+        (Some(Type::Array(lhs)), Some(Type::Array(rhs)))
+        | (Some(Type::List(lhs)), Some(Type::List(rhs)))
+        | (Some(Type::Set(lhs)), Some(Type::Set(rhs)))
+        | (Some(Type::Slice(lhs)), Some(Type::Slice(rhs)))
+        | (Some(Type::Option(lhs)), Some(Type::Option(rhs)))
+        | (Some(Type::Schema(lhs)), Some(Type::Schema(rhs)))
+        | (Some(Type::Message(lhs)), Some(Type::Message(rhs)))
+        | (Some(Type::MemorySelection(lhs)), Some(Type::MemorySelection(rhs)))
+        | (Some(Type::MemoryRegion(lhs)), Some(Type::MemoryRegion(rhs))) => {
+            unify_schematic_type(store, *lhs, *rhs, named_substitutions, unifier)
+        }
+        (Some(Type::Range { index: lhs }), Some(Type::Range { index: rhs })) => {
+            unify_schematic_type(store, *lhs, *rhs, named_substitutions, unifier)
+        }
+        (
+            Some(Type::Trust {
+                wrapper: lhs_wrapper,
+                inner: lhs,
+            }),
+            Some(Type::Trust {
+                wrapper: rhs_wrapper,
+                inner: rhs,
+            }),
+        ) if lhs_wrapper == rhs_wrapper => {
+            unify_schematic_type(store, *lhs, *rhs, named_substitutions, unifier)
+        }
+        (
+            Some(Type::Map {
+                key: lhs_key,
+                value: lhs_value,
+            }),
+            Some(Type::Map {
+                key: rhs_key,
+                value: rhs_value,
+            }),
+        )
+        | (
+            Some(Type::Store {
+                key: lhs_key,
+                value: lhs_value,
+            }),
+            Some(Type::Store {
+                key: rhs_key,
+                value: rhs_value,
+            }),
+        ) => {
+            unify_schematic_type(store, *lhs_key, *rhs_key, named_substitutions, unifier)
+                && unify_schematic_type(store, *lhs_value, *rhs_value, named_substitutions, unifier)
+        }
+        (
+            Some(Type::Result {
+                ok: lhs_ok,
+                err: lhs_err,
+            }),
+            Some(Type::Result {
+                ok: rhs_ok,
+                err: rhs_err,
+            }),
+        ) => {
+            unify_schematic_type(store, *lhs_ok, *rhs_ok, named_substitutions, unifier)
+                && unify_schematic_type(store, *lhs_err, *rhs_err, named_substitutions, unifier)
+        }
+        (Some(Type::Tuple(lhs)), Some(Type::Tuple(rhs))) if lhs.len() == rhs.len() => lhs
+            .iter()
+            .copied()
+            .zip(rhs.iter().copied())
+            .all(|(lhs, rhs)| unify_schematic_type(store, lhs, rhs, named_substitutions, unifier)),
+        (
+            Some(Type::Applied {
+                constructor: lhs_constructor,
+                args: lhs_args,
+            }),
+            Some(Type::Applied {
+                constructor: rhs_constructor,
+                args: rhs_args,
+            }),
+        ) if constructors_match(store, *lhs_constructor, *rhs_constructor)
+            && lhs_args.len() == rhs_args.len() =>
+        {
+            lhs_args
+                .iter()
+                .copied()
+                .zip(rhs_args.iter().copied())
+                .all(|(lhs, rhs)| {
+                    unify_schematic_type(store, lhs, rhs, named_substitutions, unifier)
+                })
+        }
+        _ => unifier.unify(schematic, actual).is_ok(),
+    }
 }
 
 fn unresolved_output_schematics_are_input_bound(
@@ -298,26 +403,6 @@ fn inputs_contain_fresh_type_var(store: &TypeStore, inputs: &[TypeId]) -> bool {
     inputs
         .iter()
         .any(|input| contains_fresh_type_var(store, *input))
-}
-
-fn resolve_local_substitution(
-    store: &TypeStore,
-    substitutions: &crate::Substitution,
-    ty: TypeId,
-) -> TypeId {
-    let mut current = ty;
-    let mut seen = 0usize;
-    while let Some(Type::Var(var)) = store.get(current) {
-        let Some(next) = substitutions.get(*var) else {
-            break;
-        };
-        if next == current || seen > 64 {
-            break;
-        }
-        current = next;
-        seen += 1;
-    }
-    current
 }
 
 fn contains_fresh_type_var(store: &TypeStore, ty: TypeId) -> bool {
@@ -1234,67 +1319,6 @@ fn contains_unresolved_schematic_type_var(
         Some(Type::ResourceHandle(crate::ResourceHandleType::Other { args, .. })) => args
             .iter()
             .any(|arg| contains_unresolved_schematic_type_var(store, *arg, substitutions)),
-        _ => false,
-    }
-}
-
-fn unification_target_for_schematic_expected(
-    store: &TypeStore,
-    expected: TypeId,
-    substitutions: &HashMap<String, TypeId>,
-) -> Option<TypeId> {
-    match store.get(expected) {
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
-            substitutions.get(&name.name).copied()
-        }
-        _ if contains_any_schematic_type_var(store, expected) => None,
-        _ => Some(expected),
-    }
-}
-
-fn contains_any_schematic_type_var(store: &TypeStore, ty: TypeId) -> bool {
-    match store.get(ty) {
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => true,
-        Some(Type::Array(inner))
-        | Some(Type::List(inner))
-        | Some(Type::Set(inner))
-        | Some(Type::Slice(inner))
-        | Some(Type::Option(inner))
-        | Some(Type::Message(inner))
-        | Some(Type::Schema(inner))
-        | Some(Type::MemorySelection(inner))
-        | Some(Type::MemoryRegion(inner))
-        | Some(Type::Range { index: inner }) => contains_any_schematic_type_var(store, *inner),
-        Some(Type::Trust { inner, .. }) => contains_any_schematic_type_var(store, *inner),
-        Some(Type::Map { key, value }) | Some(Type::Store { key, value }) => {
-            contains_any_schematic_type_var(store, *key)
-                || contains_any_schematic_type_var(store, *value)
-        }
-        Some(Type::Result { ok, err }) => {
-            contains_any_schematic_type_var(store, *ok)
-                || contains_any_schematic_type_var(store, *err)
-        }
-        Some(Type::Tuple(elements)) => elements
-            .iter()
-            .any(|element| contains_any_schematic_type_var(store, *element)),
-        Some(Type::Function(flow)) => {
-            flow.input
-                .iter()
-                .any(|input| contains_any_schematic_type_var(store, *input))
-                || contains_any_schematic_type_var(store, flow.output)
-        }
-        Some(Type::Applied { args, .. }) => args
-            .iter()
-            .any(|arg| contains_any_schematic_type_var(store, *arg)),
-        Some(Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema })) => {
-            contains_any_schematic_type_var(store, *schema)
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::ExternalTool { signature })) => {
-            contains_any_schematic_type_var(store, *signature)
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::Other { args, .. })) => args
-            .iter()
-            .any(|arg| contains_any_schematic_type_var(store, *arg)),
         _ => false,
     }
 }

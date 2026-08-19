@@ -10,6 +10,27 @@ pub struct SpecFacts {
     pub external_callable_satisfactions: Vec<ExternalCallableSpecSatisfactionFact>,
     pub external_trace_conformances: Vec<ExternalTraceSpecConformanceFact>,
     pub type_param_bounds: std::collections::HashMap<etas_hir::SymbolId, Vec<TypeParamBoundFact>>,
+    pub std_impls: Vec<CheckedStdSpecImplFact>,
+    pub std_spec_aliases: std::collections::HashMap<etas_hir::SymbolId, Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CheckedSpecRef {
+    Source(etas_hir::SymbolId),
+    Std(Vec<String>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckedSpecBound {
+    pub spec: CheckedSpecRef,
+    pub args: Vec<TypeId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CheckedStdSpecImplFact {
+    pub self_type: TypeId,
+    pub spec: Vec<String>,
+    pub args: Vec<TypeId>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

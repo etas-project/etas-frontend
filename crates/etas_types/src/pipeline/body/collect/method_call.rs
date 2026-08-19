@@ -10,8 +10,8 @@ use crate::{
             },
             expr::collect_expr,
             std_member::{
-                raw_std_member_value_type, raw_std_method_candidates, std_member_value_type,
-                std_method_candidates,
+                raw_std_member_value_type, raw_std_method_candidates,
+                std_member_callable_signature, std_member_value_type, std_method_candidates,
             },
         },
         context::BodyCollectContext,
@@ -49,7 +49,10 @@ pub fn collect_method_call(
     if method == "run" {
         collect_expr(ctx, receiver, None);
     }
-    let std_member = if type_generic_args.is_empty() {
+    let generic_params = std_member_callable_signature(ctx, receiver, method)
+        .map(|signature| signature.generic_params)
+        .unwrap_or_default();
+    let std_member = if type_generic_args.is_empty() && generic_params.is_empty() {
         std_member_value_type(ctx, receiver, method)
     } else {
         raw_std_member_value_type(ctx, receiver, method)
@@ -74,7 +77,7 @@ pub fn collect_method_call(
         });
         ctx.emit(TypeConstraint::Callable {
             callee: callee_ty,
-            generic_param_names: Vec::new(),
+            generic_params,
             generic_args: type_generic_args,
             args: arg_tys,
             output,
@@ -89,13 +92,21 @@ pub fn collect_method_call(
         raw_std_method_candidates(ctx, method)
     };
     if !candidates.is_empty() {
-        let receiver_expected = receiver_expected_from_candidates(ctx, &candidates);
+        let expected_inputs = common_candidate_inputs(ctx, &candidates);
+        let receiver_expected = expected_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.first().copied());
         let receiver_ty = collect_expr(ctx, receiver, receiver_expected);
         let mut arg_tys = Vec::with_capacity(args.len() + 1);
         arg_tys.push(receiver_ty);
-        arg_tys.extend(args.iter().map(|arg| match arg {
-            HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
-            HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
+        arg_tys.extend(args.iter().enumerate().map(|(index, arg)| {
+            let expected = expected_inputs
+                .as_ref()
+                .and_then(|inputs| inputs.get(index + 1).copied());
+            match arg {
+                HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
+                HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
+            }
         }));
         let output = expected.unwrap_or_else(|| {
             specialized_method_output_for_args(ctx, &candidates, &type_generic_args, &arg_tys)
@@ -123,22 +134,21 @@ pub fn collect_method_call(
     output
 }
 
-fn receiver_expected_from_candidates(
+fn common_candidate_inputs(
     ctx: &BodyCollectContext<'_, '_>,
-    candidates: &[TypeId],
-) -> Option<TypeId> {
-    let mut expected = None;
+    candidates: &[crate::CallableCandidate],
+) -> Option<Vec<TypeId>> {
+    let mut expected: Option<Vec<TypeId>> = None;
     for candidate in candidates {
-        let Some(crate::Type::Function(flow)) = ctx.ctx.interner.store().get(*candidate) else {
+        let Some(crate::Type::Function(flow)) = ctx.ctx.interner.store().get(candidate.ty) else {
             return None;
         };
-        let receiver = flow.input.first().copied()?;
-        if let Some(existing) = expected {
-            if existing != receiver {
+        if let Some(existing) = &expected {
+            if existing != &flow.input {
                 return None;
             }
         } else {
-            expected = Some(receiver);
+            expected = Some(flow.input.clone());
         }
     }
     expected

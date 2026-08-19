@@ -11,14 +11,15 @@ use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 pub use effects::{EffectActionArgKind, EffectActionSignature};
 pub use expressions::{CheckedIndexKind, CheckedSliceKind, TryExprTypeFact};
 pub use signatures::{
-    AgentSignature, CallableSignature, FlowSignature, ItemSignature, ToolSignature,
-    TopLevelLetSignature,
+    AgentSignature, CallableGenericParam, CallableSignature, FlowSignature, ItemSignature,
+    ToolSignature, TopLevelLetSignature,
 };
 pub use specs::{
-    CallableSpecSatisfactionFact, ExternalCallableSpecSatisfactionFact,
-    ExternalTraceSpecConformanceFact, ExternalTraceSpecConformanceTarget, SpecFacts, SpecImplFact,
-    SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
-    SpecSuperBoundFact, TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
+    CallableSpecSatisfactionFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
+    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
+    ExternalTraceSpecConformanceTarget, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind,
+    SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
+    TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
     TypeSpecSatisfactionFact,
 };
 pub use symbols::{KnownStdTypes, ResourceHandleFact, SymbolTypeFact};
@@ -47,6 +48,8 @@ pub struct TypeFacts {
     pub external_callable_spec_satisfactions: Vec<ExternalCallableSpecSatisfactionFact>,
     pub external_trace_spec_conformances: Vec<ExternalTraceSpecConformanceFact>,
     pub type_param_bounds: HashMap<SymbolId, Vec<TypeParamBoundFact>>,
+    pub std_spec_impls: Vec<CheckedStdSpecImplFact>,
+    pub std_spec_aliases: HashMap<SymbolId, Vec<String>>,
     pub index_facts: HashMap<HirExprId, CheckedIndexKind>,
     pub slice_facts: HashMap<HirExprId, CheckedSliceKind>,
     pub checked_index_errors: HashMap<HirExprId, TypeId>,
