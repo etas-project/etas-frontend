@@ -120,6 +120,8 @@ impl TraceSpecPattern {
                 .clone(),
             external_trace_conformances: types.facts.external_trace_spec_conformances.clone(),
             type_param_bounds: types.facts.type_param_bounds.clone(),
+            std_impls: types.facts.std_spec_impls.clone(),
+            std_spec_aliases: types.facts.std_spec_aliases.clone(),
         };
         self.arg_bounds
             .iter()

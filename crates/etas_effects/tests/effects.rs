@@ -219,30 +219,24 @@ fn standard_flow_effect_metadata_resolves_without_string_fallback() {
             continue;
         };
         for effect in &flow.public_effects {
+            let name = effect.path.join(".");
             assert!(
-                resolves_std_effect_text(&registry, effect),
-                "std flow `{}` has an unresolvable public effect `{effect}`",
-                symbol.qualified_path.join(".")
+                registry.tag_by_name(&name).is_some(),
+                "std flow `{}` has an unresolvable public effect `{:?}`",
+                symbol.qualified_path.join("."),
+                effect,
             );
         }
         for action in &flow.requested_actions {
+            let name = action.path.join(".");
             assert!(
-                resolves_std_action_text(&registry, action),
-                "std flow `{}` has an unresolvable requested action `{action}`",
-                symbol.qualified_path.join(".")
+                registry.action_by_name(&name).is_some(),
+                "std flow `{}` has an unresolvable requested action `{:?}`",
+                symbol.qualified_path.join("."),
+                action,
             );
         }
     }
-}
-
-fn resolves_std_effect_text(registry: &EffectRegistry, text: &str) -> bool {
-    let base = text.split('[').next().unwrap_or(text);
-    registry.action_by_name(base).is_some() || registry.tag_by_name(base).is_some()
-}
-
-fn resolves_std_action_text(registry: &EffectRegistry, text: &str) -> bool {
-    let base = text.split('[').next().unwrap_or(text);
-    registry.action_by_name(base).is_some()
 }
 
 fn flow_item(hir: &etas_hir::HirProgram, name: &str) -> etas_hir::HirItemId {

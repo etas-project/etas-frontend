@@ -834,11 +834,9 @@ fn std_decl_is_pure_call_support(decl: &StdDecl) -> bool {
                 | TypeDeclKind::Wrapper
                 | TypeDeclKind::Support
         ),
-        StdDecl::Flow(_)
-        | StdDecl::Effect(_)
-        | StdDecl::EffectAction(_)
-        | StdDecl::Tool(_)
-        | StdDecl::Impl(_) => false,
+        StdDecl::Flow(_) | StdDecl::Effect(_) | StdDecl::EffectAction(_) | StdDecl::Tool(_) => {
+            false
+        }
     }
 }
 
