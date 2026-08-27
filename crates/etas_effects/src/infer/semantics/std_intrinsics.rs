@@ -33,7 +33,7 @@ impl EffectSemantics<'_> {
         if let Some(state) = self.std_command_wrapper_call(site, state.clone()) {
             return state;
         }
-        if let Some(summary) = self.std_flow_summary(site.callee_expr, site.span) {
+        if let Some(summary) = self.std_flow_summary(site.call, site.callee_expr, site.span) {
             state.summary.seq_assign(&summary);
             return state;
         }
@@ -654,7 +654,12 @@ impl EffectSemantics<'_> {
             })
     }
 
-    fn std_flow_summary(&mut self, callee: HirExprId, span: Span) -> Option<crate::EffectSummary> {
+    fn std_flow_summary(
+        &mut self,
+        call: HirExprId,
+        callee: HirExprId,
+        span: Span,
+    ) -> Option<crate::EffectSummary> {
         let symbol = self.callee_symbol(callee)?;
         let symbol_data = self.hir.symbols.get(symbol)?;
         let SymbolDef::ImportAlias { path, .. } = &symbol_data.def else {
@@ -666,7 +671,7 @@ impl EffectSemantics<'_> {
         let StdDecl::Flow(flow) = &decl.decl else {
             return None;
         };
-        let mut summary = self.summary_from_std_flow(symbol, flow, span);
+        let mut summary = self.summary_from_std_flow(call, symbol, flow, span);
         if let Some(intrinsic) = &decl.intrinsic {
             match intrinsic.runtime_requirement {
                 IntrinsicRuntimeRequirement::None => {}
@@ -680,6 +685,7 @@ impl EffectSemantics<'_> {
 
     fn summary_from_std_flow(
         &mut self,
+        call: HirExprId,
         symbol: etas_hir::SymbolId,
         flow: &etas_std::FlowDecl,
         span: Span,
@@ -700,7 +706,10 @@ impl EffectSemantics<'_> {
             return summary;
         };
         if let Some(row) = &signature.effects {
-            self.apply_public_row_to_summary(&mut summary, &self.row_from_type_ref(row), span);
+            let Some(row) = self.specialize_std_effect_row(call, flow, row, span) else {
+                return summary;
+            };
+            self.apply_public_row_to_summary(&mut summary, &self.row_from_type_ref(&row), span);
         }
         let Some(requested_actions) = &signature.requested_actions else {
             if !flow.requested_actions.is_empty() {
@@ -715,7 +724,12 @@ impl EffectSemantics<'_> {
             }
             return summary;
         };
-        let requested_actions = self.row_from_type_ref(requested_actions);
+        let Some(requested_actions) =
+            self.specialize_std_effect_row(call, flow, requested_actions, span)
+        else {
+            return summary;
+        };
+        let requested_actions = self.row_from_type_ref(&requested_actions);
         for action_ref in requested_actions.effects.iter().cloned() {
             self.apply_requested_action_to_summary_with_source(
                 &mut summary,
@@ -725,6 +739,98 @@ impl EffectSemantics<'_> {
             );
         }
         summary
+    }
+
+    fn specialize_std_effect_row(
+        &mut self,
+        call: HirExprId,
+        flow: &etas_std::FlowDecl,
+        row: &etas_types::EffectRowRef,
+        span: Span,
+    ) -> Option<etas_types::EffectRowRef> {
+        let generic_names = flow
+            .type_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        if generic_names.is_empty() {
+            return Some(row.clone());
+        }
+        let fact = self.types.facts.generic_instantiations.get(&call);
+        let bindings = fact
+            .map(|fact| {
+                fact.type_bindings
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), *ty))
+                    .collect::<std::collections::HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let mut specialized = row.clone();
+        for effect in &mut specialized.effects {
+            for arg in &mut effect.args {
+                let etas_types::EffectArgRef::Type(ty) = arg else {
+                    continue;
+                };
+                let mut references_generic = false;
+                for name in &generic_names {
+                    let contains = match etas_types::type_contains_named_param(
+                        &self.types.store,
+                        *ty,
+                        name,
+                    ) {
+                        Ok(contains) => contains,
+                        Err(error) => {
+                            self.diagnostics.push(Diagnostic::effect_check(
+                                EffectDiagnosticCode::IncompleteEffectFacts,
+                                span,
+                                format!(
+                                    "standard library flow `{}` has invalid checked selector type facts: {error}",
+                                    flow.name
+                                ),
+                            ));
+                            return None;
+                        }
+                    };
+                    if !contains {
+                        continue;
+                    }
+                    references_generic = true;
+                    if !bindings.contains_key(name) {
+                        self.diagnostics.push(Diagnostic::effect_check(
+                            EffectDiagnosticCode::IncompleteEffectFacts,
+                            span,
+                            format!(
+                                "standard library flow `{}` requires checked generic instantiation for `{name}`",
+                                flow.name
+                            ),
+                        ));
+                        return None;
+                    }
+                }
+                if !references_generic {
+                    continue;
+                }
+                *ty = match etas_types::substitute_named_params_in_store(
+                    &self.types.store,
+                    *ty,
+                    &bindings,
+                ) {
+                    Ok(specialized) => specialized,
+                    Err(error) => {
+                        self.diagnostics.push(Diagnostic::effect_check(
+                            EffectDiagnosticCode::IncompleteEffectFacts,
+                            span,
+                            format!(
+                                "standard library flow `{}` selector specialization requires complete checked type facts: {error}",
+                                flow.name
+                            ),
+                        ));
+                        return None;
+                    }
+                };
+            }
+        }
+        Some(specialized)
     }
 
     pub(crate) fn action_effect_with_omitted_selector(&self, action: ActionRef) -> Effect {
@@ -853,5 +959,100 @@ pub(super) fn type_effect_name(ty: &Type) -> Option<String> {
 fn arg_expr(arg: &HirArg) -> Option<HirExprId> {
     match arg {
         HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => Some(*expr),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etas_core::{SourceFile, SourceId, TextSize};
+    use etas_hir::{HirExpr, lower_program};
+    use etas_hir_analysis::HirAnalysisContext;
+    use etas_types::{
+        EffectRef, GenericInstantiationFact, NamedTypeRef, NominalTypeRef, PrimitiveType,
+        TypeConstructorId, TypeInterner, TypeOutput,
+    };
+
+    #[test]
+    fn std_effect_row_recursively_specializes_nested_generic_selector() {
+        let parsed = etas_syntax::parse_program(SourceFile::new(
+            SourceId(0),
+            None,
+            "flow main() -> unit { helper(); return; }",
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let call = hir
+            .exprs
+            .iter()
+            .find_map(|(id, expr)| matches!(expr, HirExpr::Call { .. }).then_some(id))
+            .expect("test source should contain a call");
+
+        let mut interner = TypeInterner::new();
+        let param = interner.intern(Type::Named(NamedTypeRef {
+            name: "T".to_owned(),
+        }));
+        let concrete_arg = interner.primitive(PrimitiveType::I32);
+        let wrapper = interner.intern(Type::Nominal(NominalTypeRef {
+            name: "Wrapper".to_owned(),
+            params: vec!["T".to_owned()],
+            representation: None,
+        }));
+        let generic_selector = interner.intern(Type::Applied {
+            constructor: TypeConstructorId(wrapper.0),
+            args: vec![param],
+        });
+        let concrete_selector = interner.intern(Type::Applied {
+            constructor: TypeConstructorId(wrapper.0),
+            args: vec![concrete_arg],
+        });
+        let mut types = TypeOutput {
+            store: interner.into_store(),
+            ..TypeOutput::default()
+        };
+        types.facts.generic_instantiations.insert(
+            call,
+            GenericInstantiationFact {
+                type_bindings: vec![("T".to_owned(), concrete_arg)],
+            },
+        );
+        let flow = etas_std::FlowDecl {
+            name: "std.test.nested_selector".to_owned(),
+            type_params: vec![etas_std::StdGenericParam::new("T")],
+            params: Vec::new(),
+            output: etas_std::StdType::parse("unit"),
+            public_effects: Vec::new(),
+            requested_actions: Vec::new(),
+            source_method: None,
+        };
+        let row = etas_types::EffectRowRef {
+            effects: vec![EffectRef {
+                name: "Test.action".to_owned(),
+                args: vec![EffectArgRef::Type(generic_selector)],
+            }],
+            tail: None,
+        };
+        let std_registry = etas_std::standard_registry();
+        let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
+        let context = HirAnalysisContext::new(&hir);
+        let mut semantics = EffectSemantics::with_context(
+            &hir,
+            context,
+            &types,
+            &std_registry,
+            &registry,
+            &[],
+            &[],
+        );
+
+        let specialized = semantics
+            .specialize_std_effect_row(call, &flow, &row, Span::empty(SourceId(0), TextSize::ZERO))
+            .expect("checked nested selector should specialize");
+
+        assert_eq!(
+            specialized.effects[0].args,
+            vec![EffectArgRef::Type(concrete_selector)]
+        );
+        assert!(semantics.diagnostics.is_empty());
     }
 }

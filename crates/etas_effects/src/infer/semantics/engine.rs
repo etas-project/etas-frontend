@@ -749,6 +749,7 @@ mod tests {
                 "run".to_owned(),
             ],
             param_names: Vec::new(),
+            generic_param_names: Vec::new(),
             public_effects: Default::default(),
             requested_actions: Default::default(),
             handled_requested_actions: Default::default(),

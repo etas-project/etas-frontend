@@ -43,6 +43,7 @@ impl EffectSemantics<'_> {
             return state;
         };
         let Some(effect) = self.materialize_performed_action_effect(
+            expr,
             &effect,
             action,
             generic_args,
@@ -186,6 +187,7 @@ impl EffectSemantics<'_> {
 
     fn materialize_performed_action_effect(
         &mut self,
+        call: HirExprId,
         effect: &Effect,
         action: &ResolvedActionRef,
         generic_args: &[HirGenericArg],
@@ -224,6 +226,7 @@ impl EffectSemantics<'_> {
         let mut effect_args = Vec::new();
         for (index, kind) in signature.effect_args.iter().enumerate() {
             let Some(arg) = self.materialize_action_effect_arg(
+                call,
                 kind,
                 generic_args.get(index),
                 signature.selector_param_names.get(index),
@@ -250,6 +253,7 @@ impl EffectSemantics<'_> {
 
     fn materialize_action_effect_arg(
         &self,
+        call: HirExprId,
         kind: &EffectActionArgKind,
         generic_arg: Option<&HirGenericArg>,
         selector_param_name: Option<&String>,
@@ -259,6 +263,16 @@ impl EffectSemantics<'_> {
         let Some(generic_arg) = generic_arg else {
             if let Some(default) = selector_default {
                 return Some(default.clone());
+            }
+            if matches!(kind, EffectActionArgKind::Type)
+                && let Some(name) = selector_param_name
+                && let Some(fact) = self.types.facts.generic_instantiations.get(&call)
+                && let Some((_, ty)) = fact
+                    .type_bindings
+                    .iter()
+                    .find(|(binding, _)| binding == name)
+            {
+                return Some(etas_types::EffectArgRef::Type(*ty));
             }
             if let Some(inferred) = self.infer_action_selector_arg(kind, selector_param_name, owner)
             {

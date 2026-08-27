@@ -25,6 +25,8 @@ pub struct ExternalEffectSummaryMetadata {
     pub item: Vec<String>,
     #[serde(default)]
     pub param_names: Vec<String>,
+    #[serde(default)]
+    pub generic_param_names: Vec<String>,
     pub public_effects: ExternalEffectRowMetadata,
     pub requested_actions: ExternalEffectRowMetadata,
     #[serde(default)]

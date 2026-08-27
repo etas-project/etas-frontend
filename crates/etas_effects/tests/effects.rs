@@ -201,12 +201,7 @@ fn effect_registry_reads_substrate_actions_from_std_registry() {
                 .expect("Stream.read should resolve"),
         )
         .expect("Stream.read should have a signature");
-    assert_eq!(
-        stream_read.effect_args,
-        vec![EffectActionArgKind::StaticResourcePath {
-            ty: "ByteStream".to_owned()
-        }]
-    );
+    assert_eq!(stream_read.effect_args, vec![EffectActionArgKind::Type]);
 }
 
 #[test]
@@ -5171,6 +5166,159 @@ flow main() -> unit ![Error<NetworkError>]
 }
 
 #[test]
+fn std_stream_read_specializes_requested_action_from_checked_call_instantiation() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+module app.main;
+import std.net.tcp.TcpStream;
+import std.stream.{StreamError, StreamRead, read};
+
+flow main(stream: TcpStream) -> StreamRead ![Error<StreamError>]
+{
+    return read(stream, 1, None());
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let registry = EffectRegistry::with_standard_effects();
+    let action = registry
+        .action_by_name("Stream.read")
+        .expect("Stream.read should resolve");
+    let summary = output
+        .facts
+        .item_effects
+        .values()
+        .find(|summary| !summary.requested_actions.effects.is_empty())
+        .expect("stream wrapper should record requested action");
+    let selector = summary
+        .requested_actions
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::AppliedAction(instance) if instance.action == action => instance.args.first(),
+            _ => None,
+        })
+        .expect("Stream.read should have a concrete selector");
+    let etas_types::EffectArgRef::Type(selector_ty) = selector else {
+        panic!("Stream.read selector should be a checked type: {selector:?}");
+    };
+    assert!(
+        matches!(
+            types.store.get(*selector_ty),
+            Some(etas_types::Type::Named(named))
+                if named.name == "std.net.tcp.TcpStream"
+        ),
+        "unexpected checked Stream.read selector type: {:?}",
+        types.store.get(*selector_ty)
+    );
+}
+
+#[test]
+fn std_fs_read_specializes_region_selector_from_checked_call_instantiation() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+module app.main;
+import std.fs.{IOError, Region, WorkspacePath, read_bytes};
+
+flow main<R ~ Region>(path: WorkspacePath<R>) -> bytes ![Error<IOError>]
+{
+    return read_bytes(path);
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_action_type_selector(
+        &output,
+        &types,
+        "Fs.read",
+        |ty| matches!(ty, etas_types::Type::Named(named) if named.name == "R"),
+    );
+}
+
+#[test]
+fn std_secret_read_specializes_key_selector_from_checked_call_instantiation() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+module app.main;
+import std.secret.{SecretError, SecretKey, SecretValue, read};
+
+type ApiKey;
+
+flow main(key: SecretKey<ApiKey>) -> SecretValue<ApiKey> ![Error<SecretError>]
+{
+    return read(key);
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_action_type_selector(
+        &output,
+        &types,
+        "Secret.read",
+        |ty| matches!(ty, etas_types::Type::Nominal(nominal) if nominal.name.ends_with("ApiKey")),
+    );
+}
+
+fn assert_action_type_selector(
+    output: &etas_effects::EffectOutput,
+    types: &etas_types::TypeOutput,
+    action_name: &str,
+    expected: impl Fn(&etas_types::Type) -> bool,
+) {
+    let registry = EffectRegistry::with_standard_effects();
+    let action = registry
+        .action_by_name(action_name)
+        .unwrap_or_else(|| panic!("{action_name} should resolve"));
+    let selector = output
+        .facts
+        .item_effects
+        .values()
+        .flat_map(|summary| summary.requested_actions.effects.iter())
+        .find_map(|effect| match effect {
+            Effect::AppliedAction(instance) if instance.action == action => {
+                instance.args.first().cloned()
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{action_name} should have a concrete selector"));
+    let etas_types::EffectArgRef::Type(selector_ty) = selector else {
+        panic!("{action_name} selector should be a checked type: {selector:?}");
+    };
+    let selector = types.store.get(selector_ty).expect("selector type fact");
+    assert!(
+        expected(selector),
+        "unexpected {action_name} selector: {selector:?}"
+    );
+}
+
+#[test]
 fn handler_application_propagates_handler_body_std_default_actions() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -5771,7 +5919,7 @@ fn check_program_rejects_agent_public_agentic_infer_row() {
         etas_core::SourceId(0),
         None,
         r#"
-agent Reviewer(input: Prompt) -> string ![Agentic.infer<Reviewer>] {
+agent Reviewer(input: Prompt) -> string ![Agentic.infer<Reviewer, string>] {
     return input;
 }
 "#,

@@ -47,8 +47,7 @@ impl EffectSemantics<'_> {
         path: &[String],
         site: &CallSite<EffectUnit>,
         state: &EffectState,
-    ) -> Result<Option<EffectSummary>, etas_hir_analysis::static_string::StaticStringEvaluationError>
-    {
+    ) -> Result<Option<EffectSummary>, super::specialize::EffectSpecializationError> {
         let Some(metadata) = self
             .external_summaries
             .iter()
@@ -61,7 +60,25 @@ impl EffectSemantics<'_> {
             return Ok(None);
         };
         let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
-        summary = self.specialize_summary_with_bindings(&summary, &bindings, &[])?;
+        let type_bindings = self
+            .types
+            .facts
+            .generic_instantiations
+            .get(&site.call)
+            .map(|fact| {
+                fact.type_bindings
+                    .iter()
+                    .filter(|(name, _)| metadata.generic_param_names.contains(name))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        self.require_named_effect_type_bindings(
+            &metadata.generic_param_names,
+            &summary,
+            &type_bindings,
+        )?;
+        summary = self.specialize_summary_with_bindings(&summary, &bindings, &type_bindings)?;
         if self
             .apply_external_function_parameter_effects(&mut summary, site, state)
             .is_none()

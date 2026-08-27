@@ -1,6 +1,41 @@
 use super::engine::EffectSemantics;
 use super::shared::*;
 
+#[derive(Debug)]
+pub(crate) enum EffectSpecializationError {
+    StaticString(etas_hir_analysis::static_string::StaticStringEvaluationError),
+    Type(etas_types::TypeSubstitutionError),
+    MissingTypeBinding { param: String },
+}
+
+impl std::fmt::Display for EffectSpecializationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::StaticString(error) => error.fmt(f),
+            Self::Type(error) => error.fmt(f),
+            Self::MissingTypeBinding { param } => {
+                write!(f, "checked generic instantiation is missing `{param}`")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EffectSpecializationError {}
+
+impl From<etas_hir_analysis::static_string::StaticStringEvaluationError>
+    for EffectSpecializationError
+{
+    fn from(error: etas_hir_analysis::static_string::StaticStringEvaluationError) -> Self {
+        Self::StaticString(error)
+    }
+}
+
+impl From<etas_types::TypeSubstitutionError> for EffectSpecializationError {
+    fn from(error: etas_types::TypeSubstitutionError) -> Self {
+        Self::Type(error)
+    }
+}
+
 impl EffectSemantics<'_> {
     pub(crate) fn specialize_summary_for_call(
         &self,
@@ -8,7 +43,7 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         state: &EffectState,
         summary: &EffectSummary,
-    ) -> Result<EffectSummary, etas_hir_analysis::static_string::StaticStringEvaluationError> {
+    ) -> Result<EffectSummary, EffectSpecializationError> {
         let Some(params) = self.unit_params(callee) else {
             return Ok(summary.clone());
         };
@@ -27,6 +62,7 @@ impl EffectSemantics<'_> {
         }
         let type_bindings =
             self.call_type_bindings(callee, site, state.owner.map(EffectUnit::Item));
+        self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         if bindings.is_empty() && type_bindings.is_empty() {
             return Ok(summary.clone());
         }
@@ -216,7 +252,7 @@ impl EffectSemantics<'_> {
         summary: &EffectSummary,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-    ) -> Result<EffectSummary, etas_hir_analysis::static_string::StaticStringEvaluationError> {
+    ) -> Result<EffectSummary, EffectSpecializationError> {
         if bindings.is_empty() && type_bindings.is_empty() {
             return Ok(summary.clone());
         }
@@ -251,7 +287,7 @@ impl EffectSemantics<'_> {
         row: &EffectRow,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-    ) -> Result<EffectRow, etas_hir_analysis::static_string::StaticStringEvaluationError> {
+    ) -> Result<EffectRow, EffectSpecializationError> {
         let effects = row
             .effects
             .iter()
@@ -269,7 +305,7 @@ impl EffectSemantics<'_> {
         effect: Effect,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-    ) -> Result<Effect, etas_hir_analysis::static_string::StaticStringEvaluationError> {
+    ) -> Result<Effect, EffectSpecializationError> {
         match effect {
             Effect::AppliedAction(mut action) => {
                 action.args = action
@@ -278,6 +314,28 @@ impl EffectSemantics<'_> {
                     .map(|arg| self.specialize_effect_arg(arg, bindings, type_bindings))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Effect::AppliedAction(action))
+            }
+            Effect::Applied { tag, args } => {
+                let bindings = type_bindings.iter().cloned().collect();
+                let args = args
+                    .into_iter()
+                    .map(|ty| {
+                        etas_types::substitute_named_params_in_store(
+                            &self.types.store,
+                            ty,
+                            &bindings,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Effect::Applied { tag, args })
+            }
+            Effect::Error(ty) => {
+                let bindings = type_bindings.iter().cloned().collect();
+                Ok(Effect::Error(etas_types::substitute_named_params_in_store(
+                    &self.types.store,
+                    ty,
+                    &bindings,
+                )?))
             }
             other => Ok(other),
         }
@@ -288,8 +346,7 @@ impl EffectSemantics<'_> {
         trace: &ActionTraceDomain,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-    ) -> Result<ActionTraceDomain, etas_hir_analysis::static_string::StaticStringEvaluationError>
-    {
+    ) -> Result<ActionTraceDomain, EffectSpecializationError> {
         match trace {
             ActionTraceDomain::Empty => Ok(ActionTraceDomain::Empty),
             ActionTraceDomain::Event(event) => {
@@ -329,12 +386,12 @@ impl EffectSemantics<'_> {
         arg: EffectArgRef,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-    ) -> Result<EffectArgRef, etas_hir_analysis::static_string::StaticStringEvaluationError> {
+    ) -> Result<EffectArgRef, EffectSpecializationError> {
         if let EffectArgRef::Type(ty) = arg {
-            return Ok(self
-                .specialize_type_effect_arg(ty, type_bindings)
+            let bindings = type_bindings.iter().cloned().collect();
+            return etas_types::substitute_named_params_in_store(&self.types.store, ty, &bindings)
                 .map(EffectArgRef::Type)
-                .unwrap_or(EffectArgRef::Type(ty)));
+                .map_err(Into::into);
         }
         let EffectArgRef::Path(path) = &arg else {
             return Ok(arg);
@@ -345,21 +402,7 @@ impl EffectSemantics<'_> {
         let Some((_, expr)) = bindings.iter().find(|(param, _)| param == head) else {
             return Ok(arg);
         };
-        self.effect_arg_from_expr_path(*expr, tail)
-    }
-
-    pub(crate) fn specialize_type_effect_arg(
-        &self,
-        ty: TypeId,
-        type_bindings: &[(String, TypeId)],
-    ) -> Option<TypeId> {
-        let Type::Named(name) = self.types.store.get(ty)? else {
-            return None;
-        };
-        type_bindings
-            .iter()
-            .find(|(param, _)| param == &name.name)
-            .map(|(_, ty)| *ty)
+        Ok(self.effect_arg_from_expr_path(*expr, tail)?)
     }
 
     pub(crate) fn effect_arg_from_expr_path(
@@ -368,5 +411,124 @@ impl EffectSemantics<'_> {
         path: &[String],
     ) -> Result<EffectArgRef, etas_hir_analysis::static_string::StaticStringEvaluationError> {
         evaluate_static_string(self, expr, path).map(EffectArgRef::String)
+    }
+
+    fn require_effect_type_bindings(
+        &self,
+        callee: EffectUnit,
+        summary: &EffectSummary,
+        type_bindings: &[(String, TypeId)],
+    ) -> Result<(), EffectSpecializationError> {
+        let params = self
+            .unit_type_params(callee)
+            .into_iter()
+            .filter_map(|symbol| self.hir.symbols.get(symbol))
+            .filter(|symbol| matches!(symbol.def, SymbolDef::TypeParam { .. }))
+            .map(|symbol| symbol.name.clone())
+            .collect::<Vec<_>>();
+        self.require_named_effect_type_bindings(&params, summary, type_bindings)
+    }
+
+    pub(crate) fn require_named_effect_type_bindings(
+        &self,
+        params: &[String],
+        summary: &EffectSummary,
+        type_bindings: &[(String, TypeId)],
+    ) -> Result<(), EffectSpecializationError> {
+        let bound = type_bindings
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        for param in params {
+            if bound.contains(param.as_str())
+                || !self.summary_contains_named_type(summary, param)?
+            {
+                continue;
+            }
+            return Err(EffectSpecializationError::MissingTypeBinding {
+                param: param.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn summary_contains_named_type(
+        &self,
+        summary: &EffectSummary,
+        name: &str,
+    ) -> Result<bool, etas_types::TypeSubstitutionError> {
+        for row in [
+            &summary.escaping_effects,
+            &summary.requested_actions,
+            &summary.default_actions,
+            &summary.handled_actions,
+        ] {
+            for effect in row.effects.iter() {
+                if self.effect_contains_named_type(effect, name)? {
+                    return Ok(true);
+                }
+            }
+        }
+        self.action_trace_contains_named_type(&summary.action_trace, name)
+    }
+
+    fn effect_contains_named_type(
+        &self,
+        effect: &Effect,
+        name: &str,
+    ) -> Result<bool, etas_types::TypeSubstitutionError> {
+        match effect {
+            Effect::AppliedAction(action) => {
+                for arg in &action.args {
+                    if let EffectArgRef::Type(ty) = arg
+                        && etas_types::type_contains_named_param(&self.types.store, *ty, name)?
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+            Effect::Applied { args, .. } => {
+                for ty in args {
+                    if etas_types::type_contains_named_param(&self.types.store, *ty, name)? {
+                        return Ok(true);
+                    }
+                }
+            }
+            Effect::Error(ty) => {
+                if etas_types::type_contains_named_param(&self.types.store, *ty, name)? {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn action_trace_contains_named_type(
+        &self,
+        trace: &ActionTraceDomain,
+        name: &str,
+    ) -> Result<bool, etas_types::TypeSubstitutionError> {
+        match trace {
+            ActionTraceDomain::Empty => Ok(false),
+            ActionTraceDomain::Event(event) => self.effect_contains_named_type(&event.action, name),
+            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => {
+                for item in items {
+                    if self.action_trace_contains_named_type(item, name)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            ActionTraceDomain::Repeat(item) => self.action_trace_contains_named_type(item, name),
+            ActionTraceDomain::UnknownOrder(actions) => {
+                for effect in actions.iter() {
+                    if self.effect_contains_named_type(effect, name)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
     }
 }
