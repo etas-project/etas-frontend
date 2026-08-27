@@ -117,6 +117,7 @@ pub fn collect_spec_method_call(
     call_args.extend(explicit_arg_tys);
     let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
     ctx.emit(TypeConstraint::Callable {
+        call: None,
         callee: callee_ty,
         generic_params: signature
             .param_names

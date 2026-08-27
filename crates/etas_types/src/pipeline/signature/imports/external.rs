@@ -6,8 +6,8 @@ use crate::{
     SpecImplFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
     SymbolTypeFact, Type, TypeConstructorId, TypeId, TypeSpecSatisfactionFact,
     lower::external::{
-        lower_external_action_signature, lower_external_effect_row, lower_external_type,
-        lower_external_type_declaration,
+        lower_external_action_signature, lower_external_callable_generic_params,
+        lower_external_effect_row, lower_external_type, lower_external_type_declaration,
     },
     pipeline::context::TypePipelineContext,
 };
@@ -17,7 +17,8 @@ pub fn apply_external_signature_input(
     input: &ExternalSignatureInput,
 ) {
     let mut symbols = HashMap::<(ExternalPackageKey, Vec<String>), SymbolTypeFact>::new();
-    let mut actions = HashMap::<Vec<String>, crate::EffectActionSignature>::new();
+    let mut actions =
+        HashMap::<(ExternalPackageKey, Vec<String>), crate::EffectActionSignature>::new();
     let mut trace_specs = HashMap::<(ExternalPackageKey, Vec<String>), ()>::new();
     let mut spec_signatures =
         HashMap::<(ExternalPackageKey, Vec<String>), crate::ExternalSpecSignatureInput>::new();
@@ -72,8 +73,17 @@ pub fn apply_external_signature_input(
             );
         }
         for item in &metadata.flows {
+            let Some(generic_params) = lower_external_callable_generic_params(
+                ctx,
+                metadata.package,
+                &item.path,
+                &item.generic_params,
+                &binding_symbols,
+            ) else {
+                continue;
+            };
             let signature = CallableSignature {
-                generic_params: Vec::new(),
+                generic_params,
                 params: item
                     .params
                     .iter()
@@ -92,8 +102,17 @@ pub fn apply_external_signature_input(
             );
         }
         for item in &metadata.agents {
+            let Some(generic_params) = lower_external_callable_generic_params(
+                ctx,
+                metadata.package,
+                &item.path,
+                &item.generic_params,
+                &binding_symbols,
+            ) else {
+                continue;
+            };
             let signature = CallableSignature {
-                generic_params: Vec::new(),
+                generic_params,
                 params: item
                     .input
                     .iter()
@@ -112,8 +131,17 @@ pub fn apply_external_signature_input(
             );
         }
         for item in &metadata.tools {
+            let Some(generic_params) = lower_external_callable_generic_params(
+                ctx,
+                metadata.package,
+                &item.path,
+                &item.generic_params,
+                &binding_symbols,
+            ) else {
+                continue;
+            };
             let signature = CallableSignature {
-                generic_params: Vec::new(),
+                generic_params,
                 params: item
                     .input
                     .iter()
@@ -146,10 +174,11 @@ pub fn apply_external_signature_input(
             spec_signatures.insert((metadata.package, item.path.clone()), item.clone());
         }
         for action in &metadata.actions {
-            actions.insert(
-                action.path.clone(),
-                lower_external_action_signature(ctx, action),
-            );
+            if let Some(signature) =
+                lower_external_action_signature(ctx, metadata.package, action, &binding_symbols)
+            {
+                actions.insert((metadata.package, action.path.clone()), signature);
+            }
         }
     }
 
@@ -189,7 +218,10 @@ pub fn apply_external_signature_input(
         }
     }
     for binding in &input.action_bindings {
-        if let Some(signature) = actions.get(&binding.path).cloned() {
+        if let Some(signature) = actions
+            .get(&(binding.package, binding.path.clone()))
+            .cloned()
+        {
             ctx.signature_facts.symbol_types.insert(
                 binding.symbol,
                 SymbolTypeFact::EffectAction {
@@ -333,11 +365,16 @@ fn lower_external_spec_signature(
                 ));
                 return None;
             };
-            let signature = method
-                .signature
-                .as_ref()
-                .map(|signature| CallableSignature {
-                    generic_params: Vec::new(),
+            let signature = method.signature.as_ref().and_then(|signature| {
+                let generic_params = lower_external_callable_generic_params(
+                    ctx,
+                    package,
+                    &signature.path,
+                    &signature.generic_params,
+                    binding_symbols,
+                )?;
+                Some(CallableSignature {
+                    generic_params,
                     params: signature
                         .params
                         .iter()
@@ -349,7 +386,8 @@ fn lower_external_spec_signature(
                         .as_ref()
                         .map(|row| lower_external_effect_row(ctx, row)),
                     requested_actions: None,
-                });
+                })
+            });
             Some(SpecMethodFact {
                 identity: SpecMethodIdentity::External {
                     package: package.0,
@@ -391,11 +429,17 @@ fn lower_external_spec_signature(
         },
         params: Vec::new(),
         param_names: signature.param_names.clone(),
-        callable: signature
-            .callable
-            .as_ref()
-            .map(|callable| CallableSignature {
-                generic_params: Vec::new(),
+        callable: signature.callable.as_ref().and_then(|callable| {
+            let package = package?;
+            let generic_params = lower_external_callable_generic_params(
+                ctx,
+                package,
+                &callable.path,
+                &callable.generic_params,
+                binding_symbols,
+            )?;
+            Some(CallableSignature {
+                generic_params,
                 params: callable
                     .params
                     .iter()
@@ -407,7 +451,8 @@ fn lower_external_spec_signature(
                     .as_ref()
                     .map(|row| lower_external_effect_row(ctx, row)),
                 requested_actions: None,
-            }),
+            })
+        }),
         methods,
         super_specs,
     }

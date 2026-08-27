@@ -220,6 +220,14 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     }
 
     fn action_signature(&mut self, signature: &mut crate::EffectActionSignature) {
+        for generic in &mut signature.generic_params {
+            generic.subject = self.ty(generic.subject);
+            for bound in &mut generic.bounds {
+                for arg in &mut bound.args {
+                    *arg = self.ty(*arg);
+                }
+            }
+        }
         for param in &mut signature.params {
             *param = self.ty(*param);
         }
@@ -391,6 +399,11 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for signature in facts.qualified_action_signatures.values_mut() {
         remapper.action_signature(signature);
+    }
+    for fact in facts.generic_instantiations.values_mut() {
+        for (_, ty) in &mut fact.type_bindings {
+            *ty = remapper.ty(*ty);
+        }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
     for fact in facts.resource_handles.values_mut() {

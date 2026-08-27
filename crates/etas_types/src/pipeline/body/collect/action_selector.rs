@@ -60,6 +60,7 @@ pub fn specialize_action_signature(
     let substitutions = effect_arg_selector_substitutions(ctx, &signature, args);
     if substitutions.is_empty() {
         return EffectActionSignature {
+            generic_params: signature.generic_params,
             params: signature.params,
             output: signature.output,
             effect_args: signature.effect_args,
@@ -69,6 +70,7 @@ pub fn specialize_action_signature(
         };
     }
     EffectActionSignature {
+        generic_params: signature.generic_params,
         params: signature
             .params
             .into_iter()
@@ -106,6 +108,7 @@ pub fn specialize_action_signature_from_generic_args(
     let substitutions = generic_arg_selector_substitutions(ctx, &signature, generic_args);
     if substitutions.is_empty() {
         return EffectActionSignature {
+            generic_params: signature.generic_params,
             params: signature.params,
             output: signature.output,
             effect_args: signature.effect_args,
@@ -115,6 +118,7 @@ pub fn specialize_action_signature_from_generic_args(
         };
     }
     EffectActionSignature {
+        generic_params: signature.generic_params,
         params: signature
             .params
             .into_iter()

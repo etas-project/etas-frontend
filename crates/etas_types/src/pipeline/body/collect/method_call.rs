@@ -66,7 +66,7 @@ pub fn collect_method_call(
             })
             .collect::<Vec<_>>();
         let output = expected.unwrap_or_else(|| {
-            specialized_callable_output_for_args(ctx, callee_ty, &type_generic_args, &arg_tys)
+            specialized_callable_output_for_args(ctx, callee_ty, &type_generic_args, &arg_tys, span)
                 .or_else(|| callable_output_for_expression(ctx, callee_ty))
                 .unwrap_or_else(|| ctx.fresh_type_var())
         });
@@ -76,6 +76,7 @@ pub fn collect_method_call(
             span,
         });
         ctx.emit(TypeConstraint::Callable {
+            call: None,
             callee: callee_ty,
             generic_params,
             generic_args: type_generic_args,
@@ -109,7 +110,7 @@ pub fn collect_method_call(
             }
         }));
         let output = expected.unwrap_or_else(|| {
-            specialized_method_output_for_args(ctx, &candidates, &type_generic_args, &arg_tys)
+            specialized_method_output_for_args(ctx, &candidates, &type_generic_args, &arg_tys, span)
                 .unwrap_or_else(|| ctx.fresh_type_var())
         });
         ctx.emit(TypeConstraint::MethodCall {

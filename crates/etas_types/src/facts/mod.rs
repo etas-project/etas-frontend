@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 
 pub use effects::{EffectActionArgKind, EffectActionSignature};
-pub use expressions::{CheckedIndexKind, CheckedSliceKind, TryExprTypeFact};
+pub use expressions::{
+    CheckedIndexKind, CheckedSliceKind, GenericInstantiationFact, TryExprTypeFact,
+};
 pub use signatures::{
     AgentSignature, CallableGenericParam, CallableSignature, FlowSignature, ItemSignature,
     ToolSignature, TopLevelLetSignature,
@@ -53,5 +55,6 @@ pub struct TypeFacts {
     pub index_facts: HashMap<HirExprId, CheckedIndexKind>,
     pub slice_facts: HashMap<HirExprId, CheckedSliceKind>,
     pub checked_index_errors: HashMap<HirExprId, TypeId>,
+    pub generic_instantiations: HashMap<HirExprId, GenericInstantiationFact>,
     pub try_facts: HashMap<HirExprId, TryExprTypeFact>,
 }

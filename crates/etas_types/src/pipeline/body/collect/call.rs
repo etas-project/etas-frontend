@@ -23,6 +23,7 @@ use crate::{
 
 pub fn collect_call(
     ctx: &mut BodyCollectContext<'_, '_>,
+    call: etas_hir::HirExprId,
     callee: etas_hir::HirExprId,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
@@ -39,12 +40,13 @@ pub fn collect_call(
         })
         .collect::<Vec<_>>();
     if let Some(output) =
-        collect_std_qualified_call(ctx, callee, &type_generic_args, args, span, expected)
+        collect_std_qualified_call(ctx, call, callee, &type_generic_args, args, span, expected)
     {
         return output;
     }
     if let Some(output) = collect_partially_resolved_method_call(
         ctx,
+        call,
         callee,
         &type_generic_args,
         args,
@@ -80,7 +82,7 @@ pub fn collect_call(
         } else {
             collect_expr(ctx, callee, None)
         };
-    let expected_inputs = callable_input_types(ctx, callee_ty, &type_generic_args);
+    let expected_inputs = callable_input_types(ctx, callee_ty, &type_generic_args, span);
     let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
     let output = expected.unwrap_or_else(|| {
         infer_imported_std_call_output_from_args(ctx, callee, &arg_tys)
@@ -93,6 +95,7 @@ pub fn collect_call(
         span,
     });
     ctx.emit(TypeConstraint::Callable {
+        call: Some(call),
         callee: callee_ty,
         generic_params,
         generic_args: type_generic_args,
@@ -105,6 +108,7 @@ pub fn collect_call(
 
 fn collect_std_qualified_call(
     ctx: &mut BodyCollectContext<'_, '_>,
+    call: etas_hir::HirExprId,
     callee: etas_hir::HirExprId,
     type_generic_args: &[TypeId],
     args: &[HirArg],
@@ -122,12 +126,18 @@ fn collect_std_qualified_call(
     } else {
         (raw_std_qualified_path_value_type(ctx, path)?, Vec::new())
     };
-    let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args);
+    let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args, span);
     let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
     let output = expected.unwrap_or_else(|| {
         infer_std_call_output_from_args(ctx, path, &arg_tys)
             .or_else(|| {
-                specialized_callable_output_for_args(ctx, callee_ty, type_generic_args, &arg_tys)
+                specialized_callable_output_for_args(
+                    ctx,
+                    callee_ty,
+                    type_generic_args,
+                    &arg_tys,
+                    span,
+                )
             })
             .or_else(|| callable_output_for_expression(ctx, callee_ty))
             .unwrap_or_else(|| ctx.fresh_type_var())
@@ -138,6 +148,7 @@ fn collect_std_qualified_call(
         span,
     });
     ctx.emit(TypeConstraint::Callable {
+        call: Some(call),
         callee: callee_ty,
         generic_params,
         generic_args: type_generic_args.to_vec(),
@@ -310,7 +321,17 @@ fn apply_alias_type_args(
         return target;
     }
     let substitutions = params.iter().cloned().zip(args.iter().copied()).collect();
-    crate::substitute_named_params(&mut ctx.ctx.interner, target, &substitutions)
+    match crate::substitute_named_params(&mut ctx.ctx.interner, target, &substitutions) {
+        Ok(ty) => ty,
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("callable alias substitution failed: {error}"),
+            });
+            ctx.primitive(crate::PrimitiveType::Never)
+        }
+    }
 }
 
 fn resolved_callee_symbol(path: &etas_hir::ResolvedPath) -> Option<etas_hir::SymbolId> {
@@ -329,6 +350,7 @@ fn resolved_callee_symbol(path: &etas_hir::ResolvedPath) -> Option<etas_hir::Sym
 
 fn collect_partially_resolved_method_call(
     ctx: &mut BodyCollectContext<'_, '_>,
+    call: etas_hir::HirExprId,
     callee: etas_hir::HirExprId,
     type_generic_args: &[TypeId],
     args: &[HirArg],
@@ -354,10 +376,10 @@ fn collect_partially_resolved_method_call(
         raw_std_member_value_type_for_symbol(ctx, receiver_symbol, method)
     };
     if let Some(callee_ty) = std_member {
-        let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args);
+        let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args, span);
         let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
         let output = expected.unwrap_or_else(|| {
-            specialized_callable_output_for_args(ctx, callee_ty, type_generic_args, &arg_tys)
+            specialized_callable_output_for_args(ctx, callee_ty, type_generic_args, &arg_tys, span)
                 .or_else(|| callable_output_for_expression(ctx, callee_ty))
                 .unwrap_or_else(|| ctx.fresh_type_var())
         });
@@ -367,6 +389,7 @@ fn collect_partially_resolved_method_call(
             span,
         });
         ctx.emit(TypeConstraint::Callable {
+            call: Some(call),
             callee: callee_ty,
             generic_params,
             generic_args: type_generic_args.to_vec(),
@@ -399,7 +422,7 @@ fn collect_partially_resolved_method_call(
         HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
     }));
     let output = expected.unwrap_or_else(|| {
-        specialized_method_output_for_args(ctx, &candidates, type_generic_args, &arg_tys)
+        specialized_method_output_for_args(ctx, &candidates, type_generic_args, &arg_tys, span)
             .unwrap_or_else(|| ctx.fresh_type_var())
     });
     ctx.emit(TypeConstraint::MethodCall {
@@ -418,6 +441,7 @@ pub fn specialized_callable_output_for_args(
     callee_ty: TypeId,
     explicit_generic_args: &[TypeId],
     arg_tys: &[TypeId],
+    span: etas_core::Span,
 ) -> Option<TypeId> {
     let Type::Function(flow) = ctx.ctx.interner.store().get(callee_ty).cloned()? else {
         return None;
@@ -441,9 +465,9 @@ pub fn specialized_callable_output_for_args(
         if !substitutions.is_empty() {
             input = input
                 .into_iter()
-                .map(|ty| crate::substitute_named_params(&mut ctx.ctx.interner, ty, &substitutions))
+                .map(|ty| substitute_named_or_report(ctx, ty, &substitutions, span))
                 .collect();
-            output = crate::substitute_named_params(&mut ctx.ctx.interner, output, &substitutions);
+            output = substitute_named_or_report(ctx, output, &substitutions, span);
         }
     }
 
@@ -462,12 +486,17 @@ pub fn specialized_method_output_for_args(
     candidates: &[crate::CallableCandidate],
     explicit_generic_args: &[TypeId],
     arg_tys: &[TypeId],
+    span: etas_core::Span,
 ) -> Option<TypeId> {
     let mut selected = None;
     for candidate in candidates {
-        let Some(output) =
-            specialized_callable_output_for_args(ctx, candidate.ty, explicit_generic_args, arg_tys)
-        else {
+        let Some(output) = specialized_callable_output_for_args(
+            ctx,
+            candidate.ty,
+            explicit_generic_args,
+            arg_tys,
+            span,
+        ) else {
             continue;
         };
         match selected {
@@ -937,6 +966,7 @@ fn callable_input_types(
     ctx: &mut BodyCollectContext<'_, '_>,
     callee_ty: TypeId,
     explicit_generic_args: &[TypeId],
+    span: etas_core::Span,
 ) -> Option<Vec<TypeId>> {
     let Type::Function(flow) = ctx.ctx.interner.store().get(callee_ty).cloned()? else {
         return None;
@@ -961,9 +991,28 @@ fn callable_input_types(
     Some(
         input
             .into_iter()
-            .map(|ty| crate::substitute_named_params(&mut ctx.ctx.interner, ty, &substitutions))
+            .map(|ty| substitute_named_or_report(ctx, ty, &substitutions, span))
             .collect(),
     )
+}
+
+fn substitute_named_or_report(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    ty: TypeId,
+    substitutions: &HashMap<String, TypeId>,
+    span: etas_core::Span,
+) -> TypeId {
+    match crate::substitute_named_params(&mut ctx.ctx.interner, ty, substitutions) {
+        Ok(ty) => ty,
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("callable type substitution failed: {error}"),
+            });
+            ctx.primitive(crate::PrimitiveType::Never)
+        }
+    }
 }
 
 fn collect_call_args(

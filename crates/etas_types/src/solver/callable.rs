@@ -234,8 +234,11 @@ fn unify_schematic_type(
                 key: rhs_key,
                 value: rhs_value,
             }),
-        )
-        | (
+        ) => {
+            unify_schematic_type(store, *lhs_key, *rhs_key, named_substitutions, unifier)
+                && unify_schematic_type(store, *lhs_value, *rhs_value, named_substitutions, unifier)
+        }
+        (
             Some(Type::Store {
                 key: lhs_key,
                 value: lhs_value,
@@ -758,16 +761,21 @@ fn infer_type_substitution(
         Some(Type::Map {
             key: expected_key,
             value: expected_value,
-        })
-        | Some(Type::Store {
-            key: expected_key,
-            value: expected_value,
         }) => {
             if let Some(Type::Map {
                 key: actual_key,
                 value: actual_value,
-            })
-            | Some(Type::Store {
+            }) = store.get(actual)
+            {
+                infer_type_substitution(store, *expected_key, *actual_key, substitutions);
+                infer_type_substitution(store, *expected_value, *actual_value, substitutions);
+            }
+        }
+        Some(Type::Store {
+            key: expected_key,
+            value: expected_value,
+        }) => {
+            if let Some(Type::Store {
                 key: actual_key,
                 value: actual_value,
             }) = store.get(actual)
@@ -817,12 +825,6 @@ fn is_assignable_to_schematic(
     expected: TypeId,
     substitutions: &mut HashMap<String, TypeId>,
 ) -> bool {
-    if let Some(Type::Named(name)) = store.get(actual)
-        && is_type_variable_name(&name.name)
-        && let Some(actual) = substitutions.get(&name.name).copied()
-    {
-        return is_assignable_to_schematic(store, actual, expected, substitutions);
-    }
     match store.get(expected) {
         Some(Type::Var(_)) => true,
         Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
@@ -911,16 +913,26 @@ fn is_assignable_to_schematic(
         Some(Type::Map {
             key: expected_key,
             value: expected_value,
-        })
-        | Some(Type::Store {
-            key: expected_key,
-            value: expected_value,
         }) => match store.get(actual) {
             Some(Type::Map {
                 key: actual_key,
                 value: actual_value,
-            })
-            | Some(Type::Store {
+            }) => {
+                is_assignable_to_schematic(store, *actual_key, *expected_key, substitutions)
+                    && is_assignable_to_schematic(
+                        store,
+                        *actual_value,
+                        *expected_value,
+                        substitutions,
+                    )
+            }
+            _ => false,
+        },
+        Some(Type::Store {
+            key: expected_key,
+            value: expected_value,
+        }) => match store.get(actual) {
+            Some(Type::Store {
                 key: actual_key,
                 value: actual_value,
             }) => {
@@ -1078,10 +1090,6 @@ fn is_schematic_assignable_to(
         Some(Type::Map {
             key: from_key,
             value: from_value,
-        })
-        | Some(Type::Store {
-            key: from_key,
-            value: from_value,
         }) => match store.get(to) {
             Some(Type::Map { key, value }) => {
                 is_schematic_assignable_to(
@@ -1098,6 +1106,12 @@ fn is_schematic_assignable_to(
                     solver_substitutions,
                 )
             }
+            _ => false,
+        },
+        Some(Type::Store {
+            key: from_key,
+            value: from_value,
+        }) => match store.get(to) {
             Some(Type::Store { key, value }) => {
                 is_schematic_assignable_to(
                     store,

@@ -1,7 +1,7 @@
 use etas_hir::{HirPat, ResolveResult, ResolvedPath};
 
 use crate::{
-    AssignabilityReason, CallableSignature, ConstraintOrigin, FieldType, RecordType,
+    AssignabilityReason, CallableSignature, ConstraintOrigin, FieldType, FlowType, RecordType,
     SymbolTypeFact, Type, TypeConstraint, TypeId,
     pipeline::{body::collect::literal::collect_literal, context::BodyCollectContext},
 };
@@ -52,7 +52,7 @@ pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirP
             }
         }
         HirPat::Record { fields, span, .. } => {
-            let expected_fields = record_fields(ctx, ty);
+            let expected_fields = record_fields(ctx, ty, span);
             let field_tys = fields
                 .iter()
                 .map(|field| FieldType {
@@ -220,21 +220,41 @@ fn collect_constructor_variant(
         return;
     };
 
-    ctx.emit(TypeConstraint::Assignable {
-        from: signature.output,
-        to: ty,
+    let constructor_name = variant_leaf_name(path).unwrap_or_else(|| "<constructor>".to_owned());
+    if args.len() != signature.params.len() {
+        ctx.validate(crate::ValidationRequest::Diagnostic {
+            code: etas_core::TypeDiagnosticCode::ArityMismatch,
+            span,
+            message: format!(
+                "variant pattern `{constructor_name}` expects {} argument(s), got {}",
+                signature.params.len(),
+                args.len()
+            ),
+        });
+    }
+
+    let arg_tys = args
+        .into_iter()
+        .map(|arg| {
+            let arg_ty = ctx.fresh_type_var();
+            collect_pattern(ctx, arg, arg_ty);
+            arg_ty
+        })
+        .collect::<Vec<_>>();
+    let callee = ctx.ctx.interner.intern(Type::Function(FlowType {
+        input: signature.params,
+        output: signature.output,
+        effects: None,
+    }));
+    ctx.emit(TypeConstraint::Callable {
+        call: None,
+        callee,
+        generic_params: signature.generic_params,
+        generic_args: Vec::new(),
+        args: arg_tys,
+        output: ty,
         origin: ConstraintOrigin { span },
-        reason: AssignabilityReason::Pattern,
     });
-    collect_variant_args(
-        ctx,
-        variant_leaf_name(path)
-            .as_deref()
-            .unwrap_or("<constructor>"),
-        args,
-        &signature.params,
-        span,
-    );
 }
 
 fn constructor_signature(
@@ -303,8 +323,23 @@ fn normalize_pattern_binding_type(ctx: &mut BodyCollectContext<'_, '_>, ty: Type
     }
 }
 
-fn record_fields(ctx: &mut BodyCollectContext<'_, '_>, ty: TypeId) -> Option<RecordType> {
-    let ty = crate::applied_representation(&mut ctx.ctx.interner, ty).unwrap_or(ty);
+fn record_fields(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    ty: TypeId,
+    span: etas_core::Span,
+) -> Option<RecordType> {
+    let ty = match crate::applied_representation(&mut ctx.ctx.interner, ty) {
+        Ok(Some(representation)) => representation,
+        Ok(None) => ty,
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("pattern representation substitution failed: {error}"),
+            });
+            return None;
+        }
+    };
     match ctx.ctx.interner.store().get(ty)? {
         Type::Record(record) => Some(record.clone()),
         _ => None,

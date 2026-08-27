@@ -194,9 +194,8 @@ pub fn lower_std_effect_action_signature(
         .map(lower_std_action_arg_kind)
         .collect::<Vec<_>>();
     let selector_len = effect_args.len();
-    let selector_param_names =
-        std_action_selector_param_names(&effect_args, &action.params, &action.output);
     EffectActionSignature {
+        generic_params: lower_std_generic_params(ctx, registry, &action.type_params),
         params: action
             .params
             .iter()
@@ -204,80 +203,9 @@ pub fn lower_std_effect_action_signature(
             .collect(),
         output: lower_std_type(ctx, registry, &action.output),
         effect_args,
-        selector_param_names,
+        selector_param_names: action.selector_param_names.clone(),
         selector_defaults: vec![None; selector_len],
         returns_never: matches!(action.output, StdType::Primitive(StdPrimitiveType::Never)),
-    }
-}
-
-fn std_action_selector_param_names(
-    effect_args: &[EffectActionArgKind],
-    params: &[StdType],
-    output: &StdType,
-) -> Vec<String> {
-    let mut vars = Vec::new();
-    for ty in params.iter().chain(std::iter::once(output)) {
-        collect_std_type_vars(ty, &mut vars);
-    }
-    let mut vars = vars.into_iter();
-    effect_args
-        .iter()
-        .map(|kind| match kind {
-            EffectActionArgKind::Type => vars.next().unwrap_or_default(),
-            EffectActionArgKind::MemoryPlace
-            | EffectActionArgKind::StaticResourcePath { .. }
-            | EffectActionArgKind::StringPattern => String::new(),
-        })
-        .collect()
-}
-
-fn collect_std_type_vars(ty: &StdType, out: &mut Vec<String>) {
-    match ty {
-        StdType::Var(name) => {
-            if !out.contains(name) {
-                out.push(name.clone());
-            }
-        }
-        StdType::Array(inner)
-        | StdType::List(inner)
-        | StdType::Set(inner)
-        | StdType::Range(inner)
-        | StdType::Slice(inner)
-        | StdType::Option(inner)
-        | StdType::Schema(inner)
-        | StdType::Trust { inner, .. }
-        | StdType::Message(inner)
-        | StdType::MemorySelection(inner)
-        | StdType::MemoryRegion(inner)
-        | StdType::ResourceHandleMemoryRegion(inner) => collect_std_type_vars(inner, out),
-        StdType::Map { key, value } | StdType::Store { key, value } => {
-            collect_std_type_vars(key, out);
-            collect_std_type_vars(value, out);
-        }
-        StdType::Result { ok, err } => {
-            collect_std_type_vars(ok, out);
-            collect_std_type_vars(err, out);
-        }
-        StdType::Tuple(elements) => {
-            for element in elements {
-                collect_std_type_vars(element, out);
-            }
-        }
-        StdType::NamedApplied { args, .. } => {
-            for arg in args {
-                collect_std_type_vars(arg, out);
-            }
-        }
-        StdType::Record(fields) => {
-            for field in fields {
-                collect_std_type_vars(&field.ty, out);
-            }
-        }
-        StdType::Primitive(_)
-        | StdType::Support(_)
-        | StdType::Prompt
-        | StdType::PromptPart
-        | StdType::Named(_) => {}
     }
 }
 

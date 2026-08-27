@@ -9,8 +9,13 @@ use crate::{
 
 pub fn lower_external_action_signature(
     ctx: &mut TypePipelineContext<'_>,
+    package: crate::ExternalPackageKey,
     action: &crate::ExternalActionSignatureInput,
-) -> EffectActionSignature {
+    binding_symbols: &std::collections::HashMap<
+        (crate::ExternalPackageKey, Vec<String>),
+        etas_hir::SymbolId,
+    >,
+) -> Option<EffectActionSignature> {
     validate_external_action_selector_metadata(ctx, action);
     let effect_args = action
         .effect_args
@@ -24,7 +29,15 @@ pub fn lower_external_action_signature(
             crate::ExternalActionArgKindInput::StringPattern => EffectActionArgKind::StringPattern,
         })
         .collect();
-    EffectActionSignature {
+    let generic_params = lower_external_callable_generic_params(
+        ctx,
+        package,
+        &action.path,
+        &action.generic_params,
+        binding_symbols,
+    )?;
+    Some(EffectActionSignature {
+        generic_params,
         params: action
             .params
             .iter()
@@ -39,7 +52,71 @@ pub fn lower_external_action_signature(
             .map(|arg| arg.as_ref().map(|arg| lower_external_effect_arg(ctx, arg)))
             .collect(),
         returns_never: action.returns_never,
+    })
+}
+
+pub fn lower_external_callable_generic_params(
+    ctx: &mut TypePipelineContext<'_>,
+    package: crate::ExternalPackageKey,
+    callable_path: &[String],
+    params: &[crate::ExternalCallableGenericParamInput],
+    binding_symbols: &std::collections::HashMap<
+        (crate::ExternalPackageKey, Vec<String>),
+        etas_hir::SymbolId,
+    >,
+) -> Option<Vec<crate::CallableGenericParam>> {
+    let unique_names = params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if unique_names.len() != params.len() {
+        invalid_external_metadata(
+            ctx,
+            format!(
+                "invalid external package metadata: callable `{}` contains duplicate generic parameter names",
+                callable_path.join(".")
+            ),
+        );
+        return None;
     }
+    let mut generic_params = Vec::with_capacity(params.len());
+    for param in params {
+        let mut bounds = Vec::with_capacity(param.bounds.len());
+        for bound in &param.bounds {
+            let spec = if bound.spec.first().is_some_and(|segment| segment == "std") {
+                crate::CheckedSpecRef::Std(bound.spec.clone())
+            } else if let Some(symbol) = binding_symbols.get(&(package, bound.spec.clone())) {
+                crate::CheckedSpecRef::Source(*symbol)
+            } else {
+                invalid_external_metadata(
+                    ctx,
+                    format!(
+                        "invalid external package metadata: callable `{}` generic `{}` references spec `{}` without a checked package binding",
+                        callable_path.join("."),
+                        param.name,
+                        bound.spec.join(".")
+                    ),
+                );
+                return None;
+            };
+            bounds.push(crate::CheckedSpecBound {
+                spec,
+                args: bound
+                    .args
+                    .iter()
+                    .map(|arg| lower_external_type(ctx, arg))
+                    .collect(),
+            });
+        }
+        generic_params.push(crate::CallableGenericParam {
+            name: param.name.clone(),
+            subject: ctx.interner.intern(Type::Named(NamedTypeRef {
+                name: param.name.clone(),
+            })),
+            bounds,
+        });
+    }
+    Some(generic_params)
 }
 
 fn validate_external_action_selector_metadata(
@@ -67,6 +144,33 @@ fn validate_external_action_selector_metadata(
                 action.effect_args.len()
             ),
         );
+    }
+    let generic_names = action
+        .generic_params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if generic_names.len() != action.generic_params.len() {
+        invalid_external_metadata(
+            ctx,
+            format!(
+                "invalid external package metadata: action `{}` contains duplicate generic parameter names",
+                action.path.join(".")
+            ),
+        );
+    }
+    for (kind, name) in action.effect_args.iter().zip(&action.selector_param_names) {
+        if matches!(kind, crate::ExternalActionArgKindInput::Type)
+            && (name.is_empty() || !generic_names.contains(name.as_str()))
+        {
+            invalid_external_metadata(
+                ctx,
+                format!(
+                    "invalid external package metadata: action `{}` type selector `{name}` does not name a declared generic parameter",
+                    action.path.join(".")
+                ),
+            );
+        }
     }
     for (index, (kind, default)) in action
         .effect_args

@@ -2,7 +2,8 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 use etas_hir::{HirActionSelectorParam, HirEffectActionDecl, HirImplItem, HirItem, SymbolKind};
 
 use crate::{
-    EffectActionArgKind, EffectActionSignature, EffectArgRef, PrimitiveType, SymbolTypeFact, Type,
+    CallableGenericParam, CheckedSpecBound, CheckedSpecRef, EffectActionArgKind,
+    EffectActionSignature, EffectArgRef, NamedTypeRef, PrimitiveType, SymbolTypeFact, Type,
     lower::type_ref::lower_type_ref,
     pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState},
 };
@@ -68,6 +69,31 @@ fn collect_action(
     let (effect_args, selector_param_names, selector_defaults) =
         action_effect_selector_signature(ctx, action);
     let signature = EffectActionSignature {
+        generic_params: action
+            .type_params
+            .iter()
+            .filter_map(|param| {
+                let name = ctx.hir.symbols.get(*param)?.name.clone();
+                let bounds = state
+                    .type_param_bounds
+                    .get(param)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|bound| CheckedSpecBound {
+                        spec: CheckedSpecRef::Source(bound.spec_symbol),
+                        args: bound.args,
+                    })
+                    .collect();
+                Some(CallableGenericParam {
+                    subject: ctx
+                        .interner
+                        .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+                    name,
+                    bounds,
+                })
+            })
+            .collect(),
         params,
         output,
         effect_args,

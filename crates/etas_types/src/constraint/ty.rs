@@ -42,6 +42,7 @@ pub enum TypeConstraint {
         reason: AssignabilityReason,
     },
     Callable {
+        call: Option<etas_hir::HirExprId>,
         callee: TypeId,
         generic_params: Vec<CallableGenericParam>,
         generic_args: Vec<TypeId>,

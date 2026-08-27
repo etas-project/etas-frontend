@@ -261,7 +261,17 @@ fn apply_alias_type(
         return target;
     }
     let substitutions = params.into_iter().zip(args).collect();
-    crate::substitute_named_params(&mut ctx.interner, target, &substitutions)
+    match crate::substitute_named_params(&mut ctx.interner, target, &substitutions) {
+        Ok(ty) => ty,
+        Err(error) => {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                format!("type alias substitution failed: {error}"),
+            ));
+            ctx.interner.primitive(PrimitiveType::Never)
+        }
+    }
 }
 
 fn apply_declared_type_args(

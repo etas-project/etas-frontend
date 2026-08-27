@@ -9,7 +9,7 @@ pub mod spec_solver;
 pub mod unification;
 
 pub use assignability::{Assignable, TypeRelation};
-pub use report::{GenericInstantiationFact, SolverFailure, SolverReport};
+pub use report::{SolverFailure, SolverReport};
 pub use unification::{Substitution, TypeUnifier, UnifyError};
 
 use std::collections::HashMap;
@@ -79,6 +79,7 @@ impl TypeSolver {
                     }
                 }
                 TypeConstraint::Callable {
+                    call,
                     callee,
                     generic_params,
                     generic_args,
@@ -96,6 +97,7 @@ impl TypeSolver {
                         input.store,
                         input.spec_facts,
                         CallableConstraintSolveInput {
+                            call: *call,
                             callee,
                             generic_params,
                             explicit_generic_args: generic_args,
@@ -145,6 +147,7 @@ impl TypeSolver {
                             input.store,
                             input.spec_facts,
                             CallableConstraintSolveInput {
+                                call: None,
                                 callee: candidate.ty,
                                 generic_params: &candidate.generic_params,
                                 explicit_generic_args: generic_args,
@@ -252,6 +255,7 @@ impl TypeSolver {
 }
 
 struct CallableConstraintSolveInput<'a> {
+    call: Option<etas_hir::HirExprId>,
     callee: TypeId,
     generic_params: &'a [crate::CallableGenericParam],
     explicit_generic_args: &'a [TypeId],
@@ -303,7 +307,7 @@ fn solve_callable_constraint(
                 .copied()
                 .or_else(|| {
                     (solved_subject != param.subject
-                        || !matches!(store.get(param.subject), Some(Type::Var(_))))
+                        && !matches!(store.get(solved_subject), Some(Type::Var(_))))
                     .then_some(solved_subject)
                 });
             let Some(ty) = ty else {
@@ -331,6 +335,41 @@ fn solve_callable_constraint(
                 &obligations,
                 &report.named_substitutions,
             ));
+        }
+    }
+    if report.failures.is_empty()
+        && let Some(call) = input.call
+    {
+        let type_bindings = generic_param_names
+            .iter()
+            .filter_map(|name| {
+                report
+                    .named_substitutions
+                    .get(name)
+                    .copied()
+                    .or_else(|| {
+                        input
+                            .generic_params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .and_then(|param| {
+                                let solved = resolve_substitution(
+                                    store,
+                                    &report.substitutions,
+                                    param.subject,
+                                );
+                                (solved != param.subject
+                                    && !matches!(store.get(solved), Some(Type::Var(_))))
+                                .then_some(solved)
+                            })
+                    })
+                    .map(|ty| (name.clone(), ty))
+            })
+            .collect::<Vec<_>>();
+        if !type_bindings.is_empty() {
+            report
+                .generic_instantiations
+                .insert(call, crate::GenericInstantiationFact { type_bindings });
         }
     }
     // Generic names belong to this call only. Type-variable substitutions carry

@@ -4,7 +4,8 @@ mod request;
 pub use output::TypeOutput;
 pub use request::{
     CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest, ExternalActionArgKindInput,
-    ExternalActionBindingInput, ExternalActionSignatureInput, ExternalAgentSignatureInput,
+    ExternalActionBindingInput, ExternalActionGenericParamInput, ExternalActionSignatureInput,
+    ExternalAgentSignatureInput, ExternalCallableGenericParamInput,
     ExternalCallableSpecSatisfactionInput, ExternalEffectArgInput, ExternalEffectRefInput,
     ExternalEffectRowInput, ExternalFlowSignatureInput, ExternalNamedSignatureInput,
     ExternalPackageKey, ExternalPublicMetadataInput, ExternalRecordFieldInput,

@@ -81,6 +81,7 @@ pub struct ExternalSymbolBindingInput {
 #[derive(Clone, Debug)]
 pub struct ExternalActionBindingInput {
     pub symbol: SymbolId,
+    pub package: ExternalPackageKey,
     pub path: Vec<String>,
     pub span: etas_core::Span,
 }
@@ -113,6 +114,7 @@ pub struct ExternalNamedSignatureInput {
 #[derive(Clone, Debug)]
 pub struct ExternalFlowSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub params: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: Option<ExternalEffectRowInput>,
@@ -121,6 +123,7 @@ pub struct ExternalFlowSignatureInput {
 #[derive(Clone, Debug)]
 pub struct ExternalAgentSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub input: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: Option<ExternalEffectRowInput>,
@@ -129,6 +132,7 @@ pub struct ExternalAgentSignatureInput {
 #[derive(Clone, Debug)]
 pub struct ExternalToolSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub input: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: Option<ExternalEffectRowInput>,
@@ -137,6 +141,7 @@ pub struct ExternalToolSignatureInput {
 #[derive(Clone, Debug)]
 pub struct ExternalActionSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ExternalActionGenericParamInput>,
     pub params: Vec<ExternalTypeInput>,
     pub effect_args: Vec<ExternalActionArgKindInput>,
     pub selector_param_names: Vec<String>,
@@ -144,6 +149,14 @@ pub struct ExternalActionSignatureInput {
     pub output: ExternalTypeInput,
     pub returns_never: bool,
 }
+
+#[derive(Clone, Debug)]
+pub struct ExternalCallableGenericParamInput {
+    pub name: String,
+    pub bounds: Vec<ExternalSpecBoundInput>,
+}
+
+pub type ExternalActionGenericParamInput = ExternalCallableGenericParamInput;
 
 #[derive(Clone, Debug)]
 pub struct ExternalSpecSignatureInput {

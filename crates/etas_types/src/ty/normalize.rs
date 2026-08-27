@@ -1,17 +1,20 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{
-    FieldType, FlowType, HandlerProducedEffects, HandlerType, MemoryPlaceType, PrimitiveType,
-    RecordType, ResourceHandleType, Type, TypeId, TypeInterner, TypeStore,
+    EffectArgRef, HandlerProducedEffects, RecordType, ResourceHandleType, Type, TypeId,
+    TypeInterner, TypeStore, TypeSubstitutionError, substitute_named_params,
+    substitute_named_params_in_store,
 };
 
-pub fn applied_representation(interner: &mut TypeInterner, ty: TypeId) -> Option<TypeId> {
-    let (representation, substitutions) = nominal_representation_parts(interner.store(), ty)?;
-    Some(substitute_named_params(
-        interner,
-        representation,
-        &substitutions,
-    ))
+pub fn applied_representation(
+    interner: &mut TypeInterner,
+    ty: TypeId,
+) -> Result<Option<TypeId>, TypeSubstitutionError> {
+    let Some((representation, substitutions)) = nominal_representation_parts(interner.store(), ty)
+    else {
+        return Ok(None);
+    };
+    substitute_named_params(interner, representation, &substitutions).map(Some)
 }
 
 pub fn nominal_representation_parts(
@@ -37,189 +40,107 @@ pub fn nominal_representation_parts(
     }
 }
 
-pub fn record_fields_with_applied_params(store: &TypeStore, ty: TypeId) -> Option<RecordType> {
-    match store.get(ty)?.clone() {
-        Type::Record(record) => Some(record),
-        Type::Nominal(_) | Type::Applied { .. } => {
-            let (representation, substitutions) = nominal_representation_parts(store, ty)?;
-            let mut record = record_fields_with_applied_params(store, representation)?;
-            for field in &mut record.fields {
-                field.ty = substitute_named_params_readonly(store, field.ty, &substitutions);
-            }
-            Some(record)
-        }
-        _ => None,
-    }
-}
-
-pub fn substitute_named_params(
-    interner: &mut TypeInterner,
-    ty: TypeId,
-    substitutions: &HashMap<String, TypeId>,
-) -> TypeId {
-    if substitutions.is_empty() {
-        return ty;
-    }
-    let Some(ty_data) = interner.store().get(ty).cloned() else {
-        return ty;
-    };
-    match ty_data {
-        Type::Named(name) => substitutions.get(&name.name).copied().unwrap_or(ty),
-        Type::Array(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Array(inner))
-        }
-        Type::List(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::List(inner))
-        }
-        Type::Map { key, value } => {
-            let key = substitute_named_params(interner, key, substitutions);
-            let value = substitute_named_params(interner, value, substitutions);
-            interner.intern(Type::Map { key, value })
-        }
-        Type::Set(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Set(inner))
-        }
-        Type::Range { index } => {
-            let index = substitute_named_params(interner, index, substitutions);
-            interner.intern(Type::Range { index })
-        }
-        Type::Slice(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Slice(inner))
-        }
-        Type::Option(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Option(inner))
-        }
-        Type::Result { ok, err } => {
-            let ok = substitute_named_params(interner, ok, substitutions);
-            let err = substitute_named_params(interner, err, substitutions);
-            interner.intern(Type::Result { ok, err })
-        }
-        Type::Record(record) => {
-            let fields = record
-                .fields
-                .into_iter()
-                .map(|field| FieldType {
-                    name: field.name,
-                    ty: substitute_named_params(interner, field.ty, substitutions),
-                })
-                .collect();
-            interner.intern(Type::Record(RecordType { fields }))
-        }
-        Type::Tuple(elements) => {
-            let elements = elements
-                .into_iter()
-                .map(|element| substitute_named_params(interner, element, substitutions))
-                .collect();
-            interner.intern(Type::Tuple(elements))
-        }
-        Type::Function(flow) => {
-            let input = flow
-                .input
-                .into_iter()
-                .map(|input| substitute_named_params(interner, input, substitutions))
-                .collect();
-            let output = substitute_named_params(interner, flow.output, substitutions);
-            interner.intern(Type::Function(FlowType {
-                input,
-                output,
-                effects: flow.effects,
-            }))
-        }
-        Type::Handler(handler) => {
-            let result = handler
-                .result
-                .map(|result| substitute_named_params(interner, result, substitutions));
-            interner.intern(Type::Handler(HandlerType {
-                handled: handler.handled,
-                produced: match handler.produced {
-                    HandlerProducedEffects::Infer => HandlerProducedEffects::Infer,
-                    HandlerProducedEffects::Explicit(row) => HandlerProducedEffects::Explicit(row),
-                },
-                result,
-            }))
-        }
-        Type::Applied { constructor, args } => {
-            let args = args
-                .into_iter()
-                .map(|arg| substitute_named_params(interner, arg, substitutions))
-                .collect();
-            interner.intern(Type::Applied { constructor, args })
-        }
-        Type::Refined { base, predicate } => {
-            let base = substitute_named_params(interner, base, substitutions);
-            interner.intern(Type::Refined { base, predicate })
-        }
-        Type::Trust { wrapper, inner } => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Trust { wrapper, inner })
-        }
-        Type::Schema(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Schema(inner))
-        }
-        Type::Message(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::Message(inner))
-        }
-        Type::MemorySelection(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::MemorySelection(inner))
-        }
-        Type::Store { key, value } => {
-            let key = substitute_named_params(interner, key, substitutions);
-            let value = substitute_named_params(interner, value, substitutions);
-            interner.intern(Type::Store { key, value })
-        }
-        Type::MemoryRegion(inner) => {
-            let inner = substitute_named_params(interner, inner, substitutions);
-            interner.intern(Type::MemoryRegion(inner))
-        }
-        Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
-            let schema = substitute_named_params(interner, schema, substitutions);
-            interner.intern(Type::ResourceHandle(ResourceHandleType::MemoryRegion {
-                schema,
-            }))
-        }
-        Type::ResourceHandle(ResourceHandleType::ExternalTool { signature }) => {
-            let signature = substitute_named_params(interner, signature, substitutions);
-            interner.intern(Type::ResourceHandle(ResourceHandleType::ExternalTool {
-                signature,
-            }))
-        }
-        Type::ResourceHandle(ResourceHandleType::Other { name, args }) => {
-            let args = args
-                .into_iter()
-                .map(|arg| substitute_named_params(interner, arg, substitutions))
-                .collect();
-            interner.intern(Type::ResourceHandle(ResourceHandleType::Other {
-                name,
-                args,
-            }))
-        }
-        Type::Primitive(PrimitiveType::Never)
-        | Type::Primitive(_)
-        | Type::IntegerLiteral { .. }
-        | Type::Var(_)
-        | Type::Enum(_)
-        | Type::Nominal(_)
-        | Type::Prompt
-        | Type::PromptPart
-        | Type::MemoryPlace(MemoryPlaceType { .. }) => ty,
-    }
-}
-
-fn substitute_named_params_readonly(
+pub fn record_fields_with_applied_params(
     store: &TypeStore,
     ty: TypeId,
-    substitutions: &HashMap<String, TypeId>,
-) -> TypeId {
-    match store.get(ty) {
-        Some(Type::Named(name)) => substitutions.get(&name.name).copied().unwrap_or(ty),
-        _ => ty,
+) -> Result<Option<RecordType>, TypeSubstitutionError> {
+    let Some(ty_data) = store.get(ty).cloned() else {
+        return Err(TypeSubstitutionError::MissingType(ty));
+    };
+    match ty_data {
+        Type::Record(record) => Ok(Some(record)),
+        Type::Nominal(_) | Type::Applied { .. } => {
+            let Some((representation, substitutions)) = nominal_representation_parts(store, ty)
+            else {
+                return Ok(None);
+            };
+            let Some(mut record) = record_fields_with_applied_params(store, representation)? else {
+                return Ok(None);
+            };
+            for field in &mut record.fields {
+                field.ty = substitute_named_params_in_store(store, field.ty, &substitutions)?;
+            }
+            Ok(Some(record))
+        }
+        _ => Ok(None),
     }
+}
+
+pub fn type_contains_named_param(
+    store: &TypeStore,
+    ty: TypeId,
+    name: &str,
+) -> Result<bool, TypeSubstitutionError> {
+    let mut pending = vec![ty];
+    let mut visited = HashSet::new();
+    while let Some(ty) = pending.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        match store
+            .get(ty)
+            .ok_or(TypeSubstitutionError::MissingType(ty))?
+        {
+            Type::Named(named) if named.name == name => return Ok(true),
+            Type::Array(inner)
+            | Type::List(inner)
+            | Type::Set(inner)
+            | Type::Range { index: inner }
+            | Type::Slice(inner)
+            | Type::Option(inner)
+            | Type::Schema(inner)
+            | Type::Message(inner)
+            | Type::MemorySelection(inner)
+            | Type::MemoryRegion(inner)
+            | Type::Refined { base: inner, .. }
+            | Type::Trust { inner, .. } => pending.push(*inner),
+            Type::Map { key, value }
+            | Type::Store { key, value }
+            | Type::Result {
+                ok: key,
+                err: value,
+            } => {
+                pending.push(*key);
+                pending.push(*value);
+            }
+            Type::Record(record) => pending.extend(record.fields.iter().map(|field| field.ty)),
+            Type::Tuple(elements) | Type::Applied { args: elements, .. } => {
+                pending.extend(elements.iter().copied());
+            }
+            Type::Function(flow) => {
+                pending.extend(flow.input.iter().copied());
+                pending.push(flow.output);
+                if let Some(row) = &flow.effects {
+                    push_effect_row_types(row, &mut pending);
+                }
+            }
+            Type::Handler(handler) => {
+                push_effect_row_types(&handler.handled, &mut pending);
+                if let HandlerProducedEffects::Explicit(row) = &handler.produced {
+                    push_effect_row_types(row, &mut pending);
+                }
+                pending.extend(handler.result);
+            }
+            Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
+                pending.push(*schema);
+            }
+            Type::ResourceHandle(ResourceHandleType::ExternalTool { signature }) => {
+                pending.push(*signature);
+            }
+            Type::ResourceHandle(ResourceHandleType::Other { args, .. }) => {
+                pending.extend(args.iter().copied());
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+fn push_effect_row_types(row: &super::EffectRowRef, pending: &mut Vec<TypeId>) {
+    pending.extend(row.effects.iter().flat_map(|effect| {
+        effect.args.iter().filter_map(|arg| match arg {
+            EffectArgRef::Type(ty) => Some(*ty),
+            _ => None,
+        })
+    }));
 }

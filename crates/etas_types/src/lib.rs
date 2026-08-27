@@ -9,7 +9,8 @@ pub mod ty;
 
 pub use api::{
     CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest, ExternalActionArgKindInput,
-    ExternalActionBindingInput, ExternalActionSignatureInput, ExternalAgentSignatureInput,
+    ExternalActionBindingInput, ExternalActionGenericParamInput, ExternalActionSignatureInput,
+    ExternalAgentSignatureInput, ExternalCallableGenericParamInput,
     ExternalCallableSpecSatisfactionInput, ExternalEffectArgInput, ExternalEffectRefInput,
     ExternalEffectRowInput, ExternalFlowSignatureInput, ExternalNamedSignatureInput,
     ExternalPackageKey, ExternalPublicMetadataInput, ExternalRecordFieldInput,
@@ -29,23 +30,24 @@ pub use facts::{
     CheckedIndexKind, CheckedSliceKind, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
     EffectActionArgKind, EffectActionSignature, ExternalCallableSpecSatisfactionFact,
     ExternalTraceSpecConformanceFact, ExternalTraceSpecConformanceTarget, FlowSignature,
-    ItemSignature, KnownStdTypes, ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact,
-    SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
-    SymbolTypeFact, ToolSignature, TopLevelLetSignature, TraceSpecConformanceFact,
-    TraceSpecConformanceTarget, TryExprTypeFact, TypeFacts, TypeParamBoundFact,
-    TypeSpecSatisfactionFact,
+    GenericInstantiationFact, ItemSignature, KnownStdTypes, ResourceHandleFact, SpecFacts,
+    SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
+    SpecSuperBoundFact, SymbolTypeFact, ToolSignature, TopLevelLetSignature,
+    TraceSpecConformanceFact, TraceSpecConformanceTarget, TryExprTypeFact, TypeFacts,
+    TypeParamBoundFact, TypeSpecSatisfactionFact,
 };
 pub use solver::{
-    Assignable, GenericInstantiationFact, SolverFailure, SolverReport, Substitution, TypeRelation,
-    TypeSolver, TypeUnifier, UnifyError,
+    Assignable, SolverFailure, SolverReport, Substitution, TypeRelation, TypeSolver, TypeUnifier,
+    UnifyError,
 };
 pub use ty::{
     EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef, FieldType, FlowType,
     HandlerProducedEffects, HandlerType, MemoryPlaceType, NamedTypeRef, NominalTypeRef,
     PrimitiveType, RecordType, RefinementId, ResourceHandleType, TrustWrapper, Type,
-    TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore, TypeVarId,
-    applied_representation, nominal_representation_parts, record_fields_with_applied_params,
-    substitute_named_params,
+    TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore, TypeSubstitutionEngine,
+    TypeSubstitutionError, TypeVarId, applied_representation, nominal_representation_parts,
+    record_fields_with_applied_params, substitute_effect_row_params, substitute_named_params,
+    substitute_named_params_in_store, substitute_type_params, type_contains_named_param,
 };
 
 pub fn check_program(hir: &etas_hir::HirProgram) -> TypeOutput {

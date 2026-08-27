@@ -2,6 +2,8 @@ use crate::{EffectArgRef, TypeId};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EffectActionSignature {
+    #[serde(default)]
+    pub generic_params: Vec<crate::CallableGenericParam>,
     pub params: Vec<TypeId>,
     pub output: TypeId,
     pub effect_args: Vec<EffectActionArgKind>,

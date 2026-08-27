@@ -1,6 +1,11 @@
 use crate::TypeId;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GenericInstantiationFact {
+    pub type_bindings: Vec<(String, TypeId)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CheckedIndexKind {
     Sequence {
         base: TypeId,

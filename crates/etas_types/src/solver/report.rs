@@ -1,18 +1,16 @@
 use std::collections::HashMap;
 
 use etas_core::{Span, TypeDiagnosticCode};
-use etas_hir::{HirExprId, SymbolId};
+use etas_hir::HirExprId;
 
-use crate::{
-    CheckedIndexKind, CheckedSliceKind, TypeId, TypeVarId, solver::unification::Substitution,
-};
+use crate::{CheckedIndexKind, CheckedSliceKind, TypeId, solver::unification::Substitution};
 
 #[derive(Clone, Debug, Default)]
 pub struct SolverReport {
     pub substitutions: Substitution,
     pub named_substitutions: HashMap<String, TypeId>,
     pub inferred_expr_types: HashMap<HirExprId, TypeId>,
-    pub generic_instantiations: Vec<GenericInstantiationFact>,
+    pub generic_instantiations: HashMap<HirExprId, crate::GenericInstantiationFact>,
     pub index_facts: HashMap<HirExprId, CheckedIndexKind>,
     pub slice_facts: HashMap<HirExprId, CheckedSliceKind>,
     pub checked_index_errors: HashMap<HirExprId, TypeId>,
@@ -59,14 +57,6 @@ impl SolverReport {
     pub fn failures(&self) -> impl Iterator<Item = &SolverFailure> {
         self.failures.iter()
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct GenericInstantiationFact {
-    pub callable: SymbolId,
-    pub type_args: Vec<TypeId>,
-    pub effect_args: Vec<String>,
-    pub substitutions: Vec<(TypeVarId, TypeId)>,
 }
 
 #[derive(Clone, Debug)]

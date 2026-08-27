@@ -46,6 +46,10 @@ pub fn merge_outputs(
             .facts
             .checked_index_errors
             .extend(body.facts.checked_index_errors);
+        signatures
+            .facts
+            .generic_instantiations
+            .extend(body.facts.generic_instantiations);
         signatures.facts.try_facts.extend(body.facts.try_facts);
     }
     signatures.store = interner.into_store();

@@ -275,13 +275,14 @@ pub fn std_declared_field_type(
     ctx: &mut BodyCollectContext<'_, '_>,
     base: TypeId,
     field: &str,
+    span: etas_core::Span,
 ) -> Option<TypeId> {
     match ctx.ctx.interner.store().get(base).cloned()? {
-        Type::Message(inner) => std_declared_message_field_type(ctx, inner, field),
+        Type::Message(inner) => std_declared_message_field_type(ctx, inner, field, span),
         Type::Applied { constructor, args }
             if is_std_message_constructor(ctx, constructor) && args.len() == 1 =>
         {
-            std_declared_message_field_type(ctx, args[0], field)
+            std_declared_message_field_type(ctx, args[0], field, span)
         }
         _ => None,
     }
@@ -291,6 +292,7 @@ fn std_declared_message_field_type(
     ctx: &mut BodyCollectContext<'_, '_>,
     inner: TypeId,
     field: &str,
+    span: etas_core::Span,
 ) -> Option<TypeId> {
     let registry = ctx.ctx.std_registry.clone();
     let symbol = registry.lookup_qualified(&["std", "agent", "message", "Message"])?;
@@ -307,11 +309,17 @@ fn std_declared_message_field_type(
         .clone();
     let lowered = lower_std_type(ctx.ctx, &registry, &field_ty);
     let substitutions = HashMap::from([("T".to_owned(), inner)]);
-    Some(substitute_named_params(
-        &mut ctx.ctx.interner,
-        lowered,
-        &substitutions,
-    ))
+    match substitute_named_params(&mut ctx.ctx.interner, lowered, &substitutions) {
+        Ok(ty) => Some(ty),
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("standard field type substitution failed: {error}"),
+            });
+            Some(ctx.primitive(crate::PrimitiveType::Never))
+        }
+    }
 }
 
 fn is_std_message_constructor(

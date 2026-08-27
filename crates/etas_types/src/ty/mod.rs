@@ -4,6 +4,7 @@ mod normalize;
 mod primitive;
 mod row;
 mod scheme;
+mod substitution;
 
 use std::collections::HashMap;
 
@@ -11,11 +12,15 @@ pub use display::display_type;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
 pub use normalize::{
     applied_representation, nominal_representation_parts, record_fields_with_applied_params,
-    substitute_named_params,
+    type_contains_named_param,
 };
 pub use primitive::PrimitiveType;
 pub use row::{EffectArgRef, EffectRef, EffectRowRef};
 pub use scheme::{TypeConstructorId, TypeScheme, TypeVarId};
+pub use substitution::{
+    TypeSubstitutionEngine, TypeSubstitutionError, substitute_effect_row_params,
+    substitute_named_params, substitute_named_params_in_store, substitute_type_params,
+};
 
 #[derive(
     Clone,

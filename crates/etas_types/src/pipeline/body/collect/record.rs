@@ -19,7 +19,7 @@ pub fn collect_record(
         .as_ref()
         .and_then(|path| record_constructor_type(ctx, path, &record.generic_args, record.span));
     let field_hint_target = constructor_target.or(expected);
-    let target_fields = field_hint_target.and_then(|ty| record_fields(ctx, ty));
+    let target_fields = field_hint_target.and_then(|ty| record_fields(ctx, ty, record.span));
     let mut seen = HashSet::new();
     let mut fields = Vec::new();
     for field in &record.fields {
@@ -152,7 +152,17 @@ fn apply_alias_type_args(
         return target;
     }
     let substitutions = params.into_iter().zip(args).collect();
-    crate::substitute_named_params(&mut ctx.ctx.interner, target, &substitutions)
+    match crate::substitute_named_params(&mut ctx.ctx.interner, target, &substitutions) {
+        Ok(ty) => ty,
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("record alias substitution failed: {error}"),
+            });
+            ctx.primitive(crate::PrimitiveType::Never)
+        }
+    }
 }
 
 fn apply_constructor_type_args(
@@ -193,8 +203,23 @@ fn field_span(field: &HirFieldInit) -> etas_core::Span {
     }
 }
 
-fn record_fields(ctx: &mut BodyCollectContext<'_, '_>, ty: TypeId) -> Option<RecordType> {
-    let ty = crate::applied_representation(&mut ctx.ctx.interner, ty).unwrap_or(ty);
+fn record_fields(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    ty: TypeId,
+    span: etas_core::Span,
+) -> Option<RecordType> {
+    let ty = match crate::applied_representation(&mut ctx.ctx.interner, ty) {
+        Ok(Some(representation)) => representation,
+        Ok(None) => ty,
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("record representation substitution failed: {error}"),
+            });
+            return None;
+        }
+    };
     match ctx.ctx.interner.store().get(ty)? {
         Type::Record(record) => Some(record.clone()),
         _ => None,

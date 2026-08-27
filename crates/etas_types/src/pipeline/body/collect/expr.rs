@@ -188,7 +188,7 @@ pub fn collect_expr(
             generic_args,
             args,
             span,
-        } => collect_call(ctx, callee, &generic_args, &args, span, expected),
+        } => collect_call(ctx, expr, callee, &generic_args, &args, span, expected),
         HirExpr::Field { base, field, span } => {
             if let Some(ty) = std_member_value_type(ctx, base, &field) {
                 ty
@@ -196,7 +196,7 @@ pub fn collect_expr(
                 let base_ty = collect_expr(ctx, base, None);
                 let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
                 record_field_memory_place(ctx, expr, base, &field);
-                if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field) {
+                if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field, span) {
                     ctx.emit(TypeConstraint::Assignable {
                         from: field_ty,
                         to: output,
@@ -318,7 +318,7 @@ pub fn collect_expr(
             generic_args,
             args,
             span,
-        } => collect_perform(ctx, &action, &generic_args, &args, span, expected),
+        } => collect_perform(ctx, expr, &action, &generic_args, &args, span, expected),
         HirExpr::MethodCall {
             receiver,
             method,
@@ -562,6 +562,7 @@ fn collect_stage_composition(
         let stage_ty = collect_expr(ctx, stage.expr, None);
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
+            call: None,
             callee: stage_ty,
             generic_params: Vec::new(),
             generic_args: Vec::new(),
@@ -602,6 +603,7 @@ fn collect_pipeline(
         let stage_ty = collect_expr(ctx, stage.expr, None);
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
+            call: None,
             callee: stage_ty,
             generic_params: Vec::new(),
             generic_args: Vec::new(),
@@ -647,7 +649,8 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
             }
             if let Some(mut current) = symbol_value_type(ctx, symbol) {
                 for member in &partial.remaining {
-                    if let Some(field_ty) = std_declared_field_type(ctx, current, member) {
+                    if let Some(field_ty) = std_declared_field_type(ctx, current, member, path.span)
+                    {
                         current = field_ty;
                         continue;
                     }

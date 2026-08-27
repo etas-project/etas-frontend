@@ -1,7 +1,7 @@
 use etas_hir::{HirArg, HirGenericArg, ResolveResult, ResolvedActionRef};
 
 use crate::{
-    AssignabilityReason, ConstraintOrigin, EffectActionSignature, PrimitiveType, SymbolTypeFact,
+    ConstraintOrigin, EffectActionSignature, FlowType, PrimitiveType, SymbolTypeFact, Type,
     TypeConstraint, TypeId,
     pipeline::{
         body::collect::{
@@ -17,6 +17,7 @@ use crate::{
 
 pub fn collect_perform(
     ctx: &mut BodyCollectContext<'_, '_>,
+    expr: etas_hir::HirExprId,
     action: &ResolvedActionRef,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
@@ -64,30 +65,37 @@ pub fn collect_perform(
         });
     }
 
+    let mut arg_types = Vec::with_capacity(args.len());
     for (index, arg) in args.iter().enumerate() {
         let expected_arg = signature.params.get(index).copied();
         let actual = collect_arg(ctx, arg, expected_arg);
-        if let Some(expected_arg) = expected_arg {
-            ctx.emit(TypeConstraint::Assignable {
-                from: actual,
-                to: expected_arg,
-                origin: ConstraintOrigin {
-                    span: arg_span(arg, span),
-                },
-                reason: AssignabilityReason::Argument,
-            });
-        }
+        arg_types.push(actual);
     }
 
-    if let Some(expected) = expected {
-        ctx.emit(TypeConstraint::Assignable {
-            from: signature.output,
-            to: expected,
-            origin: ConstraintOrigin { span },
-            reason: AssignabilityReason::Other,
-        });
-    }
-    signature.output
+    let output = expected.unwrap_or(signature.output);
+    let callee = ctx.ctx.interner.intern(Type::Function(FlowType {
+        input: signature.params.clone(),
+        output: signature.output,
+        effects: None,
+    }));
+    let explicit_generic_args = generic_args
+        .iter()
+        .map(|arg| match arg {
+            HirGenericArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty),
+            HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default();
+    ctx.emit(TypeConstraint::Callable {
+        call: Some(expr),
+        callee,
+        generic_params: signature.generic_params,
+        generic_args: explicit_generic_args,
+        args: arg_types,
+        output,
+        origin: ConstraintOrigin { span },
+    });
+    output
 }
 
 fn action_signature(
@@ -125,12 +133,5 @@ fn collect_arg(
     match arg {
         HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
         HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
-    }
-}
-
-fn arg_span(arg: &HirArg, fallback: etas_core::Span) -> etas_core::Span {
-    match arg {
-        HirArg::Positional(_) => fallback,
-        HirArg::Named { span, .. } => *span,
     }
 }

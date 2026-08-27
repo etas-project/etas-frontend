@@ -3258,6 +3258,7 @@ fn check_program_types_extended_store_methods() {
         None,
         r#"
 flow main(store: Store<string, string>) -> unit {
+  let paper = store.get("paper-1");
   let has_paper = store.contains("paper-1");
   let paper_keys = store.keys();
   store.insert("paper-1", "draft");
@@ -3286,6 +3287,13 @@ flow main(store: Store<string, string>) -> unit {
     assert!(matches!(
         output.store.get(contains_ty),
         Some(Type::Primitive(PrimitiveType::Bool))
+    ));
+
+    let get_ty = expr_ty("get").expect("get should type-check");
+    assert!(matches!(
+        output.store.get(get_ty),
+        Some(Type::Option(inner))
+            if matches!(output.store.get(*inner), Some(Type::Primitive(PrimitiveType::String)))
     ));
 
     let keys_ty = expr_ty("keys").expect("keys should type-check");
@@ -4996,6 +5004,57 @@ flow main() -> Prompt {
     let output = check_program(&hir);
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_materializes_generic_call_instantiation_fact() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow identity<T>(value: T) -> T {
+  return value;
+}
+
+flow main(value: i32) -> i32 {
+  return identity(value);
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let call = hir
+        .exprs
+        .iter()
+        .find_map(|(expr, data)| match data {
+            etas_hir::HirExpr::Call { callee, .. }
+                if matches!(
+                    hir.exprs.get(*callee),
+                    Some(etas_hir::HirExpr::Path(path))
+                        if path.segments.last().is_some_and(|segment| segment.name == "identity")
+                ) =>
+            {
+                Some(expr)
+            }
+            _ => None,
+        })
+        .expect("identity call should be lowered");
+    let fact = output
+        .facts
+        .generic_instantiations
+        .get(&call)
+        .expect("generic call should have a checked instantiation fact");
+    let (_, ty) = fact
+        .type_bindings
+        .iter()
+        .find(|(name, _)| name == "T")
+        .expect("T binding should be recorded");
+    assert!(matches!(
+        output.store.get(*ty),
+        Some(Type::Primitive(PrimitiveType::I32))
+    ));
 }
 
 #[test]

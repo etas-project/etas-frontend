@@ -15,13 +15,24 @@ pub fn solve_field_access(
     origin: ConstraintOrigin,
 ) -> SolverReport {
     let mut report = SolverReport::default();
-    let Some(record) = record_fields(store, base) else {
-        report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::UnknownField,
-            span: origin.span,
-            message: format!("cannot access field `{field}` on this value"),
-        });
-        return report;
+    let record = match record_fields(store, base) {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::UnknownField,
+                span: origin.span,
+                message: format!("cannot access field `{field}` on this value"),
+            });
+            return report;
+        }
+        Err(error) => {
+            report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span: origin.span,
+                message: format!("record representation substitution failed: {error}"),
+            });
+            return report;
+        }
     };
     let Some(found) = record
         .fields
@@ -48,9 +59,15 @@ pub fn solve_field_access(
     report
 }
 
-fn record_fields(store: &TypeStore, ty: TypeId) -> Option<crate::RecordType> {
-    match store.get(ty)? {
-        Type::Record(record) => Some(record.clone()),
+fn record_fields(
+    store: &TypeStore,
+    ty: TypeId,
+) -> Result<Option<crate::RecordType>, crate::TypeSubstitutionError> {
+    let Some(ty_data) = store.get(ty) else {
+        return Err(crate::TypeSubstitutionError::MissingType(ty));
+    };
+    match ty_data {
+        Type::Record(record) => Ok(Some(record.clone())),
         Type::MemoryRegion(schema) => record_fields(store, *schema),
         Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
             record_fields(store, *schema)
@@ -58,6 +75,6 @@ fn record_fields(store: &TypeStore, ty: TypeId) -> Option<crate::RecordType> {
         Type::Nominal(_) | Type::Applied { .. } => {
             crate::record_fields_with_applied_params(store, ty)
         }
-        _ => None,
+        _ => Ok(None),
     }
 }
