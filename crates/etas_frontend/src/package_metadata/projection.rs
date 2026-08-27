@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use etas_effects::{
     ActionRef, Effect, EffectCoverage, EffectRegistry, EffectRow, EffectSet, TraceSpecClauseFact,
@@ -674,12 +674,18 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &EffectActionSignature,
     ) -> Result<MetadataActionSignature, PackageMetadataError> {
+        let generic_names = signature
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         Ok(MetadataActionSignature {
             path,
+            generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             params: signature
                 .params
                 .iter()
-                .map(|ty| self.metadata_type(*ty))
+                .map(|ty| self.metadata_type_in_generic_scope(*ty, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
             effect_args: signature
                 .effect_args
@@ -692,14 +698,60 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .iter()
                 .map(|arg| {
                     arg.as_ref()
-                        .map(|arg| metadata_effect_arg(arg, &self.checked.type_store))
+                        .map(|arg| self.metadata_effect_arg_in_generic_scope(arg, &generic_names))
                         .transpose()
                 })
                 .collect::<Result<Vec<_>, _>>()?,
-            output: Some(self.metadata_type(signature.output)?),
+            output: Some(self.metadata_type_in_generic_scope(signature.output, &generic_names)?),
             returns_never: signature.returns_never,
             visibility,
         })
+    }
+
+    fn checked_spec_bound_metadata(
+        &self,
+        bound: &etas_types::CheckedSpecBound,
+        generic_names: &BTreeSet<String>,
+    ) -> Result<MetadataSpecBound, PackageMetadataError> {
+        let spec = match &bound.spec {
+            etas_types::CheckedSpecRef::Source(symbol) => self
+                .symbol_canonical_path(*symbol)
+                .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                    reason: "action generic spec bound has no canonical metadata path".to_owned(),
+                })?,
+            etas_types::CheckedSpecRef::Std(path) => path.clone(),
+        };
+        Ok(MetadataSpecBound {
+            spec,
+            args: bound
+                .args
+                .iter()
+                .map(|arg| self.metadata_type_in_generic_scope(*arg, generic_names))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    fn callable_generic_params_metadata(
+        &self,
+        params: &[etas_types::CallableGenericParam],
+    ) -> Result<Vec<etas_package_metadata::GenericParam>, PackageMetadataError> {
+        let generic_names = params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
+        params
+            .iter()
+            .map(|param| {
+                Ok(etas_package_metadata::GenericParam {
+                    name: param.name.clone(),
+                    bounds: param
+                        .bounds
+                        .iter()
+                        .map(|bound| self.checked_spec_bound_metadata(bound, &generic_names))
+                        .collect::<Result<Vec<_>, _>>()?,
+                })
+            })
+            .collect()
     }
 
     fn spec_signatures(&self) -> Result<Vec<MetadataSpecSignature>, PackageMetadataError> {
@@ -985,19 +1037,25 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &etas_types::CallableSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let generic_names = signature
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
             path,
+            generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: Vec::new(),
             input: signature
                 .params
                 .iter()
-                .map(|ty| self.metadata_type(*ty))
+                .map(|ty| self.metadata_type_in_generic_scope(*ty, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
-            output: Some(self.metadata_type(signature.output)?),
+            output: Some(self.metadata_type_in_generic_scope(signature.output, &generic_names)?),
             effects: signature
                 .effects
                 .as_ref()
-                .map(|row| metadata_effect_row_ref(row, &self.checked.type_store))
+                .map(|row| self.metadata_effect_row_in_generic_scope(row, &generic_names))
                 .transpose()?,
             visibility,
         })
@@ -1022,6 +1080,41 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn metadata_type(&self, ty: TypeId) -> Result<MetadataType, PackageMetadataError> {
         let mut metadata = metadata_type(ty, &self.checked.type_store)?;
         self.canonicalize_metadata_type(&mut metadata)?;
+        Ok(metadata)
+    }
+
+    fn metadata_type_in_generic_scope(
+        &self,
+        ty: TypeId,
+        generic_names: &BTreeSet<String>,
+    ) -> Result<MetadataType, PackageMetadataError> {
+        let mut metadata = metadata_type(ty, &self.checked.type_store)?;
+        normalize_generic_type(&mut metadata, generic_names);
+        self.canonicalize_metadata_type(&mut metadata)?;
+        Ok(metadata)
+    }
+
+    fn metadata_effect_row_in_generic_scope(
+        &self,
+        row: &EffectRowRef,
+        generic_names: &BTreeSet<String>,
+    ) -> Result<MetadataEffectRow, PackageMetadataError> {
+        let mut metadata = metadata_effect_row_ref(row, &self.checked.type_store)?;
+        normalize_generic_effect_row(&mut metadata, generic_names);
+        self.canonicalize_effect_row_types(&mut metadata)?;
+        Ok(metadata)
+    }
+
+    fn metadata_effect_arg_in_generic_scope(
+        &self,
+        arg: &EffectArgRef,
+        generic_names: &BTreeSet<String>,
+    ) -> Result<MetadataEffectArg, PackageMetadataError> {
+        let mut metadata = metadata_effect_arg(arg, &self.checked.type_store)?;
+        if let Some(ty) = &mut metadata.ty {
+            normalize_generic_type(ty, generic_names);
+            self.canonicalize_metadata_type(ty)?;
+        }
         Ok(metadata)
     }
 
@@ -1105,16 +1198,25 @@ impl<'a> ProjectMetadataProjection<'a> {
             let Some(path) = self.item_path(*item) else {
                 continue;
             };
+            let generic_names = self
+                .checked
+                .types
+                .item_signatures
+                .get(item)
+                .map(callable_generic_names)
+                .unwrap_or_default();
             let public_effects = match self.public_contract_for_item(*item) {
-                Some(contract) => self.effect_row_metadata(&contract.public_row)?,
-                None => self.effect_row_metadata(&summary.escaping_effects)?,
+                Some(contract) => self.effect_row_metadata(&contract.public_row, &generic_names)?,
+                None => self.effect_row_metadata(&summary.escaping_effects, &generic_names)?,
             };
             summaries.push(MetadataEffectSummary {
                 item: path,
                 public_effects,
-                requested_actions: self.effect_row_metadata(&summary.requested_actions)?,
-                handled_requested_actions: self.handled_requested_action_row(summary)?,
-                latent_flows: self.latent_flow_summaries(*item)?,
+                requested_actions: self
+                    .effect_row_metadata(&summary.requested_actions, &generic_names)?,
+                handled_requested_actions: self
+                    .handled_requested_action_row(summary, &generic_names)?,
+                latent_flows: self.latent_flow_summaries(*item, &generic_names)?,
             });
         }
         summaries.sort_by(|left, right| left.item.cmp(&right.item));
@@ -1265,6 +1367,7 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn handled_requested_action_row(
         &self,
         summary: &etas_effects::EffectSummary,
+        generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
         let coverage = EffectCoverage {
             registry: &self.effect_registry,
@@ -1282,7 +1385,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 coverage.row_covers(&summary.default_actions, &requested)
                     || coverage.row_covers(&summary.handled_actions, &requested)
             })
-            .map(|effect| self.summary_effect_ref_metadata(effect))
+            .map(|effect| self.summary_effect_ref_metadata(effect, generic_names))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(MetadataEffectRow { effects })
     }
@@ -1301,6 +1404,7 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn latent_flow_summaries(
         &self,
         item: HirItemId,
+        generic_names: &BTreeSet<String>,
     ) -> Result<Vec<MetadataLatentFlowSummary>, PackageMetadataError> {
         self.checked
             .effects
@@ -1312,12 +1416,13 @@ impl<'a> ProjectMetadataProjection<'a> {
                     let declared_bound = latent
                         .declared_bound
                         .as_ref()
-                        .map(|row| self.effect_row_metadata(row))
+                        .map(|row| self.effect_row_metadata(row, generic_names))
                         .transpose()?
                         .unwrap_or_default();
                     Ok(MetadataLatentFlowSummary {
                         declared_bound,
-                        inferred_effects: self.effect_row_metadata(&latent.inferred)?,
+                        inferred_effects: self
+                            .effect_row_metadata(&latent.inferred, generic_names)?,
                     })
                 })
             })
@@ -1327,12 +1432,13 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn effect_row_metadata(
         &self,
         row: &EffectRow,
+        generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
         Ok(MetadataEffectRow {
             effects: row
                 .effects
                 .iter()
-                .map(|effect| self.summary_effect_ref_metadata(effect))
+                .map(|effect| self.summary_effect_ref_metadata(effect, generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
@@ -1340,6 +1446,7 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn summary_effect_ref_metadata(
         &self,
         effect: &Effect,
+        generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRef, PackageMetadataError> {
         Ok(match effect {
             Effect::Tag(tag) => MetadataEffectRef {
@@ -1355,7 +1462,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 args: action
                     .args
                     .iter()
-                    .map(|arg| metadata_effect_arg(arg, &self.checked.type_store))
+                    .map(|arg| self.metadata_effect_arg_in_generic_scope(arg, generic_names))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Effect::Applied { tag, args } => MetadataEffectRef {
@@ -1365,7 +1472,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|arg| {
                         Ok(MetadataEffectArg {
                             kind: MetadataEffectArgKind::Type,
-                            ty: Some(self.metadata_type(*arg)?),
+                            ty: Some(self.metadata_type_in_generic_scope(*arg, generic_names)?),
                             path: Vec::new(),
                             value: String::new(),
                         })
@@ -1379,7 +1486,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 path: vec!["Error".to_owned()],
                 args: vec![MetadataEffectArg {
                     kind: MetadataEffectArgKind::Type,
-                    ty: Some(self.metadata_type(*ty)?),
+                    ty: Some(self.metadata_type_in_generic_scope(*ty, generic_names)?),
                     path: Vec::new(),
                     value: String::new(),
                 }],
@@ -1498,19 +1605,25 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &FlowSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let generic_names = signature
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
             path,
+            generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: self.callable_param_names(item)?,
             input: signature
                 .params
                 .iter()
-                .map(|ty| self.metadata_type(*ty))
+                .map(|ty| self.metadata_type_in_generic_scope(*ty, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
-            output: Some(self.metadata_type(signature.output)?),
+            output: Some(self.metadata_type_in_generic_scope(signature.output, &generic_names)?),
             effects: signature
                 .effects
                 .as_ref()
-                .map(|row| metadata_effect_row_ref(row, &self.checked.type_store))
+                .map(|row| self.metadata_effect_row_in_generic_scope(row, &generic_names))
                 .transpose()?,
             visibility,
         })
@@ -1523,19 +1636,25 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &AgentSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let generic_names = signature
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
             path,
+            generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: self.callable_param_names(item)?,
             input: signature
                 .params
                 .iter()
-                .map(|ty| self.metadata_type(*ty))
+                .map(|ty| self.metadata_type_in_generic_scope(*ty, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
-            output: Some(self.metadata_type(signature.output)?),
+            output: Some(self.metadata_type_in_generic_scope(signature.output, &generic_names)?),
             effects: signature
                 .effects
                 .as_ref()
-                .map(|row| metadata_effect_row_ref(row, &self.checked.type_store))
+                .map(|row| self.metadata_effect_row_in_generic_scope(row, &generic_names))
                 .transpose()?,
             visibility,
         })
@@ -1548,19 +1667,25 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &ToolSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let generic_names = signature
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
             path,
+            generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: self.callable_param_names(item)?,
             input: signature
                 .params
                 .iter()
-                .map(|ty| self.metadata_type(*ty))
+                .map(|ty| self.metadata_type_in_generic_scope(*ty, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
-            output: Some(self.metadata_type(signature.output)?),
+            output: Some(self.metadata_type_in_generic_scope(signature.output, &generic_names)?),
             effects: signature
                 .effects
                 .as_ref()
-                .map(|row| metadata_effect_row_ref(row, &self.checked.type_store))
+                .map(|row| self.metadata_effect_row_in_generic_scope(row, &generic_names))
                 .transpose()?,
             visibility,
         })
@@ -2273,6 +2398,52 @@ fn metadata_effect_arg(
             path: path.clone(),
             value: String::new(),
         }),
+    }
+}
+
+fn callable_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
+    match signature {
+        ItemSignature::Flow(signature)
+        | ItemSignature::Agent(signature)
+        | ItemSignature::Tool(signature) => signature
+            .generic_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect(),
+        ItemSignature::TopLevelLet(_) => BTreeSet::new(),
+    }
+}
+
+fn normalize_generic_effect_row(row: &mut MetadataEffectRow, names: &BTreeSet<String>) {
+    for effect in &mut row.effects {
+        for arg in &mut effect.args {
+            if let Some(ty) = &mut arg.ty {
+                normalize_generic_type(ty, names);
+            }
+        }
+    }
+}
+
+fn normalize_generic_type(ty: &mut MetadataType, names: &BTreeSet<String>) {
+    if matches!(ty.kind, MetadataTypeKind::Named)
+        && let [name] = ty.path.as_slice()
+        && names.contains(name)
+    {
+        ty.kind = MetadataTypeKind::Var;
+        ty.name = name.clone();
+        ty.path.clear();
+    }
+    for child in &mut ty.children {
+        normalize_generic_type(child, names);
+    }
+    for field in &mut ty.fields {
+        normalize_generic_type(&mut field.ty, names);
+    }
+    if let Some(effects) = &mut ty.effects {
+        normalize_generic_effect_row(effects, names);
+    }
+    if let Some(effects) = &mut ty.produced_effects {
+        normalize_generic_effect_row(effects, names);
     }
 }
 

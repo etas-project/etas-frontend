@@ -18,7 +18,8 @@ use etas_frontend::{
     ImportGraph, ImportTarget, MemoryArtifactReuse, ModuleImportExportSummary, ModuleIndex,
     ModulePath, ModuleTopoOrder, ParsedSource, ProjectChangeSet, ProjectCompileOptions,
     ProjectEntry, ProjectEntryFact, ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
-    ProjectExternalActionSignatureInput, ProjectExternalCallableSpecSatisfactionInput,
+    ProjectExternalActionGenericParamInput, ProjectExternalActionSignatureInput,
+    ProjectExternalCallableGenericParamInput, ProjectExternalCallableSpecSatisfactionInput,
     ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
     ProjectExternalEffectSummaryInput, ProjectExternalExportInput,
     ProjectExternalFlowSignatureInput, ProjectExternalLatentFlowSummaryInput,
@@ -109,6 +110,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             values: Vec::new(),
             enums: Vec::new(),
             flows: vec![ProjectExternalFlowSignatureInput {
+                generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "math".to_owned(), "add".to_owned()],
                 param_names: vec!["left".to_owned(), "right".to_owned()],
                 params: vec![
@@ -4450,6 +4452,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             values: Vec::new(),
             enums: Vec::new(),
             flows: vec![ProjectExternalFlowSignatureInput {
+                generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
                 param_names: Vec::new(),
                 params: Vec::new(),
@@ -4650,6 +4653,7 @@ fn frontend_runtime_source_requirements_ignore_provider_bound_external_tool() {
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
             package: ExternalPackageId(0),
             tools: vec![ProjectExternalToolSignatureInput {
+                generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "host".to_owned(), "tool".to_owned()],
                 param_names: Vec::new(),
                 input: Vec::new(),
@@ -5063,6 +5067,7 @@ fn empty_external_public_metadata(
 
 fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
     ProjectExternalFlowSignatureInput {
+        generic_params: Vec::new(),
         path: path.iter().map(|segment| (*segment).to_owned()).collect(),
         param_names: Vec::new(),
         params: Vec::new(),
@@ -7718,6 +7723,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
         ..ProjectEnvironmentInput::default()
     };
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
         param_names: Vec::new(),
         params: Vec::new(),
@@ -7732,6 +7738,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             kind: ProjectExternalSpecKindInput::Callable,
             param_names: Vec::new(),
             callable: Some(ProjectExternalFlowSignatureInput {
+                generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "api".to_owned(), "Pure".to_owned()],
                 param_names: Vec::new(),
                 params: Vec::new(),
@@ -7877,6 +7884,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         ..ProjectEnvironmentInput::default()
     };
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
         param_names: Vec::new(),
         params: Vec::new(),
@@ -7976,6 +7984,7 @@ fn frontend_check_project_rejects_effectful_external_flow_without_summary_metada
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "fetch".to_owned()],
             param_names: Vec::new(),
             params: Vec::new(),
@@ -8051,6 +8060,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
                 "Transport".to_owned(),
                 "request".to_owned(),
             ],
+            generic_params: Vec::new(),
             params: vec![
                 ProjectExternalTypeInput::Primitive("string".to_owned()),
                 ProjectExternalTypeInput::Primitive("string".to_owned()),
@@ -8068,6 +8078,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "request".to_owned()],
             param_names: vec!["method".to_owned(), "host".to_owned()],
             params: vec![
@@ -8171,6 +8182,157 @@ flow main() -> unit {
 }
 
 #[test]
+fn frontend_check_project_specializes_external_summary_generic_actions() {
+    let frontend = Frontend;
+    let mut environment = external_environment();
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(2),
+            name: "generic_request".to_owned(),
+            visibility: etas_hir::Visibility::Public,
+        });
+    environment.external_public_metadata[0]
+        .effects
+        .push(ProjectExternalNamedSignatureInput {
+            path: vec!["dep".to_owned(), "math".to_owned(), "Storage".to_owned()],
+            visibility: "public".to_owned(),
+            ty: None,
+        });
+    environment.external_public_metadata[0]
+        .actions
+        .push(ProjectExternalActionSignatureInput {
+            path: vec![
+                "dep".to_owned(),
+                "math".to_owned(),
+                "Storage".to_owned(),
+                "read".to_owned(),
+            ],
+            generic_params: vec![ProjectExternalActionGenericParamInput {
+                name: "R".to_owned(),
+                bounds: Vec::new(),
+            }],
+            params: Vec::new(),
+            effect_args: vec![ProjectExternalActionArgKindInput::Type],
+            selector_param_names: vec!["R".to_owned()],
+            selector_defaults: vec![None],
+            output: ProjectExternalTypeInput::Primitive("unit".to_owned()),
+            returns_never: false,
+            visibility: "public".to_owned(),
+        });
+    environment.external_public_metadata[0]
+        .flows
+        .push(ProjectExternalFlowSignatureInput {
+            generic_params: vec![ProjectExternalCallableGenericParamInput {
+                name: "R".to_owned(),
+                bounds: Vec::new(),
+            }],
+            path: vec![
+                "dep".to_owned(),
+                "math".to_owned(),
+                "generic_request".to_owned(),
+            ],
+            param_names: Vec::new(),
+            params: Vec::new(),
+            output: ProjectExternalTypeInput::Primitive("unit".to_owned()),
+            effects: None,
+            visibility: "public".to_owned(),
+        });
+    environment.external_public_metadata[0]
+        .effect_summaries
+        .push(ProjectExternalEffectSummaryInput {
+            item: vec![
+                "dep".to_owned(),
+                "math".to_owned(),
+                "generic_request".to_owned(),
+            ],
+            public_effects: ProjectExternalEffectRowInput::default(),
+            requested_actions: external_effect_row(vec![external_effect(
+                &["dep", "math", "Storage", "read"],
+                vec![ProjectExternalEffectArgInput::Type(
+                    ProjectExternalTypeInput::Var("R".to_owned()),
+                )],
+            )]),
+            handled_requested_actions: ProjectExternalEffectRowInput::default(),
+            latent_flows: Vec::new(),
+        });
+
+    let output = frontend.check_project(ProjectInput {
+        project_root: std::path::PathBuf::from("/workspace/external-generic-effect"),
+        source_root: None,
+        options: Default::default(),
+        environment,
+        sources: vec![SourceInput {
+            id: etas_core::SourceId(59_001),
+            path: Some(std::path::PathBuf::from("src/app/main.es")),
+            text: r#"module app.main;
+
+import dep.math.generic_request;
+
+flow main() -> unit {
+    generic_request<string>();
+    return;
+}
+"#
+            .to_owned(),
+            kind: SourceKind::SourceProjectFile,
+        }],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["app".to_owned(), "main".to_owned()],
+            }),
+            flow: "main".to_owned(),
+        },
+    });
+
+    assert!(output.checked.is_some(), "{:#?}", output.diagnostics);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error),
+        "{:#?}",
+        output.diagnostics
+    );
+    let checked = output.checked.as_ref().expect("checked output");
+    let effects = output.effects.as_ref().expect("effect output");
+    let main = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow) => checked
+                .hir
+                .symbols
+                .get(flow.symbol)
+                .is_some_and(|symbol| symbol.name == "main")
+                .then_some(id),
+            _ => None,
+        })
+        .expect("main flow should exist");
+    let summary = effects
+        .facts
+        .item_effects
+        .get(&main)
+        .expect("main effect summary should exist");
+    assert!(
+        summary.requested_actions.effects.iter().any(|effect| {
+            let Effect::AppliedAction(action) = effect else {
+                return false;
+            };
+            let [etas_types::EffectArgRef::Type(ty)] = action.args.as_slice() else {
+                return false;
+            };
+            matches!(
+                checked.type_store.get(*ty),
+                Some(Type::Primitive(PrimitiveType::String))
+            )
+        }),
+        "{summary:#?}"
+    );
+}
+
+#[test]
 fn frontend_check_project_replays_external_action_selector_defaults_from_metadata() {
     let frontend = Frontend;
     let mut environment = external_environment();
@@ -8197,6 +8359,10 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
                 "Transport".to_owned(),
                 "request".to_owned(),
             ],
+            generic_params: vec![ProjectExternalActionGenericParamInput {
+                name: "resource".to_owned(),
+                bounds: Vec::new(),
+            }],
             params: Vec::new(),
             effect_args: vec![
                 ProjectExternalActionArgKindInput::StringPattern,
@@ -8218,6 +8384,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            generic_params: Vec::new(),
             path: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -8345,6 +8512,7 @@ fn frontend_check_project_propagates_external_function_parameter_effects() {
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "run".to_owned()],
             param_names: vec!["callback".to_owned()],
             params: vec![ProjectExternalTypeInput::Function {
@@ -8452,6 +8620,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            generic_params: Vec::new(),
             path: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -8570,6 +8739,7 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "run_latent".to_owned()],
             param_names: Vec::new(),
             params: Vec::new(),
@@ -8693,6 +8863,7 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
         }),
     }];
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
         param_names: Vec::new(),
         params: Vec::new(),
@@ -8821,6 +8992,7 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
         }),
     }];
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
         param_names: Vec::new(),
         params: Vec::new(),
@@ -8947,6 +9119,7 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
         ty: None,
     }];
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
         param_names: Vec::new(),
         params: Vec::new(),
@@ -9009,6 +9182,111 @@ flow main() -> unit ![Error<HttpError>] {
         }),
         "{:?}",
         output.diagnostics
+    );
+}
+
+#[test]
+fn frontend_package_metadata_preserves_generic_callable_effect_identity() {
+    let output = Frontend.check_project(ProjectInput {
+        project_root: std::path::PathBuf::from("/workspace/generic-storage"),
+        source_root: None,
+        options: Default::default(),
+        environment: ProjectEnvironmentInput::default(),
+        sources: vec![SourceInput {
+            id: etas_core::SourceId(54_001),
+            path: Some(std::path::PathBuf::from("src/storage/api.es")),
+            text: r#"module storage.api;
+
+public type R = string;
+
+public effect Storage {
+    action read<R>() -> unit;
+}
+
+public flow read<R>() -> unit ![Storage.read<R>] {
+    perform Storage.read<R>();
+    return;
+}
+
+flow main() -> unit {
+    return;
+}
+"#
+            .to_owned(),
+            kind: SourceKind::SourceProjectFile,
+        }],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["storage".to_owned(), "api".to_owned()],
+            }),
+            flow: "main".to_owned(),
+        },
+    });
+
+    assert!(output.checked.is_some(), "{:#?}", output.diagnostics);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error),
+        "{:#?}",
+        output.diagnostics
+    );
+    let artifact = build_package_metadata_artifact_from_checked(
+        PackageMetadataBuildInput {
+            package_id: "generic-storage".to_owned(),
+            package_version: "0.1.0".to_owned(),
+            package_edition: "2026".to_owned(),
+            compiler_version: "test".to_owned(),
+            source_payload_hash: "blake3:test-source".to_owned(),
+            manifest_hash: "blake3:test-manifest".to_owned(),
+            dependency_lock_hash: "blake3:test-lock".to_owned(),
+            bins: Vec::new(),
+            dependencies: Vec::new(),
+            tool_bindings: Vec::new(),
+        },
+        output.checked.as_ref().expect("checked project"),
+    )
+    .expect("package metadata should emit");
+    let (_, metadata) =
+        package_metadata_from_artifact(std::path::Path::new("package.etasmeta"), &artifact.bytes)
+            .expect("package metadata should decode");
+    let flow = metadata
+        .public_metadata
+        .flows
+        .iter()
+        .find(|signature| signature.path == ["storage", "api", "read"])
+        .expect("generic flow signature should be published");
+    assert_eq!(
+        flow.generic_params
+            .iter()
+            .map(|param| param.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["R"]
+    );
+    let summary = metadata
+        .public_metadata
+        .effect_summaries
+        .iter()
+        .find(|summary| summary.item == flow.path)
+        .expect("generic flow effect summary should be published");
+    assert!(
+        summary.requested_actions.effects.iter().any(|effect| {
+            effect.path == ["storage", "api", "Storage", "read"]
+                && matches!(
+                    effect.args.as_slice(),
+                    [etas_package_metadata::EffectArg {
+                        kind: etas_package_metadata::EffectArgKind::Type,
+                        ty: Some(etas_package_metadata::Type {
+                            kind: etas_package_metadata::TypeKind::Var,
+                            name,
+                            ..
+                        }),
+                        ..
+                    }] if name == "R"
+                )
+        }),
+        "{summary:#?}"
     );
 }
 
@@ -10192,6 +10470,7 @@ fn frontend_check_project_rejects_malformed_external_action_selector_metadata() 
                 "Transport".to_owned(),
                 "request".to_owned(),
             ],
+            generic_params: Vec::new(),
             params: vec![ProjectExternalTypeInput::Primitive("string".to_owned())],
             effect_args: vec![ProjectExternalActionArgKindInput::StringPattern],
             selector_param_names: vec!["host".to_owned()],

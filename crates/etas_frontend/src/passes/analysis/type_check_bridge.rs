@@ -45,7 +45,7 @@ fn external_signature_input(
             .map(convert_external_metadata)
             .collect(),
         symbol_bindings: Vec::new(),
-        action_bindings: external_effect_action_bindings(hir, diagnostics),
+        action_bindings: Vec::new(),
     };
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
@@ -118,6 +118,9 @@ fn external_signature_input(
         }
     }
 
+    input.action_bindings =
+        external_effect_action_bindings(hir, &input.symbol_bindings, diagnostics);
+
     input
 }
 
@@ -133,6 +136,7 @@ fn external_item_path(module_path: &ModulePath, name: &str) -> Vec<String> {
 
 fn external_effect_action_bindings(
     hir: &etas_hir::HirProgram,
+    symbol_bindings: &[etas_types::ExternalSymbolBindingInput],
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<etas_types::ExternalActionBindingInput> {
     let action_refs = hir
@@ -159,8 +163,28 @@ fn external_effect_action_bindings(
             ));
             continue;
         };
+        let etas_hir::ResolveResult::Resolved(effect_symbol) = action.effect.path.resolution else {
+            diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                action.span,
+                "external effect action requires a resolved effect import",
+            ));
+            continue;
+        };
+        let Some(effect_binding) = symbol_bindings
+            .iter()
+            .find(|binding| binding.symbol == effect_symbol)
+        else {
+            diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                action.span,
+                "external effect action requires package-aware import facts",
+            ));
+            continue;
+        };
         bindings.push(etas_types::ExternalActionBindingInput {
             symbol,
+            package: effect_binding.package,
             path: action_path,
             span: action.span,
         });
@@ -394,6 +418,7 @@ fn convert_external_flow_signature(
 ) -> etas_types::ExternalFlowSignatureInput {
     etas_types::ExternalFlowSignatureInput {
         path: signature.path.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         params: signature.params.iter().map(convert_external_type).collect(),
         output: convert_external_type(&signature.output),
         effects: signature.effects.as_ref().map(convert_external_effect_row),
@@ -405,6 +430,7 @@ fn convert_external_agent_signature(
 ) -> etas_types::ExternalAgentSignatureInput {
     etas_types::ExternalAgentSignatureInput {
         path: signature.path.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         input: signature.input.iter().map(convert_external_type).collect(),
         output: convert_external_type(&signature.output),
         effects: signature.effects.as_ref().map(convert_external_effect_row),
@@ -416,6 +442,7 @@ fn convert_external_tool_signature(
 ) -> etas_types::ExternalToolSignatureInput {
     etas_types::ExternalToolSignatureInput {
         path: signature.path.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         input: signature.input.iter().map(convert_external_type).collect(),
         output: convert_external_type(&signature.output),
         effects: signature.effects.as_ref().map(convert_external_effect_row),
@@ -427,6 +454,7 @@ fn convert_external_action_signature(
 ) -> etas_types::ExternalActionSignatureInput {
     etas_types::ExternalActionSignatureInput {
         path: signature.path.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         params: signature.params.iter().map(convert_external_type).collect(),
         effect_args: signature
             .effect_args
@@ -442,6 +470,25 @@ fn convert_external_action_signature(
         output: convert_external_type(&signature.output),
         returns_never: signature.returns_never,
     }
+}
+
+fn convert_external_generic_params(
+    params: &[crate::ProjectExternalCallableGenericParamInput],
+) -> Vec<etas_types::ExternalCallableGenericParamInput> {
+    params
+        .iter()
+        .map(|param| etas_types::ExternalCallableGenericParamInput {
+            name: param.name.clone(),
+            bounds: param
+                .bounds
+                .iter()
+                .map(|bound| etas_types::ExternalSpecBoundInput {
+                    spec: bound.spec.clone(),
+                    args: bound.args.iter().map(convert_external_type).collect(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 fn convert_external_action_arg_kind(

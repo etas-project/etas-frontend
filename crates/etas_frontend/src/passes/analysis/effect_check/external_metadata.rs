@@ -227,6 +227,7 @@ pub(super) fn external_effect_summaries(
         });
         let import_root = package.map(|package| package.import_root.clone());
         let param_names_by_item = external_param_names_by_item(metadata);
+        let generic_param_names_by_item = external_generic_param_names_by_item(metadata);
         for summary in &metadata.effect_summaries {
             let Some(summary_span) = anchors.item_span(metadata.package, &summary.item) else {
                 continue;
@@ -237,6 +238,7 @@ pub(super) fn external_effect_summaries(
                 package_identity.clone(),
                 import_root.clone(),
                 &param_names_by_item,
+                &generic_param_names_by_item,
                 types,
             ) {
                 Ok(summary) => summaries.push(etas_effects::AnchoredExternalMetadata {
@@ -302,6 +304,10 @@ pub(super) fn external_effect_summaries(
                     import_root: import_root.clone(),
                     item: item.clone(),
                     param_names: param_names_by_item.get(item).cloned().unwrap_or_default(),
+                    generic_param_names: generic_param_names_by_item
+                        .get(item)
+                        .cloned()
+                        .unwrap_or_default(),
                     public_effects,
                     requested_actions: Default::default(),
                     handled_requested_actions: Default::default(),
@@ -318,6 +324,7 @@ fn external_effect_summary_metadata(
     package: Option<String>,
     import_root: Option<String>,
     param_names_by_item: &HashMap<Vec<String>, Vec<String>>,
+    generic_param_names_by_item: &HashMap<Vec<String>, Vec<String>>,
     types: &TypeOutput,
 ) -> Result<etas_effects::ExternalEffectSummaryMetadata, String> {
     let latent_flows = summary
@@ -335,6 +342,10 @@ fn external_effect_summary_metadata(
         import_root,
         item: summary.item.clone(),
         param_names: param_names_by_item
+            .get(&summary.item)
+            .cloned()
+            .unwrap_or_default(),
+        generic_param_names: generic_param_names_by_item
             .get(&summary.item)
             .cloned()
             .unwrap_or_default(),
@@ -498,5 +509,44 @@ fn external_param_names_by_item(
                 .iter()
                 .map(|signature| (signature.path.clone(), signature.param_names.clone())),
         )
+        .collect()
+}
+
+fn external_generic_param_names_by_item(
+    metadata: &ProjectExternalPublicMetadataInput,
+) -> HashMap<Vec<String>, Vec<String>> {
+    metadata
+        .flows
+        .iter()
+        .map(|signature| {
+            (
+                signature.path.clone(),
+                signature
+                    .generic_params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+            )
+        })
+        .chain(metadata.agents.iter().map(|signature| {
+            (
+                signature.path.clone(),
+                signature
+                    .generic_params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+            )
+        }))
+        .chain(metadata.tools.iter().map(|signature| {
+            (
+                signature.path.clone(),
+                signature
+                    .generic_params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+            )
+        }))
         .collect()
 }

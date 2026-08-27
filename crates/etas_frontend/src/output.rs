@@ -749,6 +749,7 @@ pub enum ProjectExternalTraceSpecConformanceTargetInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectExternalFlowSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
     pub params: Vec<ProjectExternalTypeInput>,
     pub output: ProjectExternalTypeInput,
@@ -759,6 +760,7 @@ pub struct ProjectExternalFlowSignatureInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectExternalAgentSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
     pub input: Vec<ProjectExternalTypeInput>,
     pub output: ProjectExternalTypeInput,
@@ -769,6 +771,7 @@ pub struct ProjectExternalAgentSignatureInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectExternalToolSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
     pub input: Vec<ProjectExternalTypeInput>,
     pub output: ProjectExternalTypeInput,
@@ -785,6 +788,7 @@ pub struct ProjectExternalToolSchemaInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectExternalActionSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ProjectExternalActionGenericParamInput>,
     pub params: Vec<ProjectExternalTypeInput>,
     pub effect_args: Vec<ProjectExternalActionArgKindInput>,
     pub selector_param_names: Vec<String>,
@@ -793,6 +797,14 @@ pub struct ProjectExternalActionSignatureInput {
     pub returns_never: bool,
     pub visibility: String,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectExternalCallableGenericParamInput {
+    pub name: String,
+    pub bounds: Vec<ProjectExternalSpecBoundInput>,
+}
+
+pub type ProjectExternalActionGenericParamInput = ProjectExternalCallableGenericParamInput;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectExternalActionArgKindInput {
