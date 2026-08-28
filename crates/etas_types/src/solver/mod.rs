@@ -83,6 +83,7 @@ impl TypeSolver {
                     callee,
                     generic_params,
                     generic_args,
+                    arg_exprs,
                     args,
                     output,
                     origin,
@@ -101,6 +102,7 @@ impl TypeSolver {
                             callee,
                             generic_params,
                             explicit_generic_args: generic_args,
+                            arg_exprs,
                             args: &args,
                             output,
                             origin: *origin,
@@ -151,6 +153,7 @@ impl TypeSolver {
                                 callee: candidate.ty,
                                 generic_params: &candidate.generic_params,
                                 explicit_generic_args: generic_args,
+                                arg_exprs: &[],
                                 args: &args,
                                 output,
                                 origin: *origin,
@@ -258,7 +261,8 @@ struct CallableConstraintSolveInput<'a> {
     call: Option<etas_hir::HirExprId>,
     callee: TypeId,
     generic_params: &'a [crate::CallableGenericParam],
-    explicit_generic_args: &'a [TypeId],
+    explicit_generic_args: &'a [crate::CallableGenericArg],
+    arg_exprs: &'a [Option<etas_hir::HirExprId>],
     args: &'a [TypeId],
     output: TypeId,
     origin: ConstraintOrigin,
@@ -278,16 +282,71 @@ fn solve_callable_constraint(
         declared_names = input
             .generic_params
             .iter()
+            .filter(|param| param.kind == crate::CallableGenericParamKind::Type)
             .map(|param| param.name.clone())
             .collect::<Vec<_>>();
         declared_names.as_slice()
     };
+    let effect_param_names = input
+        .generic_params
+        .iter()
+        .filter(|param| param.kind == crate::CallableGenericParamKind::Effect)
+        .map(|param| param.name.clone())
+        .collect::<Vec<_>>();
+    let mut type_generic_args = Vec::new();
+    let mut effect_row_bindings = HashMap::new();
+    let mut deferred_effect_row_bindings = HashMap::new();
+    let mut generic_argument_failure = None;
+    if input.explicit_generic_args.len() > input.generic_params.len() {
+        generic_argument_failure = Some(format!(
+            "call accepts at most {} generic argument(s), got {}",
+            input.generic_params.len(),
+            input.explicit_generic_args.len()
+        ));
+    } else {
+        for (param, arg) in input.generic_params.iter().zip(input.explicit_generic_args) {
+            match (param.kind, arg) {
+                (crate::CallableGenericParamKind::Type, crate::CallableGenericArg::Type(ty)) => {
+                    type_generic_args.push(*ty);
+                }
+                (
+                    crate::CallableGenericParamKind::Effect,
+                    crate::CallableGenericArg::EffectRow(row),
+                ) => {
+                    effect_row_bindings.insert(param.name.clone(), row.clone());
+                }
+                (crate::CallableGenericParamKind::Type, _) => {
+                    generic_argument_failure = Some(format!(
+                        "generic parameter `{}` requires a type argument",
+                        param.name
+                    ));
+                    break;
+                }
+                (crate::CallableGenericParamKind::Effect, _) => {
+                    generic_argument_failure = Some(format!(
+                        "generic parameter `effect {}` requires an effect-row argument",
+                        param.name
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    if let Some(message) = generic_argument_failure {
+        let mut report = SolverReport::default();
+        report.push(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::TypeMismatch,
+            span: input.origin.span,
+            message,
+        });
+        return report;
+    }
     let mut report = callable::solve_callable_with_named_substitutions(
         store,
         callable::CallableSolveInput {
             callee: input.callee,
             generic_param_names,
-            explicit_generic_args: input.explicit_generic_args,
+            explicit_generic_args: &type_generic_args,
             args: input.args,
             output: input.output,
             origin: input.origin,
@@ -295,8 +354,76 @@ fn solve_callable_constraint(
         },
     );
     if report.failures.is_empty() {
+        let Some(Type::Function(flow)) = store.get(input.callee) else {
+            return report;
+        };
+        for (index, (actual, expected)) in input.args.iter().zip(&flow.input).enumerate() {
+            let inference = effect_row::infer_bindings_from_types(
+                store,
+                *expected,
+                *actual,
+                &report.named_substitutions,
+                &report.substitutions,
+                &effect_param_names,
+                &mut effect_row_bindings,
+            );
+            if !inference.matches {
+                report.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                    span: input.origin.span,
+                    message: "callable argument effect row does not match the generic effect-row contract"
+                        .to_owned(),
+                });
+                break;
+            }
+            for name in inference.deferred {
+                let Some(expr) = input.arg_exprs.get(index).copied().flatten() else {
+                    report.push(SolverFailure {
+                        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        span: input.origin.span,
+                        message: format!(
+                            "generic effect-row parameter `effect {name}` requires a checked latent flow source"
+                        ),
+                    });
+                    break;
+                };
+                if deferred_effect_row_bindings
+                    .insert(name.clone(), expr)
+                    .is_some_and(|existing| existing != expr)
+                {
+                    report.push(SolverFailure {
+                        code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                        span: input.origin.span,
+                        message: format!(
+                            "generic effect-row parameter `effect {name}` has incompatible latent flow sources"
+                        ),
+                    });
+                    break;
+                }
+            }
+        }
+        for name in &effect_param_names {
+            if effect_row_bindings.contains_key(name)
+                || deferred_effect_row_bindings.contains_key(name)
+            {
+                continue;
+            }
+            report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span: input.origin.span,
+                message: format!(
+                    "generic effect-row parameter `effect {name}` could not be inferred for this call"
+                ),
+            });
+        }
+    }
+    if report.failures.is_empty() {
         let mut obligations = Vec::new();
-        for param in input.generic_params {
+        for param in input
+            .generic_params
+            .iter()
+            .filter(|param| param.kind == crate::CallableGenericParamKind::Type)
+        {
             if param.bounds.is_empty() {
                 continue;
             }
@@ -366,10 +493,36 @@ fn solve_callable_constraint(
                     .map(|ty| (name.clone(), ty))
             })
             .collect::<Vec<_>>();
-        if !type_bindings.is_empty() {
-            report
-                .generic_instantiations
-                .insert(call, crate::GenericInstantiationFact { type_bindings });
+        let effect_row_bindings = effect_param_names
+            .iter()
+            .filter_map(|name| {
+                effect_row_bindings
+                    .get(name)
+                    .cloned()
+                    .map(|row| (name.clone(), row))
+            })
+            .collect::<Vec<_>>();
+        let deferred_effect_row_bindings = effect_param_names
+            .iter()
+            .filter_map(|name| {
+                deferred_effect_row_bindings
+                    .get(name)
+                    .copied()
+                    .map(|expr| (name.clone(), expr))
+            })
+            .collect::<Vec<_>>();
+        if !type_bindings.is_empty()
+            || !effect_row_bindings.is_empty()
+            || !deferred_effect_row_bindings.is_empty()
+        {
+            report.generic_instantiations.insert(
+                call,
+                crate::GenericInstantiationFact {
+                    type_bindings,
+                    effect_row_bindings,
+                    deferred_effect_row_bindings,
+                },
+            );
         }
     }
     // Generic names belong to this call only. Type-variable substitutions carry
@@ -819,7 +972,7 @@ fn is_checked_message_cast_candidate(store: &TypeStore, candidate: TypeId) -> bo
 
 fn solve_checked_message_cast(
     store: &TypeStore,
-    generic_args: &[TypeId],
+    generic_args: &[crate::CallableGenericArg],
     args: &[TypeId],
     output: TypeId,
     origin: ConstraintOrigin,
@@ -857,7 +1010,15 @@ fn solve_checked_message_cast(
         });
         return report;
     }
-    if !is_option_message_of(store, output, generic_args[0]) {
+    let crate::CallableGenericArg::Type(payload) = generic_args[0] else {
+        report.push(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::TypeMismatch,
+            span: origin.span,
+            message: "Message.cast requires a type generic argument".to_owned(),
+        });
+        return report;
+    };
+    if !is_option_message_of(store, output, payload) {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span: origin.span,

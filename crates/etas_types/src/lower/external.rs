@@ -1,4 +1,4 @@
-use etas_core::{Diagnostic, SourceId, Span, TextSize, TypeDiagnosticCode};
+use etas_core::{Diagnostic, Span, TypeDiagnosticCode};
 
 use crate::{
     EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FieldType,
@@ -9,6 +9,7 @@ use crate::{
 
 pub fn lower_external_action_signature(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     package: crate::ExternalPackageKey,
     action: &crate::ExternalActionSignatureInput,
     binding_symbols: &std::collections::HashMap<
@@ -16,7 +17,7 @@ pub fn lower_external_action_signature(
         etas_hir::SymbolId,
     >,
 ) -> Option<EffectActionSignature> {
-    validate_external_action_selector_metadata(ctx, action);
+    validate_external_action_selector_metadata(ctx, span, action);
     let effect_args = action
         .effect_args
         .iter()
@@ -31,6 +32,7 @@ pub fn lower_external_action_signature(
         .collect();
     let generic_params = lower_external_callable_generic_params(
         ctx,
+        span,
         package,
         &action.path,
         &action.generic_params,
@@ -41,15 +43,18 @@ pub fn lower_external_action_signature(
         params: action
             .params
             .iter()
-            .map(|ty| lower_external_type(ctx, ty))
+            .map(|ty| lower_external_type(ctx, span, ty))
             .collect(),
-        output: lower_external_type(ctx, &action.output),
+        output: lower_external_type(ctx, span, &action.output),
         effect_args,
         selector_param_names: action.selector_param_names.clone(),
         selector_defaults: action
             .selector_defaults
             .iter()
-            .map(|arg| arg.as_ref().map(|arg| lower_external_effect_arg(ctx, arg)))
+            .map(|arg| {
+                arg.as_ref()
+                    .map(|arg| lower_external_effect_arg(ctx, span, arg))
+            })
             .collect(),
         returns_never: action.returns_never,
     })
@@ -57,6 +62,7 @@ pub fn lower_external_action_signature(
 
 pub fn lower_external_callable_generic_params(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     package: crate::ExternalPackageKey,
     callable_path: &[String],
     params: &[crate::ExternalCallableGenericParamInput],
@@ -72,6 +78,7 @@ pub fn lower_external_callable_generic_params(
     if unique_names.len() != params.len() {
         invalid_external_metadata(
             ctx,
+            span,
             format!(
                 "invalid external package metadata: callable `{}` contains duplicate generic parameter names",
                 callable_path.join(".")
@@ -90,6 +97,7 @@ pub fn lower_external_callable_generic_params(
             } else {
                 invalid_external_metadata(
                     ctx,
+                    span,
                     format!(
                         "invalid external package metadata: callable `{}` generic `{}` references spec `{}` without a checked package binding",
                         callable_path.join("."),
@@ -104,11 +112,19 @@ pub fn lower_external_callable_generic_params(
                 args: bound
                     .args
                     .iter()
-                    .map(|arg| lower_external_type(ctx, arg))
+                    .map(|arg| lower_external_type(ctx, span, arg))
                     .collect(),
             });
         }
         generic_params.push(crate::CallableGenericParam {
+            kind: match param.kind {
+                crate::ExternalCallableGenericParamKindInput::Type => {
+                    crate::CallableGenericParamKind::Type
+                }
+                crate::ExternalCallableGenericParamKindInput::Effect => {
+                    crate::CallableGenericParamKind::Effect
+                }
+            },
             name: param.name.clone(),
             subject: ctx.interner.intern(Type::Named(NamedTypeRef {
                 name: param.name.clone(),
@@ -121,11 +137,13 @@ pub fn lower_external_callable_generic_params(
 
 fn validate_external_action_selector_metadata(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     action: &crate::ExternalActionSignatureInput,
 ) {
     if action.selector_param_names.len() != action.effect_args.len() {
         invalid_external_metadata(
             ctx,
+            span,
             format!(
                 "invalid external package metadata: action `{}` selector_param_names length {} does not match effect_args length {}",
                 action.path.join("."),
@@ -137,6 +155,7 @@ fn validate_external_action_selector_metadata(
     if action.selector_defaults.len() != action.effect_args.len() {
         invalid_external_metadata(
             ctx,
+            span,
             format!(
                 "invalid external package metadata: action `{}` selector_defaults length {} does not match effect_args length {}",
                 action.path.join("."),
@@ -153,6 +172,7 @@ fn validate_external_action_selector_metadata(
     if generic_names.len() != action.generic_params.len() {
         invalid_external_metadata(
             ctx,
+            span,
             format!(
                 "invalid external package metadata: action `{}` contains duplicate generic parameter names",
                 action.path.join(".")
@@ -165,6 +185,7 @@ fn validate_external_action_selector_metadata(
         {
             invalid_external_metadata(
                 ctx,
+                span,
                 format!(
                     "invalid external package metadata: action `{}` type selector `{name}` does not name a declared generic parameter",
                     action.path.join(".")
@@ -184,6 +205,7 @@ fn validate_external_action_selector_metadata(
         if !external_effect_arg_matches_action_arg_kind(default, kind) {
             invalid_external_metadata(
                 ctx,
+                span,
                 format!(
                     "invalid external package metadata: action `{}` selector default at index {index} does not match selector kind",
                     action.path.join(".")
@@ -223,41 +245,57 @@ fn external_effect_arg_matches_action_arg_kind(
 
 pub fn lower_external_type(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     ty: &crate::ExternalTypeInput,
 ) -> TypeId {
     match ty {
-        crate::ExternalTypeInput::Primitive(name) => primitive_from_name(ctx, name),
+        crate::ExternalTypeInput::Primitive(name) => primitive_from_name(ctx, span, name),
         crate::ExternalTypeInput::Var(name) => ctx
             .interner
             .intern(Type::Named(NamedTypeRef { name: name.clone() })),
-        crate::ExternalTypeInput::Named(path) => ctx
-            .external_type_paths
-            .get(path)
-            .copied()
-            .unwrap_or_else(|| named_external_type(ctx, path)),
+        crate::ExternalTypeInput::Named(path) => {
+            let Some(ty) = checked_external_or_std_type(ctx, path) else {
+                invalid_external_metadata(
+                    ctx,
+                    span,
+                    format!(
+                        "invalid external package metadata: named type `{}` has no checked package binding",
+                        path.join(".")
+                    ),
+                );
+                return ctx.interner.primitive(PrimitiveType::Never);
+            };
+            ty
+        }
         crate::ExternalTypeInput::Applied { path, args } => {
-            let constructor = ctx
-                .external_type_paths
-                .get(path)
-                .copied()
-                .unwrap_or_else(|| named_external_type(ctx, path));
+            let Some(constructor) = checked_external_or_std_type(ctx, path) else {
+                invalid_external_metadata(
+                    ctx,
+                    span,
+                    format!(
+                        "invalid external package metadata: applied type `{}` has no checked package binding",
+                        path.join(".")
+                    ),
+                );
+                return ctx.interner.primitive(PrimitiveType::Never);
+            };
             let args = args
                 .iter()
-                .map(|arg| lower_external_type(ctx, arg))
+                .map(|arg| lower_external_type(ctx, span, arg))
                 .collect();
             ctx.interner.intern(Type::Applied {
                 constructor: TypeConstructorId(constructor.0),
                 args,
             })
         }
-        crate::ExternalTypeInput::Alias { target, .. } => lower_external_type(ctx, target),
+        crate::ExternalTypeInput::Alias { target, .. } => lower_external_type(ctx, span, target),
         crate::ExternalTypeInput::Nominal {
             path,
             representation,
         } => {
             let representation = representation
                 .as_ref()
-                .map(|representation| lower_external_type(ctx, representation));
+                .map(|representation| lower_external_type(ctx, span, representation));
             ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 name: path.join("."),
                 params: Vec::new(),
@@ -265,37 +303,37 @@ pub fn lower_external_type(
             }))
         }
         crate::ExternalTypeInput::Array(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::Array(inner))
         }
         crate::ExternalTypeInput::List(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::List(inner))
         }
         crate::ExternalTypeInput::Map { key, value } => {
-            let key = lower_external_type(ctx, key);
-            let value = lower_external_type(ctx, value);
+            let key = lower_external_type(ctx, span, key);
+            let value = lower_external_type(ctx, span, value);
             ctx.interner.intern(Type::Map { key, value })
         }
         crate::ExternalTypeInput::Set(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::Set(inner))
         }
         crate::ExternalTypeInput::Range(inner) => {
-            let index = lower_external_type(ctx, inner);
+            let index = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::Range { index })
         }
         crate::ExternalTypeInput::Slice(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::Slice(inner))
         }
         crate::ExternalTypeInput::Option(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::Option(inner))
         }
         crate::ExternalTypeInput::Result { ok, err } => {
-            let ok = lower_external_type(ctx, ok);
-            let err = lower_external_type(ctx, err);
+            let ok = lower_external_type(ctx, span, ok);
+            let err = lower_external_type(ctx, span, err);
             ctx.interner.intern(Type::Result { ok, err })
         }
         crate::ExternalTypeInput::Record { fields } => {
@@ -303,7 +341,7 @@ pub fn lower_external_type(
                 .iter()
                 .map(|field| FieldType {
                     name: field.name.clone(),
-                    ty: lower_external_type(ctx, &field.ty),
+                    ty: lower_external_type(ctx, span, &field.ty),
                 })
                 .collect();
             ctx.interner.intern(Type::Record(RecordType { fields }))
@@ -311,7 +349,7 @@ pub fn lower_external_type(
         crate::ExternalTypeInput::Tuple(elements) => {
             let elements = elements
                 .iter()
-                .map(|ty| lower_external_type(ctx, ty))
+                .map(|ty| lower_external_type(ctx, span, ty))
                 .collect();
             ctx.interner.intern(Type::Tuple(elements))
         }
@@ -322,12 +360,12 @@ pub fn lower_external_type(
         } => {
             let input = input
                 .iter()
-                .map(|ty| lower_external_type(ctx, ty))
+                .map(|ty| lower_external_type(ctx, span, ty))
                 .collect();
-            let output = lower_external_type(ctx, output);
+            let output = lower_external_type(ctx, span, output);
             let effects = effects
                 .as_ref()
-                .map(|row| lower_external_effect_row(ctx, row));
+                .map(|row| lower_external_effect_row(ctx, span, row));
             ctx.interner.intern(Type::Function(FlowType {
                 input,
                 output,
@@ -341,11 +379,11 @@ pub fn lower_external_type(
         } => {
             let result = result
                 .as_ref()
-                .map(|result| lower_external_type(ctx, result));
-            let handled = lower_external_effect_row(ctx, handled);
+                .map(|result| lower_external_type(ctx, span, result));
+            let handled = lower_external_effect_row(ctx, span, handled);
             let produced = produced
                 .as_ref()
-                .map(|row| lower_external_effect_row(ctx, row))
+                .map(|row| lower_external_effect_row(ctx, span, row))
                 .map(HandlerProducedEffects::Explicit)
                 .unwrap_or(HandlerProducedEffects::Infer);
             ctx.interner.intern(Type::Handler(HandlerType {
@@ -355,10 +393,11 @@ pub fn lower_external_type(
             }))
         }
         crate::ExternalTypeInput::Trust { wrapper, inner } => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             let Some(wrapper) = external_trust_wrapper(wrapper) else {
                 invalid_external_metadata(
                     ctx,
+                    span,
                     format!("invalid external package metadata: unknown trust wrapper `{wrapper}`"),
                 );
                 return ctx.interner.primitive(PrimitiveType::Never);
@@ -368,24 +407,27 @@ pub fn lower_external_type(
         crate::ExternalTypeInput::Prompt => ctx.interner.intern(Type::Prompt),
         crate::ExternalTypeInput::PromptPart => ctx.interner.intern(Type::PromptPart),
         crate::ExternalTypeInput::Message(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::Message(inner))
         }
         crate::ExternalTypeInput::MemorySelection(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::MemorySelection(inner))
         }
         crate::ExternalTypeInput::Store { key, value } => {
-            let key = lower_external_type(ctx, key);
-            let value = lower_external_type(ctx, value);
+            let key = lower_external_type(ctx, span, key);
+            let value = lower_external_type(ctx, span, value);
             ctx.interner.intern(Type::Store { key, value })
         }
         crate::ExternalTypeInput::MemoryRegion(inner) => {
-            let inner = lower_external_type(ctx, inner);
+            let inner = lower_external_type(ctx, span, inner);
             ctx.interner.intern(Type::MemoryRegion(inner))
         }
         crate::ExternalTypeInput::ResourceHandle { name, args } => {
-            let args = args.iter().map(|ty| lower_external_type(ctx, ty)).collect();
+            let args = args
+                .iter()
+                .map(|ty| lower_external_type(ctx, span, ty))
+                .collect();
             ctx.interner
                 .intern(Type::ResourceHandle(ResourceHandleType::Other {
                     name: name.clone(),
@@ -395,8 +437,21 @@ pub fn lower_external_type(
     }
 }
 
+fn checked_external_or_std_type(
+    ctx: &mut TypePipelineContext<'_>,
+    path: &[String],
+) -> Option<TypeId> {
+    if let Some(ty) = ctx.external_type_paths.get(path).copied() {
+        return Some(ty);
+    }
+    let registry = ctx.std_registry.clone();
+    let symbol = registry.lookup_qualified(path)?;
+    crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol)
+}
+
 pub fn lower_external_type_declaration(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     path: &[String],
     ty: Option<&crate::ExternalTypeInput>,
 ) -> TypeId {
@@ -405,8 +460,8 @@ pub fn lower_external_type_declaration(
             path: alias_path,
             target,
         }) => {
-            validate_decl_path(ctx, "alias", path, alias_path);
-            let ty = lower_external_type(ctx, target);
+            validate_decl_path(ctx, span, "alias", path, alias_path);
+            let ty = lower_external_type(ctx, span, target);
             ctx.external_type_paths.insert(path.to_vec(), ty);
             ty
         }
@@ -414,10 +469,10 @@ pub fn lower_external_type_declaration(
             path: nominal_path,
             representation,
         }) => {
-            validate_decl_path(ctx, "nominal type", path, nominal_path);
+            validate_decl_path(ctx, span, "nominal type", path, nominal_path);
             let representation = representation
                 .as_ref()
-                .map(|representation| lower_external_type(ctx, representation));
+                .map(|representation| lower_external_type(ctx, span, representation));
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 name: path.join("."),
                 params: Vec::new(),
@@ -427,7 +482,7 @@ pub fn lower_external_type_declaration(
             ty
         }
         Some(representation) => {
-            let representation = lower_external_type(ctx, representation);
+            let representation = lower_external_type(ctx, span, representation);
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 name: path.join("."),
                 params: Vec::new(),
@@ -450,6 +505,7 @@ pub fn lower_external_type_declaration(
 
 pub fn lower_external_effect_row(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     row: &crate::ExternalEffectRowInput,
 ) -> EffectRowRef {
     EffectRowRef {
@@ -461,20 +517,23 @@ pub fn lower_external_effect_row(
                 args: effect
                     .args
                     .iter()
-                    .map(|arg| lower_external_effect_arg(ctx, arg))
+                    .map(|arg| lower_external_effect_arg(ctx, span, arg))
                     .collect(),
             })
             .collect(),
-        tail: None,
+        tail: row.tail.clone(),
     }
 }
 
 fn lower_external_effect_arg(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     arg: &crate::ExternalEffectArgInput,
 ) -> EffectArgRef {
     match arg {
-        crate::ExternalEffectArgInput::Type(ty) => EffectArgRef::Type(lower_external_type(ctx, ty)),
+        crate::ExternalEffectArgInput::Type(ty) => {
+            EffectArgRef::Type(lower_external_type(ctx, span, ty))
+        }
         crate::ExternalEffectArgInput::Path(path) => EffectArgRef::Path(path.clone()),
         crate::ExternalEffectArgInput::String(value) => EffectArgRef::String(value.clone()),
         crate::ExternalEffectArgInput::Int(value) => EffectArgRef::Int(value.clone()),
@@ -506,7 +565,7 @@ pub fn lower_external_effect_row_from_output(
                 })
             })
             .collect::<Result<Vec<_>, _>>()?,
-        tail: None,
+        tail: row.tail.clone(),
     })
 }
 
@@ -764,7 +823,7 @@ fn external_trust_wrapper(wrapper: &str) -> Option<TrustWrapper> {
     })
 }
 
-fn primitive_from_name(ctx: &mut TypePipelineContext<'_>, name: &str) -> TypeId {
+fn primitive_from_name(ctx: &mut TypePipelineContext<'_>, span: Span, name: &str) -> TypeId {
     let primitive = match name {
         "bool" => PrimitiveType::Bool,
         "i8" => PrimitiveType::I8,
@@ -789,6 +848,7 @@ fn primitive_from_name(ctx: &mut TypePipelineContext<'_>, name: &str) -> TypeId 
         _ => {
             invalid_external_metadata(
                 ctx,
+                span,
                 format!("invalid external package metadata: unknown primitive type `{name}`"),
             );
             return ctx.interner.primitive(PrimitiveType::Never);
@@ -799,6 +859,7 @@ fn primitive_from_name(ctx: &mut TypePipelineContext<'_>, name: &str) -> TypeId 
 
 fn validate_decl_path(
     ctx: &mut TypePipelineContext<'_>,
+    span: Span,
     kind: &str,
     expected: &[String],
     actual: &[String],
@@ -808,6 +869,7 @@ fn validate_decl_path(
     }
     invalid_external_metadata(
         ctx,
+        span,
         format!(
             "invalid external package metadata: {kind} declaration path `{}` does not match exported path `{}`",
             actual.join("."),
@@ -816,18 +878,12 @@ fn validate_decl_path(
     );
 }
 
-fn invalid_external_metadata(ctx: &mut TypePipelineContext<'_>, message: String) {
+fn invalid_external_metadata(ctx: &mut TypePipelineContext<'_>, span: Span, message: String) {
     ctx.diagnostics.push(Diagnostic::type_check(
         TypeDiagnosticCode::IncompleteTypeFacts,
-        Span::empty(SourceId(0), TextSize::ZERO),
+        span,
         message,
     ));
-}
-
-fn named_external_type(ctx: &mut TypePipelineContext<'_>, path: &[String]) -> TypeId {
-    ctx.interner.intern(Type::Named(NamedTypeRef {
-        name: path.join("."),
-    }))
 }
 
 #[cfg(test)]

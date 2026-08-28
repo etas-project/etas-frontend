@@ -4,11 +4,11 @@ use etas_std::{
 };
 
 use crate::{
-    CallableGenericParam, CallableSignature, CheckedSpecBound, CheckedSpecRef,
-    CheckedStdSpecImplFact, EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef,
-    EffectRowRef, FieldType, NamedTypeRef, NominalTypeRef, PrimitiveType, RecordType,
-    ResourceHandleType, SpecSignature, SymbolTypeFact, TrustWrapper, Type, TypeConstructorId,
-    TypeId, pipeline::context::TypePipelineContext,
+    CallableGenericParam, CallableGenericParamKind, CallableSignature, CheckedSpecBound,
+    CheckedSpecRef, CheckedStdSpecImplFact, EffectActionArgKind, EffectActionSignature,
+    EffectArgRef, EffectRef, EffectRowRef, FieldType, NamedTypeRef, NominalTypeRef, PrimitiveType,
+    RecordType, ResourceHandleType, SpecSignature, SymbolTypeFact, TrustWrapper, Type,
+    TypeConstructorId, TypeId, pipeline::context::TypePipelineContext,
 };
 
 pub fn lower_std_decl(
@@ -163,6 +163,7 @@ fn lower_std_generic_params(
     params
         .iter()
         .map(|param| CallableGenericParam {
+            kind: CallableGenericParamKind::Type,
             subject: ctx.interner.intern(Type::Named(NamedTypeRef {
                 name: param.name.clone(),
             })),

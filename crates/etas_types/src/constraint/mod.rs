@@ -5,5 +5,7 @@ pub mod validation;
 
 pub use origin::ConstraintOrigin;
 pub use spec_obligation::SpecObligation;
-pub use ty::{AssignabilityReason, CallableCandidate, NumericLiteralKind, TypeConstraint};
+pub use ty::{
+    AssignabilityReason, CallableCandidate, CallableGenericArg, NumericLiteralKind, TypeConstraint,
+};
 pub use validation::ValidationRequest;

@@ -566,6 +566,7 @@ fn collect_stage_composition(
             callee: stage_ty,
             generic_params: Vec::new(),
             generic_args: Vec::new(),
+            arg_exprs: Vec::new(),
             args: vec![current],
             output,
             origin: ConstraintOrigin { span: stage.span },
@@ -607,6 +608,7 @@ fn collect_pipeline(
             callee: stage_ty,
             generic_params: Vec::new(),
             generic_args: Vec::new(),
+            arg_exprs: Vec::new(),
             args: vec![current],
             output,
             origin: ConstraintOrigin { span: stage.span },
@@ -871,6 +873,7 @@ pub fn callable_candidate_from_fact(
             .generic_params
             .into_iter()
             .map(|param| crate::CallableGenericParam {
+                kind: param.kind,
                 name: param.name,
                 subject: instantiate_callable_schematic_type(
                     ctx,

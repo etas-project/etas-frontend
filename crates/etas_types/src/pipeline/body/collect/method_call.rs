@@ -1,7 +1,7 @@
 use etas_hir::{HirArg, HirGenericArg};
 
 use crate::{
-    ConstraintOrigin, TypeConstraint, TypeId,
+    CallableGenericArg, ConstraintOrigin, TypeConstraint, TypeId,
     pipeline::{
         body::collect::{
             call::{
@@ -79,7 +79,19 @@ pub fn collect_method_call(
             call: None,
             callee: callee_ty,
             generic_params,
-            generic_args: type_generic_args,
+            generic_args: type_generic_args
+                .into_iter()
+                .map(CallableGenericArg::Type)
+                .collect(),
+            arg_exprs: args
+                .iter()
+                .map(|arg| {
+                    Some(match arg {
+                        HirArg::Positional(expr) => *expr,
+                        HirArg::Named { value, .. } => *value,
+                    })
+                })
+                .collect(),
             args: arg_tys,
             output,
             origin: ConstraintOrigin { span },
@@ -116,7 +128,10 @@ pub fn collect_method_call(
         ctx.emit(TypeConstraint::MethodCall {
             method: method.to_owned(),
             candidates,
-            generic_args: type_generic_args,
+            generic_args: type_generic_args
+                .into_iter()
+                .map(CallableGenericArg::Type)
+                .collect(),
             args: arg_tys,
             output,
             origin: ConstraintOrigin { span },

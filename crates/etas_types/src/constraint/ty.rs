@@ -1,4 +1,10 @@
-use crate::{CallableGenericParam, ConstraintOrigin, TypeId};
+use crate::{CallableGenericParam, ConstraintOrigin, EffectRowRef, TypeId};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallableGenericArg {
+    Type(TypeId),
+    EffectRow(EffectRowRef),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericLiteralKind {
@@ -45,7 +51,8 @@ pub enum TypeConstraint {
         call: Option<etas_hir::HirExprId>,
         callee: TypeId,
         generic_params: Vec<CallableGenericParam>,
-        generic_args: Vec<TypeId>,
+        generic_args: Vec<CallableGenericArg>,
+        arg_exprs: Vec<Option<etas_hir::HirExprId>>,
         args: Vec<TypeId>,
         output: TypeId,
         origin: ConstraintOrigin,
@@ -53,7 +60,7 @@ pub enum TypeConstraint {
     MethodCall {
         method: String,
         candidates: Vec<CallableCandidate>,
-        generic_args: Vec<TypeId>,
+        generic_args: Vec<CallableGenericArg>,
         args: Vec<TypeId>,
         output: TypeId,
         origin: ConstraintOrigin,

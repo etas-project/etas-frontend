@@ -123,6 +123,14 @@ fn apply_solver_substitutions(
         for (_, ty) in &mut fact.type_bindings {
             *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
         }
+        for (_, row) in &mut fact.effect_row_bindings {
+            *row = crate::substitute_effect_row_params(
+                &mut ctx.interner,
+                row.clone(),
+                &named_substitutions,
+                &substitutions,
+            )?;
+        }
     }
     Ok(())
 }

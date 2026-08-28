@@ -1,9 +1,9 @@
 use etas_hir::{HirItem, HirToolBody};
 
 use crate::{
-    CallableGenericParam, CallableSignature, CheckedSpecBound, CheckedSpecRef, ItemSignature,
-    NamedTypeRef, PrimitiveType, ResourceHandleFact, SymbolTypeFact, ToolSignature,
-    TopLevelLetSignature, Type, TypeId,
+    CallableGenericParam, CallableGenericParamKind, CallableSignature, CheckedSpecBound,
+    CheckedSpecRef, ItemSignature, NamedTypeRef, PrimitiveType, ResourceHandleFact, SymbolTypeFact,
+    ToolSignature, TopLevelLetSignature, Type, TypeId,
     lower::{effect_row::lower_effect_row, type_ref::lower_type_ref},
     pipeline::{
         context::TypePipelineContext,
@@ -106,13 +106,20 @@ fn callable_generic_params(
     params
         .iter()
         .filter_map(|param| {
-            let name = ctx.hir.symbols.get(*param)?.name.clone();
+            let symbol = ctx.hir.symbols.get(*param)?;
+            let name = symbol.name.clone();
+            let kind = match symbol.def {
+                etas_hir::SymbolDef::TypeParam { .. } => CallableGenericParamKind::Type,
+                etas_hir::SymbolDef::EffectParam { .. } => CallableGenericParamKind::Effect,
+                _ => return None,
+            };
             let bounds = state
                 .type_param_bounds
                 .get(param)
                 .cloned()
                 .unwrap_or_default();
             Some(CallableGenericParam {
+                kind,
                 subject: ctx
                     .interner
                     .intern(Type::Named(NamedTypeRef { name: name.clone() })),

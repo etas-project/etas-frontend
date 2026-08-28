@@ -2,8 +2,9 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 use etas_hir::{HirActionSelectorParam, HirEffectActionDecl, HirImplItem, HirItem, SymbolKind};
 
 use crate::{
-    CallableGenericParam, CheckedSpecBound, CheckedSpecRef, EffectActionArgKind,
-    EffectActionSignature, EffectArgRef, NamedTypeRef, PrimitiveType, SymbolTypeFact, Type,
+    CallableGenericParam, CallableGenericParamKind, CheckedSpecBound, CheckedSpecRef,
+    EffectActionArgKind, EffectActionSignature, EffectArgRef, NamedTypeRef, PrimitiveType,
+    SymbolTypeFact, Type,
     lower::type_ref::lower_type_ref,
     pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState},
 };
@@ -86,6 +87,7 @@ fn collect_action(
                     })
                     .collect();
                 Some(CallableGenericParam {
+                    kind: CallableGenericParamKind::Type,
                     subject: ctx
                         .interner
                         .intern(Type::Named(NamedTypeRef { name: name.clone() })),

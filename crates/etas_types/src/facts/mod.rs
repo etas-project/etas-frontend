@@ -13,8 +13,8 @@ pub use expressions::{
     CheckedIndexKind, CheckedSliceKind, GenericInstantiationFact, TryExprTypeFact,
 };
 pub use signatures::{
-    AgentSignature, CallableGenericParam, CallableSignature, FlowSignature, ItemSignature,
-    ToolSignature, TopLevelLetSignature,
+    AgentSignature, CallableGenericParam, CallableGenericParamKind, CallableSignature,
+    FlowSignature, ItemSignature, ToolSignature, TopLevelLetSignature,
 };
 pub use specs::{
     CallableSpecSatisfactionFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,

@@ -404,6 +404,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         for (_, ty) in &mut fact.type_bindings {
             *ty = remapper.ty(*ty);
         }
+        for (_, row) in &mut fact.effect_row_bindings {
+            *row = remapper.effect_row(row.clone());
+        }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
     for fact in facts.resource_handles.values_mut() {

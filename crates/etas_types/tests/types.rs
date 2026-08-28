@@ -4377,6 +4377,96 @@ flow accepts_row<effect E>() -> unit ![E] {
     let output = check_program(&hir);
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let call = hir
+        .exprs
+        .iter()
+        .find_map(|(expr, data)| match data {
+            etas_hir::HirExpr::Call { callee, .. }
+                if matches!(
+                    hir.exprs.get(*callee),
+                    Some(etas_hir::HirExpr::Path(path))
+                        if path.segments.last().is_some_and(|segment| segment.name == "accepts_row")
+                ) =>
+            {
+                Some(expr)
+            }
+            _ => None,
+        })
+        .expect("row-polymorphic call should lower");
+    let fact = output
+        .facts
+        .generic_instantiations
+        .get(&call)
+        .expect("row-polymorphic call must have checked instantiation facts");
+    assert_eq!(
+        fact.effect_row_bindings,
+        vec![(
+            "E".to_owned(),
+            etas_types::EffectRowRef {
+                effects: vec![etas_types::EffectRef {
+                    name: "Console.stdout_write".to_owned(),
+                    args: Vec::new(),
+                }],
+                tail: None,
+            },
+        )]
+    );
+}
+
+#[test]
+fn check_program_records_deferred_effect_row_binding_for_anonymous_flow() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow twice<effect E>(f: () -> unit ![E]) -> unit ![E] {
+  f();
+}
+
+flow main() -> unit ![Console.stdout_write] {
+  twice(() => {
+    perform Console.stdout_write("test");
+  });
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let (call, lambda) = hir
+        .exprs
+        .iter()
+        .find_map(|(expr, data)| match data {
+            etas_hir::HirExpr::Call { callee, args, .. }
+                if matches!(
+                    hir.exprs.get(*callee),
+                    Some(etas_hir::HirExpr::Path(path))
+                        if path.segments.last().is_some_and(|segment| segment.name == "twice")
+                ) =>
+            {
+                args.first().map(|arg| {
+                    let lambda = match arg {
+                        etas_hir::HirArg::Positional(value)
+                        | etas_hir::HirArg::Named { value, .. } => *value,
+                    };
+                    (expr, lambda)
+                })
+            }
+            _ => None,
+        })
+        .expect("row-polymorphic lambda call should lower");
+    let fact = output
+        .facts
+        .generic_instantiations
+        .get(&call)
+        .expect("call must have checked generic instantiation facts");
+    assert!(fact.effect_row_bindings.is_empty(), "{fact:#?}");
+    assert_eq!(
+        fact.deferred_effect_row_bindings,
+        vec![("E".to_owned(), lambda)]
+    );
 }
 
 #[test]

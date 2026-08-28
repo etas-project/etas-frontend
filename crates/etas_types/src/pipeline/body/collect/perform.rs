@@ -81,7 +81,8 @@ pub fn collect_perform(
     let explicit_generic_args = generic_args
         .iter()
         .map(|arg| match arg {
-            HirGenericArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty),
+            HirGenericArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty)
+                .map(crate::CallableGenericArg::Type),
             HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
         })
         .collect::<Option<Vec<_>>>()
@@ -91,6 +92,15 @@ pub fn collect_perform(
         callee,
         generic_params: signature.generic_params,
         generic_args: explicit_generic_args,
+        arg_exprs: args
+            .iter()
+            .map(|arg| {
+                Some(match arg {
+                    HirArg::Positional(expr) => *expr,
+                    HirArg::Named { value, .. } => *value,
+                })
+            })
+            .collect(),
         args: arg_types,
         output,
         origin: ConstraintOrigin { span },

@@ -124,12 +124,24 @@ pub fn collect_spec_method_call(
             .into_iter()
             .zip(spec_arg_tys.iter().copied())
             .map(|(name, subject)| crate::CallableGenericParam {
+                kind: crate::CallableGenericParamKind::Type,
                 name,
                 subject,
                 bounds: Vec::new(),
             })
             .collect(),
-        generic_args: spec_arg_tys,
+        generic_args: spec_arg_tys
+            .into_iter()
+            .map(crate::CallableGenericArg::Type)
+            .collect(),
+        arg_exprs: std::iter::once(Some(receiver))
+            .chain(args.iter().map(|arg| {
+                Some(match arg {
+                    HirArg::Positional(expr) => *expr,
+                    HirArg::Named { value, .. } => *value,
+                })
+            }))
+            .collect(),
         args: call_args,
         output,
         origin: ConstraintOrigin { span },

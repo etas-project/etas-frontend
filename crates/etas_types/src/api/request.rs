@@ -153,7 +153,14 @@ pub struct ExternalActionSignatureInput {
 #[derive(Clone, Debug)]
 pub struct ExternalCallableGenericParamInput {
     pub name: String,
+    pub kind: ExternalCallableGenericParamKindInput,
     pub bounds: Vec<ExternalSpecBoundInput>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalCallableGenericParamKindInput {
+    Type,
+    Effect,
 }
 
 pub type ExternalActionGenericParamInput = ExternalCallableGenericParamInput;
@@ -236,6 +243,7 @@ pub enum ExternalActionArgKindInput {
 #[derive(Clone, Debug)]
 pub struct ExternalEffectRowInput {
     pub effects: Vec<ExternalEffectRefInput>,
+    pub tail: Option<String>,
 }
 
 #[derive(Clone, Debug)]

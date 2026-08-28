@@ -27,9 +27,16 @@ pub struct CallableSignature {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallableGenericParam {
+    pub kind: CallableGenericParamKind,
     pub name: String,
     pub subject: TypeId,
     pub bounds: Vec<CheckedSpecBound>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CallableGenericParamKind {
+    Type,
+    Effect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

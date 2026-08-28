@@ -251,6 +251,7 @@ fn collect_constructor_variant(
         callee,
         generic_params: signature.generic_params,
         generic_args: Vec::new(),
+        arg_exprs: Vec::new(),
         args: arg_tys,
         output: ty,
         origin: ConstraintOrigin { span },

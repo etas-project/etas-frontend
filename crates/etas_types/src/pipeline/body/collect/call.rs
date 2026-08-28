@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use etas_hir::{HirArg, HirExpr, HirGenericArg, ResolveResult, SymbolDef};
 
 use crate::{
-    AssignabilityReason, ConstraintOrigin, FieldType, FlowType, HandlerType, MemoryPlaceType,
-    RecordType, ResourceHandleType, SymbolTypeFact, Type, TypeConstraint, TypeId,
+    AssignabilityReason, CallableGenericArg, ConstraintOrigin, FieldType, FlowType, HandlerType,
+    MemoryPlaceType, RecordType, ResourceHandleType, SymbolTypeFact, Type, TypeConstraint, TypeId,
+    lower::effect_row::lower_effect_row,
     lower::type_ref::lower_type_ref,
     pipeline::{
         body::collect::{
@@ -30,8 +31,17 @@ pub fn collect_call(
     span: etas_core::Span,
     expected: Option<TypeId>,
 ) -> TypeId {
-    validate_generic_args(ctx, callee, generic_args, span);
+    let checked_generic_args = lower_callable_generic_args(ctx, generic_args);
     let callable_signature = callee_callable_signature(ctx, callee);
+    validate_generic_args(
+        ctx,
+        callable_signature
+            .as_ref()
+            .map(|signature| signature.generic_params.as_slice())
+            .unwrap_or_default(),
+        generic_args,
+        span,
+    );
     let type_generic_args = generic_args
         .iter()
         .filter_map(|arg| match arg {
@@ -98,7 +108,8 @@ pub fn collect_call(
         call: Some(call),
         callee: callee_ty,
         generic_params,
-        generic_args: type_generic_args,
+        generic_args: checked_generic_args,
+        arg_exprs: call_arg_exprs(args),
         args: arg_tys,
         output,
         origin: ConstraintOrigin { span },
@@ -151,7 +162,12 @@ fn collect_std_qualified_call(
         call: Some(call),
         callee: callee_ty,
         generic_params,
-        generic_args: type_generic_args.to_vec(),
+        generic_args: type_generic_args
+            .iter()
+            .copied()
+            .map(CallableGenericArg::Type)
+            .collect(),
+        arg_exprs: call_arg_exprs(args),
         args: arg_tys,
         output,
         origin: ConstraintOrigin { span },
@@ -392,7 +408,12 @@ fn collect_partially_resolved_method_call(
             call: Some(call),
             callee: callee_ty,
             generic_params,
-            generic_args: type_generic_args.to_vec(),
+            generic_args: type_generic_args
+                .iter()
+                .copied()
+                .map(CallableGenericArg::Type)
+                .collect(),
+            arg_exprs: call_arg_exprs(args),
             args: arg_tys,
             output,
             origin: ConstraintOrigin { span },
@@ -428,7 +449,11 @@ fn collect_partially_resolved_method_call(
     ctx.emit(TypeConstraint::MethodCall {
         method: method.clone(),
         candidates,
-        generic_args: type_generic_args.to_vec(),
+        generic_args: type_generic_args
+            .iter()
+            .copied()
+            .map(CallableGenericArg::Type)
+            .collect(),
         args: arg_tys,
         output,
         origin: ConstraintOrigin { span },
@@ -1032,6 +1057,17 @@ fn collect_call_args(
         .collect()
 }
 
+fn call_arg_exprs(args: &[HirArg]) -> Vec<Option<etas_hir::HirExprId>> {
+    args.iter()
+        .map(|arg| {
+            Some(match arg {
+                HirArg::Positional(expr) => *expr,
+                HirArg::Named { value, .. } => *value,
+            })
+        })
+        .collect()
+}
+
 pub fn callable_output_for_expression(
     ctx: &mut BodyCollectContext<'_, '_>,
     callee_ty: TypeId,
@@ -1083,7 +1119,7 @@ fn contains_callable_generic_var(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -
 
 fn validate_generic_args(
     ctx: &mut BodyCollectContext<'_, '_>,
-    callee: etas_hir::HirExprId,
+    generic_params: &[crate::CallableGenericParam],
     generic_args: &[HirGenericArg],
     span: etas_core::Span,
 ) {
@@ -1116,7 +1152,11 @@ fn validate_generic_args(
         }
     }
 
-    if callee_effect_param_count(ctx, callee) < effect_row_args {
+    let effect_param_count = generic_params
+        .iter()
+        .filter(|param| matches!(param.kind, crate::CallableGenericParamKind::Effect))
+        .count();
+    if effect_param_count < effect_row_args {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span,
@@ -1127,52 +1167,18 @@ fn validate_generic_args(
     }
 }
 
-fn callee_effect_param_count(
-    ctx: &BodyCollectContext<'_, '_>,
-    callee: etas_hir::HirExprId,
-) -> usize {
-    let Some(item) = callee_item(ctx, callee) else {
-        return 0;
-    };
-    item_type_params(ctx, item)
+fn lower_callable_generic_args(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    generic_args: &[HirGenericArg],
+) -> Vec<CallableGenericArg> {
+    generic_args
         .iter()
-        .filter(|symbol| {
-            ctx.ctx
-                .hir
-                .symbols
-                .get(**symbol)
-                .is_some_and(|symbol| matches!(symbol.def, SymbolDef::EffectParam { .. }))
+        .filter_map(|arg| match arg {
+            HirGenericArg::Type(ty) => lower_type_ref(ctx.ctx, *ty).map(CallableGenericArg::Type),
+            HirGenericArg::EffectRow(row) => Some(CallableGenericArg::EffectRow(lower_effect_row(
+                ctx.ctx, row,
+            ))),
+            HirGenericArg::Wildcard { .. } => None,
         })
-        .count()
-}
-
-fn item_type_params(
-    ctx: &BodyCollectContext<'_, '_>,
-    item: etas_hir::HirItemId,
-) -> Vec<etas_hir::SymbolId> {
-    match &ctx.ctx.hir.items[item] {
-        etas_hir::HirItem::Flow(flow) => flow.type_params.clone(),
-        etas_hir::HirItem::TypeAlias(decl) => decl.type_params.clone(),
-        etas_hir::HirItem::Type(decl) => decl.type_params.clone(),
-        etas_hir::HirItem::Enum(decl) => decl.type_params.clone(),
-        etas_hir::HirItem::Spec(decl) => decl.type_params.clone(),
-        etas_hir::HirItem::Effect(decl) => decl.type_params.clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn callee_item(
-    ctx: &BodyCollectContext<'_, '_>,
-    callee: etas_hir::HirExprId,
-) -> Option<etas_hir::HirItemId> {
-    let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
-        return None;
-    };
-    let ResolveResult::Resolved(symbol) = path.resolution else {
-        return None;
-    };
-    match ctx.ctx.hir.symbols.get(symbol)?.def {
-        SymbolDef::Item { item } | SymbolDef::TopLevelLet { item, .. } => Some(item),
-        _ => None,
-    }
+        .collect()
 }
