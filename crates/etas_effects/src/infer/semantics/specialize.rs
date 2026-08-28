@@ -6,6 +6,8 @@ pub(crate) enum EffectSpecializationError {
     StaticString(etas_hir_analysis::static_string::StaticStringEvaluationError),
     Type(etas_types::TypeSubstitutionError),
     MissingTypeBinding { param: String },
+    MissingEffectRowBinding { param: String },
+    MissingLatentEffectBinding { param: String },
 }
 
 impl std::fmt::Display for EffectSpecializationError {
@@ -16,6 +18,16 @@ impl std::fmt::Display for EffectSpecializationError {
             Self::MissingTypeBinding { param } => {
                 write!(f, "checked generic instantiation is missing `{param}`")
             }
+            Self::MissingEffectRowBinding { param } => {
+                write!(
+                    f,
+                    "checked generic instantiation is missing `effect {param}`"
+                )
+            }
+            Self::MissingLatentEffectBinding { param } => write!(
+                f,
+                "checked latent flow summary is missing for `effect {param}`"
+            ),
         }
     }
 }
@@ -34,6 +46,13 @@ impl From<etas_types::TypeSubstitutionError> for EffectSpecializationError {
     fn from(error: etas_types::TypeSubstitutionError) -> Self {
         Self::Type(error)
     }
+}
+
+#[derive(Default)]
+pub(crate) struct CheckedGenericBindings {
+    pub(crate) types: Vec<(String, TypeId)>,
+    pub(crate) effect_rows: Vec<(String, etas_types::EffectRowRef)>,
+    pub(crate) deferred_effect_rows: Vec<(String, HirExprId)>,
 }
 
 impl EffectSemantics<'_> {
@@ -60,14 +79,50 @@ impl EffectSemantics<'_> {
             };
             bindings.push((symbol.name.clone(), arg));
         }
-        let type_bindings =
-            self.call_type_bindings(callee, site, state.owner.map(EffectUnit::Item));
-        self.require_effect_type_bindings(callee, summary, &type_bindings)?;
-        if bindings.is_empty() && type_bindings.is_empty() {
+        let generic_bindings = self.call_generic_bindings(site.call);
+        let mut effect_row_bindings = generic_bindings.effect_rows.clone();
+        effect_row_bindings.extend(generic_bindings.deferred_effect_rows.iter().map(
+            |(name, _)| {
+                (
+                    name.clone(),
+                    etas_types::EffectRowRef {
+                        effects: Vec::new(),
+                        tail: None,
+                    },
+                )
+            },
+        ));
+        self.require_effect_type_bindings(callee, summary, &generic_bindings.types)?;
+        self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
+        if bindings.is_empty()
+            && generic_bindings.types.is_empty()
+            && effect_row_bindings.is_empty()
+        {
             return Ok(summary.clone());
         }
 
-        self.specialize_summary_with_bindings(summary, &bindings, &type_bindings)
+        let mut specialized = self.specialize_summary_with_bindings(
+            summary,
+            &bindings,
+            &generic_bindings.types,
+            &effect_row_bindings,
+        )?;
+        for (param, expr) in &generic_bindings.deferred_effect_rows {
+            let Some(sources) = self.latent_sources_for_expr(state, *expr) else {
+                return Err(EffectSpecializationError::MissingLatentEffectBinding {
+                    param: param.clone(),
+                });
+            };
+            for source in sources {
+                let Some(source_summary) = self.inputs.unit_effects.get(&source) else {
+                    return Err(EffectSpecializationError::MissingLatentEffectBinding {
+                        param: param.clone(),
+                    });
+                };
+                specialized.seq_assign(source_summary);
+            }
+        }
+        Ok(specialized)
     }
 
     pub(crate) fn call_bindings_from_param_names(
@@ -89,61 +144,17 @@ impl EffectSemantics<'_> {
             .collect()
     }
 
-    pub(crate) fn call_type_bindings(
-        &self,
-        callee: EffectUnit,
-        site: &CallSite<EffectUnit>,
-        caller: Option<EffectUnit>,
-    ) -> Vec<(String, TypeId)> {
-        let type_params = self.unit_type_params(callee);
-        if type_params.is_empty() {
-            return Vec::new();
-        }
-        let Some(HirExpr::Call {
-            generic_args, args, ..
-        }) = self.hir.exprs.get(site.call)
-        else {
-            return Vec::new();
-        };
-
-        let mut bindings = Vec::new();
-        let type_param_names = type_params
-            .iter()
-            .filter_map(|symbol| {
-                let symbol = self.hir.symbols.get(*symbol)?;
-                matches!(symbol.def, SymbolDef::TypeParam { .. }).then(|| symbol.name.clone())
+    pub(crate) fn call_generic_bindings(&self, call: HirExprId) -> CheckedGenericBindings {
+        self.types
+            .facts
+            .generic_instantiations
+            .get(&call)
+            .map(|fact| CheckedGenericBindings {
+                types: fact.type_bindings.clone(),
+                effect_rows: fact.effect_row_bindings.clone(),
+                deferred_effect_rows: fact.deferred_effect_row_bindings.clone(),
             })
-            .collect::<Vec<_>>();
-
-        for (param_name, generic_arg) in type_param_names.iter().zip(generic_args.iter()) {
-            let HirGenericArg::Type(ty) = generic_arg else {
-                continue;
-            };
-            if let Some(ty) = self.types.facts.type_refs.get(ty).copied() {
-                insert_type_binding(&mut bindings, param_name.clone(), ty);
-            }
-        }
-
-        if let Some(param_types) = self.unit_param_types(callee) {
-            for (param_ty, arg) in param_types.iter().copied().zip(args.iter()) {
-                let Some(arg_expr) = arg_expr(arg) else {
-                    continue;
-                };
-                let Some(actual_ty) = self.types.facts.expr_types.get(&arg_expr).copied() else {
-                    continue;
-                };
-                collect_type_bindings_from_type_pattern(
-                    &self.types.store,
-                    param_ty,
-                    actual_ty,
-                    &type_param_names,
-                    &mut bindings,
-                );
-            }
-        }
-
-        self.infer_type_bindings_from_spec_bounds(&type_params, caller, &mut bindings);
-        bindings
+            .unwrap_or_default()
     }
 
     pub(crate) fn unit_type_params(&self, unit: EffectUnit) -> Vec<etas_hir::SymbolId> {
@@ -160,111 +171,41 @@ impl EffectSemantics<'_> {
         }
     }
 
-    pub(crate) fn unit_param_types(&self, unit: EffectUnit) -> Option<Vec<TypeId>> {
-        let EffectUnit::Item(item) = unit else {
-            return None;
-        };
-        match self.types.facts.item_signatures.get(&item)? {
-            ItemSignature::Flow(signature)
-            | ItemSignature::Agent(signature)
-            | ItemSignature::Tool(signature) => Some(signature.params.clone()),
-            ItemSignature::TopLevelLet(_) => None,
-        }
-    }
-
-    pub(crate) fn infer_type_bindings_from_spec_bounds(
-        &self,
-        callee_type_params: &[etas_hir::SymbolId],
-        caller: Option<EffectUnit>,
-        bindings: &mut Vec<(String, TypeId)>,
-    ) {
-        let type_param_names = callee_type_params
-            .iter()
-            .filter_map(|symbol| {
-                let symbol = self.hir.symbols.get(*symbol)?;
-                matches!(symbol.def, SymbolDef::TypeParam { .. }).then(|| symbol.name.clone())
-            })
-            .collect::<Vec<_>>();
-        let caller_type_param_by_name = caller
-            .map(|unit| self.unit_type_params(unit))
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|symbol| {
-                let symbol_data = self.hir.symbols.get(symbol)?;
-                matches!(symbol_data.def, SymbolDef::TypeParam { .. })
-                    .then(|| (symbol_data.name.clone(), symbol))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let snapshot = bindings.clone();
-            for callee_type_param in callee_type_params {
-                let Some(bounds) = self.types.facts.type_param_bounds.get(callee_type_param) else {
-                    continue;
-                };
-                for bound in bounds {
-                    let Some(actual_ty) = snapshot
-                        .iter()
-                        .find(|(name, _)| name == &bound.param_name)
-                        .map(|(_, ty)| *ty)
-                    else {
-                        continue;
-                    };
-                    let Some(actual_name) = named_type_name(&self.types.store, actual_ty) else {
-                        continue;
-                    };
-                    let Some(actual_param) = caller_type_param_by_name.get(&actual_name) else {
-                        continue;
-                    };
-                    let Some(actual_bounds) = self.types.facts.type_param_bounds.get(actual_param)
-                    else {
-                        continue;
-                    };
-                    for actual_bound in actual_bounds.iter().filter(|candidate| {
-                        candidate.spec_symbol == bound.spec_symbol
-                            && candidate.args.len() == bound.args.len()
-                    }) {
-                        for (pattern, actual) in bound
-                            .args
-                            .iter()
-                            .copied()
-                            .zip(actual_bound.args.iter().copied())
-                        {
-                            if collect_type_bindings_from_type_pattern(
-                                &self.types.store,
-                                pattern,
-                                actual,
-                                &type_param_names,
-                                bindings,
-                            ) {
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     pub(crate) fn specialize_summary_with_bindings(
         &self,
         summary: &EffectSummary,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
+        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
     ) -> Result<EffectSummary, EffectSpecializationError> {
-        if bindings.is_empty() && type_bindings.is_empty() {
+        if bindings.is_empty() && type_bindings.is_empty() && effect_row_bindings.is_empty() {
             return Ok(summary.clone());
         }
         let mut specialized = summary.clone();
-        specialized.escaping_effects =
-            self.specialize_effect_row(&summary.escaping_effects, bindings, type_bindings)?;
-        specialized.requested_actions =
-            self.specialize_effect_row(&summary.requested_actions, bindings, type_bindings)?;
-        specialized.default_actions =
-            self.specialize_effect_row(&summary.default_actions, bindings, type_bindings)?;
-        specialized.handled_actions =
-            self.specialize_effect_row(&summary.handled_actions, bindings, type_bindings)?;
+        specialized.escaping_effects = self.specialize_effect_row(
+            &summary.escaping_effects,
+            bindings,
+            type_bindings,
+            effect_row_bindings,
+        )?;
+        specialized.requested_actions = self.specialize_effect_row(
+            &summary.requested_actions,
+            bindings,
+            type_bindings,
+            effect_row_bindings,
+        )?;
+        specialized.default_actions = self.specialize_effect_row(
+            &summary.default_actions,
+            bindings,
+            type_bindings,
+            effect_row_bindings,
+        )?;
+        specialized.handled_actions = self.specialize_effect_row(
+            &summary.handled_actions,
+            bindings,
+            type_bindings,
+            effect_row_bindings,
+        )?;
         specialized.action_trace =
             self.specialize_action_trace(&summary.action_trace, bindings, type_bindings)?;
         Ok(specialized)
@@ -287,6 +228,7 @@ impl EffectSemantics<'_> {
         row: &EffectRow,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
+        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
     ) -> Result<EffectRow, EffectSpecializationError> {
         let effects = row
             .effects
@@ -294,10 +236,22 @@ impl EffectSemantics<'_> {
             .cloned()
             .map(|effect| self.specialize_effect(effect, bindings, type_bindings))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(EffectRow {
+        let mut specialized = EffectRow {
             effects: EffectSet::from_iter(effects),
             open: row.open,
-        })
+        };
+        if let Some(open) = row.open {
+            for (name, binding) in effect_row_bindings {
+                if effect_var_id_from_name(name) != open {
+                    continue;
+                }
+                let binding = self.row_from_type_ref(binding);
+                specialized.effects.union_assign(&binding.effects);
+                specialized.open = binding.open;
+                break;
+            }
+        }
+        Ok(specialized)
     }
 
     pub(crate) fn specialize_effect(
@@ -429,6 +383,43 @@ impl EffectSemantics<'_> {
         self.require_named_effect_type_bindings(&params, summary, type_bindings)
     }
 
+    fn require_effect_row_bindings(
+        &self,
+        callee: EffectUnit,
+        summary: &EffectSummary,
+        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+    ) -> Result<(), EffectSpecializationError> {
+        let params = self
+            .unit_type_params(callee)
+            .into_iter()
+            .filter_map(|symbol| self.hir.symbols.get(symbol))
+            .filter(|symbol| matches!(symbol.def, SymbolDef::EffectParam { .. }))
+            .map(|symbol| symbol.name.clone())
+            .collect::<Vec<_>>();
+        self.require_named_effect_row_bindings(&params, summary, effect_row_bindings)
+    }
+
+    pub(crate) fn require_named_effect_row_bindings(
+        &self,
+        params: &[String],
+        summary: &EffectSummary,
+        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+    ) -> Result<(), EffectSpecializationError> {
+        let bound = effect_row_bindings
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        for param in params {
+            if bound.contains(param.as_str()) || !summary_contains_effect_row(summary, param) {
+                continue;
+            }
+            return Err(EffectSpecializationError::MissingEffectRowBinding {
+                param: param.clone(),
+            });
+        }
+        Ok(())
+    }
+
     pub(crate) fn require_named_effect_type_bindings(
         &self,
         params: &[String],
@@ -531,4 +522,16 @@ impl EffectSemantics<'_> {
             }
         }
     }
+}
+
+fn summary_contains_effect_row(summary: &EffectSummary, name: &str) -> bool {
+    let open = effect_var_id_from_name(name);
+    [
+        &summary.escaping_effects,
+        &summary.requested_actions,
+        &summary.default_actions,
+        &summary.handled_actions,
+    ]
+    .into_iter()
+    .any(|row| row.open == Some(open))
 }

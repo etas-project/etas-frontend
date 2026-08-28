@@ -26,7 +26,9 @@ pub struct ExternalEffectSummaryMetadata {
     #[serde(default)]
     pub param_names: Vec<String>,
     #[serde(default)]
-    pub generic_param_names: Vec<String>,
+    pub type_param_names: Vec<String>,
+    #[serde(default)]
+    pub effect_param_names: Vec<String>,
     pub public_effects: ExternalEffectRowMetadata,
     pub requested_actions: ExternalEffectRowMetadata,
     #[serde(default)]
@@ -70,6 +72,8 @@ pub struct ExternalLatentFlowSummaryMetadata {
 pub struct ExternalEffectRowMetadata {
     #[serde(default)]
     pub effects: Vec<ExternalEffectMetadata>,
+    #[serde(default)]
+    pub tail: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

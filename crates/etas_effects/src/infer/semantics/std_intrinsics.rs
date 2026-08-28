@@ -1014,6 +1014,8 @@ mod tests {
             call,
             GenericInstantiationFact {
                 type_bindings: vec![("T".to_owned(), concrete_arg)],
+                effect_row_bindings: Vec::new(),
+                deferred_effect_row_bindings: Vec::new(),
             },
         );
         let flow = etas_std::FlowDecl {

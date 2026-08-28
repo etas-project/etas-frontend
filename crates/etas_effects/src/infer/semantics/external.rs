@@ -60,27 +60,67 @@ impl EffectSemantics<'_> {
             return Ok(None);
         };
         let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
-        let type_bindings = self
+        let (type_bindings, mut effect_row_bindings, deferred_effect_row_bindings) = self
             .types
             .facts
             .generic_instantiations
             .get(&site.call)
             .map(|fact| {
-                fact.type_bindings
+                let deferred = fact
+                    .deferred_effect_row_bindings
                     .iter()
-                    .filter(|(name, _)| metadata.generic_param_names.contains(name))
+                    .filter(|(name, _)| metadata.effect_param_names.contains(name))
                     .cloned()
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (
+                    fact.type_bindings
+                        .iter()
+                        .filter(|(name, _)| metadata.type_param_names.contains(name))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    fact.effect_row_bindings
+                        .iter()
+                        .filter(|(name, _)| metadata.effect_param_names.contains(name))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    deferred,
+                )
             })
             .unwrap_or_default();
+        effect_row_bindings.extend(deferred_effect_row_bindings.iter().map(|(name, _)| {
+            (
+                name.clone(),
+                etas_types::EffectRowRef {
+                    effects: Vec::new(),
+                    tail: None,
+                },
+            )
+        }));
         self.require_named_effect_type_bindings(
-            &metadata.generic_param_names,
+            &metadata.type_param_names,
             &summary,
             &type_bindings,
         )?;
-        summary = self.specialize_summary_with_bindings(&summary, &bindings, &type_bindings)?;
+        self.require_named_effect_row_bindings(
+            &metadata.effect_param_names,
+            &summary,
+            &effect_row_bindings,
+        )?;
+        summary = self.specialize_summary_with_bindings(
+            &summary,
+            &bindings,
+            &type_bindings,
+            &effect_row_bindings,
+        )?;
         if self
-            .apply_external_function_parameter_effects(&mut summary, site, state)
+            .apply_external_function_parameter_effects(
+                &mut summary,
+                site,
+                state,
+                &type_bindings,
+                &effect_row_bindings,
+                &deferred_effect_row_bindings,
+            )?
             .is_none()
         {
             return Ok(None);
@@ -109,6 +149,21 @@ impl EffectSemantics<'_> {
             let handled = handled_effects.contains(&effect);
             self.record_external_summary_requested_action(&mut summary, effect, handled, span);
         }
+        summary.escaping_effects.open = metadata
+            .public_effects
+            .tail
+            .as_deref()
+            .map(effect_var_id_from_name);
+        summary.requested_actions.open = metadata
+            .requested_actions
+            .tail
+            .as_deref()
+            .map(effect_var_id_from_name);
+        summary.handled_actions.open = metadata
+            .handled_requested_actions
+            .tail
+            .as_deref()
+            .map(effect_var_id_from_name);
         Some(summary)
     }
 
@@ -211,15 +266,18 @@ impl EffectSemantics<'_> {
         summary: &mut EffectSummary,
         site: &CallSite<EffectUnit>,
         state: &EffectState,
-    ) -> Option<()> {
+        type_bindings: &[(String, TypeId)],
+        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+        deferred_effect_row_bindings: &[(String, HirExprId)],
+    ) -> Result<Option<()>, super::specialize::EffectSpecializationError> {
         let Some(callee_input) = self
             .flow_type_for_expr(site.callee_expr)
             .map(|flow| flow.input.clone())
         else {
-            return Some(());
+            return Ok(Some(()));
         };
         let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(site.call) else {
-            return Some(());
+            return Ok(Some(()));
         };
         for (index, param_ty) in callee_input.iter().enumerate() {
             let Some(arg) = args.get(index).and_then(arg_expr) else {
@@ -229,16 +287,44 @@ impl EffectSemantics<'_> {
                 continue;
             };
             if let Some(row) = &flow.effects {
-                self.apply_public_row_to_summary(summary, &self.row_from_type_ref(row), site.span);
+                if row.tail.as_ref().is_some_and(|tail| {
+                    deferred_effect_row_bindings
+                        .iter()
+                        .any(|(name, source)| name == tail && *source == arg)
+                }) {
+                    let Some(sources) = self.latent_sources_for_expr(state, arg) else {
+                        return Ok(None);
+                    };
+                    for source in sources {
+                        let Some(source_summary) = self.inputs.unit_effects.get(&source).cloned()
+                        else {
+                            return Ok(None);
+                        };
+                        summary.seq_assign(&source_summary);
+                        self.record_latent_realization(source, site.call);
+                    }
+                    continue;
+                }
+                let row = self.specialize_effect_row(
+                    &self.row_from_type_ref(row),
+                    &[],
+                    type_bindings,
+                    effect_row_bindings,
+                )?;
+                summary.seq_assign(&self.summary_for_invoked_flow_row(row, site.span));
                 continue;
             }
-            let sources = self.latent_sources_for_expr(state, arg)?;
+            let Some(sources) = self.latent_sources_for_expr(state, arg) else {
+                return Ok(None);
+            };
             for source in sources {
-                let source_summary = self.inputs.unit_effects.get(&source)?.clone();
+                let Some(source_summary) = self.inputs.unit_effects.get(&source).cloned() else {
+                    return Ok(None);
+                };
                 summary.seq_assign(&source_summary);
                 self.record_latent_realization(source, site.call);
             }
         }
-        Some(())
+        Ok(Some(()))
     }
 }

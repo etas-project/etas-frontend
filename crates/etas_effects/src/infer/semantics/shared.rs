@@ -12,19 +12,18 @@ pub(super) use etas_hir_analysis::intraprocedural::{
     AnalysisStep, HandleParts, HirAnalysisSemantics,
 };
 pub(super) use etas_std::{RequirementSemantics, StdDecl};
-pub(super) use etas_types::{EffectArgRef, ItemSignature, SymbolTypeFact, Type, TypeId};
+pub(super) use etas_types::{EffectArgRef, SymbolTypeFact, Type, TypeId};
 
 pub(super) use crate::diagnostic_anchor::DiagnosticAnchor;
 pub(super) use crate::infer::unit::{EffectAnonymousFlowBody, EffectUnit};
 pub(super) use crate::{
     AGENTIC_INFER_ACTION, ActionInstanceRef, ActionTraceDomain, CoreEffect, Effect, EffectRow,
     EffectSet, EffectSummary, FrontendRejectionReason, InterpreterSupport, LimitKind,
-    LimitRequirement, LimitValue, RequirementFact, RequirementSet,
+    LimitRequirement, LimitValue, RequirementFact, RequirementSet, effect_var_id_from_name,
 };
 
 pub(super) use super::engine::{
-    DeferredSpecialization, arg_expr, collect_type_bindings_from_type_pattern,
-    external_summary_matches_path, insert_type_binding, limit_kind_from_std, named_type_name,
+    DeferredSpecialization, arg_expr, external_summary_matches_path, limit_kind_from_std,
 };
 pub(super) use super::state::EffectState;
 pub(super) use super::static_string::evaluate_static_string;

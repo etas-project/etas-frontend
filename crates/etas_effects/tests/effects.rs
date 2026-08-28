@@ -5416,6 +5416,162 @@ flow main() -> unit ![Console.stdout_write]
 }
 
 #[test]
+fn row_polymorphic_higher_order_call_preserves_concrete_effects() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow accepts_row<effect E>(f: () -> unit ![E]) -> unit ![E] {
+    f();
+}
+
+flow write_console() -> unit ![Console.stdout_write] {
+    perform Console.stdout_write("test");
+}
+
+flow main() -> unit ![Console.stdout_write] {
+    accepts_row<![Console.stdout_write]>(write_console);
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "main"))
+        .expect("main summary should be materialized");
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert_eq!(summary.escaping_effects.open, None, "{summary:?}");
+    assert_eq!(summary.requested_actions.open, None, "{summary:?}");
+    assert!(
+        summary.escaping_effects.effects.contains(&stdout),
+        "concrete higher-order effect must escape: {summary:?}"
+    );
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "concrete higher-order action must remain requested: {summary:?}"
+    );
+}
+
+#[test]
+fn row_polymorphic_higher_order_call_infers_anonymous_flow_effects() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow twice<effect E>(f: () -> unit ![E]) -> unit ![E] {
+    f();
+    f();
+}
+
+flow main() -> unit ![Console.stdout_write] {
+    twice(() => {
+        perform Console.stdout_write("test");
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "main"))
+        .expect("main summary should be materialized");
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert_eq!(summary.escaping_effects.open, None, "{summary:?}");
+    assert_eq!(summary.requested_actions.open, None, "{summary:?}");
+    assert!(
+        summary.escaping_effects.effects.contains(&stdout),
+        "{summary:?}"
+    );
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn row_polymorphic_inference_applies_type_substitution_before_solving_tail() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow apply<T, effect E>(f: () -> unit ![Error<T>, E]) -> unit ![Error<T>, E] {
+    f();
+}
+
+flow main() -> unit ![Error<i32>, Console.stdout_write] {
+    apply<i32>(() => {
+        perform Console.stdout_write("test");
+        perform Error<i32>.raise(1);
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "main"))
+        .expect("main summary should be materialized");
+    assert_eq!(summary.escaping_effects.open, None, "{summary:?}");
+    assert_eq!(summary.requested_actions.open, None, "{summary:?}");
+    assert!(
+        summary
+            .requested_actions
+            .effects
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                Effect::Action(ActionRef {
+                    tag: CONSOLE_TAG,
+                    action: CONSOLE_STDOUT_WRITE_ACTION,
+                })
+            )),
+        "{summary:?}"
+    );
+    assert!(
+        summary
+            .escaping_effects
+            .effects
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                Effect::Error(ty)
+                    if matches!(
+                        types.store.get(*ty),
+                        Some(etas_types::Type::Primitive(etas_types::PrimitiveType::I32))
+                    )
+            )),
+        "{summary:?}"
+    );
+}
+
+#[test]
 fn try_expr_captures_typed_error_effect_and_keeps_other_effects() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),

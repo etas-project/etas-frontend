@@ -517,6 +517,7 @@ fn declared_row(
         };
         output.effects.insert(summary);
     }
+    output.open = row.tail.as_deref().map(crate::effect_var_id_from_name);
     validate_declared_effect_row(registry, &output)?;
     Ok(Some(output))
 }

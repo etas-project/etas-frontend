@@ -176,6 +176,16 @@ impl<'a> EffectSemantics<'a> {
         for effect in row.effects.iter() {
             self.apply_effect_to_summary(summary, effect.clone(), span);
         }
+        summary.escaping_effects.open = row.open;
+    }
+
+    pub(crate) fn summary_for_invoked_flow_row(&self, row: EffectRow, span: Span) -> EffectSummary {
+        let mut summary = self.summary_from_public_row(row.clone(), span);
+        for effect in row.effects.iter().filter(|effect| effect.is_action()) {
+            summary.record_requested_action(effect.clone());
+        }
+        summary.requested_actions.open = row.open;
+        summary
     }
 
     pub(crate) fn apply_effect_to_summary(
@@ -438,7 +448,7 @@ impl<'a> EffectSemantics<'a> {
     ) -> Option<EffectSummary> {
         let flow = self.flow_type_for_expr(expr)?;
         let row = flow.effects.as_ref()?;
-        Some(self.summary_from_public_row(self.row_from_type_ref(row), span))
+        Some(self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span))
     }
 
     pub(crate) fn flow_type_for_expr(&self, expr: HirExprId) -> Option<&etas_types::FlowType> {
@@ -539,196 +549,6 @@ pub(super) fn arg_expr(arg: &HirArg) -> Option<HirExprId> {
     }
 }
 
-pub(super) fn insert_type_binding(
-    bindings: &mut Vec<(String, TypeId)>,
-    name: String,
-    ty: TypeId,
-) -> bool {
-    if bindings.iter().any(|(existing, _)| existing == &name) {
-        return false;
-    }
-    bindings.push((name, ty));
-    true
-}
-
-pub(super) fn named_type_name(store: &etas_types::TypeStore, ty: TypeId) -> Option<String> {
-    match store.get(ty)? {
-        Type::Named(name) => Some(name.name.clone()),
-        _ => None,
-    }
-}
-
-pub(super) fn collect_type_bindings_from_type_pattern(
-    store: &etas_types::TypeStore,
-    pattern: TypeId,
-    actual: TypeId,
-    allowed_names: &[String],
-    bindings: &mut Vec<(String, TypeId)>,
-) -> bool {
-    match store.get(pattern) {
-        Some(Type::Named(name)) if allowed_names.iter().any(|allowed| allowed == &name.name) => {
-            insert_type_binding(bindings, name.name.clone(), actual)
-        }
-        Some(Type::Array(pattern)) => match store.get(actual) {
-            Some(Type::Array(actual)) => collect_type_bindings_from_type_pattern(
-                store,
-                *pattern,
-                *actual,
-                allowed_names,
-                bindings,
-            ),
-            _ => false,
-        },
-        Some(Type::List(pattern)) => match store.get(actual) {
-            Some(Type::List(actual)) => collect_type_bindings_from_type_pattern(
-                store,
-                *pattern,
-                *actual,
-                allowed_names,
-                bindings,
-            ),
-            _ => false,
-        },
-        Some(Type::Set(pattern)) => match store.get(actual) {
-            Some(Type::Set(actual)) => collect_type_bindings_from_type_pattern(
-                store,
-                *pattern,
-                *actual,
-                allowed_names,
-                bindings,
-            ),
-            _ => false,
-        },
-        Some(Type::Slice(pattern)) => match store.get(actual) {
-            Some(Type::Slice(actual)) => collect_type_bindings_from_type_pattern(
-                store,
-                *pattern,
-                *actual,
-                allowed_names,
-                bindings,
-            ),
-            _ => false,
-        },
-        Some(Type::Option(pattern)) => match store.get(actual) {
-            Some(Type::Option(actual)) => collect_type_bindings_from_type_pattern(
-                store,
-                *pattern,
-                *actual,
-                allowed_names,
-                bindings,
-            ),
-            _ => false,
-        },
-        Some(Type::Result {
-            ok: pattern_ok,
-            err: pattern_err,
-        }) => match store.get(actual) {
-            Some(Type::Result {
-                ok: actual_ok,
-                err: actual_err,
-            }) => {
-                let ok_changed = collect_type_bindings_from_type_pattern(
-                    store,
-                    *pattern_ok,
-                    *actual_ok,
-                    allowed_names,
-                    bindings,
-                );
-                let err_changed = collect_type_bindings_from_type_pattern(
-                    store,
-                    *pattern_err,
-                    *actual_err,
-                    allowed_names,
-                    bindings,
-                );
-                ok_changed || err_changed
-            }
-            _ => false,
-        },
-        Some(Type::Map {
-            key: pattern_key,
-            value: pattern_value,
-        })
-        | Some(Type::Store {
-            key: pattern_key,
-            value: pattern_value,
-        }) => match store.get(actual) {
-            Some(Type::Map {
-                key: actual_key,
-                value: actual_value,
-            })
-            | Some(Type::Store {
-                key: actual_key,
-                value: actual_value,
-            }) => {
-                let key_changed = collect_type_bindings_from_type_pattern(
-                    store,
-                    *pattern_key,
-                    *actual_key,
-                    allowed_names,
-                    bindings,
-                );
-                let value_changed = collect_type_bindings_from_type_pattern(
-                    store,
-                    *pattern_value,
-                    *actual_value,
-                    allowed_names,
-                    bindings,
-                );
-                key_changed || value_changed
-            }
-            _ => false,
-        },
-        Some(Type::Tuple(pattern_elements)) => match store.get(actual) {
-            Some(Type::Tuple(actual_elements))
-                if pattern_elements.len() == actual_elements.len() =>
-            {
-                pattern_elements
-                    .iter()
-                    .copied()
-                    .zip(actual_elements.iter().copied())
-                    .fold(false, |changed, (pattern, actual)| {
-                        collect_type_bindings_from_type_pattern(
-                            store,
-                            pattern,
-                            actual,
-                            allowed_names,
-                            bindings,
-                        ) || changed
-                    })
-            }
-            _ => false,
-        },
-        Some(Type::Applied {
-            constructor: pattern_constructor,
-            args: pattern_args,
-        }) => match store.get(actual) {
-            Some(Type::Applied {
-                constructor: actual_constructor,
-                args: actual_args,
-            }) if pattern_constructor == actual_constructor
-                && pattern_args.len() == actual_args.len() =>
-            {
-                pattern_args
-                    .iter()
-                    .copied()
-                    .zip(actual_args.iter().copied())
-                    .fold(false, |changed, (pattern, actual)| {
-                        collect_type_bindings_from_type_pattern(
-                            store,
-                            pattern,
-                            actual,
-                            allowed_names,
-                            bindings,
-                        ) || changed
-                    })
-            }
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{EffectSemantics, external_summary_matches_path};
@@ -749,7 +569,8 @@ mod tests {
                 "run".to_owned(),
             ],
             param_names: Vec::new(),
-            generic_param_names: Vec::new(),
+            type_param_names: Vec::new(),
+            effect_param_names: Vec::new(),
             public_effects: Default::default(),
             requested_actions: Default::default(),
             handled_requested_actions: Default::default(),

@@ -653,7 +653,7 @@ impl EffectSemantics<'_> {
         };
         if let Some(row) = &flow.effects {
             return DeferredSpecialization::Solved(Box::new(
-                self.summary_from_public_row(self.row_from_type_ref(row), span),
+                self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span),
             ));
         }
         let Some(index) = self.param_index(callee_item, param_symbol) else {
