@@ -19,8 +19,9 @@ use etas_frontend::{
     ModulePath, ModuleTopoOrder, ParsedSource, ProjectChangeSet, ProjectCompileOptions,
     ProjectEntry, ProjectEntryFact, ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
     ProjectExternalActionGenericParamInput, ProjectExternalActionSignatureInput,
-    ProjectExternalCallableGenericParamInput, ProjectExternalCallableSpecSatisfactionInput,
-    ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
+    ProjectExternalCallableGenericParamInput, ProjectExternalCallableGenericParamKindInput,
+    ProjectExternalCallableSpecSatisfactionInput, ProjectExternalEffectArgInput,
+    ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
     ProjectExternalEffectSummaryInput, ProjectExternalExportInput,
     ProjectExternalFlowSignatureInput, ProjectExternalLatentFlowSummaryInput,
     ProjectExternalModuleInput, ProjectExternalNamedSignatureInput, ProjectExternalPackageInput,
@@ -153,6 +154,7 @@ fn external_network_effect_row() -> ProjectExternalEffectRowInput {
             path: vec!["Network".to_owned()],
             args: Vec::new(),
         }],
+        tail: None,
     }
 }
 
@@ -164,6 +166,7 @@ fn external_error_effect_row(path: Vec<String>) -> ProjectExternalEffectRowInput
                 ProjectExternalTypeInput::Named(path),
             )],
         }],
+        tail: None,
     }
 }
 
@@ -5100,7 +5103,10 @@ fn external_effect(
 fn external_effect_row(
     effects: Vec<ProjectExternalEffectRefInput>,
 ) -> ProjectExternalEffectRowInput {
-    ProjectExternalEffectRowInput { effects }
+    ProjectExternalEffectRowInput {
+        effects,
+        tail: None,
+    }
 }
 
 fn external_effect_path_arg(path: &[&str]) -> ProjectExternalEffectArgInput {
@@ -7559,6 +7565,7 @@ fn frontend_check_project_uses_external_trace_spec_metadata_for_conformance() {
                         path: vec!["Console".to_owned(), "stdout_write".to_owned()],
                         args: Vec::new(),
                     }],
+                    tail: None,
                 }),
                 guard: None,
                 target: None,
@@ -7650,6 +7657,7 @@ fn frontend_check_project_applies_external_trace_spec_metadata_monitor() {
                         path: vec!["Console".to_owned(), "stdout_write".to_owned()],
                         args: Vec::new(),
                     }],
+                    tail: None,
                 }),
                 guard: None,
                 target: None,
@@ -7783,6 +7791,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
                         path: vec!["Console".to_owned(), "stdout_write".to_owned()],
                         args: Vec::new(),
                     }],
+                    tail: None,
                 }),
                 guard: None,
                 target: None,
@@ -7912,6 +7921,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
                         path: vec!["Console".to_owned(), "stdout_write".to_owned()],
                         args: Vec::new(),
                     }],
+                    tail: None,
                 }),
                 guard: None,
                 target: None,
@@ -8210,6 +8220,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
             ],
             generic_params: vec![ProjectExternalActionGenericParamInput {
                 name: "R".to_owned(),
+                kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: Vec::new(),
             }],
             params: Vec::new(),
@@ -8225,6 +8236,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
         .push(ProjectExternalFlowSignatureInput {
             generic_params: vec![ProjectExternalCallableGenericParamInput {
                 name: "R".to_owned(),
+                kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: Vec::new(),
             }],
             path: vec![
@@ -8333,6 +8345,144 @@ flow main() -> unit {
 }
 
 #[test]
+fn frontend_check_project_specializes_external_effect_row_generic() {
+    let frontend = Frontend;
+    let mut environment = external_environment();
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(2),
+            name: "accepts_row".to_owned(),
+            visibility: etas_hir::Visibility::Public,
+        });
+    environment.external_public_metadata[0]
+        .flows
+        .push(ProjectExternalFlowSignatureInput {
+            generic_params: vec![ProjectExternalCallableGenericParamInput {
+                name: "E".to_owned(),
+                kind: ProjectExternalCallableGenericParamKindInput::Effect,
+                bounds: Vec::new(),
+            }],
+            path: vec![
+                "dep".to_owned(),
+                "math".to_owned(),
+                "accepts_row".to_owned(),
+            ],
+            param_names: vec!["callback".to_owned()],
+            params: vec![ProjectExternalTypeInput::Function {
+                input: Vec::new(),
+                output: Box::new(ProjectExternalTypeInput::Primitive("unit".to_owned())),
+                effects: Some(ProjectExternalEffectRowInput {
+                    effects: Vec::new(),
+                    tail: Some("E".to_owned()),
+                }),
+            }],
+            output: ProjectExternalTypeInput::Primitive("unit".to_owned()),
+            effects: Some(ProjectExternalEffectRowInput {
+                effects: Vec::new(),
+                tail: Some("E".to_owned()),
+            }),
+            visibility: "public".to_owned(),
+        });
+    environment.external_public_metadata[0]
+        .effect_summaries
+        .push(ProjectExternalEffectSummaryInput {
+            item: vec![
+                "dep".to_owned(),
+                "math".to_owned(),
+                "accepts_row".to_owned(),
+            ],
+            public_effects: ProjectExternalEffectRowInput {
+                effects: Vec::new(),
+                tail: Some("E".to_owned()),
+            },
+            requested_actions: ProjectExternalEffectRowInput {
+                effects: Vec::new(),
+                tail: Some("E".to_owned()),
+            },
+            handled_requested_actions: ProjectExternalEffectRowInput::default(),
+            latent_flows: Vec::new(),
+        });
+
+    let output = frontend.check_project(ProjectInput {
+        project_root: std::path::PathBuf::from("/workspace/external-effect-row"),
+        source_root: None,
+        options: Default::default(),
+        environment,
+        sources: vec![SourceInput {
+            id: etas_core::SourceId(59_002),
+            path: Some(std::path::PathBuf::from("src/app/main.es")),
+            text: r#"module app.main;
+
+import dep.math.accepts_row;
+
+flow write_console() -> unit ![Console.stdout_write] {
+    perform Console.stdout_write("test");
+}
+
+flow main() -> unit ![Console.stdout_write] {
+    accepts_row<![Console.stdout_write]>(write_console);
+    return;
+}
+"#
+            .to_owned(),
+            kind: SourceKind::SourceProjectFile,
+        }],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["app".to_owned(), "main".to_owned()],
+            }),
+            flow: "main".to_owned(),
+        },
+    });
+
+    assert!(output.checked.is_some(), "{:#?}", output.diagnostics);
+    assert!(
+        !output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error),
+        "{:#?}",
+        output.diagnostics
+    );
+    let checked = output.checked.as_ref().expect("checked output");
+    let effects = output.effects.as_ref().expect("effect output");
+    let main = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow) => checked
+                .hir
+                .symbols
+                .get(flow.symbol)
+                .is_some_and(|symbol| symbol.name == "main")
+                .then_some(id),
+            _ => None,
+        })
+        .expect("main flow should exist");
+    let summary = effects
+        .facts
+        .item_effects
+        .get(&main)
+        .expect("main effect summary should exist");
+    let stdout = Effect::Action(etas_effects::ActionRef {
+        tag: etas_effects::CONSOLE_TAG,
+        action: etas_effects::CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert_eq!(summary.escaping_effects.open, None, "{summary:#?}");
+    assert_eq!(summary.requested_actions.open, None, "{summary:#?}");
+    assert!(
+        summary.escaping_effects.effects.contains(&stdout),
+        "{summary:#?}"
+    );
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "{summary:#?}"
+    );
+}
+
+#[test]
 fn frontend_check_project_replays_external_action_selector_defaults_from_metadata() {
     let frontend = Frontend;
     let mut environment = external_environment();
@@ -8361,6 +8511,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
             ],
             generic_params: vec![ProjectExternalActionGenericParamInput {
                 name: "resource".to_owned(),
+                kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: Vec::new(),
             }],
             params: Vec::new(),
@@ -9208,6 +9359,10 @@ public flow read<R>() -> unit ![Storage.read<R>] {
     return;
 }
 
+public flow accepts_row<effect E>(f: () -> unit ![E]) -> unit ![E] {
+    f();
+}
+
 flow main() -> unit {
     return;
 }
@@ -9288,6 +9443,15 @@ flow main() -> unit {
         }),
         "{summary:#?}"
     );
+    let row_summary = metadata
+        .public_metadata
+        .effect_summaries
+        .iter()
+        .find(|summary| summary.item == ["storage", "api", "accepts_row"])
+        .expect("row-polymorphic flow effect summary should be published");
+    assert_eq!(row_summary.public_effects.tail.as_deref(), Some("E"));
+    assert_eq!(row_summary.requested_actions.tail.as_deref(), Some("E"));
+    assert!(row_summary.latent_flows.is_empty(), "{row_summary:#?}");
 }
 
 #[test]
@@ -10447,13 +10611,77 @@ flow main() -> i32 {
     });
 
     assert!(output.checked.is_none());
+    let diagnostic = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            matches!(
+                diagnostic.code,
+                DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
+            ) && diagnostic
+                .message
+                .contains("invalid external package metadata")
+        })
+        .expect("malformed external metadata must fail closed");
+    assert_eq!(diagnostic.primary.span.source, etas_core::SourceId(44));
+}
+
+#[test]
+fn frontend_check_project_rejects_empty_external_type_paths_and_unknown_effect_tails() {
+    fn check(environment: ProjectEnvironmentInput, source: etas_core::SourceId) -> ProjectOutput {
+        Frontend.check_project(ProjectInput {
+            project_root: std::path::PathBuf::from("/workspace/demo"),
+            source_root: None,
+            options: Default::default(),
+            environment,
+            sources: vec![SourceInput {
+                id: source,
+                path: Some(std::path::PathBuf::from("src/app/a.es")),
+                text: r#"module app.a;
+
+import dep.math.{add};
+
+flow main() -> i32 {
+    return add(1, 2);
+}
+"#
+                .to_owned(),
+                kind: SourceKind::SourceProjectFile,
+            }],
+            entry: ProjectEntry {
+                module: Some(ModulePath {
+                    segments: vec!["app".to_owned(), "a".to_owned()],
+                }),
+                flow: "main".to_owned(),
+            },
+        })
+    }
+
+    let mut empty_path = external_environment();
+    empty_path.external_public_metadata[0].flows[0].params[0] =
+        ProjectExternalTypeInput::Named(Vec::new());
+    let output = check(empty_path, etas_core::SourceId(46));
+    assert!(output.checked.is_none());
     assert!(output.diagnostics.iter().any(|diagnostic| {
         matches!(
             diagnostic.code,
             DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
-        ) && diagnostic
-            .message
-            .contains("invalid external package metadata")
+        ) && diagnostic.message.contains("named type path")
+    }));
+
+    let mut unknown_tail = external_environment();
+    unknown_tail.external_public_metadata[0].flows[0].effects =
+        Some(ProjectExternalEffectRowInput {
+            effects: Vec::new(),
+            tail: Some("Missing".to_owned()),
+        });
+    let output = check(unknown_tail, etas_core::SourceId(47));
+    assert!(output.checked.is_none());
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code,
+            DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
+        ) && diagnostic.message.contains("effect-row tail `Missing`")
     }));
 }
 

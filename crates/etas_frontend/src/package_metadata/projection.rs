@@ -744,6 +744,14 @@ impl<'a> ProjectMetadataProjection<'a> {
             .map(|param| {
                 Ok(etas_package_metadata::GenericParam {
                     name: param.name.clone(),
+                    kind: match param.kind {
+                        etas_types::CallableGenericParamKind::Type => {
+                            etas_package_metadata::GenericParamKind::Type
+                        }
+                        etas_types::CallableGenericParamKind::Effect => {
+                            etas_package_metadata::GenericParamKind::Effect
+                        }
+                    },
                     bounds: param
                         .bounds
                         .iter()
@@ -1198,25 +1206,50 @@ impl<'a> ProjectMetadataProjection<'a> {
             let Some(path) = self.item_path(*item) else {
                 continue;
             };
-            let generic_names = self
+            let type_generic_names = self
                 .checked
                 .types
                 .item_signatures
                 .get(item)
-                .map(callable_generic_names)
+                .map(callable_type_generic_names)
+                .unwrap_or_default();
+            let effect_generic_names = self
+                .checked
+                .types
+                .item_signatures
+                .get(item)
+                .map(callable_effect_generic_names)
                 .unwrap_or_default();
             let public_effects = match self.public_contract_for_item(*item) {
-                Some(contract) => self.effect_row_metadata(&contract.public_row, &generic_names)?,
-                None => self.effect_row_metadata(&summary.escaping_effects, &generic_names)?,
+                Some(contract) => self.effect_row_metadata(
+                    &contract.public_row,
+                    &type_generic_names,
+                    &effect_generic_names,
+                )?,
+                None => self.effect_row_metadata(
+                    &summary.escaping_effects,
+                    &type_generic_names,
+                    &effect_generic_names,
+                )?,
             };
             summaries.push(MetadataEffectSummary {
                 item: path,
                 public_effects,
-                requested_actions: self
-                    .effect_row_metadata(&summary.requested_actions, &generic_names)?,
-                handled_requested_actions: self
-                    .handled_requested_action_row(summary, &generic_names)?,
-                latent_flows: self.latent_flow_summaries(*item, &generic_names)?,
+                requested_actions: self.effect_row_metadata(
+                    &summary.requested_actions,
+                    &type_generic_names,
+                    &effect_generic_names,
+                )?,
+                handled_requested_actions: self.handled_requested_action_row(
+                    summary,
+                    &type_generic_names,
+                    &effect_generic_names,
+                )?,
+                latent_flows: self.latent_flow_summaries(
+                    *item,
+                    &type_generic_names,
+                    &effect_generic_names,
+                )?,
             });
         }
         summaries.sort_by(|left, right| left.item.cmp(&right.item));
@@ -1303,6 +1336,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .iter()
                 .map(|effect| self.metadata_effect(effect))
                 .collect::<Result<Vec<_>, _>>()?,
+            tail: self.effect_row_tail(row, &BTreeSet::new())?,
         })
     }
 
@@ -1367,7 +1401,8 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn handled_requested_action_row(
         &self,
         summary: &etas_effects::EffectSummary,
-        generic_names: &BTreeSet<String>,
+        type_generic_names: &BTreeSet<String>,
+        effect_generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
         let coverage = EffectCoverage {
             registry: &self.effect_registry,
@@ -1385,9 +1420,22 @@ impl<'a> ProjectMetadataProjection<'a> {
                 coverage.row_covers(&summary.default_actions, &requested)
                     || coverage.row_covers(&summary.handled_actions, &requested)
             })
-            .map(|effect| self.summary_effect_ref_metadata(effect, generic_names))
+            .map(|effect| self.summary_effect_ref_metadata(effect, type_generic_names))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(MetadataEffectRow { effects })
+        let default_tail = self.effect_row_tail(&summary.default_actions, effect_generic_names)?;
+        let handled_tail = self.effect_row_tail(&summary.handled_actions, effect_generic_names)?;
+        let tail = match (default_tail, handled_tail) {
+            (Some(default), Some(handled)) if default != handled => {
+                return Err(PackageMetadataError::InvalidMetadataType {
+                    reason: format!(
+                        "handled action rows use incompatible effect parameters `{default}` and `{handled}`"
+                    ),
+                });
+            }
+            (Some(tail), _) | (_, Some(tail)) => Some(tail),
+            (None, None) => None,
+        };
+        Ok(MetadataEffectRow { effects, tail })
     }
 
     fn public_contract_for_item(
@@ -1404,7 +1452,8 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn latent_flow_summaries(
         &self,
         item: HirItemId,
-        generic_names: &BTreeSet<String>,
+        type_generic_names: &BTreeSet<String>,
+        effect_generic_names: &BTreeSet<String>,
     ) -> Result<Vec<MetadataLatentFlowSummary>, PackageMetadataError> {
         self.checked
             .effects
@@ -1416,13 +1465,18 @@ impl<'a> ProjectMetadataProjection<'a> {
                     let declared_bound = latent
                         .declared_bound
                         .as_ref()
-                        .map(|row| self.effect_row_metadata(row, generic_names))
+                        .map(|row| {
+                            self.effect_row_metadata(row, type_generic_names, effect_generic_names)
+                        })
                         .transpose()?
                         .unwrap_or_default();
                     Ok(MetadataLatentFlowSummary {
                         declared_bound,
-                        inferred_effects: self
-                            .effect_row_metadata(&latent.inferred, generic_names)?,
+                        inferred_effects: self.effect_row_metadata(
+                            &latent.inferred,
+                            type_generic_names,
+                            effect_generic_names,
+                        )?,
                     })
                 })
             })
@@ -1432,15 +1486,47 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn effect_row_metadata(
         &self,
         row: &EffectRow,
-        generic_names: &BTreeSet<String>,
+        type_generic_names: &BTreeSet<String>,
+        effect_generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
         Ok(MetadataEffectRow {
             effects: row
                 .effects
                 .iter()
-                .map(|effect| self.summary_effect_ref_metadata(effect, generic_names))
+                .map(|effect| self.summary_effect_ref_metadata(effect, type_generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
+            tail: self.effect_row_tail(row, effect_generic_names)?,
         })
+    }
+
+    fn effect_row_tail(
+        &self,
+        row: &EffectRow,
+        effect_generic_names: &BTreeSet<String>,
+    ) -> Result<Option<String>, PackageMetadataError> {
+        let Some(open) = row.open else {
+            return Ok(None);
+        };
+        let matches = effect_generic_names
+            .iter()
+            .filter(|name| etas_effects::effect_var_id_from_name(name) == open)
+            .cloned()
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [name] => Ok(Some(name.clone())),
+            [] => Err(PackageMetadataError::InvalidMetadataType {
+                reason: format!(
+                    "open effect row variable {:?} does not name a declared effect parameter",
+                    open
+                ),
+            }),
+            _ => Err(PackageMetadataError::InvalidMetadataType {
+                reason: format!(
+                    "open effect row variable {:?} is ambiguous in callable generic parameters",
+                    open
+                ),
+            }),
+        }
     }
 
     fn summary_effect_ref_metadata(
@@ -2346,6 +2432,7 @@ fn metadata_effect_row_ref(
             .iter()
             .map(|effect| metadata_effect_ref(effect, store))
             .collect::<Result<Vec<_>, _>>()?,
+        tail: row.tail.clone(),
     })
 }
 
@@ -2401,13 +2488,28 @@ fn metadata_effect_arg(
     }
 }
 
-fn callable_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
+fn callable_type_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
     match signature {
         ItemSignature::Flow(signature)
         | ItemSignature::Agent(signature)
         | ItemSignature::Tool(signature) => signature
             .generic_params
             .iter()
+            .filter(|param| param.kind == etas_types::CallableGenericParamKind::Type)
+            .map(|param| param.name.clone())
+            .collect(),
+        ItemSignature::TopLevelLet(_) => BTreeSet::new(),
+    }
+}
+
+fn callable_effect_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
+    match signature {
+        ItemSignature::Flow(signature)
+        | ItemSignature::Agent(signature)
+        | ItemSignature::Tool(signature) => signature
+            .generic_params
+            .iter()
+            .filter(|param| param.kind == etas_types::CallableGenericParamKind::Effect)
             .map(|param| param.name.clone())
             .collect(),
         ItemSignature::TopLevelLet(_) => BTreeSet::new(),

@@ -479,6 +479,14 @@ fn convert_external_generic_params(
         .iter()
         .map(|param| etas_types::ExternalCallableGenericParamInput {
             name: param.name.clone(),
+            kind: match param.kind {
+                crate::ProjectExternalCallableGenericParamKindInput::Type => {
+                    etas_types::ExternalCallableGenericParamKindInput::Type
+                }
+                crate::ProjectExternalCallableGenericParamKindInput::Effect => {
+                    etas_types::ExternalCallableGenericParamKindInput::Effect
+                }
+            },
             bounds: param
                 .bounds
                 .iter()
@@ -517,6 +525,7 @@ pub(super) fn convert_external_effect_row(
             .iter()
             .map(convert_external_effect_ref)
             .collect(),
+        tail: row.tail.clone(),
     }
 }
 

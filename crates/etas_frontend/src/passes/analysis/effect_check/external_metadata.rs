@@ -5,9 +5,9 @@ use etas_types::{EffectArgRef, TypeOutput};
 
 use super::anchors::ExternalImportAnchorIndex;
 use crate::{
-    ProjectExternalActionArgKindInput, ProjectExternalEffectArgInput,
-    ProjectExternalEffectRowInput, ProjectExternalPublicMetadataInput,
-    ProjectExternalTraceSpecClauseKindInput, ProjectInput,
+    ProjectExternalActionArgKindInput, ProjectExternalCallableGenericParamKindInput,
+    ProjectExternalEffectArgInput, ProjectExternalEffectRowInput,
+    ProjectExternalPublicMetadataInput, ProjectExternalTraceSpecClauseKindInput, ProjectInput,
 };
 
 pub(super) fn external_effect_metadata(
@@ -227,7 +227,7 @@ pub(super) fn external_effect_summaries(
         });
         let import_root = package.map(|package| package.import_root.clone());
         let param_names_by_item = external_param_names_by_item(metadata);
-        let generic_param_names_by_item = external_generic_param_names_by_item(metadata);
+        let generic_params_by_item = external_generic_params_by_item(metadata);
         for summary in &metadata.effect_summaries {
             let Some(summary_span) = anchors.item_span(metadata.package, &summary.item) else {
                 continue;
@@ -238,7 +238,7 @@ pub(super) fn external_effect_summaries(
                 package_identity.clone(),
                 import_root.clone(),
                 &param_names_by_item,
-                &generic_param_names_by_item,
+                &generic_params_by_item,
                 types,
             ) {
                 Ok(summary) => summaries.push(etas_effects::AnchoredExternalMetadata {
@@ -304,9 +304,13 @@ pub(super) fn external_effect_summaries(
                     import_root: import_root.clone(),
                     item: item.clone(),
                     param_names: param_names_by_item.get(item).cloned().unwrap_or_default(),
-                    generic_param_names: generic_param_names_by_item
+                    type_param_names: generic_params_by_item
                         .get(item)
-                        .cloned()
+                        .map(|params| params.type_params.clone())
+                        .unwrap_or_default(),
+                    effect_param_names: generic_params_by_item
+                        .get(item)
+                        .map(|params| params.effect_params.clone())
                         .unwrap_or_default(),
                     public_effects,
                     requested_actions: Default::default(),
@@ -324,7 +328,7 @@ fn external_effect_summary_metadata(
     package: Option<String>,
     import_root: Option<String>,
     param_names_by_item: &HashMap<Vec<String>, Vec<String>>,
-    generic_param_names_by_item: &HashMap<Vec<String>, Vec<String>>,
+    generic_params_by_item: &HashMap<Vec<String>, ExternalGenericParams>,
     types: &TypeOutput,
 ) -> Result<etas_effects::ExternalEffectSummaryMetadata, String> {
     let latent_flows = summary
@@ -345,9 +349,13 @@ fn external_effect_summary_metadata(
             .get(&summary.item)
             .cloned()
             .unwrap_or_default(),
-        generic_param_names: generic_param_names_by_item
+        type_param_names: generic_params_by_item
             .get(&summary.item)
-            .cloned()
+            .map(|params| params.type_params.clone())
+            .unwrap_or_default(),
+        effect_param_names: generic_params_by_item
+            .get(&summary.item)
+            .map(|params| params.effect_params.clone())
             .unwrap_or_default(),
         public_effects: external_effect_row(&summary.public_effects, types)?,
         requested_actions: external_effect_row(&summary.requested_actions, types)?,
@@ -478,6 +486,7 @@ fn external_effect_row(
                 })
             })
             .collect::<Result<Vec<_>, String>>()?,
+        tail: row.tail.clone(),
     })
 }
 
@@ -512,41 +521,52 @@ fn external_param_names_by_item(
         .collect()
 }
 
-fn external_generic_param_names_by_item(
+#[derive(Clone, Debug, Default)]
+struct ExternalGenericParams {
+    type_params: Vec<String>,
+    effect_params: Vec<String>,
+}
+
+fn external_generic_params_by_item(
     metadata: &ProjectExternalPublicMetadataInput,
-) -> HashMap<Vec<String>, Vec<String>> {
+) -> HashMap<Vec<String>, ExternalGenericParams> {
     metadata
         .flows
         .iter()
         .map(|signature| {
             (
                 signature.path.clone(),
-                signature
-                    .generic_params
-                    .iter()
-                    .map(|param| param.name.clone())
-                    .collect(),
+                split_external_generic_params(&signature.generic_params),
             )
         })
         .chain(metadata.agents.iter().map(|signature| {
             (
                 signature.path.clone(),
-                signature
-                    .generic_params
-                    .iter()
-                    .map(|param| param.name.clone())
-                    .collect(),
+                split_external_generic_params(&signature.generic_params),
             )
         }))
         .chain(metadata.tools.iter().map(|signature| {
             (
                 signature.path.clone(),
-                signature
-                    .generic_params
-                    .iter()
-                    .map(|param| param.name.clone())
-                    .collect(),
+                split_external_generic_params(&signature.generic_params),
             )
         }))
         .collect()
+}
+
+fn split_external_generic_params(
+    params: &[crate::ProjectExternalCallableGenericParamInput],
+) -> ExternalGenericParams {
+    let mut result = ExternalGenericParams::default();
+    for param in params {
+        match param.kind {
+            ProjectExternalCallableGenericParamKindInput::Type => {
+                result.type_params.push(param.name.clone());
+            }
+            ProjectExternalCallableGenericParamKindInput::Effect => {
+                result.effect_params.push(param.name.clone());
+            }
+        }
+    }
+    result
 }
