@@ -12,13 +12,10 @@ use crate::{
     pipeline::context::TypePipelineContext,
 };
 
-use super::validated_external::ValidatedExternalMetadata;
-
 pub fn apply_external_signature_input(
     ctx: &mut TypePipelineContext<'_>,
     input: &ExternalSignatureInput,
 ) {
-    let validated = ValidatedExternalMetadata::validate(ctx, input);
     let mut symbols = HashMap::<(ExternalPackageKey, Vec<String>), SymbolTypeFact>::new();
     let mut actions =
         HashMap::<(ExternalPackageKey, Vec<String>), crate::EffectActionSignature>::new();
@@ -32,9 +29,6 @@ pub fn apply_external_signature_input(
         .collect::<HashMap<_, _>>();
 
     for metadata in &input.metadata {
-        if !validated.contains(metadata.package) {
-            continue;
-        }
         let Some(span) = package_binding_span(input, metadata.package) else {
             continue;
         };
@@ -266,19 +260,15 @@ pub fn apply_external_signature_input(
                 .insert(binding.symbol, signature);
         }
     }
-    apply_external_spec_facts(ctx, input, &binding_symbols, &validated);
+    apply_external_spec_facts(ctx, input, &binding_symbols);
 }
 
 fn apply_external_spec_facts(
     ctx: &mut TypePipelineContext<'_>,
     input: &ExternalSignatureInput,
     binding_symbols: &HashMap<(ExternalPackageKey, Vec<String>), etas_hir::SymbolId>,
-    validated: &ValidatedExternalMetadata,
 ) {
     for metadata in &input.metadata {
-        if !validated.contains(metadata.package) {
-            continue;
-        }
         let Some(package_span) = package_binding_span(input, metadata.package) else {
             continue;
         };
