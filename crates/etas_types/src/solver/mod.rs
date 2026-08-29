@@ -295,7 +295,7 @@ fn solve_callable_constraint(
         .collect::<Vec<_>>();
     let mut type_generic_args = Vec::new();
     let mut effect_row_bindings = HashMap::new();
-    let mut deferred_effect_row_bindings = HashMap::new();
+    let mut deferred_effect_row_obligations = Vec::new();
     let mut generic_argument_failure = None;
     if input.explicit_generic_args.len() > input.generic_params.len() {
         generic_argument_failure = Some(format!(
@@ -377,6 +377,9 @@ fn solve_callable_constraint(
                 break;
             }
             for name in inference.deferred {
+                if effect_row_bindings.contains_key(&name) {
+                    continue;
+                }
                 let Some(expr) = input.arg_exprs.get(index).copied().flatten() else {
                     report.push(SolverFailure {
                         code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
@@ -387,24 +390,23 @@ fn solve_callable_constraint(
                     });
                     break;
                 };
-                if deferred_effect_row_bindings
-                    .insert(name.clone(), expr)
-                    .is_some_and(|existing| existing != expr)
-                {
-                    report.push(SolverFailure {
-                        code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                        span: input.origin.span,
-                        message: format!(
-                            "generic effect-row parameter `effect {name}` has incompatible latent flow sources"
-                        ),
+                if !deferred_effect_row_obligations.iter().any(
+                    |obligation: &crate::DeferredEffectRowObligation| {
+                        obligation.param == name && obligation.source == expr
+                    },
+                ) {
+                    deferred_effect_row_obligations.push(crate::DeferredEffectRowObligation {
+                        param: name,
+                        source: expr,
                     });
-                    break;
                 }
             }
         }
         for name in &effect_param_names {
             if effect_row_bindings.contains_key(name)
-                || deferred_effect_row_bindings.contains_key(name)
+                || deferred_effect_row_obligations
+                    .iter()
+                    .any(|obligation| obligation.param == *name)
             {
                 continue;
             }
@@ -502,25 +504,22 @@ fn solve_callable_constraint(
                     .map(|row| (name.clone(), row))
             })
             .collect::<Vec<_>>();
-        let deferred_effect_row_bindings = effect_param_names
-            .iter()
-            .filter_map(|name| {
-                deferred_effect_row_bindings
-                    .get(name)
-                    .copied()
-                    .map(|expr| (name.clone(), expr))
-            })
-            .collect::<Vec<_>>();
+        deferred_effect_row_obligations.sort_by_key(|obligation| {
+            effect_param_names
+                .iter()
+                .position(|name| name == &obligation.param)
+                .unwrap_or(effect_param_names.len())
+        });
         if !type_bindings.is_empty()
             || !effect_row_bindings.is_empty()
-            || !deferred_effect_row_bindings.is_empty()
+            || !deferred_effect_row_obligations.is_empty()
         {
             report.generic_instantiations.insert(
                 call,
                 crate::GenericInstantiationFact {
                     type_bindings,
                     effect_row_bindings,
-                    deferred_effect_row_bindings,
+                    deferred_effect_row_obligations,
                 },
             );
         }

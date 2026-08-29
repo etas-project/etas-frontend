@@ -4464,8 +4464,78 @@ flow main() -> unit ![Console.stdout_write] {
         .expect("call must have checked generic instantiation facts");
     assert!(fact.effect_row_bindings.is_empty(), "{fact:#?}");
     assert_eq!(
-        fact.deferred_effect_row_bindings,
-        vec![("E".to_owned(), lambda)]
+        fact.deferred_effect_row_obligations,
+        vec![etas_types::DeferredEffectRowObligation {
+            param: "E".to_owned(),
+            source: lambda,
+        }]
+    );
+}
+
+#[test]
+fn check_program_records_all_sources_for_one_deferred_effect_row() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(
+  f: () -> unit ![E],
+  g: () -> unit ![E],
+) -> unit ![E] {
+  f();
+  g();
+}
+
+flow main() -> unit ![Console.stdout_write] {
+  both(
+    () => { perform Console.stdout_write("first"); },
+    () => { perform Console.stdout_write("second"); },
+  );
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    let (call, sources) = hir
+        .exprs
+        .iter()
+        .find_map(|(expr, data)| match data {
+            etas_hir::HirExpr::Call { callee, args, .. }
+                if matches!(
+                    hir.exprs.get(*callee),
+                    Some(etas_hir::HirExpr::Path(path))
+                        if path.segments.last().is_some_and(|segment| segment.name == "both")
+                ) =>
+            {
+                Some((
+                    expr,
+                    args.iter()
+                        .map(|arg| match arg {
+                            etas_hir::HirArg::Positional(value)
+                            | etas_hir::HirArg::Named { value, .. } => *value,
+                        })
+                        .collect::<Vec<_>>(),
+                ))
+            }
+            _ => None,
+        })
+        .expect("row-polymorphic call should lower");
+    let fact = output
+        .facts
+        .generic_instantiations
+        .get(&call)
+        .expect("call must have checked generic instantiation facts");
+    assert_eq!(
+        fact.deferred_effect_row_obligations,
+        sources
+            .into_iter()
+            .map(|source| etas_types::DeferredEffectRowObligation {
+                param: "E".to_owned(),
+                source,
+            })
+            .collect::<Vec<_>>()
     );
 }
 

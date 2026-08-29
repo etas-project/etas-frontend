@@ -10,7 +10,8 @@ use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 
 pub use effects::{EffectActionArgKind, EffectActionSignature};
 pub use expressions::{
-    CheckedIndexKind, CheckedSliceKind, GenericInstantiationFact, TryExprTypeFact,
+    CheckedIndexKind, CheckedSliceKind, DeferredEffectRowObligation, GenericInstantiationFact,
+    TryExprTypeFact,
 };
 pub use signatures::{
     AgentSignature, CallableGenericParam, CallableGenericParamKind, CallableSignature,

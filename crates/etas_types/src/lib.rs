@@ -29,8 +29,8 @@ pub use constraint::{
 pub use facts::{
     AgentSignature, CallableGenericParam, CallableGenericParamKind, CallableSignature,
     CallableSpecSatisfactionFact, CheckedIndexKind, CheckedSliceKind, CheckedSpecBound,
-    CheckedSpecRef, CheckedStdSpecImplFact, EffectActionArgKind, EffectActionSignature,
-    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
+    CheckedSpecRef, CheckedStdSpecImplFact, DeferredEffectRowObligation, EffectActionArgKind,
+    EffectActionSignature, ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
     ExternalTraceSpecConformanceTarget, FlowSignature, GenericInstantiationFact, ItemSignature,
     KnownStdTypes, ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind,
     SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact, SymbolTypeFact,
