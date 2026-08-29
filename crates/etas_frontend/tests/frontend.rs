@@ -19,9 +19,9 @@ use etas_frontend::{
     ModulePath, ModuleTopoOrder, ParsedSource, ProjectChangeSet, ProjectCompileOptions,
     ProjectEntry, ProjectEntryFact, ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
     ProjectExternalActionGenericParamInput, ProjectExternalActionSignatureInput,
-    ProjectExternalCallableGenericParamInput, ProjectExternalCallableGenericParamKindInput,
-    ProjectExternalCallableSpecSatisfactionInput, ProjectExternalEffectArgInput,
-    ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
+    ProjectExternalActionTraceInput, ProjectExternalCallableGenericParamInput,
+    ProjectExternalCallableGenericParamKindInput, ProjectExternalCallableSpecSatisfactionInput,
+    ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
     ProjectExternalEffectSummaryInput, ProjectExternalExportInput,
     ProjectExternalFlowSignatureInput, ProjectExternalLatentFlowSummaryInput,
     ProjectExternalModuleInput, ProjectExternalNamedSignatureInput, ProjectExternalPackageInput,
@@ -139,6 +139,7 @@ fn external_environment() -> ProjectEnvironmentInput {
                 requested_actions: ProjectExternalEffectRowInput::default(),
                 handled_requested_actions: ProjectExternalEffectRowInput::default(),
                 latent_flows: Vec::new(),
+                action_trace: Default::default(),
             }],
             action_summaries: Vec::new(),
             trace_spec_summaries: Vec::new(),
@@ -4480,6 +4481,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
                 requested_actions: ProjectExternalEffectRowInput::default(),
                 handled_requested_actions: ProjectExternalEffectRowInput::default(),
                 latent_flows: Vec::new(),
+                action_trace: Default::default(),
             }],
             action_summaries: Vec::new(),
             trace_spec_summaries: Vec::new(),
@@ -5087,6 +5089,7 @@ fn empty_external_summary(path: &[&str]) -> ProjectExternalEffectSummaryInput {
         requested_actions: ProjectExternalEffectRowInput::default(),
         handled_requested_actions: ProjectExternalEffectRowInput::default(),
         latent_flows: Vec::new(),
+        action_trace: Default::default(),
     }
 }
 
@@ -7805,6 +7808,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         }];
 
     let output = Frontend.check_project(ProjectInput {
@@ -7946,6 +7950,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             )]),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         }];
 
     let output = Frontend.check_project(ProjectInput {
@@ -8044,6 +8049,76 @@ flow main() -> unit ![Network] {
 }
 
 #[test]
+fn frontend_check_project_rejects_open_external_flow_without_summary_metadata() {
+    let frontend = Frontend;
+    let mut environment = external_environment();
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(2),
+            name: "apply".to_owned(),
+            visibility: etas_hir::Visibility::Public,
+        });
+    environment.external_public_metadata[0]
+        .flows
+        .push(ProjectExternalFlowSignatureInput {
+            generic_params: vec![ProjectExternalCallableGenericParamInput {
+                name: "E".to_owned(),
+                kind: ProjectExternalCallableGenericParamKindInput::Effect,
+                bounds: Vec::new(),
+            }],
+            path: vec!["dep".to_owned(), "math".to_owned(), "apply".to_owned()],
+            param_names: Vec::new(),
+            params: Vec::new(),
+            output: ProjectExternalTypeInput::Primitive("unit".to_owned()),
+            effects: Some(ProjectExternalEffectRowInput {
+                effects: Vec::new(),
+                tail: Some("E".to_owned()),
+            }),
+            visibility: "public".to_owned(),
+        });
+
+    let output = frontend.check_project(ProjectInput {
+        project_root: std::path::PathBuf::from("/workspace/open-external-row"),
+        source_root: None,
+        options: Default::default(),
+        environment,
+        sources: vec![SourceInput {
+            id: etas_core::SourceId(58),
+            path: Some(std::path::PathBuf::from("src/app/a.es")),
+            text: r#"module app.a;
+
+import dep.math.{apply};
+
+flow main() -> unit {
+    apply<![]>();
+    return;
+}
+"#
+            .to_owned(),
+            kind: SourceKind::SourceProjectFile,
+        }],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["app".to_owned(), "a".to_owned()],
+            }),
+            flow: "main".to_owned(),
+        },
+    });
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+                && diagnostic
+                    .message
+                    .contains("does not provide a solved effect summary")
+        }),
+        "open external callable without solved summary must fail closed: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn frontend_check_project_specializes_external_summary_parameter_actions() {
     let frontend = Frontend;
     let mut environment = external_environment();
@@ -8113,6 +8188,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
             )]),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -8267,6 +8343,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
             )]),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -8345,14 +8422,14 @@ flow main() -> unit {
 }
 
 #[test]
-fn frontend_check_project_specializes_external_effect_row_generic() {
+fn frontend_check_project_specializes_external_effect_row_generic_trace_template() {
     let frontend = Frontend;
     let mut environment = external_environment();
     environment.external_modules[0]
         .exports
         .push(ProjectExternalExportInput {
             symbol: ExternalSymbolId(2),
-            name: "accepts_row".to_owned(),
+            name: "twice".to_owned(),
             visibility: etas_hir::Visibility::Public,
         });
     environment.external_public_metadata[0]
@@ -8363,11 +8440,7 @@ fn frontend_check_project_specializes_external_effect_row_generic() {
                 kind: ProjectExternalCallableGenericParamKindInput::Effect,
                 bounds: Vec::new(),
             }],
-            path: vec![
-                "dep".to_owned(),
-                "math".to_owned(),
-                "accepts_row".to_owned(),
-            ],
+            path: vec!["dep".to_owned(), "math".to_owned(), "twice".to_owned()],
             param_names: vec!["callback".to_owned()],
             params: vec![ProjectExternalTypeInput::Function {
                 input: Vec::new(),
@@ -8387,11 +8460,7 @@ fn frontend_check_project_specializes_external_effect_row_generic() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
-            item: vec![
-                "dep".to_owned(),
-                "math".to_owned(),
-                "accepts_row".to_owned(),
-            ],
+            item: vec!["dep".to_owned(), "math".to_owned(), "twice".to_owned()],
             public_effects: ProjectExternalEffectRowInput {
                 effects: Vec::new(),
                 tail: Some("E".to_owned()),
@@ -8402,6 +8471,14 @@ fn frontend_check_project_specializes_external_effect_row_generic() {
             },
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: ProjectExternalActionTraceInput::Seq(vec![
+                ProjectExternalActionTraceInput::ParameterCall {
+                    parameter: "callback".to_owned(),
+                },
+                ProjectExternalActionTraceInput::ParameterCall {
+                    parameter: "callback".to_owned(),
+                },
+            ]),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -8414,14 +8491,12 @@ fn frontend_check_project_specializes_external_effect_row_generic() {
             path: Some(std::path::PathBuf::from("src/app/main.es")),
             text: r#"module app.main;
 
-import dep.math.accepts_row;
-
-flow write_console() -> unit ![Console.stdout_write] {
-    perform Console.stdout_write("test");
-}
+import dep.math.twice;
 
 flow main() -> unit ![Console.stdout_write] {
-    accepts_row<![Console.stdout_write]>(write_console);
+    twice(() => {
+        perform Console.stdout_write("test");
+    });
     return;
 }
 "#
@@ -8478,6 +8553,27 @@ flow main() -> unit ![Console.stdout_write] {
     );
     assert!(
         summary.requested_actions.effects.contains(&stdout),
+        "{summary:#?}"
+    );
+    fn count_stdout(trace: &etas_effects::ActionTraceDomain, stdout: &Effect) -> usize {
+        match trace {
+            etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
+            etas_effects::ActionTraceDomain::Seq(children)
+            | etas_effects::ActionTraceDomain::Choice(children) => children
+                .iter()
+                .map(|child| count_stdout(child, stdout))
+                .sum(),
+            etas_effects::ActionTraceDomain::Repeat(child) => count_stdout(child, stdout),
+            etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
+                usize::from(actions.contains(stdout))
+            }
+            etas_effects::ActionTraceDomain::Empty
+            | etas_effects::ActionTraceDomain::ParameterCall { .. } => 0,
+        }
+    }
+    assert_eq!(
+        count_stdout(&summary.action_trace, &stdout),
+        2,
         "{summary:#?}"
     );
 }
@@ -8562,6 +8658,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
             )]),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -8683,6 +8780,7 @@ fn frontend_check_project_propagates_external_function_parameter_effects() {
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -8799,6 +8897,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -8912,6 +9011,7 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
                     Vec::new(),
                 )]),
             }],
+            action_trace: Default::default(),
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -9036,6 +9136,7 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         }];
 
     let output = frontend.check_project(ProjectInput {
@@ -9165,6 +9266,7 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         }];
 
     let output = frontend.check_project(ProjectInput {
@@ -9292,6 +9394,7 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         }];
 
     let output = frontend.check_project(ProjectInput {
@@ -9359,7 +9462,8 @@ public flow read<R>() -> unit ![Storage.read<R>] {
     return;
 }
 
-public flow accepts_row<effect E>(f: () -> unit ![E]) -> unit ![E] {
+public flow twice<effect E>(f: () -> unit ![E]) -> unit ![E] {
+    f();
     f();
 }
 
@@ -9447,11 +9551,26 @@ flow main() -> unit {
         .public_metadata
         .effect_summaries
         .iter()
-        .find(|summary| summary.item == ["storage", "api", "accepts_row"])
+        .find(|summary| summary.item == ["storage", "api", "twice"])
         .expect("row-polymorphic flow effect summary should be published");
     assert_eq!(row_summary.public_effects.tail.as_deref(), Some("E"));
     assert_eq!(row_summary.requested_actions.tail.as_deref(), Some("E"));
     assert!(row_summary.latent_flows.is_empty(), "{row_summary:#?}");
+    let etas_package_metadata::ActionTrace::Seq(trace) = &row_summary.action_trace else {
+        panic!("generic action trace should preserve sequence: {row_summary:#?}");
+    };
+    assert_eq!(
+        trace
+            .iter()
+            .filter(|node| matches!(
+                node,
+                etas_package_metadata::ActionTrace::ParameterCall { parameter }
+                    if parameter == "f"
+            ))
+            .count(),
+        2,
+        "{row_summary:#?}"
+    );
 }
 
 #[test]

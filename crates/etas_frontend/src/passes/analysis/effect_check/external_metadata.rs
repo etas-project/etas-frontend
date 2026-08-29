@@ -5,8 +5,9 @@ use etas_types::{EffectArgRef, TypeOutput};
 
 use super::anchors::ExternalImportAnchorIndex;
 use crate::{
-    ProjectExternalActionArgKindInput, ProjectExternalCallableGenericParamKindInput,
-    ProjectExternalEffectArgInput, ProjectExternalEffectRowInput,
+    ProjectExternalActionArgKindInput, ProjectExternalActionTraceEventSourceInput,
+    ProjectExternalActionTraceInput, ProjectExternalCallableGenericParamKindInput,
+    ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
     ProjectExternalPublicMetadataInput, ProjectExternalTraceSpecClauseKindInput, ProjectInput,
 };
 
@@ -275,7 +276,7 @@ pub(super) fn external_effect_summaries(
             if !seen.insert((package_identity.clone(), item.clone())) {
                 continue;
             }
-            if row.is_some_and(|row| !row.effects.is_empty()) {
+            if row.is_some_and(|row| !row.effects.is_empty() || row.tail.is_some()) {
                 diagnostics.push(Diagnostic::effect_check(
                     EffectDiagnosticCode::IncompleteEffectFacts,
                     item_span,
@@ -316,6 +317,7 @@ pub(super) fn external_effect_summaries(
                     requested_actions: Default::default(),
                     handled_requested_actions: Default::default(),
                     latent_flows: Vec::new(),
+                    action_trace: Default::default(),
                 },
             });
         }
@@ -361,6 +363,85 @@ fn external_effect_summary_metadata(
         requested_actions: external_effect_row(&summary.requested_actions, types)?,
         handled_requested_actions: external_effect_row(&summary.handled_requested_actions, types)?,
         latent_flows,
+        action_trace: external_action_trace(&summary.action_trace, types)?,
+    })
+}
+
+fn external_action_trace(
+    trace: &ProjectExternalActionTraceInput,
+    types: &TypeOutput,
+) -> Result<etas_effects::ExternalActionTraceMetadata, String> {
+    Ok(match trace {
+        ProjectExternalActionTraceInput::Empty => etas_effects::ExternalActionTraceMetadata::Empty,
+        ProjectExternalActionTraceInput::Event { action, source } => {
+            etas_effects::ExternalActionTraceMetadata::Event {
+                action: lower_external_effect_metadata(action, types)?,
+                source: match source {
+                    ProjectExternalActionTraceEventSourceInput::Perform => {
+                        etas_effects::ActionEventSource::Perform
+                    }
+                    ProjectExternalActionTraceEventSourceInput::StdIntrinsic => {
+                        etas_effects::ActionEventSource::StdIntrinsic
+                    }
+                    ProjectExternalActionTraceEventSourceInput::AgentCall => {
+                        etas_effects::ActionEventSource::AgentCall
+                    }
+                    ProjectExternalActionTraceEventSourceInput::ExternalMetadata => {
+                        etas_effects::ActionEventSource::ExternalMetadata
+                    }
+                    ProjectExternalActionTraceEventSourceInput::Transfer => {
+                        etas_effects::ActionEventSource::Transfer
+                    }
+                    ProjectExternalActionTraceEventSourceInput::Unknown => {
+                        etas_effects::ActionEventSource::Unknown
+                    }
+                },
+            }
+        }
+        ProjectExternalActionTraceInput::ParameterCall { parameter } => {
+            etas_effects::ExternalActionTraceMetadata::ParameterCall {
+                parameter: parameter.clone(),
+            }
+        }
+        ProjectExternalActionTraceInput::Seq(children) => {
+            etas_effects::ExternalActionTraceMetadata::Seq(
+                children
+                    .iter()
+                    .map(|child| external_action_trace(child, types))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        }
+        ProjectExternalActionTraceInput::Choice(children) => {
+            etas_effects::ExternalActionTraceMetadata::Choice(
+                children
+                    .iter()
+                    .map(|child| external_action_trace(child, types))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        }
+        ProjectExternalActionTraceInput::Repeat(child) => {
+            etas_effects::ExternalActionTraceMetadata::Repeat(Box::new(external_action_trace(
+                child, types,
+            )?))
+        }
+        ProjectExternalActionTraceInput::UnknownOrder(actions) => {
+            etas_effects::ExternalActionTraceMetadata::UnknownOrder(
+                actions
+                    .iter()
+                    .map(|action| lower_external_effect_metadata(action, types))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        }
+    })
+}
+
+fn lower_external_effect_metadata(
+    effect: &ProjectExternalEffectRefInput,
+    types: &TypeOutput,
+) -> Result<etas_effects::ExternalEffectMetadata, String> {
+    Ok(etas_effects::ExternalEffectMetadata {
+        path: effect.path.clone(),
+        args: external_effect_args(&effect.args, types)?,
     })
 }
 

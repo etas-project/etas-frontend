@@ -1,11 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use etas_effects::{
-    ActionRef, Effect, EffectCoverage, EffectRegistry, EffectRow, EffectSet, TraceSpecClauseFact,
+    ActionEventSource, ActionRef, ActionTraceDomain, Effect, EffectCoverage, EffectRegistry,
+    EffectRow, EffectSet, TraceSpecClauseFact,
 };
 use etas_hir::{HirItem, HirItemId, Visibility};
 use etas_package_metadata::{
     ActionArgKind as MetadataActionArgKind, ActionSignature as MetadataActionSignature,
+    ActionTrace as MetadataActionTrace, ActionTraceEvent as MetadataActionTraceEvent,
+    ActionTraceEventSource as MetadataActionTraceEventSource,
     AnnotationArgMetadata as MetadataAnnotationArg,
     AnnotationFieldMetadata as MetadataAnnotationField, AnnotationMetadata as MetadataAnnotation,
     AnnotationValueKind as MetadataAnnotationValueKind,
@@ -1250,6 +1253,8 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &type_generic_names,
                     &effect_generic_names,
                 )?,
+                action_trace: self
+                    .action_trace_metadata(&summary.action_trace, &type_generic_names)?,
             });
         }
         summaries.sort_by(|left, right| left.item.cmp(&right.item));
@@ -1481,6 +1486,59 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             })
             .collect()
+    }
+
+    fn action_trace_metadata(
+        &self,
+        trace: &ActionTraceDomain,
+        type_generic_names: &BTreeSet<String>,
+    ) -> Result<MetadataActionTrace, PackageMetadataError> {
+        Ok(match trace {
+            ActionTraceDomain::Empty => MetadataActionTrace::Empty,
+            ActionTraceDomain::Event(event) => {
+                MetadataActionTrace::Event(MetadataActionTraceEvent {
+                    action: self.summary_effect_ref_metadata(&event.action, type_generic_names)?,
+                    source: match event.source {
+                        ActionEventSource::Perform => MetadataActionTraceEventSource::Perform,
+                        ActionEventSource::StdIntrinsic => {
+                            MetadataActionTraceEventSource::StdIntrinsic
+                        }
+                        ActionEventSource::AgentCall => MetadataActionTraceEventSource::AgentCall,
+                        ActionEventSource::ExternalMetadata => {
+                            MetadataActionTraceEventSource::ExternalMetadata
+                        }
+                        ActionEventSource::Transfer => MetadataActionTraceEventSource::Transfer,
+                        ActionEventSource::Unknown => MetadataActionTraceEventSource::Unknown,
+                    },
+                })
+            }
+            ActionTraceDomain::ParameterCall { parameter, .. } => {
+                MetadataActionTrace::ParameterCall {
+                    parameter: parameter.clone(),
+                }
+            }
+            ActionTraceDomain::Seq(children) => MetadataActionTrace::Seq(
+                children
+                    .iter()
+                    .map(|child| self.action_trace_metadata(child, type_generic_names))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            ActionTraceDomain::Choice(children) => MetadataActionTrace::Choice(
+                children
+                    .iter()
+                    .map(|child| self.action_trace_metadata(child, type_generic_names))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            ActionTraceDomain::Repeat(child) => MetadataActionTrace::Repeat(Box::new(
+                self.action_trace_metadata(child, type_generic_names)?,
+            )),
+            ActionTraceDomain::UnknownOrder(actions) => MetadataActionTrace::UnknownOrder(
+                actions
+                    .iter()
+                    .map(|action| self.summary_effect_ref_metadata(action, type_generic_names))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+        })
     }
 
     fn effect_row_metadata(

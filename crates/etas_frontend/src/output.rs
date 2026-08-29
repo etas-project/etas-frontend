@@ -919,6 +919,35 @@ pub struct ProjectExternalEffectSummaryInput {
     pub requested_actions: ProjectExternalEffectRowInput,
     pub handled_requested_actions: ProjectExternalEffectRowInput,
     pub latent_flows: Vec<ProjectExternalLatentFlowSummaryInput>,
+    pub action_trace: ProjectExternalActionTraceInput,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ProjectExternalActionTraceInput {
+    #[default]
+    Empty,
+    Event {
+        action: ProjectExternalEffectRefInput,
+        source: ProjectExternalActionTraceEventSourceInput,
+    },
+    ParameterCall {
+        parameter: String,
+    },
+    Seq(Vec<ProjectExternalActionTraceInput>),
+    Choice(Vec<ProjectExternalActionTraceInput>),
+    Repeat(Box<ProjectExternalActionTraceInput>),
+    UnknownOrder(Vec<ProjectExternalEffectRefInput>),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProjectExternalActionTraceEventSourceInput {
+    Perform,
+    StdIntrinsic,
+    AgentCall,
+    ExternalMetadata,
+    Transfer,
+    #[default]
+    Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
