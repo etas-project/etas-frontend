@@ -13,6 +13,8 @@ use crate::{
     ResolvedModuleTarget, ResolvedWildcardImport,
 };
 
+use super::external_metadata_validation::validate_external_metadata;
+
 pub(super) fn build_signature_pipeline_input<'a>(
     context: &ProjectContext,
     program: &'a etas_hir::HirProgram,
@@ -42,7 +44,19 @@ fn external_signature_input(
             .environment
             .external_public_metadata
             .iter()
-            .map(convert_external_metadata)
+            .filter_map(|metadata| {
+                if let Err(reason) = validate_external_metadata(metadata) {
+                    if let Some(span) = external_package_import_span(context, metadata.package) {
+                        diagnostics.push(Diagnostic::type_check(
+                            TypeDiagnosticCode::IncompleteTypeFacts,
+                            span,
+                            format!("invalid external package metadata: {reason}"),
+                        ));
+                    }
+                    return None;
+                }
+                Some(convert_external_metadata(metadata))
+            })
             .collect(),
         symbol_bindings: Vec::new(),
         action_bindings: Vec::new(),
@@ -122,6 +136,39 @@ fn external_signature_input(
         external_effect_action_bindings(hir, &input.symbol_bindings, diagnostics);
 
     input
+}
+
+fn external_package_import_span(
+    context: &ProjectContext,
+    package: ExternalPackageId,
+) -> Option<etas_core::Span> {
+    let resolved = context.resolved_imports.as_ref()?;
+    resolved
+        .imports
+        .iter()
+        .find_map(|import| match &import.target {
+            ImportTarget::ExternalItem {
+                package: Some(target),
+                ..
+            } if *target == package => Some(import.span),
+            ImportTarget::Module(ResolvedModuleTarget::External {
+                package: Some(target),
+                ..
+            }) if *target == package => Some(import.span),
+            _ => None,
+        })
+        .or_else(|| {
+            resolved
+                .wildcard_imports
+                .iter()
+                .find_map(|import| match &import.target_module {
+                    ResolvedModuleTarget::External {
+                        package: Some(target),
+                        ..
+                    } if *target == package => Some(import.span),
+                    _ => None,
+                })
+        })
 }
 
 fn external_package_key(package: ExternalPackageId) -> etas_types::ExternalPackageKey {

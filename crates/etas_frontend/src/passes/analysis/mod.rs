@@ -1,4 +1,5 @@
 mod effect_check;
+mod external_metadata_validation;
 mod loop_progress;
 mod top_level_let;
 mod type_check;
