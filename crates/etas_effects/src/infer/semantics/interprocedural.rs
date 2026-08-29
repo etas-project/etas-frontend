@@ -175,19 +175,32 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 return state;
             }
         }
+        if let Some(parameter) = self.open_effect_parameter_call(site.callee_expr) {
+            if let Some(summary) = self.summary_for_flow_expr_type(site.callee_expr, site.span) {
+                state.summary.seq_assign(&summary);
+            }
+            state
+                .summary
+                .action_trace
+                .seq_assign(ActionTraceDomain::ParameterCall {
+                    parameter,
+                    span: site.span,
+                });
+            return state;
+        }
+        if self.is_deferred_first_class_param(site.callee_expr) {
+            self.inputs
+                .deferred_first_class_calls
+                .entry(context.unit)
+                .or_default()
+                .push(site.call);
+            return state;
+        }
         if let Some(summary) = self.summary_for_flow_expr_type(site.callee_expr, site.span) {
             state.summary.seq_assign(&summary);
             return state;
         }
         if let Some(flow) = self.flow_type_for_expr(site.callee_expr) {
-            if flow.effects.is_none() && self.is_deferred_first_class_param(site.callee_expr) {
-                self.inputs
-                    .deferred_first_class_calls
-                    .entry(context.unit)
-                    .or_default()
-                    .push(site.call);
-                return state;
-            }
             if flow.effects.is_none() && self.is_projected_flow_value(site.callee_expr) {
                 return self.reject_effect_state(
                     site.span,

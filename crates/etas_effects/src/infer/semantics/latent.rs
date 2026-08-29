@@ -63,9 +63,16 @@ impl EffectSemantics<'_> {
                 }
                 let symbol_data = self.hir.symbols.get(symbol)?;
                 match symbol_data.def {
-                    SymbolDef::Item { item } => self
-                        .top_level_anonymous_flow_unit(item)
-                        .map(|unit| vec![unit]),
+                    SymbolDef::Item { item } => match self.hir.items.get(item) {
+                        Some(
+                            etas_hir::HirItem::Flow(_)
+                            | etas_hir::HirItem::Agent(_)
+                            | etas_hir::HirItem::Tool(_),
+                        ) => Some(vec![EffectUnit::Item(item)]),
+                        _ => self
+                            .top_level_anonymous_flow_unit(item)
+                            .map(|unit| vec![unit]),
+                    },
                     SymbolDef::TopLevelLet { item, .. } => self
                         .top_level_anonymous_flow_unit(item)
                         .map(|unit| vec![unit]),
@@ -482,6 +489,27 @@ impl EffectSemantics<'_> {
             .is_some_and(|flow| flow.effects.is_none())
     }
 
+    pub(crate) fn open_effect_parameter_call(&self, expr: HirExprId) -> Option<String> {
+        let HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
+            return None;
+        };
+        let ResolveResult::Resolved(symbol) = path.resolution else {
+            return None;
+        };
+        let symbol = self.hir.symbols.get(symbol)?;
+        if !matches!(symbol.kind, etas_hir::SymbolKind::Param)
+            && !matches!(symbol.def, SymbolDef::Param { .. })
+        {
+            return None;
+        }
+        self.flow_type_for_expr(expr)?
+            .effects
+            .as_ref()?
+            .tail
+            .as_ref()?;
+        Some(symbol.name.clone())
+    }
+
     pub(crate) fn is_projected_flow_value(&self, expr: HirExprId) -> bool {
         matches!(
             self.hir.exprs.get(expr),
@@ -651,7 +679,9 @@ impl EffectSemantics<'_> {
                 message: "first-class flow call specialization requires a checked function parameter type",
             };
         };
-        if let Some(row) = &flow.effects {
+        if let Some(row) = &flow.effects
+            && row.tail.is_none()
+        {
             return DeferredSpecialization::Solved(Box::new(
                 self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span),
             ));

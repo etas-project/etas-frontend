@@ -1,5 +1,6 @@
 use super::engine::EffectSemantics;
 use super::shared::*;
+use crate::{ActionEvent, pipeline::ExternalActionTraceMetadata};
 
 impl EffectSemantics<'_> {
     pub(crate) fn source_import_target_missing(&self, callee: HirExprId) -> bool {
@@ -60,16 +61,16 @@ impl EffectSemantics<'_> {
             return Ok(None);
         };
         let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
-        let (type_bindings, mut effect_row_bindings, deferred_effect_row_bindings) = self
+        let (type_bindings, mut effect_row_bindings, deferred_effect_row_obligations) = self
             .types
             .facts
             .generic_instantiations
             .get(&site.call)
             .map(|fact| {
                 let deferred = fact
-                    .deferred_effect_row_bindings
+                    .deferred_effect_row_obligations
                     .iter()
-                    .filter(|(name, _)| metadata.effect_param_names.contains(name))
+                    .filter(|obligation| metadata.effect_param_names.contains(&obligation.param))
                     .cloned()
                     .collect::<Vec<_>>();
                 (
@@ -87,9 +88,9 @@ impl EffectSemantics<'_> {
                 )
             })
             .unwrap_or_default();
-        effect_row_bindings.extend(deferred_effect_row_bindings.iter().map(|(name, _)| {
+        effect_row_bindings.extend(deferred_effect_row_obligations.iter().map(|obligation| {
             (
-                name.clone(),
+                obligation.param.clone(),
                 etas_types::EffectRowRef {
                     effects: Vec::new(),
                     tail: None,
@@ -106,12 +107,23 @@ impl EffectSemantics<'_> {
             &summary,
             &effect_row_bindings,
         )?;
+        self.validate_deferred_effect_row_obligations(state, &deferred_effect_row_obligations)?;
         summary = self.specialize_summary_with_bindings(
             &summary,
             &bindings,
             &type_bindings,
             &effect_row_bindings,
         )?;
+        let mut merged_params = BTreeSet::new();
+        for obligation in &deferred_effect_row_obligations {
+            if !merged_params.insert(obligation.param.clone()) {
+                continue;
+            }
+            let mut source_summary =
+                self.latent_summary_for_expr(state, obligation.source, &obligation.param)?;
+            source_summary.action_trace = ActionTraceDomain::Empty;
+            summary.seq_assign(&source_summary);
+        }
         if self
             .apply_external_function_parameter_effects(
                 &mut summary,
@@ -119,12 +131,14 @@ impl EffectSemantics<'_> {
                 state,
                 &type_bindings,
                 &effect_row_bindings,
-                &deferred_effect_row_bindings,
+                &deferred_effect_row_obligations,
             )?
             .is_none()
         {
             return Ok(None);
         }
+        summary.action_trace =
+            self.specialize_parameter_call_trace(&summary.action_trace, &bindings, state)?;
         Ok(Some(summary))
     }
 
@@ -164,7 +178,55 @@ impl EffectSemantics<'_> {
             .tail
             .as_deref()
             .map(effect_var_id_from_name);
+        summary.action_trace =
+            self.external_action_trace_from_metadata(&metadata.action_trace, span)?;
         Some(summary)
+    }
+
+    fn external_action_trace_from_metadata(
+        &self,
+        trace: &ExternalActionTraceMetadata,
+        span: Span,
+    ) -> Option<ActionTraceDomain> {
+        Some(match trace {
+            ExternalActionTraceMetadata::Empty => ActionTraceDomain::Empty,
+            ExternalActionTraceMetadata::Event { action, source } => {
+                ActionTraceDomain::Event(ActionEvent {
+                    action: self.external_effect_from_metadata(action)?,
+                    span,
+                    source: source.clone(),
+                })
+            }
+            ExternalActionTraceMetadata::ParameterCall { parameter } => {
+                ActionTraceDomain::ParameterCall {
+                    parameter: parameter.clone(),
+                    span,
+                }
+            }
+            ExternalActionTraceMetadata::Seq(children) => ActionTraceDomain::Seq(
+                children
+                    .iter()
+                    .map(|child| self.external_action_trace_from_metadata(child, span))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            ExternalActionTraceMetadata::Choice(children) => ActionTraceDomain::Choice(
+                children
+                    .iter()
+                    .map(|child| self.external_action_trace_from_metadata(child, span))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            ExternalActionTraceMetadata::Repeat(child) => ActionTraceDomain::Repeat(Box::new(
+                self.external_action_trace_from_metadata(child, span)?,
+            )),
+            ExternalActionTraceMetadata::UnknownOrder(actions) => {
+                ActionTraceDomain::UnknownOrder(EffectSet::from_iter(
+                    actions
+                        .iter()
+                        .map(|action| self.external_effect_from_metadata(action))
+                        .collect::<Option<Vec<_>>>()?,
+                ))
+            }
+        })
     }
 
     pub(crate) fn external_effect_from_metadata(
@@ -268,7 +330,7 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         type_bindings: &[(String, TypeId)],
         effect_row_bindings: &[(String, etas_types::EffectRowRef)],
-        deferred_effect_row_bindings: &[(String, HirExprId)],
+        deferred_effect_row_obligations: &[etas_types::DeferredEffectRowObligation],
     ) -> Result<Option<()>, super::specialize::EffectSpecializationError> {
         let Some(callee_input) = self
             .flow_type_for_expr(site.callee_expr)
@@ -288,21 +350,10 @@ impl EffectSemantics<'_> {
             };
             if let Some(row) = &flow.effects {
                 if row.tail.as_ref().is_some_and(|tail| {
-                    deferred_effect_row_bindings
+                    deferred_effect_row_obligations
                         .iter()
-                        .any(|(name, source)| name == tail && *source == arg)
+                        .any(|obligation| obligation.param == *tail && obligation.source == arg)
                 }) {
-                    let Some(sources) = self.latent_sources_for_expr(state, arg) else {
-                        return Ok(None);
-                    };
-                    for source in sources {
-                        let Some(source_summary) = self.inputs.unit_effects.get(&source).cloned()
-                        else {
-                            return Ok(None);
-                        };
-                        summary.seq_assign(&source_summary);
-                        self.record_latent_realization(source, site.call);
-                    }
                     continue;
                 }
                 let row = self.specialize_effect_row(

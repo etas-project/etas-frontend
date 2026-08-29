@@ -38,9 +38,10 @@ pub use infer::{
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
-    EffectPipelineOutput, ExternalArtifactAnchor, ExternalEffectMetadata,
-    ExternalEffectRowMetadata, ExternalEffectSummaryMetadata, ExternalLatentFlowSummaryMetadata,
-    ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
+    EffectPipelineOutput, ExternalActionTraceMetadata, ExternalArtifactAnchor,
+    ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
+    ExternalLatentFlowSummaryMetadata, ExternalTraceSpecClauseKind,
+    ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
     ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, RunEffectPipeline,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};

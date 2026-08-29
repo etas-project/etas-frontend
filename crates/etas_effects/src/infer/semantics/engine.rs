@@ -575,6 +575,7 @@ mod tests {
             requested_actions: Default::default(),
             handled_requested_actions: Default::default(),
             latent_flows: Vec::new(),
+            action_trace: Default::default(),
         };
 
         assert!(external_summary_matches_path(

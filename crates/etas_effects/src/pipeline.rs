@@ -35,6 +35,25 @@ pub struct ExternalEffectSummaryMetadata {
     pub handled_requested_actions: ExternalEffectRowMetadata,
     #[serde(default)]
     pub latent_flows: Vec<ExternalLatentFlowSummaryMetadata>,
+    #[serde(default)]
+    pub action_trace: ExternalActionTraceMetadata,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExternalActionTraceMetadata {
+    #[default]
+    Empty,
+    Event {
+        action: ExternalEffectMetadata,
+        source: crate::ActionEventSource,
+    },
+    ParameterCall {
+        parameter: String,
+    },
+    Seq(Vec<ExternalActionTraceMetadata>),
+    Choice(Vec<ExternalActionTraceMetadata>),
+    Repeat(Box<ExternalActionTraceMetadata>),
+    UnknownOrder(Vec<ExternalEffectMetadata>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

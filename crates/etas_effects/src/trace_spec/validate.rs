@@ -469,6 +469,7 @@ fn action_span(trace: &ActionTraceDomain, action: &Effect) -> Option<Span> {
         ActionTraceDomain::Repeat(inner) => action_span(inner, action),
         ActionTraceDomain::Empty
         | ActionTraceDomain::Event(_)
+        | ActionTraceDomain::ParameterCall { .. }
         | ActionTraceDomain::UnknownOrder(_) => None,
     }
 }

@@ -149,6 +149,10 @@ pub enum ActionTraceDomain {
     #[default]
     Empty,
     Event(ActionEvent),
+    ParameterCall {
+        parameter: String,
+        span: Span,
+    },
     Seq(Vec<ActionTraceDomain>),
     Choice(Vec<ActionTraceDomain>),
     Repeat(Box<ActionTraceDomain>),
@@ -196,7 +200,7 @@ impl ActionTraceDomain {
 
     fn node_count(&self) -> usize {
         match self {
-            Self::Empty | Self::Event(_) | Self::UnknownOrder(_) => 1,
+            Self::Empty | Self::Event(_) | Self::ParameterCall { .. } | Self::UnknownOrder(_) => 1,
             Self::Seq(parts) | Self::Choice(parts) => {
                 1 + parts.iter().map(Self::node_count).sum::<usize>()
             }
@@ -208,7 +212,9 @@ impl ActionTraceDomain {
         match self {
             Self::Repeat(_) => true,
             Self::Seq(parts) | Self::Choice(parts) => parts.iter().any(Self::contains_repeat),
-            Self::Empty | Self::Event(_) | Self::UnknownOrder(_) => false,
+            Self::Empty | Self::Event(_) | Self::ParameterCall { .. } | Self::UnknownOrder(_) => {
+                false
+            }
         }
     }
 
@@ -229,6 +235,7 @@ impl ActionTraceDomain {
             Self::Event(event) => {
                 actions.insert(event.action.clone());
             }
+            Self::ParameterCall { .. } => {}
             Self::Seq(parts) | Self::Choice(parts) => {
                 for part in parts {
                     part.collect_actions(actions);
@@ -263,7 +270,6 @@ impl ActionTraceDomain {
                 items.append(&mut right);
                 Self::Seq(items)
             }
-            (left, right) if left == right => left,
             (left, right) => Self::Seq(vec![left, right]),
         };
         trace.widen_if_needed()

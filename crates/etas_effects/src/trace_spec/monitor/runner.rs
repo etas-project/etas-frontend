@@ -108,6 +108,7 @@ impl SingleComponentMonitor {
         match trace {
             ActionTraceDomain::Empty => TraceRun::States(states),
             ActionTraceDomain::Event(event) => self.step_event(states, event, matcher),
+            ActionTraceDomain::ParameterCall { .. } => TraceRun::Unknown,
             ActionTraceDomain::Seq(parts) => {
                 let mut current = states;
                 for part in parts {

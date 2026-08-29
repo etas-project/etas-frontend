@@ -101,6 +101,7 @@ fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
         }
         ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer(inner),
         ActionTraceDomain::UnknownOrder(actions) => actions.iter().any(is_agentic_infer_effect),
+        ActionTraceDomain::ParameterCall { .. } => false,
     }
 }
 
@@ -115,6 +116,7 @@ fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEvent
             .any(|part| trace_has_agentic_infer_source(part, source.clone())),
         ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer_source(inner, source),
         ActionTraceDomain::UnknownOrder(_) => false,
+        ActionTraceDomain::ParameterCall { .. } => false,
     }
 }
 
@@ -5487,6 +5489,31 @@ flow main() -> unit ![Console.stdout_write] {
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    fn count_parameter_calls(trace: &ActionTraceDomain, parameter: &str) -> usize {
+        match trace {
+            ActionTraceDomain::ParameterCall {
+                parameter: actual, ..
+            } => usize::from(actual == parameter),
+            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => items
+                .iter()
+                .map(|item| count_parameter_calls(item, parameter))
+                .sum(),
+            ActionTraceDomain::Repeat(item) => count_parameter_calls(item, parameter),
+            ActionTraceDomain::Empty
+            | ActionTraceDomain::Event(_)
+            | ActionTraceDomain::UnknownOrder(_) => 0,
+        }
+    }
+    let generic_summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "twice"))
+        .expect("twice summary should be materialized");
+    assert_eq!(
+        count_parameter_calls(&generic_summary.action_trace, "f"),
+        2,
+        "{generic_summary:?}"
+    );
     let summary = output
         .facts
         .item_effects
@@ -5505,6 +5532,111 @@ flow main() -> unit ![Console.stdout_write] {
     assert!(
         summary.requested_actions.effects.contains(&stdout),
         "{summary:?}"
+    );
+    fn count_stdout(trace: &etas_effects::ActionTraceDomain, stdout: &Effect) -> usize {
+        match trace {
+            etas_effects::ActionTraceDomain::Empty => 0,
+            etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
+            etas_effects::ActionTraceDomain::Seq(items)
+            | etas_effects::ActionTraceDomain::Choice(items) => {
+                items.iter().map(|item| count_stdout(item, stdout)).sum()
+            }
+            etas_effects::ActionTraceDomain::Repeat(item) => count_stdout(item, stdout),
+            etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
+                usize::from(actions.contains(stdout))
+            }
+            etas_effects::ActionTraceDomain::ParameterCall { .. } => 0,
+        }
+    }
+    assert_eq!(
+        count_stdout(&summary.action_trace, &stdout),
+        2,
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn row_polymorphic_call_solves_multiple_equivalent_latent_sources() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(
+    f: () -> unit ![E],
+    g: () -> unit ![E],
+) -> unit ![E] {
+    f();
+    g();
+}
+
+flow main() -> unit ![Console.stdout_write] {
+    both(
+        () => { perform Console.stdout_write("first"); },
+        () => { perform Console.stdout_write("second"); },
+    );
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "main"))
+        .expect("main summary should be materialized");
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(
+        summary.escaping_effects.effects.contains(&stdout),
+        "{summary:?}"
+    );
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn row_polymorphic_call_rejects_incompatible_latent_sources_for_one_row() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(
+    f: () -> unit ![E],
+    g: () -> unit ![E],
+) -> unit ![E] {
+    f();
+    g();
+}
+
+flow main() -> unit ![Console.stdout_write, Error<i32>] {
+    both(
+        () => { perform Console.stdout_write("first"); },
+        () => { perform Error<i32>.raise(1); },
+    );
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("latent flow sources do not agree on the row bound to `effect E`")
+        }),
+        "{:?}",
+        output.diagnostics
     );
 }
 
