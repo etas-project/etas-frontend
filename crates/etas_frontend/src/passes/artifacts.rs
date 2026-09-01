@@ -17,6 +17,8 @@ pub(crate) const LOWERED_MODULE_ITEMS: ArtifactKey =
     ArtifactKey::new("frontend", "lowered_module_items");
 pub(crate) const HIR_OUTPUT: ArtifactKey = ArtifactKey::new("frontend", "hir");
 pub(crate) const RESOLVED_IMPORTS: ArtifactKey = ArtifactKey::new("frontend", "resolved_imports");
+pub(crate) const VALIDATED_EXTERNAL_ENVIRONMENT: ArtifactKey =
+    ArtifactKey::new("frontend", "validated_external_environment");
 pub(crate) const RESOLVED_PATHS: ArtifactKey = ArtifactKey::new("frontend", "resolved_paths");
 pub(crate) const SIGNATURE_FACTS: ArtifactKey = ArtifactKey::new("frontend", "signature_facts");
 pub(crate) const TOP_LEVEL_LET_FACTS: ArtifactKey =

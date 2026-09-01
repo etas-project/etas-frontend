@@ -11,12 +11,14 @@ use etas_utils::{
 
 use crate::passes::artifacts::{
     HIR_OUTPUT, PROJECT_ENTRY, REACHABILITY_FACTS, RESOLVED_PATHS, RUNTIME_SOURCE_REQUIREMENTS,
+    VALIDATED_EXTERNAL_ENVIRONMENT,
 };
 use crate::{
     AstBodyRef, ExternalPackageId, HirItemBindings, HirPathResolution, ImportTarget, ModulePath,
-    ProjectContext, ProjectExternalPackageInput, ProjectExternalPublicMetadataInput,
-    ReachabilityFacts, ResolvedModuleTarget, RuntimeSourceReason, RuntimeSourceReasonKind,
-    RuntimeSourceRequirement, RuntimeSourceRequirements, UnitTarget,
+    ProjectContext, ProjectEnvironmentInput, ProjectExternalPackageInput,
+    ProjectExternalPublicMetadataInput, ReachabilityFacts, ResolvedModuleTarget,
+    RuntimeSourceReason, RuntimeSourceReasonKind, RuntimeSourceRequirement,
+    RuntimeSourceRequirements, UnitTarget,
 };
 
 pub struct ComputeEntryReachabilityPass;
@@ -28,6 +30,7 @@ impl Pass<ProjectContext> for ComputeEntryReachabilityPass {
                 HIR_OUTPUT,
                 RESOLVED_PATHS,
                 PROJECT_ENTRY,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
             ]))
             .produces(ArtifactSet::from([
                 REACHABILITY_FACTS,
@@ -41,7 +44,14 @@ impl Pass<ProjectContext> for ComputeEntryReachabilityPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let reachability = compute_reachability(context);
+        let Some(environment) = context
+            .validated_external_environment
+            .as_ref()
+            .map(|validated| validated.environment())
+        else {
+            return PassResult::failed("entry reachability requires validated external metadata");
+        };
+        let reachability = compute_reachability(context, environment);
         context.runtime_source_requirements =
             Some(reachability.runtime_source_requirements.clone());
         context.reachability = Some(reachability);
@@ -52,7 +62,10 @@ impl Pass<ProjectContext> for ComputeEntryReachabilityPass {
     }
 }
 
-fn compute_reachability(context: &ProjectContext) -> ReachabilityFacts {
+fn compute_reachability(
+    context: &ProjectContext,
+    environment: &ProjectEnvironmentInput,
+) -> ReachabilityFacts {
     let mut facts = ReachabilityFacts::default();
     let Some(reachable) = entry_reachability(context) else {
         return facts;
@@ -66,23 +79,17 @@ fn compute_reachability(context: &ProjectContext) -> ReachabilityFacts {
         return facts;
     };
     let mut planner = RuntimeSourceRequirementPlanner {
-        packages: context
-            .input
-            .environment
+        packages: environment
             .external_packages
             .iter()
             .map(|package| (package.id, package))
             .collect(),
-        metadata: context
-            .input
-            .environment
+        metadata: environment
             .external_public_metadata
             .iter()
             .map(|metadata| (metadata.package, metadata))
             .collect(),
-        tool_bindings: context
-            .input
-            .environment
+        tool_bindings: environment
             .tool_bindings
             .iter()
             .map(|binding| binding.tool.as_str())

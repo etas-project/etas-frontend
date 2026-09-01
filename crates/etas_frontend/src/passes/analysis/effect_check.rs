@@ -15,7 +15,8 @@ use self::external_metadata::{
 };
 use crate::incremental::CheckScope;
 use crate::passes::artifacts::{
-    EFFECT_OUTPUT, HIR_OUTPUT, RESOLVED_IMPORTS, TYPE_OUTPUT, global_with_diagnostics,
+    EFFECT_OUTPUT, HIR_OUTPUT, RESOLVED_IMPORTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
+    global_with_diagnostics,
 };
 use crate::{ProjectContext, UnitKind, UnitTarget};
 
@@ -28,6 +29,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 HIR_OUTPUT,
                 TYPE_OUTPUT,
                 RESOLVED_IMPORTS,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
             ]))
             .produces(global_with_diagnostics([EFFECT_OUTPUT]))
     }
@@ -51,9 +53,16 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             );
         };
         let external_anchors = ExternalImportAnchorIndex::build(resolved_imports);
+        let Some(environment) = context
+            .validated_external_environment
+            .as_ref()
+            .map(|validated| validated.environment())
+        else {
+            return PassResult::failed("effect checking requires validated external metadata");
+        };
         let mut external_metadata_diagnostics = Vec::new();
         let external_effect_metadata = match external_effect_metadata(
-            &context.input,
+            environment,
             types,
             &external_anchors,
             &mut external_metadata_diagnostics,
@@ -62,20 +71,19 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             Err(error) => return PassResult::failed(error),
         };
         let external_summaries = external_effect_summaries(
-            &context.input,
+            environment,
             types,
             &external_anchors,
             &mut external_metadata_diagnostics,
         );
         let external_trace_specs = external_trace_spec_summaries(
-            &context.input,
+            environment,
             types,
             &external_anchors,
             &mut external_metadata_diagnostics,
         );
-        let external_artifact_anchors =
-            external_artifact_anchors(&context.input, &external_anchors);
-        let tool_bindings = tool_provider_bindings(&context.input);
+        let external_artifact_anchors = external_artifact_anchors(environment, &external_anchors);
+        let tool_bindings = tool_provider_bindings(environment);
         let reachable_items = (context.check_scope == CheckScope::EntryReachable)
             .then_some(context.reachability.as_ref())
             .flatten()

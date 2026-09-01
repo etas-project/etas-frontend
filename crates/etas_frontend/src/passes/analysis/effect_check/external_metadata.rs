@@ -5,20 +5,21 @@ use etas_types::{EffectArgRef, TypeOutput};
 
 use super::anchors::ExternalImportAnchorIndex;
 use crate::{
-    ProjectExternalActionArgKindInput, ProjectExternalActionTraceEventSourceInput,
-    ProjectExternalActionTraceInput, ProjectExternalCallableGenericParamKindInput,
-    ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
-    ProjectExternalPublicMetadataInput, ProjectExternalTraceSpecClauseKindInput, ProjectInput,
+    ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
+    ProjectExternalActionTraceEventSourceInput, ProjectExternalActionTraceInput,
+    ProjectExternalCallableGenericParamKindInput, ProjectExternalEffectArgInput,
+    ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
+    ProjectExternalPublicMetadataInput, ProjectExternalTraceSpecClauseKindInput,
 };
 
 pub(super) fn external_effect_metadata(
-    input: &ProjectInput,
+    environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<etas_effects::DependencyEffectMetadata, String> {
-    let mut metadata = input.environment.external_effect_metadata.clone();
-    for public_metadata in &input.environment.external_public_metadata {
+    let mut metadata = environment.external_effect_metadata.clone();
+    for public_metadata in &environment.external_public_metadata {
         metadata
             .tags
             .extend(public_metadata.effects.iter().map(|effect| {
@@ -183,10 +184,9 @@ fn push_external_metadata_diagnostic(
 }
 
 pub(super) fn tool_provider_bindings(
-    input: &ProjectInput,
+    environment: &ProjectEnvironmentInput,
 ) -> Vec<etas_effects::ToolProviderBindingMetadata> {
-    input
-        .environment
+    environment
         .tool_bindings
         .iter()
         .map(|binding| etas_effects::ToolProviderBindingMetadata {
@@ -204,19 +204,18 @@ pub(super) fn tool_provider_bindings(
 }
 
 pub(super) fn external_effect_summaries(
-    input: &ProjectInput,
+    environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalEffectSummaryMetadata>> {
     let mut summaries = Vec::new();
     let mut seen = HashSet::<(Option<String>, Vec<String>)>::new();
-    for metadata in &input.environment.external_public_metadata {
+    for metadata in &environment.external_public_metadata {
         if anchors.package_span(metadata.package).is_none() {
             continue;
         }
-        let package = input
-            .environment
+        let package = environment
             .external_packages
             .iter()
             .find(|package| package.id == metadata.package);
@@ -253,22 +252,20 @@ pub(super) fn external_effect_summaries(
             }
         }
 
-        for (item, row) in metadata
+        for item in metadata
             .flows
             .iter()
-            .map(|signature| (&signature.path, signature.effects.as_ref()))
-            .chain(
-                metadata
-                    .agents
-                    .iter()
-                    .map(|signature| (&signature.path, signature.effects.as_ref())),
-            )
-            .chain(
-                metadata
-                    .tools
-                    .iter()
-                    .map(|signature| (&signature.path, signature.effects.as_ref())),
-            )
+            .map(|signature| &signature.path)
+            .chain(metadata.agents.iter().map(|signature| &signature.path))
+            .chain(metadata.tools.iter().map(|signature| &signature.path))
+            .chain(metadata.values.iter().filter_map(|value| {
+                matches!(
+                    value.ty.as_ref(),
+                    Some(crate::ProjectExternalTypeInput::Function { .. })
+                        | Some(crate::ProjectExternalTypeInput::Handler { .. })
+                )
+                .then_some(&value.path)
+            }))
         {
             let Some(item_span) = anchors.item_span(metadata.package, item) else {
                 continue;
@@ -276,50 +273,14 @@ pub(super) fn external_effect_summaries(
             if !seen.insert((package_identity.clone(), item.clone())) {
                 continue;
             }
-            if row.is_some_and(|row| !row.effects.is_empty() || row.tail.is_some()) {
-                diagnostics.push(Diagnostic::effect_check(
-                    EffectDiagnosticCode::IncompleteEffectFacts,
-                    item_span,
-                    format!(
-                        "external callable `{}` declares effects but its package metadata does not provide a solved effect summary",
-                        item.join(".")
-                    ),
-                ));
-                continue;
-            }
-            let public_effects = match row {
-                Some(row) => match external_effect_row(row, types) {
-                    Ok(row) => row,
-                    Err(message) => {
-                        push_external_metadata_diagnostic(diagnostics, item_span, message);
-                        continue;
-                    }
-                },
-                None => Default::default(),
-            };
-            summaries.push(etas_effects::AnchoredExternalMetadata {
-                package: metadata.package.0,
-                span: item_span,
-                metadata: etas_effects::ExternalEffectSummaryMetadata {
-                    package: package_identity.clone(),
-                    import_root: import_root.clone(),
-                    item: item.clone(),
-                    param_names: param_names_by_item.get(item).cloned().unwrap_or_default(),
-                    type_param_names: generic_params_by_item
-                        .get(item)
-                        .map(|params| params.type_params.clone())
-                        .unwrap_or_default(),
-                    effect_param_names: generic_params_by_item
-                        .get(item)
-                        .map(|params| params.effect_params.clone())
-                        .unwrap_or_default(),
-                    public_effects,
-                    requested_actions: Default::default(),
-                    handled_requested_actions: Default::default(),
-                    latent_flows: Vec::new(),
-                    action_trace: Default::default(),
-                },
-            });
+            diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                item_span,
+                format!(
+                    "external callable `{}` does not provide a solved effect summary",
+                    item.join(".")
+                ),
+            ));
         }
     }
     summaries
@@ -432,6 +393,16 @@ fn external_action_trace(
                     .collect::<Result<Vec<_>, _>>()?,
             )
         }
+        ProjectExternalActionTraceInput::Widened {
+            actions,
+            parameter_calls,
+        } => etas_effects::ExternalActionTraceMetadata::Widened {
+            actions: actions
+                .iter()
+                .map(|action| lower_external_effect_metadata(action, types))
+                .collect::<Result<Vec<_>, _>>()?,
+            parameter_calls: parameter_calls.clone(),
+        },
     })
 }
 
@@ -446,13 +417,13 @@ fn lower_external_effect_metadata(
 }
 
 pub(super) fn external_trace_spec_summaries(
-    input: &ProjectInput,
+    environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalTraceSpecSummaryMetadata>> {
     let mut summaries = Vec::new();
-    for metadata in &input.environment.external_public_metadata {
+    for metadata in &environment.external_public_metadata {
         if anchors.package_span(metadata.package).is_none() {
             continue;
         }

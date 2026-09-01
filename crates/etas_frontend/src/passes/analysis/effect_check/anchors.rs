@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use etas_core::Span;
 
-use crate::{ExternalPackageId, ImportTarget, ProjectInput, ResolvedImports, ResolvedModuleTarget};
+use crate::{
+    ExternalPackageId, ImportTarget, ProjectEnvironmentInput, ResolvedImports, ResolvedModuleTarget,
+};
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct ExternalImportAnchorIndex {
@@ -85,18 +87,17 @@ impl ExternalImportAnchorIndex {
 }
 
 pub(super) fn external_artifact_anchors(
-    input: &ProjectInput,
+    environment: &ProjectEnvironmentInput,
     anchors: &ExternalImportAnchorIndex,
 ) -> Vec<etas_effects::ExternalArtifactAnchor> {
-    let packages = input
-        .environment
+    let packages = environment
         .external_packages
         .iter()
         .map(|package| (package.id, package))
         .collect::<HashMap<_, _>>();
     let mut output = Vec::new();
     let mut seen = HashSet::new();
-    for metadata in &input.environment.external_public_metadata {
+    for metadata in &environment.external_public_metadata {
         let Some(package) = packages.get(&metadata.package) else {
             continue;
         };

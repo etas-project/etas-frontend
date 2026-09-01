@@ -9,8 +9,8 @@ use crate::passes::{
     FinalizeProjectHirPass, FinalizeTypeFactsPass, LowerModuleItemsPass,
     NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
     ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, ReuseTypeBodyFactsPass,
-    RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass, ValidateTopLevelLetPass,
-    VerifyInterpreterSupportPass,
+    RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
+    ValidateExternalEnvironmentPass, ValidateTopLevelLetPass, VerifyInterpreterSupportPass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
@@ -28,6 +28,7 @@ pub fn project_pipeline() -> Pipeline<ProjectContext> {
         .pass(BuildModuleIndexPass)
         .pass(BuildModuleCatalogPass)
         .pass(ResolveImportTargetsPass)
+        .pass(ValidateExternalEnvironmentPass)
         .pass(BuildUnitTreePass)
         .pass(BuildImportGraphPass)
         .pass(DetectImportCyclesPass)

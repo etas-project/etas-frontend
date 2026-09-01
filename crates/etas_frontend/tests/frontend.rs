@@ -8038,7 +8038,7 @@ flow main() -> unit ![Network] {
 
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
                 && diagnostic
                     .message
                     .contains("does not provide a solved effect summary")
@@ -8108,7 +8108,7 @@ flow main() -> unit {
 
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
                 && diagnostic
                     .message
                     .contains("does not provide a solved effect summary")
@@ -8565,6 +8565,9 @@ flow main() -> unit ![Console.stdout_write] {
                 .sum(),
             etas_effects::ActionTraceDomain::Repeat(child) => count_stdout(child, stdout),
             etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
+                usize::from(actions.contains(stdout))
+            }
+            etas_effects::ActionTraceDomain::Widened { actions, .. } => {
                 usize::from(actions.contains(stdout))
             }
             etas_effects::ActionTraceDomain::Empty
@@ -10743,6 +10746,55 @@ flow main() -> i32 {
         })
         .expect("malformed external metadata must fail closed");
     assert_eq!(diagnostic.primary.span.source, etas_core::SourceId(44));
+}
+
+#[test]
+fn frontend_check_project_requires_solved_summary_for_pure_external_callable() {
+    let mut environment = external_environment();
+    environment.external_public_metadata[0]
+        .effect_summaries
+        .clear();
+    let output = Frontend.check_project(ProjectInput {
+        project_root: std::path::PathBuf::from("/workspace/demo"),
+        source_root: None,
+        options: Default::default(),
+        environment,
+        sources: vec![SourceInput {
+            id: etas_core::SourceId(51),
+            path: Some(std::path::PathBuf::from("src/app/a.es")),
+            text: r#"module app.a;
+
+import dep.math.{add};
+
+flow main() -> i32 {
+    return add(1, 2);
+}
+"#
+            .to_owned(),
+            kind: SourceKind::SourceProjectFile,
+        }],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["app".to_owned(), "a".to_owned()],
+            }),
+            flow: "main".to_owned(),
+        },
+    });
+
+    assert!(output.checked.is_none());
+    let diagnostic = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            matches!(
+                diagnostic.code,
+                DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
+            ) && diagnostic
+                .message
+                .contains("does not provide a solved effect summary")
+        })
+        .expect("pure external callable without solved summary must fail closed");
+    assert_eq!(diagnostic.primary.span.source, etas_core::SourceId(51));
 }
 
 #[test]

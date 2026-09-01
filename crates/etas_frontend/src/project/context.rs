@@ -17,7 +17,7 @@ use crate::{
     MODULE_UNIT_KIND, ModuleCatalog, ModuleIndex, ModulePartId, ModuleTopoOrder, PROJECT_UNIT_KIND,
     ProjectEntryFact, ProjectInput, ReachabilityFacts, ResolvedImports, ResolvedPaths,
     RuntimeSourceRequirements, SOURCE_FILE_UNIT_KIND, SourceFile, SourceSet, UnitId, UnitKind,
-    UnitNode, UnitTarget, UnitTree,
+    UnitNode, UnitTarget, UnitTree, ValidatedExternalEnvironment,
 };
 
 pub const ENTRY_REACHABLE_UNIT_FILTER: UnitFilterKey =
@@ -43,6 +43,7 @@ pub struct ProjectContext {
     pub module_topo_order: Option<ModuleTopoOrder>,
     pub affected_modules: Option<AffectedModuleSet>,
     pub resolved_imports: Option<ResolvedImports>,
+    pub(crate) validated_external_environment: Option<ValidatedExternalEnvironment>,
     pub resolved_paths: Option<ResolvedPaths>,
     pub hir_item_bindings: Option<HirItemBindings>,
     pub hir_body_bindings: Option<HirBodyBindings>,
@@ -92,6 +93,7 @@ impl ProjectContext {
             module_topo_order: None,
             affected_modules: None,
             resolved_imports: None,
+            validated_external_environment: None,
             resolved_paths: None,
             hir_item_bindings: None,
             hir_body_bindings: None,

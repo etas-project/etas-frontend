@@ -1,11 +1,100 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::{
-    ProjectExternalActionTraceInput, ProjectExternalCallableGenericParamInput,
-    ProjectExternalCallableGenericParamKindInput, ProjectExternalEffectArgInput,
-    ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
-    ProjectExternalPublicMetadataInput, ProjectExternalTypeInput,
+use etas_core::{Diagnostic, TypeDiagnosticCode};
+use etas_utils::{
+    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
+    PreservedArtifacts,
 };
+
+use crate::{
+    ExternalPackageId, ImportTarget, ProjectContext, ProjectExternalActionTraceInput,
+    ProjectExternalCallableGenericParamInput, ProjectExternalCallableGenericParamKindInput,
+    ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
+    ProjectExternalPublicMetadataInput, ProjectExternalTypeInput, ResolvedModuleTarget,
+    ValidatedExternalEnvironment,
+};
+
+use crate::passes::artifacts::{
+    RESOLVED_IMPORTS, VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
+};
+
+pub struct ValidateExternalEnvironmentPass;
+
+impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
+    fn descriptor(&self) -> PassDescriptor {
+        PassDescriptor::new("ValidateExternalEnvironmentPass", PassKind::Analysis)
+            .requires(ArtifactSet::one(RESOLVED_IMPORTS))
+            .produces(global_with_diagnostics([VALIDATED_EXTERNAL_ENVIRONMENT]))
+    }
+
+    fn run(
+        &mut self,
+        context: &mut ProjectContext,
+        _pass_context: &PassContext<ProjectContext>,
+        _manager: &mut PassManager<ProjectContext>,
+    ) -> PassResult {
+        let mut environment = context.input.environment.clone();
+        let mut validated = Vec::with_capacity(environment.external_public_metadata.len());
+        for metadata in std::mem::take(&mut environment.external_public_metadata) {
+            match validate_external_metadata(&metadata) {
+                Ok(()) => validated.push(metadata),
+                Err(reason) => {
+                    let Some(span) = external_package_import_span(context, metadata.package) else {
+                        return PassResult::failed(format!(
+                            "invalid external package metadata for package {} has no resolved import anchor: {reason}",
+                            metadata.package.0
+                        ));
+                    };
+                    context.diagnostics.push(Diagnostic::type_check(
+                        TypeDiagnosticCode::IncompleteTypeFacts,
+                        span,
+                        format!("invalid external package metadata: {reason}"),
+                    ));
+                }
+            }
+        }
+        environment.external_public_metadata = validated;
+        context.validated_external_environment =
+            Some(ValidatedExternalEnvironment::new(environment));
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::one(VALIDATED_EXTERNAL_ENVIRONMENT),
+        )
+    }
+}
+
+fn external_package_import_span(
+    context: &ProjectContext,
+    package: ExternalPackageId,
+) -> Option<etas_core::Span> {
+    let resolved = context.resolved_imports.as_ref()?;
+    resolved
+        .imports
+        .iter()
+        .find_map(|import| match &import.target {
+            ImportTarget::ExternalItem {
+                package: Some(target),
+                ..
+            } if *target == package => Some(import.span),
+            ImportTarget::Module(ResolvedModuleTarget::External {
+                package: Some(target),
+                ..
+            }) if *target == package => Some(import.span),
+            _ => None,
+        })
+        .or_else(|| {
+            resolved
+                .wildcard_imports
+                .iter()
+                .find_map(|import| match &import.target_module {
+                    ResolvedModuleTarget::External {
+                        package: Some(target),
+                        ..
+                    } if *target == package => Some(import.span),
+                    _ => None,
+                })
+        })
+}
 
 #[derive(Clone, Debug, Default)]
 struct GenericScope {
@@ -201,8 +290,15 @@ fn validate_effect_summaries(
     metadata: &ProjectExternalPublicMetadataInput,
     callable_scopes: &HashMap<Vec<String>, GenericScope>,
 ) -> Result<(), String> {
+    let mut seen = HashSet::new();
     for summary in &metadata.effect_summaries {
         validate_path(&summary.item, "effect summary item path")?;
+        if !seen.insert(summary.item.clone()) {
+            return Err(format!(
+                "external callable `{}` has duplicate solved effect summaries",
+                summary.item.join(".")
+            ));
+        }
         let Some(scope) = callable_scopes.get(&summary.item) else {
             return Err(format!(
                 "effect summary `{}` has no matching callable or exported value signature",
@@ -238,10 +334,41 @@ fn validate_effect_summaries(
             .unwrap_or_default();
         validate_action_trace(&summary.action_trace, scope, parameter_names)?;
     }
+    let required = metadata
+        .flows
+        .iter()
+        .map(|callable| &callable.path)
+        .chain(metadata.agents.iter().map(|callable| &callable.path))
+        .chain(metadata.tools.iter().map(|callable| &callable.path))
+        .chain(metadata.values.iter().filter_map(|value| {
+            matches!(
+                value.ty.as_ref(),
+                Some(ProjectExternalTypeInput::Function { .. })
+                    | Some(ProjectExternalTypeInput::Handler { .. })
+            )
+            .then_some(&value.path)
+        }));
+    for item in required {
+        if !seen.contains(item) {
+            return Err(format!(
+                "external callable `{}` does not provide a solved effect summary",
+                item.join(".")
+            ));
+        }
+    }
     Ok(())
 }
 
 fn validate_action_trace(
+    trace: &ProjectExternalActionTraceInput,
+    scope: &GenericScope,
+    parameter_names: &[String],
+) -> Result<(), String> {
+    validate_action_trace_resource_bounds(trace)?;
+    validate_action_trace_semantics(trace, scope, parameter_names)
+}
+
+fn validate_action_trace_semantics(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
@@ -261,16 +388,32 @@ fn validate_action_trace(
         ProjectExternalActionTraceInput::Seq(children)
         | ProjectExternalActionTraceInput::Choice(children) => {
             for child in children {
-                validate_action_trace(child, scope, parameter_names)?;
+                validate_action_trace_semantics(child, scope, parameter_names)?;
             }
             Ok(())
         }
         ProjectExternalActionTraceInput::Repeat(child) => {
-            validate_action_trace(child, scope, parameter_names)
+            validate_action_trace_semantics(child, scope, parameter_names)
         }
         ProjectExternalActionTraceInput::UnknownOrder(actions) => {
             for action in actions {
                 validate_effect_ref(action, scope)?;
+            }
+            Ok(())
+        }
+        ProjectExternalActionTraceInput::Widened {
+            actions,
+            parameter_calls,
+        } => {
+            for action in actions {
+                validate_effect_ref(action, scope)?;
+            }
+            for parameter in parameter_calls {
+                if !parameter_names.iter().any(|name| name == parameter) {
+                    return Err(format!(
+                        "action trace parameter `{parameter}` is not declared by the callable"
+                    ));
+                }
             }
             Ok(())
         }
@@ -330,6 +473,15 @@ fn validate_type(
     scope: &GenericScope,
     allow_unbound_vars: bool,
 ) -> Result<(), String> {
+    validate_type_resource_bounds(ty)?;
+    validate_type_semantics(ty, scope, allow_unbound_vars)
+}
+
+fn validate_type_semantics(
+    ty: &ProjectExternalTypeInput,
+    scope: &GenericScope,
+    allow_unbound_vars: bool,
+) -> Result<(), String> {
     match ty {
         ProjectExternalTypeInput::Primitive(name) => validate_name(name, "primitive name"),
         ProjectExternalTypeInput::Var(name) => {
@@ -344,11 +496,11 @@ fn validate_type(
         ProjectExternalTypeInput::Named(path) => validate_path(path, "named type path"),
         ProjectExternalTypeInput::Applied { path, args } => {
             validate_path(path, "applied type path")?;
-            validate_types(args, scope, allow_unbound_vars)
+            validate_types_semantics(args, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Alias { path, target } => {
             validate_path(path, "alias path")?;
-            validate_type(target, scope, allow_unbound_vars)
+            validate_type_semantics(target, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Nominal {
             path,
@@ -356,7 +508,7 @@ fn validate_type(
         } => {
             validate_path(path, "nominal type path")?;
             if let Some(representation) = representation {
-                validate_type(representation, scope, allow_unbound_vars)?;
+                validate_type_semantics(representation, scope, allow_unbound_vars)?;
             }
             Ok(())
         }
@@ -369,7 +521,7 @@ fn validate_type(
         | ProjectExternalTypeInput::Message(inner)
         | ProjectExternalTypeInput::MemorySelection(inner)
         | ProjectExternalTypeInput::MemoryRegion(inner) => {
-            validate_type(inner, scope, allow_unbound_vars)
+            validate_type_semantics(inner, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Map { key, value }
         | ProjectExternalTypeInput::Store { key, value }
@@ -377,8 +529,8 @@ fn validate_type(
             ok: key,
             err: value,
         } => {
-            validate_type(key, scope, allow_unbound_vars)?;
-            validate_type(value, scope, allow_unbound_vars)
+            validate_type_semantics(key, scope, allow_unbound_vars)?;
+            validate_type_semantics(value, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Record { fields } => {
             let mut names = HashSet::new();
@@ -386,20 +538,20 @@ fn validate_type(
                 if field.name.is_empty() || !names.insert(field.name.as_str()) {
                     return Err("record contains an empty or duplicate field name".to_owned());
                 }
-                validate_type(&field.ty, scope, allow_unbound_vars)?;
+                validate_type_semantics(&field.ty, scope, allow_unbound_vars)?;
             }
             Ok(())
         }
         ProjectExternalTypeInput::Tuple(elements) => {
-            validate_types(elements, scope, allow_unbound_vars)
+            validate_types_semantics(elements, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Function {
             input,
             output,
             effects,
         } => {
-            validate_types(input, scope, allow_unbound_vars)?;
-            validate_type(output, scope, allow_unbound_vars)?;
+            validate_types_semantics(input, scope, allow_unbound_vars)?;
+            validate_type_semantics(output, scope, allow_unbound_vars)?;
             if let Some(row) = effects {
                 validate_effect_row(row, scope)?;
             }
@@ -415,18 +567,18 @@ fn validate_type(
                 validate_effect_row(produced, scope)?;
             }
             if let Some(result) = result {
-                validate_type(result, scope, allow_unbound_vars)?;
+                validate_type_semantics(result, scope, allow_unbound_vars)?;
             }
             Ok(())
         }
         ProjectExternalTypeInput::Trust { wrapper, inner } => {
             validate_name(wrapper, "trust wrapper")?;
-            validate_type(inner, scope, allow_unbound_vars)
+            validate_type_semantics(inner, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Prompt | ProjectExternalTypeInput::PromptPart => Ok(()),
         ProjectExternalTypeInput::ResourceHandle { name, args } => {
             validate_name(name, "resource handle name")?;
-            validate_types(args, scope, allow_unbound_vars)
+            validate_types_semantics(args, scope, allow_unbound_vars)
         }
     }
 }
@@ -438,6 +590,17 @@ fn validate_types(
 ) -> Result<(), String> {
     for ty in types {
         validate_type(ty, scope, allow_unbound_vars)?;
+    }
+    Ok(())
+}
+
+fn validate_types_semantics(
+    types: &[ProjectExternalTypeInput],
+    scope: &GenericScope,
+    allow_unbound_vars: bool,
+) -> Result<(), String> {
+    for ty in types {
+        validate_type_semantics(ty, scope, allow_unbound_vars)?;
     }
     Ok(())
 }
@@ -484,6 +647,159 @@ fn validate_effect_arg(
             validate_name(value, "integer effect selector")
         }
     }
+}
+
+const MAX_EXTERNAL_METADATA_GRAPH_DEPTH: usize = 64;
+const MAX_EXTERNAL_METADATA_GRAPH_NODES: usize = 100_000;
+
+enum TypeGraphNode<'a> {
+    Type(&'a ProjectExternalTypeInput),
+    EffectRow(&'a ProjectExternalEffectRowInput),
+    EffectRef(&'a ProjectExternalEffectRefInput),
+    EffectArg(&'a ProjectExternalEffectArgInput),
+}
+
+fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), String> {
+    let mut stack = vec![(TypeGraphNode::Type(root), 0usize)];
+    let mut nodes = 0usize;
+    while let Some((node, depth)) = stack.pop() {
+        if depth > MAX_EXTERNAL_METADATA_GRAPH_DEPTH {
+            return Err("external metadata type graph exceeds maximum depth".to_owned());
+        }
+        nodes = nodes
+            .checked_add(1)
+            .ok_or_else(|| "external metadata type graph node count overflow".to_owned())?;
+        if nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err("external metadata type graph exceeds maximum node count".to_owned());
+        }
+        let next = depth + 1;
+        match node {
+            TypeGraphNode::Type(ty) => match ty {
+                ProjectExternalTypeInput::Applied { args, .. }
+                | ProjectExternalTypeInput::Tuple(args)
+                | ProjectExternalTypeInput::ResourceHandle { args, .. } => {
+                    stack.extend(args.iter().map(|ty| (TypeGraphNode::Type(ty), next)));
+                }
+                ProjectExternalTypeInput::Alias { target, .. }
+                | ProjectExternalTypeInput::Array(target)
+                | ProjectExternalTypeInput::List(target)
+                | ProjectExternalTypeInput::Set(target)
+                | ProjectExternalTypeInput::Range(target)
+                | ProjectExternalTypeInput::Slice(target)
+                | ProjectExternalTypeInput::Option(target)
+                | ProjectExternalTypeInput::Message(target)
+                | ProjectExternalTypeInput::MemorySelection(target)
+                | ProjectExternalTypeInput::MemoryRegion(target) => {
+                    stack.push((TypeGraphNode::Type(target), next));
+                }
+                ProjectExternalTypeInput::Nominal { representation, .. } => {
+                    if let Some(representation) = representation {
+                        stack.push((TypeGraphNode::Type(representation), next));
+                    }
+                }
+                ProjectExternalTypeInput::Map { key, value }
+                | ProjectExternalTypeInput::Store { key, value }
+                | ProjectExternalTypeInput::Result {
+                    ok: key,
+                    err: value,
+                } => {
+                    stack.push((TypeGraphNode::Type(key), next));
+                    stack.push((TypeGraphNode::Type(value), next));
+                }
+                ProjectExternalTypeInput::Record { fields } => {
+                    stack.extend(
+                        fields
+                            .iter()
+                            .map(|field| (TypeGraphNode::Type(&field.ty), next)),
+                    );
+                }
+                ProjectExternalTypeInput::Function {
+                    input,
+                    output,
+                    effects,
+                } => {
+                    stack.extend(input.iter().map(|ty| (TypeGraphNode::Type(ty), next)));
+                    stack.push((TypeGraphNode::Type(output), next));
+                    if let Some(effects) = effects {
+                        stack.push((TypeGraphNode::EffectRow(effects), next));
+                    }
+                }
+                ProjectExternalTypeInput::Handler {
+                    handled,
+                    produced,
+                    result,
+                } => {
+                    stack.push((TypeGraphNode::EffectRow(handled), next));
+                    if let Some(produced) = produced {
+                        stack.push((TypeGraphNode::EffectRow(produced), next));
+                    }
+                    if let Some(result) = result {
+                        stack.push((TypeGraphNode::Type(result), next));
+                    }
+                }
+                ProjectExternalTypeInput::Trust { inner, .. } => {
+                    stack.push((TypeGraphNode::Type(inner), next));
+                }
+                ProjectExternalTypeInput::Primitive(_)
+                | ProjectExternalTypeInput::Var(_)
+                | ProjectExternalTypeInput::Named(_)
+                | ProjectExternalTypeInput::Prompt
+                | ProjectExternalTypeInput::PromptPart => {}
+            },
+            TypeGraphNode::EffectRow(row) => {
+                stack.extend(
+                    row.effects
+                        .iter()
+                        .map(|effect| (TypeGraphNode::EffectRef(effect), next)),
+                );
+            }
+            TypeGraphNode::EffectRef(effect) => {
+                stack.extend(
+                    effect
+                        .args
+                        .iter()
+                        .map(|arg| (TypeGraphNode::EffectArg(arg), next)),
+                );
+            }
+            TypeGraphNode::EffectArg(ProjectExternalEffectArgInput::Type(ty)) => {
+                stack.push((TypeGraphNode::Type(ty), next));
+            }
+            TypeGraphNode::EffectArg(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_action_trace_resource_bounds(
+    root: &ProjectExternalActionTraceInput,
+) -> Result<(), String> {
+    let mut stack = vec![(root, 0usize)];
+    let mut nodes = 0usize;
+    while let Some((trace, depth)) = stack.pop() {
+        if depth > MAX_EXTERNAL_METADATA_GRAPH_DEPTH {
+            return Err("external metadata action trace exceeds maximum depth".to_owned());
+        }
+        nodes = nodes
+            .checked_add(1)
+            .ok_or_else(|| "external metadata action trace node count overflow".to_owned())?;
+        if nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err("external metadata action trace exceeds maximum node count".to_owned());
+        }
+        let next = depth + 1;
+        match trace {
+            ProjectExternalActionTraceInput::Seq(children)
+            | ProjectExternalActionTraceInput::Choice(children) => {
+                stack.extend(children.iter().map(|child| (child, next)));
+            }
+            ProjectExternalActionTraceInput::Repeat(child) => stack.push((child, next)),
+            ProjectExternalActionTraceInput::Empty
+            | ProjectExternalActionTraceInput::Event { .. }
+            | ProjectExternalActionTraceInput::ParameterCall { .. }
+            | ProjectExternalActionTraceInput::UnknownOrder(_)
+            | ProjectExternalActionTraceInput::Widened { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_path(path: &[String], kind: &str) -> Result<(), String> {

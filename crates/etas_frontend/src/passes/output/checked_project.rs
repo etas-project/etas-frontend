@@ -9,7 +9,7 @@ use crate::{CheckedProject, ProjectContext, SourceBundle};
 
 use crate::passes::artifacts::{
     CHECKED_PROJECT, EFFECT_OUTPUT, HIR_OUTPUT, INTERPRETER_SUPPORT, MODULE_INDEX, PROJECT_ENTRY,
-    REACHABILITY_FACTS, TOP_LEVEL_LET_FACTS, TYPE_OUTPUT,
+    REACHABILITY_FACTS, TOP_LEVEL_LET_FACTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
 };
 
 pub struct BuildCheckedProjectPass;
@@ -26,6 +26,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 INTERPRETER_SUPPORT,
                 PROJECT_ENTRY,
                 REACHABILITY_FACTS,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
             ]))
             .produces(ArtifactSet::one(CHECKED_PROJECT))
     }
@@ -60,16 +61,16 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 .reachability
                 .as_ref()
                 .expect("reachability facts should exist");
+            let environment = context
+                .validated_external_environment
+                .as_ref()
+                .expect("external environment should be validated before checked output")
+                .environment();
             context.checked = Some(CheckedProject {
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
-                project_environment_fingerprint: context
-                    .input
-                    .environment
-                    .canonical_environment_fingerprint(),
-                dependency_metadata_fingerprints: context
-                    .input
-                    .environment
+                project_environment_fingerprint: environment.canonical_environment_fingerprint(),
+                dependency_metadata_fingerprints: environment
                     .canonical_dependency_metadata_fingerprints(),
                 sources: SourceBundle {
                     sources: context
@@ -95,9 +96,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 effects: effects.facts.clone(),
                 effect_registry: effect_artifacts.registry.clone(),
                 interpreter_support: effects.facts.interpreter_support.clone(),
-                external_tool_schemas: context
-                    .input
-                    .environment
+                external_tool_schemas: environment
                     .external_public_metadata
                     .iter()
                     .flat_map(|metadata| metadata.tool_schemas.iter().cloned())

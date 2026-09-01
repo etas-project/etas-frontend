@@ -96,6 +96,21 @@ pub struct ProjectEnvironmentInput {
     pub external_modules_fingerprint: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ValidatedExternalEnvironment {
+    environment: ProjectEnvironmentInput,
+}
+
+impl ValidatedExternalEnvironment {
+    pub(crate) fn new(environment: ProjectEnvironmentInput) -> Self {
+        Self { environment }
+    }
+
+    pub(crate) fn environment(&self) -> &ProjectEnvironmentInput {
+        &self.environment
+    }
+}
+
 impl ProjectEnvironmentInput {
     pub fn canonical_environment_fingerprint(&self) -> String {
         let mut parts = vec!["frontend_project_environment:v1".to_owned()];
@@ -937,6 +952,10 @@ pub enum ProjectExternalActionTraceInput {
     Choice(Vec<ProjectExternalActionTraceInput>),
     Repeat(Box<ProjectExternalActionTraceInput>),
     UnknownOrder(Vec<ProjectExternalEffectRefInput>),
+    Widened {
+        actions: Vec<ProjectExternalEffectRefInput>,
+        parameter_calls: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

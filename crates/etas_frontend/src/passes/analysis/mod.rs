@@ -10,6 +10,7 @@ mod type_check_finalize;
 mod type_reuse;
 
 pub use effect_check::RunEffectPipelinePass;
+pub use external_metadata_validation::ValidateExternalEnvironmentPass;
 pub use loop_progress::AnalyzeLoopProgressPass;
 pub use top_level_let::ValidateTopLevelLetPass;
 pub use type_check::BuildSignatureFactsPass;

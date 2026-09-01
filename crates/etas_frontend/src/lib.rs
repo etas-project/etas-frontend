@@ -19,6 +19,7 @@ pub use incremental::{
     DependencyOverlayChange, DiagnosticSet, EnvironmentChange, MemoryArtifactReuse,
     ProjectChangeSet, SnapshotDetailLevel, SourceChange, SourceVersion, TextEdit,
 };
+pub(crate) use output::ValidatedExternalEnvironment;
 pub use output::{
     BLOCK_UNIT_KIND, BODY_UNIT_KIND, CheckOutput, CheckedProgram, CheckedProject,
     DiagnosticDocument, DiagnosticDumpOptions, DiagnosticLabelRecord, DiagnosticRecord,

@@ -5,7 +5,8 @@ use etas_utils::{
 
 use crate::ProjectContext;
 use crate::passes::artifacts::{
-    HIR_OUTPUT, RESOLVED_IMPORTS, RESOLVED_PATHS, SIGNATURE_FACTS, global_with_diagnostics,
+    HIR_OUTPUT, RESOLVED_IMPORTS, RESOLVED_PATHS, SIGNATURE_FACTS, VALIDATED_EXTERNAL_ENVIRONMENT,
+    global_with_diagnostics,
 };
 
 use super::type_check_bridge::build_signature_pipeline_input;
@@ -19,6 +20,7 @@ impl Pass<ProjectContext> for BuildSignatureFactsPass {
                 HIR_OUTPUT,
                 RESOLVED_IMPORTS,
                 RESOLVED_PATHS,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
             ]))
             .produces(global_with_diagnostics([SIGNATURE_FACTS]))
     }

@@ -1538,6 +1538,21 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|action| self.summary_effect_ref_metadata(action, type_generic_names))
                     .collect::<Result<Vec<_>, _>>()?,
             ),
+            ActionTraceDomain::Widened {
+                actions,
+                parameter_calls,
+            } => MetadataActionTrace::Widened {
+                actions: actions
+                    .iter()
+                    .map(|action| self.summary_effect_ref_metadata(action, type_generic_names))
+                    .collect::<Result<Vec<_>, _>>()?,
+                parameter_calls: parameter_calls
+                    .iter()
+                    .map(|call| call.parameter.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            },
         })
     }
 
