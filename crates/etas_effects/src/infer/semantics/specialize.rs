@@ -1,6 +1,6 @@
 use super::engine::EffectSemantics;
 use super::shared::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 pub(crate) enum EffectSpecializationError {
@@ -62,17 +62,17 @@ pub(crate) struct CheckedGenericBindings {
 }
 
 impl EffectSemantics<'_> {
-    pub(crate) fn validate_deferred_effect_row_obligations(
+    pub(crate) fn solve_deferred_effect_row_obligations(
         &self,
         state: &EffectState,
         obligations: &[etas_types::DeferredEffectRowObligation],
-    ) -> Result<(), EffectSpecializationError> {
-        let mut solved = BTreeMap::<String, EffectSummary>::new();
+    ) -> Result<BTreeMap<String, EffectRow>, EffectSpecializationError> {
+        let mut solved = BTreeMap::<String, EffectRow>::new();
         for obligation in obligations {
             let source_summary =
                 self.latent_summary_for_expr(state, obligation.source, &obligation.param)?;
             if let Some(existing) = solved.get(&obligation.param)
-                && !same_latent_effect_binding(existing, &source_summary)
+                && existing != &source_summary.escaping_effects
             {
                 return Err(
                     EffectSpecializationError::IncompatibleLatentEffectBindings {
@@ -80,9 +80,9 @@ impl EffectSemantics<'_> {
                     },
                 );
             }
-            solved.insert(obligation.param.clone(), source_summary);
+            solved.insert(obligation.param.clone(), source_summary.escaping_effects);
         }
-        Ok(())
+        Ok(solved)
     }
 
     pub(crate) fn latent_summary_for_expr(
@@ -147,10 +147,78 @@ impl EffectSemantics<'_> {
             ActionTraceDomain::Repeat(item) => Ok(ActionTraceDomain::Repeat(Box::new(
                 self.specialize_parameter_call_trace(item, bindings, state)?,
             ))),
+            ActionTraceDomain::Widened {
+                actions,
+                parameter_calls,
+            } => {
+                let mut trace = ActionTraceDomain::UnknownOrder(actions.clone());
+                for call in parameter_calls {
+                    let Some((_, expr)) = bindings.iter().find(|(name, _)| name == &call.parameter)
+                    else {
+                        return Err(EffectSpecializationError::MissingLatentEffectBinding {
+                            param: call.parameter.clone(),
+                        });
+                    };
+                    trace.seq_assign(
+                        self.latent_summary_for_expr(state, *expr, &call.parameter)?
+                            .action_trace,
+                    );
+                }
+                Ok(trace.widened())
+            }
             ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
             | ActionTraceDomain::UnknownOrder(_) => Ok(trace.clone()),
         }
+    }
+
+    pub(crate) fn merge_parameter_call_summaries(
+        &self,
+        target: &mut EffectSummary,
+        trace: &ActionTraceDomain,
+        bindings: &[(String, HirExprId)],
+        state: &EffectState,
+    ) -> Result<(), EffectSpecializationError> {
+        match trace {
+            ActionTraceDomain::ParameterCall { parameter, .. } => {
+                let Some((_, expr)) = bindings.iter().find(|(name, _)| name == parameter) else {
+                    return Err(EffectSpecializationError::MissingLatentEffectBinding {
+                        param: parameter.clone(),
+                    });
+                };
+                let mut source_summary = self.latent_summary_for_expr(state, *expr, parameter)?;
+                source_summary.action_trace = ActionTraceDomain::Empty;
+                target.seq_assign(&source_summary);
+            }
+            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => {
+                for item in items {
+                    self.merge_parameter_call_summaries(target, item, bindings, state)?;
+                }
+            }
+            ActionTraceDomain::Repeat(item) => {
+                self.merge_parameter_call_summaries(target, item, bindings, state)?;
+            }
+            ActionTraceDomain::Widened {
+                parameter_calls, ..
+            } => {
+                for call in parameter_calls {
+                    let Some((_, expr)) = bindings.iter().find(|(name, _)| name == &call.parameter)
+                    else {
+                        return Err(EffectSpecializationError::MissingLatentEffectBinding {
+                            param: call.parameter.clone(),
+                        });
+                    };
+                    let mut source_summary =
+                        self.latent_summary_for_expr(state, *expr, &call.parameter)?;
+                    source_summary.action_trace = ActionTraceDomain::Empty;
+                    target.seq_assign(&source_summary);
+                }
+            }
+            ActionTraceDomain::Empty
+            | ActionTraceDomain::Event(_)
+            | ActionTraceDomain::UnknownOrder(_) => {}
+        }
+        Ok(())
     }
 
     pub(crate) fn specialize_summary_for_call(
@@ -177,18 +245,14 @@ impl EffectSemantics<'_> {
             bindings.push((symbol.name.clone(), arg));
         }
         let generic_bindings = self.call_generic_bindings(site.call);
-        let mut effect_row_bindings = generic_bindings.effect_rows.clone();
-        effect_row_bindings.extend(generic_bindings.deferred_effect_rows.iter().map(
-            |obligation| {
-                (
-                    obligation.param.clone(),
-                    etas_types::EffectRowRef {
-                        effects: Vec::new(),
-                        tail: None,
-                    },
-                )
-            },
-        ));
+        let mut effect_row_bindings = generic_bindings
+            .effect_rows
+            .iter()
+            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+            .collect::<Vec<_>>();
+        let deferred_effect_rows = self
+            .solve_deferred_effect_row_obligations(state, &generic_bindings.deferred_effect_rows)?;
+        effect_row_bindings.extend(deferred_effect_rows);
         self.require_effect_type_bindings(callee, summary, &generic_bindings.types)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
         if bindings.is_empty()
@@ -204,20 +268,12 @@ impl EffectSemantics<'_> {
             &generic_bindings.types,
             &effect_row_bindings,
         )?;
-        self.validate_deferred_effect_row_obligations(
+        self.merge_parameter_call_summaries(
+            &mut specialized,
+            &summary.action_trace,
+            &bindings,
             state,
-            &generic_bindings.deferred_effect_rows,
         )?;
-        let mut merged_params = BTreeSet::new();
-        for obligation in &generic_bindings.deferred_effect_rows {
-            if !merged_params.insert(obligation.param.clone()) {
-                continue;
-            }
-            let mut source_summary =
-                self.latent_summary_for_expr(state, obligation.source, &obligation.param)?;
-            source_summary.action_trace = ActionTraceDomain::Empty;
-            specialized.seq_assign(&source_summary);
-        }
         specialized.action_trace =
             self.specialize_parameter_call_trace(&specialized.action_trace, &bindings, state)?;
         Ok(specialized)
@@ -274,7 +330,7 @@ impl EffectSemantics<'_> {
         summary: &EffectSummary,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+        effect_row_bindings: &[(String, EffectRow)],
     ) -> Result<EffectSummary, EffectSpecializationError> {
         if bindings.is_empty() && type_bindings.is_empty() && effect_row_bindings.is_empty() {
             return Ok(summary.clone());
@@ -326,7 +382,7 @@ impl EffectSemantics<'_> {
         row: &EffectRow,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
-        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+        effect_row_bindings: &[(String, EffectRow)],
     ) -> Result<EffectRow, EffectSpecializationError> {
         let effects = row
             .effects
@@ -343,7 +399,6 @@ impl EffectSemantics<'_> {
                 if effect_var_id_from_name(name) != open {
                     continue;
                 }
-                let binding = self.row_from_type_ref(binding);
                 specialized.effects.union_assign(&binding.effects);
                 specialized.open = binding.open;
                 break;
@@ -431,6 +486,19 @@ impl EffectSemantics<'_> {
                         .collect::<Result<Vec<_>, _>>()?,
                 )))
             }
+            ActionTraceDomain::Widened {
+                actions,
+                parameter_calls,
+            } => Ok(ActionTraceDomain::Widened {
+                actions: EffectSet::from_iter(
+                    actions
+                        .iter()
+                        .cloned()
+                        .map(|effect| self.specialize_effect(effect, bindings, type_bindings))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                parameter_calls: parameter_calls.clone(),
+            }),
         }
     }
 
@@ -486,7 +554,7 @@ impl EffectSemantics<'_> {
         &self,
         callee: EffectUnit,
         summary: &EffectSummary,
-        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+        effect_row_bindings: &[(String, EffectRow)],
     ) -> Result<(), EffectSpecializationError> {
         let params = self
             .unit_type_params(callee)
@@ -502,7 +570,7 @@ impl EffectSemantics<'_> {
         &self,
         params: &[String],
         summary: &EffectSummary,
-        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+        effect_row_bindings: &[(String, EffectRow)],
     ) -> Result<(), EffectSpecializationError> {
         let bound = effect_row_bindings
             .iter()
@@ -620,20 +688,16 @@ impl EffectSemantics<'_> {
                 }
                 Ok(false)
             }
+            ActionTraceDomain::Widened { actions, .. } => {
+                for effect in actions.iter() {
+                    if self.effect_contains_named_type(effect, name)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
         }
     }
-}
-
-fn same_latent_effect_binding(left: &EffectSummary, right: &EffectSummary) -> bool {
-    left.escaping_effects == right.escaping_effects
-        && left.requested_actions == right.requested_actions
-        && left.default_actions == right.default_actions
-        && left.handled_actions == right.handled_actions
-        && left.residual_checks == right.residual_checks
-        && left.trace_spec_obligations == right.trace_spec_obligations
-        && left.requirements == right.requirements
-        && left.determinism == right.determinism
-        && left.support == right.support
 }
 
 fn summary_contains_effect_row(summary: &EffectSummary, name: &str) -> bool {

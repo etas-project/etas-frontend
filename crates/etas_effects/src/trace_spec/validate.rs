@@ -470,7 +470,8 @@ fn action_span(trace: &ActionTraceDomain, action: &Effect) -> Option<Span> {
         ActionTraceDomain::Empty
         | ActionTraceDomain::Event(_)
         | ActionTraceDomain::ParameterCall { .. }
-        | ActionTraceDomain::UnknownOrder(_) => None,
+        | ActionTraceDomain::UnknownOrder(_)
+        | ActionTraceDomain::Widened { .. } => None,
     }
 }
 

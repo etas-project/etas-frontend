@@ -1,6 +1,6 @@
 use super::engine::EffectSemantics;
 use super::shared::*;
-use crate::{ActionEvent, pipeline::ExternalActionTraceMetadata};
+use crate::{ActionEvent, infer::domain::ParameterCallRef, pipeline::ExternalActionTraceMetadata};
 
 impl EffectSemantics<'_> {
     pub(crate) fn source_import_target_missing(&self, callee: HirExprId) -> bool {
@@ -61,7 +61,7 @@ impl EffectSemantics<'_> {
             return Ok(None);
         };
         let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
-        let (type_bindings, mut effect_row_bindings, deferred_effect_row_obligations) = self
+        let (type_bindings, explicit_effect_row_bindings, deferred_effect_row_obligations) = self
             .types
             .facts
             .generic_instantiations
@@ -88,15 +88,13 @@ impl EffectSemantics<'_> {
                 )
             })
             .unwrap_or_default();
-        effect_row_bindings.extend(deferred_effect_row_obligations.iter().map(|obligation| {
-            (
-                obligation.param.clone(),
-                etas_types::EffectRowRef {
-                    effects: Vec::new(),
-                    tail: None,
-                },
-            )
-        }));
+        let mut effect_row_bindings = explicit_effect_row_bindings
+            .iter()
+            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+            .collect::<Vec<_>>();
+        let deferred_effect_rows =
+            self.solve_deferred_effect_row_obligations(state, &deferred_effect_row_obligations)?;
+        effect_row_bindings.extend(deferred_effect_rows);
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
             &summary,
@@ -107,23 +105,14 @@ impl EffectSemantics<'_> {
             &summary,
             &effect_row_bindings,
         )?;
-        self.validate_deferred_effect_row_obligations(state, &deferred_effect_row_obligations)?;
+        let parameter_trace = summary.action_trace.clone();
         summary = self.specialize_summary_with_bindings(
             &summary,
             &bindings,
             &type_bindings,
             &effect_row_bindings,
         )?;
-        let mut merged_params = BTreeSet::new();
-        for obligation in &deferred_effect_row_obligations {
-            if !merged_params.insert(obligation.param.clone()) {
-                continue;
-            }
-            let mut source_summary =
-                self.latent_summary_for_expr(state, obligation.source, &obligation.param)?;
-            source_summary.action_trace = ActionTraceDomain::Empty;
-            summary.seq_assign(&source_summary);
-        }
+        self.merge_parameter_call_summaries(&mut summary, &parameter_trace, &bindings, state)?;
         if self
             .apply_external_function_parameter_effects(
                 &mut summary,
@@ -226,6 +215,24 @@ impl EffectSemantics<'_> {
                         .collect::<Option<Vec<_>>>()?,
                 ))
             }
+            ExternalActionTraceMetadata::Widened {
+                actions,
+                parameter_calls,
+            } => ActionTraceDomain::Widened {
+                actions: EffectSet::from_iter(
+                    actions
+                        .iter()
+                        .map(|action| self.external_effect_from_metadata(action))
+                        .collect::<Option<Vec<_>>>()?,
+                ),
+                parameter_calls: parameter_calls
+                    .iter()
+                    .map(|parameter| ParameterCallRef {
+                        parameter: parameter.clone(),
+                        span,
+                    })
+                    .collect(),
+            },
         })
     }
 
@@ -329,7 +336,7 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         state: &EffectState,
         type_bindings: &[(String, TypeId)],
-        effect_row_bindings: &[(String, etas_types::EffectRowRef)],
+        effect_row_bindings: &[(String, EffectRow)],
         deferred_effect_row_obligations: &[etas_types::DeferredEffectRowObligation],
     ) -> Result<Option<()>, super::specialize::EffectSpecializationError> {
         let Some(callee_input) = self

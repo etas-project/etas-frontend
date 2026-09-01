@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use etas_core::Span;
 use etas_utils::{JoinSemiLattice, PartialOrder};
@@ -157,6 +157,16 @@ pub enum ActionTraceDomain {
     Choice(Vec<ActionTraceDomain>),
     Repeat(Box<ActionTraceDomain>),
     UnknownOrder(EffectSet),
+    Widened {
+        actions: EffectSet,
+        parameter_calls: Vec<ParameterCallRef>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParameterCallRef {
+    pub parameter: String,
+    pub span: Span,
 }
 
 impl ActionTraceDomain {
@@ -191,16 +201,16 @@ impl ActionTraceDomain {
         if !needs_widening {
             return self;
         }
-        let actions = self.action_set();
-        if actions.is_empty() {
-            return Self::Empty;
-        }
-        Self::UnknownOrder(actions)
+        self.into_widened()
     }
 
     fn node_count(&self) -> usize {
         match self {
-            Self::Empty | Self::Event(_) | Self::ParameterCall { .. } | Self::UnknownOrder(_) => 1,
+            Self::Empty
+            | Self::Event(_)
+            | Self::ParameterCall { .. }
+            | Self::UnknownOrder(_)
+            | Self::Widened { .. } => 1,
             Self::Seq(parts) | Self::Choice(parts) => {
                 1 + parts.iter().map(Self::node_count).sum::<usize>()
             }
@@ -212,9 +222,11 @@ impl ActionTraceDomain {
         match self {
             Self::Repeat(_) => true,
             Self::Seq(parts) | Self::Choice(parts) => parts.iter().any(Self::contains_repeat),
-            Self::Empty | Self::Event(_) | Self::ParameterCall { .. } | Self::UnknownOrder(_) => {
-                false
-            }
+            Self::Empty
+            | Self::Event(_)
+            | Self::ParameterCall { .. }
+            | Self::UnknownOrder(_)
+            | Self::Widened { .. } => false,
         }
     }
 
@@ -232,6 +244,11 @@ impl ActionTraceDomain {
                     actions.insert(action.clone());
                 }
             }
+            Self::Widened { actions: set, .. } => {
+                for action in set.iter() {
+                    actions.insert(action.clone());
+                }
+            }
             Self::Event(event) => {
                 actions.insert(event.action.clone());
             }
@@ -245,6 +262,84 @@ impl ActionTraceDomain {
         }
     }
 
+    fn collect_parameter_calls(
+        &self,
+        calls: &mut BTreeMap<(String, u32, u32, u32), ParameterCallRef>,
+    ) {
+        match self {
+            Self::ParameterCall { parameter, span } => {
+                calls.insert(
+                    (
+                        parameter.clone(),
+                        span.source.0,
+                        span.range.start.0,
+                        span.range.end.0,
+                    ),
+                    ParameterCallRef {
+                        parameter: parameter.clone(),
+                        span: *span,
+                    },
+                );
+            }
+            Self::Widened {
+                parameter_calls, ..
+            } => {
+                for call in parameter_calls {
+                    calls.insert(
+                        (
+                            call.parameter.clone(),
+                            call.span.source.0,
+                            call.span.range.start.0,
+                            call.span.range.end.0,
+                        ),
+                        call.clone(),
+                    );
+                }
+            }
+            Self::Seq(parts) | Self::Choice(parts) => {
+                for part in parts {
+                    part.collect_parameter_calls(calls);
+                }
+            }
+            Self::Repeat(inner) => inner.collect_parameter_calls(calls),
+            Self::Empty | Self::Event(_) | Self::UnknownOrder(_) => {}
+        }
+    }
+
+    fn into_widened(self) -> Self {
+        let actions = self.action_set();
+        let mut calls = BTreeMap::new();
+        self.collect_parameter_calls(&mut calls);
+        if actions.is_empty() && calls.is_empty() {
+            Self::Empty
+        } else {
+            Self::Widened {
+                actions,
+                parameter_calls: calls.into_values().collect(),
+            }
+        }
+    }
+
+    pub(crate) fn widened(self) -> Self {
+        self.into_widened()
+    }
+
+    fn merge_widened(left: Self, right: Self) -> Self {
+        let mut actions = left.action_set();
+        actions.union_assign(&right.action_set());
+        let mut calls = BTreeMap::new();
+        left.collect_parameter_calls(&mut calls);
+        right.collect_parameter_calls(&mut calls);
+        if actions.is_empty() && calls.is_empty() {
+            Self::Empty
+        } else {
+            Self::Widened {
+                actions,
+                parameter_calls: calls.into_values().collect(),
+            }
+        }
+    }
+
     fn seq(self, other: Self) -> Self {
         let trace = match (self, other) {
             (Self::Empty, right) => right,
@@ -253,9 +348,16 @@ impl ActionTraceDomain {
                 left.union_assign(&right);
                 Self::UnknownOrder(left)
             }
+            (left @ Self::Widened { .. }, right) | (right, left @ Self::Widened { .. }) => {
+                Self::merge_widened(left, right)
+            }
             (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                left.union_assign(&right.action_set());
-                Self::UnknownOrder(left)
+                if matches!(right, Self::ParameterCall { .. } | Self::Widened { .. }) {
+                    Self::merge_widened(Self::UnknownOrder(left), right)
+                } else {
+                    left.union_assign(&right.action_set());
+                    Self::UnknownOrder(left)
+                }
             }
             (Self::Seq(mut left), Self::Seq(right)) => {
                 left.extend(right);
@@ -284,9 +386,16 @@ impl ActionTraceDomain {
                 left.union_assign(&right);
                 Self::UnknownOrder(left)
             }
+            (left @ Self::Widened { .. }, right) | (right, left @ Self::Widened { .. }) => {
+                Self::merge_widened(left, right)
+            }
             (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                left.union_assign(&right.action_set());
-                Self::UnknownOrder(left)
+                if matches!(right, Self::ParameterCall { .. } | Self::Widened { .. }) {
+                    Self::merge_widened(Self::UnknownOrder(left), right)
+                } else {
+                    left.union_assign(&right.action_set());
+                    Self::UnknownOrder(left)
+                }
             }
             (Self::Choice(mut left), Self::Choice(right)) => {
                 left.extend(right);
@@ -321,12 +430,7 @@ impl ActionTraceDomain {
         if self.node_count() <= Self::FIXPOINT_TRACE_NODE_LIMIT && !self.contains_repeat() {
             return self;
         }
-        let actions = self.action_set();
-        if actions.is_empty() {
-            Self::Empty
-        } else {
-            Self::UnknownOrder(actions)
-        }
+        self.into_widened()
     }
 }
 
@@ -747,4 +851,32 @@ pub enum FrontendRejectionReason {
     UnsupportedHandler,
     EscapedEffect,
     MissingRequirement,
+}
+
+#[cfg(test)]
+mod tests {
+    use etas_core::{SourceId, Span, TextSize};
+
+    use super::ActionTraceDomain;
+
+    #[test]
+    fn widening_preserves_parameter_call_placeholders() {
+        let trace = ActionTraceDomain::Repeat(Box::new(ActionTraceDomain::ParameterCall {
+            parameter: "f".to_owned(),
+            span: Span::empty(SourceId(7), TextSize(11)),
+        }));
+
+        let widened = trace.stabilize_for_fixpoint(None);
+
+        let ActionTraceDomain::Widened {
+            actions,
+            parameter_calls,
+        } = widened
+        else {
+            panic!("repeated parameter call should widen");
+        };
+        assert!(actions.is_empty());
+        assert_eq!(parameter_calls.len(), 1);
+        assert_eq!(parameter_calls[0].parameter, "f");
+    }
 }

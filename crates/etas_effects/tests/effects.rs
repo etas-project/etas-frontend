@@ -101,6 +101,7 @@ fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
         }
         ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer(inner),
         ActionTraceDomain::UnknownOrder(actions) => actions.iter().any(is_agentic_infer_effect),
+        ActionTraceDomain::Widened { actions, .. } => actions.iter().any(is_agentic_infer_effect),
         ActionTraceDomain::ParameterCall { .. } => false,
     }
 }
@@ -115,7 +116,7 @@ fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEvent
             .iter()
             .any(|part| trace_has_agentic_infer_source(part, source.clone())),
         ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer_source(inner, source),
-        ActionTraceDomain::UnknownOrder(_) => false,
+        ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => false,
         ActionTraceDomain::ParameterCall { .. } => false,
     }
 }
@@ -4559,7 +4560,7 @@ flow main(flag: bool) -> unit ![Audit] {
 }
 
 #[test]
-fn action_trace_widening_preserves_only_unknown_order_for_branch_or_recursive_shapes() {
+fn action_trace_widening_preserves_unknown_order_footprint_for_branch_or_recursive_shapes() {
     let approval = Effect::Action(ActionRef {
         tag: APPROVAL_TAG,
         action: APPROVAL_REQUEST_ACTION,
@@ -4583,9 +4584,14 @@ fn action_trace_widening_preserves_only_unknown_order_for_branch_or_recursive_sh
 
     let widened = trace.stabilize_for_fixpoint(Some(&current));
 
-    let ActionTraceDomain::UnknownOrder(actions) = widened else {
+    let ActionTraceDomain::Widened {
+        actions,
+        parameter_calls,
+    } = widened
+    else {
         panic!("widening branch/recursive trace must not invent an order: {widened:?}");
     };
+    assert!(parameter_calls.is_empty(), "{parameter_calls:?}");
     assert!(actions.contains(&approval), "{actions:?}");
     assert!(actions.contains(&memory), "{actions:?}");
 }
@@ -5499,6 +5505,12 @@ flow main() -> unit ![Console.stdout_write] {
                 .map(|item| count_parameter_calls(item, parameter))
                 .sum(),
             ActionTraceDomain::Repeat(item) => count_parameter_calls(item, parameter),
+            ActionTraceDomain::Widened {
+                parameter_calls, ..
+            } => parameter_calls
+                .iter()
+                .filter(|call| call.parameter == parameter)
+                .count(),
             ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
             | ActionTraceDomain::UnknownOrder(_) => 0,
@@ -5543,6 +5555,9 @@ flow main() -> unit ![Console.stdout_write] {
             }
             etas_effects::ActionTraceDomain::Repeat(item) => count_stdout(item, stdout),
             etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
+                usize::from(actions.contains(stdout))
+            }
+            etas_effects::ActionTraceDomain::Widened { actions, .. } => {
                 usize::from(actions.contains(stdout))
             }
             etas_effects::ActionTraceDomain::ParameterCall { .. } => 0,
@@ -5599,6 +5614,53 @@ flow main() -> unit ![Console.stdout_write] {
     assert!(
         summary.requested_actions.effects.contains(&stdout),
         "{summary:?}"
+    );
+}
+
+#[test]
+fn row_polymorphic_call_allows_equal_escaping_rows_with_different_requested_actions() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.io.println;
+
+flow both<effect E>(
+    f: () -> unit ![E],
+    g: () -> unit ![E],
+) -> unit ![E] {
+    f();
+    g();
+}
+
+flow main() -> unit {
+    both(
+        () => { println("handled")?; return; },
+        () => { return; },
+    );
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "main"))
+        .expect("main summary should be materialized");
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.escaping_effects.effects.is_empty(), "{summary:?}");
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "requested actions from every called callback must be merged: {summary:?}"
     );
 }
 

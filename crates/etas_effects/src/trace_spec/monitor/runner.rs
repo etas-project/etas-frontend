@@ -144,6 +144,16 @@ impl SingleComponentMonitor {
                     TraceRun::States(states)
                 }
             }
+            ActionTraceDomain::Widened {
+                actions,
+                parameter_calls,
+            } => {
+                if !parameter_calls.is_empty() || unknown_needs_order(actions) {
+                    TraceRun::Unknown
+                } else {
+                    TraceRun::States(states)
+                }
+            }
         }
     }
 

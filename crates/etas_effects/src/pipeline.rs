@@ -54,6 +54,10 @@ pub enum ExternalActionTraceMetadata {
     Choice(Vec<ExternalActionTraceMetadata>),
     Repeat(Box<ExternalActionTraceMetadata>),
     UnknownOrder(Vec<ExternalEffectMetadata>),
+    Widened {
+        actions: Vec<ExternalEffectMetadata>,
+        parameter_calls: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
