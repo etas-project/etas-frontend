@@ -14,7 +14,7 @@ use crate::{
 
 use super::super::artifacts::{
     HIR_OUTPUT, MODULE_CATALOG, MODULE_INDEX, PARSED_SOURCE_SET, RESOLVED_IMPORTS,
-    global_with_diagnostics,
+    VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
 };
 use super::imports_common::{
     ImportResolution, duplicate_explicit_import_diagnostics, parsed_by_source, part_module,
@@ -295,6 +295,7 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
                 MODULE_INDEX,
                 HIR_OUTPUT,
                 RESOLVED_IMPORTS,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
             ]))
             .produces(global_with_diagnostics([HIR_OUTPUT]))
     }
@@ -420,8 +421,10 @@ struct ExternalActionResolution {
 
 fn external_action_paths(context: &ProjectContext) -> BTreeSet<Vec<String>> {
     context
-        .input
-        .environment
+        .validated_external_environment
+        .as_ref()
+        .expect("external environment should be validated before applying imports")
+        .environment()
         .external_public_metadata
         .iter()
         .flat_map(|metadata| metadata.actions.iter().map(|action| action.path.clone()))

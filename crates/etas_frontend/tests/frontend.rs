@@ -4275,28 +4275,27 @@ fn frontend_session_rejects_non_increasing_source_versions() {
 #[test]
 fn import_graph_does_not_rewrite_external_child_module_to_source_prefix() {
     let frontend = Frontend;
-    let environment = ProjectEnvironmentInput {
-        external_packages: vec![ProjectExternalPackageInput {
-            id: ExternalPackageId(0),
-            name: "edk".to_owned(),
-            version: "1.0.0".to_owned(),
-            edition: "2026".to_owned(),
-            import_root: "edk".to_owned(),
-        }],
-        external_modules: vec![ProjectExternalModuleInput {
-            package: Some(ExternalPackageId(0)),
-            id: ExternalModuleId(7),
-            path: ModulePath {
-                segments: vec!["edk".into(), "http".into(), "types".into()],
-            },
-            exports: vec![ProjectExternalExportInput {
-                symbol: ExternalSymbolId(0),
-                name: "HttpResponse".to_owned(),
-                visibility: etas_hir::Visibility::Public,
-            }],
-        }],
-        ..ProjectEnvironmentInput::default()
+    let mut environment = external_environment();
+    environment.external_packages[0].name = "edk".to_owned();
+    environment.external_packages[0].import_root = "edk".to_owned();
+    environment.external_modules[0].id = ExternalModuleId(7);
+    environment.external_modules[0].path = ModulePath {
+        segments: vec!["edk".into(), "http".into(), "types".into()],
     };
+    environment.external_modules[0].exports = vec![ProjectExternalExportInput {
+        symbol: ExternalSymbolId(0),
+        name: "HttpResponse".to_owned(),
+        visibility: etas_hir::Visibility::Public,
+    }];
+    let metadata = &mut environment.external_public_metadata[0];
+    metadata.types[0].path = vec![
+        "edk".to_owned(),
+        "http".to_owned(),
+        "types".to_owned(),
+        "HttpResponse".to_owned(),
+    ];
+    metadata.flows.clear();
+    metadata.effect_summaries.clear();
 
     let output = frontend.check_project(ProjectInput {
         project_root: std::path::PathBuf::from("/workspace/demo"),
@@ -8129,6 +8128,13 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
             name: "request".to_owned(),
             visibility: etas_hir::Visibility::Public,
         });
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(3),
+            name: "Transport".to_owned(),
+            visibility: etas_hir::Visibility::Public,
+        });
     environment.external_public_metadata[0]
         .effects
         .push(ProjectExternalNamedSignatureInput {
@@ -8276,6 +8282,13 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
         .push(ProjectExternalExportInput {
             symbol: ExternalSymbolId(2),
             name: "generic_request".to_owned(),
+            visibility: etas_hir::Visibility::Public,
+        });
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(3),
+            name: "Storage".to_owned(),
             visibility: etas_hir::Visibility::Public,
         });
     environment.external_public_metadata[0]
@@ -8590,6 +8603,13 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
         .push(ProjectExternalExportInput {
             symbol: ExternalSymbolId(2),
             name: "default_request".to_owned(),
+            visibility: etas_hir::Visibility::Public,
+        });
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(3),
+            name: "Transport".to_owned(),
             visibility: etas_hir::Visibility::Public,
         });
     environment.external_public_metadata[0]
@@ -10649,6 +10669,9 @@ fn frontend_check_project_uses_multi_segment_external_import_root_type_contract(
     environment.external_public_metadata[0]
         .effect_summaries
         .clear();
+    environment.external_modules[0]
+        .exports
+        .retain(|export| export.name == "Number");
 
     let output = frontend.check_project(ProjectInput {
         project_root: std::path::PathBuf::from("/workspace/demo"),
@@ -10746,6 +10769,89 @@ flow main() -> i32 {
         })
         .expect("malformed external metadata must fail closed");
     assert_eq!(diagnostic.primary.span.source, etas_core::SourceId(44));
+}
+
+#[test]
+fn frontend_check_project_validates_complete_external_environment_at_import_boundary() {
+    fn check(environment: ProjectEnvironmentInput, source: etas_core::SourceId) -> ProjectOutput {
+        Frontend.check_project(ProjectInput {
+            project_root: std::path::PathBuf::from("/workspace/external-environment"),
+            source_root: None,
+            options: Default::default(),
+            environment,
+            sources: vec![SourceInput {
+                id: source,
+                path: Some(std::path::PathBuf::from("src/app/main.es")),
+                text: "module app.main;\nimport dep.math.{add};\nflow main() -> i32 { return add(1, 2); }".to_owned(),
+                kind: SourceKind::SourceProjectFile,
+            }],
+            entry: ProjectEntry {
+                module: Some(ModulePath {
+                    segments: vec!["app".to_owned(), "main".to_owned()],
+                }),
+                flow: "main".to_owned(),
+            },
+        })
+    }
+
+    let cases = [
+        {
+            let mut environment = external_environment();
+            environment.external_modules[0]
+                .exports
+                .push(ProjectExternalExportInput {
+                    symbol: ExternalSymbolId(99),
+                    name: "Missing".to_owned(),
+                    visibility: etas_hir::Visibility::Public,
+                });
+            (environment, "has no matching public metadata identity")
+        },
+        {
+            let mut environment = external_environment();
+            environment.external_public_metadata[0].types.push(
+                ProjectExternalNamedSignatureInput {
+                    path: vec!["dep".to_owned(), "math".to_owned(), "Ghost".to_owned()],
+                    visibility: "public".to_owned(),
+                    ty: Some(ProjectExternalTypeInput::Primitive("i32".to_owned())),
+                },
+            );
+            (environment, "has no matching module export identity")
+        },
+        {
+            let mut environment = external_environment();
+            environment
+                .external_effect_metadata
+                .extensions
+                .push(DependencyEffectExtension {
+                    package: Some(ExternalPackageId(0).0),
+                    child: vec!["dep".to_owned(), "math".to_owned(), "Missing".to_owned()],
+                    parent: vec!["Network".to_owned()],
+                });
+            (environment, "extension child")
+        },
+        {
+            let mut environment = external_environment();
+            environment.tool_bindings.push(ProjectToolBindingInput {
+                tool: "dep.math.MissingTool".to_owned(),
+                provider: "test".to_owned(),
+                effect_row: Vec::new(),
+                action_row: Vec::new(),
+            });
+            (environment, "does not name a declared external tool")
+        },
+    ];
+
+    for (index, (environment, expected)) in cases.into_iter().enumerate() {
+        let source = etas_core::SourceId(60 + index as u32);
+        let output = check(environment, source);
+        assert!(output.checked.is_none(), "{:?}", output.diagnostics);
+        let diagnostic = output
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains(expected))
+            .unwrap_or_else(|| panic!("missing `{expected}` diagnostic: {:?}", output.diagnostics));
+        assert_eq!(diagnostic.primary.span.source, source);
+    }
 }
 
 #[test]
