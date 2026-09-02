@@ -98,7 +98,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             tool_bindings: input.tool_bindings.clone(),
             bins: input.bins.clone(),
         };
-        Ok(package_metadata_to_sections(&package_metadata))
+        Ok(package_metadata_to_sections(&package_metadata)?)
     }
 
     fn external_modules(&self) -> Vec<MetadataExternalModule> {
