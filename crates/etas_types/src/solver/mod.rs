@@ -94,6 +94,7 @@ impl TypeSolver {
                         .iter()
                         .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
                         .collect::<Vec<_>>();
+                    let known_substitutions = report.substitutions.clone();
                     report.append(solve_callable_constraint(
                         input.store,
                         input.spec_facts,
@@ -106,6 +107,7 @@ impl TypeSolver {
                             args: &args,
                             output,
                             origin: *origin,
+                            known_substitutions,
                         },
                     ));
                 }
@@ -157,6 +159,7 @@ impl TypeSolver {
                                 args: &args,
                                 output,
                                 origin: *origin,
+                                known_substitutions: report.substitutions.clone(),
                             },
                         );
                         if candidate_report.failures.is_empty() {
@@ -266,6 +269,7 @@ struct CallableConstraintSolveInput<'a> {
     args: &'a [TypeId],
     output: TypeId,
     origin: ConstraintOrigin,
+    known_substitutions: Substitution,
 }
 
 fn solve_callable_constraint(
@@ -351,6 +355,7 @@ fn solve_callable_constraint(
             output: input.output,
             origin: input.origin,
             initial_named_substitutions: HashMap::new(),
+            initial_substitutions: input.known_substitutions,
         },
     );
     if report.failures.is_empty() {

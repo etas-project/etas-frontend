@@ -5262,6 +5262,69 @@ flow main<R ~ Region>(path: WorkspacePath<R>) -> bytes ![Error<IOError>]
 }
 
 #[test]
+fn std_fs_read_specializes_concrete_region_through_generic_wrapper() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+module app.workspace;
+import std.fs.{IOError, Region, WorkspacePath, read_bytes};
+
+type ProjectRoot;
+impl ProjectRoot ~ Region;
+
+flow load<R ~ Region>(path: WorkspacePath<R>) -> bytes ![Fs.read<R>, Error<IOError>]
+{
+    return read_bytes(path);
+}
+
+flow main(path: WorkspacePath<ProjectRoot>) -> bytes ![Fs.read<ProjectRoot>, Error<IOError>]
+{
+    return load<ProjectRoot>(path);
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let registry = EffectRegistry::with_standard_effects();
+    let action = registry
+        .action_by_name("Fs.read")
+        .expect("Fs.read should resolve");
+    let summary = output
+        .facts
+        .item_effects
+        .get(&flow_item(&hir, "main"))
+        .expect("main effect summary");
+    let selector = summary
+        .requested_actions
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::AppliedAction(instance) if instance.action == action => instance.args.first(),
+            _ => None,
+        })
+        .expect("Fs.read should retain the concrete region selector");
+    let etas_types::EffectArgRef::Type(selector) = selector else {
+        panic!("Fs.read selector should be a checked type: {selector:?}");
+    };
+    assert!(
+        matches!(
+            types.store.get(*selector),
+            Some(etas_types::Type::Nominal(nominal))
+                if nominal.name == "app.workspace.ProjectRoot"
+        ),
+        "unexpected concrete Fs.read selector: {:?}",
+        types.store.get(*selector)
+    );
+}
+
+#[test]
 fn std_secret_read_specializes_key_selector_from_checked_call_instantiation() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),

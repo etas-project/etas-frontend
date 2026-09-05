@@ -39,6 +39,13 @@ impl<'a> TypeUnifier<'a> {
         }
     }
 
+    pub fn with_substitution(store: &'a TypeStore, substitution: Substitution) -> Self {
+        Self {
+            store,
+            substitution,
+        }
+    }
+
     pub fn substitution(&self) -> &Substitution {
         &self.substitution
     }

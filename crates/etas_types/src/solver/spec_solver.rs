@@ -99,6 +99,13 @@ fn std_type_satisfies_spec(
         implementation.spec == spec
             && type_same(store, implementation.self_type, ty)
             && args_match(store, &implementation.args, args)
+    }) || facts.impls.iter().any(|implementation| {
+        facts
+            .std_spec_aliases
+            .get(&implementation.spec_symbol)
+            .is_some_and(|path| path == spec)
+            && type_same(store, implementation.self_type, ty)
+            && args_match(store, &implementation.args, args)
     })
 }
 

@@ -5233,3 +5233,116 @@ flow main() -> Deque<i32> {
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }
+
+#[test]
+fn check_program_types_region_indexed_workspace_path_factory_and_generic_wrapper() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.fs.{IOError, Region, WorkspacePath, path, read_bytes};
+
+type ProjectRoot;
+impl ProjectRoot ~ Region;
+
+flow load<R ~ Region>(name: string) -> bytes ![Fs.read<R>, Error<IOError>] {
+  let target: Result<WorkspacePath<R>, IOError> = path<R>(name);
+  return match target {
+    Ok(workspace_path) => read_bytes(workspace_path),
+    Err(error) => perform Error<IOError>.raise(error),
+  };
+}
+
+flow main() -> bytes ![Fs.read<ProjectRoot>, Error<IOError>] {
+  return load<ProjectRoot>("src/main.es");
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_infers_workspace_region_from_expected_path_type() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.fs.{IOError, Region, WorkspacePath, path};
+
+type ProjectRoot;
+impl ProjectRoot ~ Region;
+
+flow target() -> Result<WorkspacePath<ProjectRoot>, IOError> {
+  let target: Result<WorkspacePath<ProjectRoot>, IOError> = path("src/main.es");
+  return target;
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_propagates_region_through_generic_list_iteration() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.fs.{IOError, Region, WorkspacePath, list, path, read_bytes};
+
+type ProjectRoot;
+impl ProjectRoot ~ Region;
+
+flow read_directory() -> unit ![Fs.list<ProjectRoot>, Fs.read<ProjectRoot>, Error<IOError>] {
+  let directory: Result<WorkspacePath<ProjectRoot>, IOError> = path("data");
+  let entries = match directory {
+    Ok(target) => list(target),
+    Err(error) => perform Error<IOError>.raise(error),
+  };
+  for entry in entries limit Iterations(16) {
+    let _contents = read_bytes(entry);
+  }
+  return;
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_rejects_workspace_path_factory_for_non_region_type() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.fs.{IOError, WorkspacePath, path};
+
+type ArbitraryRoot;
+
+flow target() -> Result<WorkspacePath<ArbitraryRoot>, IOError> {
+  return path<ArbitraryRoot>("src/main.es");
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)
+                && diagnostic
+                    .message
+                    .contains("does not satisfy spec bound `std.fs.Region`")
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+}

@@ -27,6 +27,7 @@ pub fn solve_callable(
             output,
             origin,
             initial_named_substitutions: HashMap::new(),
+            initial_substitutions: crate::Substitution::default(),
         },
     )
 }
@@ -39,6 +40,7 @@ pub struct CallableSolveInput<'a> {
     pub output: TypeId,
     pub origin: ConstraintOrigin,
     pub initial_named_substitutions: HashMap<String, TypeId>,
+    pub initial_substitutions: crate::Substitution,
 }
 
 pub fn callable_schematic_param_names(store: &TypeStore, callee: TypeId) -> Vec<String> {
@@ -69,8 +71,12 @@ pub fn solve_callable_with_named_substitutions(
         output,
         origin,
         initial_named_substitutions,
+        initial_substitutions,
     } = input;
-    let mut report = SolverReport::default();
+    let mut report = SolverReport {
+        substitutions: initial_substitutions,
+        ..SolverReport::default()
+    };
     if let Some(constructor) = nominal_constructor_signature(store, callee, explicit_generic_args) {
         return solve_nominal_constructor_call(store, constructor, args, output, origin);
     }
@@ -117,7 +123,8 @@ pub fn solve_callable_with_named_substitutions(
                 ),
             });
         } else {
-            let mut arg_unifier = TypeUnifier::new(store);
+            let mut arg_unifier =
+                TypeUnifier::with_substitution(store, report.substitutions.clone());
             if unify_schematic_type(
                 store,
                 expected,
@@ -152,7 +159,7 @@ pub fn solve_callable_with_named_substitutions(
         });
         return report;
     }
-    let mut output_unifier = TypeUnifier::new(store);
+    let mut output_unifier = TypeUnifier::with_substitution(store, report.substitutions.clone());
     if unify_schematic_type(
         store,
         flow.output,
