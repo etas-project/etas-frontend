@@ -2,6 +2,7 @@ mod display;
 mod nominal;
 mod normalize;
 mod primitive;
+mod representation;
 mod row;
 mod scheme;
 mod substitution;
@@ -15,6 +16,7 @@ pub use normalize::{
     type_contains_named_param,
 };
 pub use primitive::PrimitiveType;
+pub(crate) use representation::materialize_representations;
 pub use row::{EffectArgRef, EffectRef, EffectRowRef};
 pub use scheme::{TypeConstructorId, TypeScheme, TypeVarId};
 pub use substitution::{

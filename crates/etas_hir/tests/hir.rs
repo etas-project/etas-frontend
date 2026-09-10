@@ -23,6 +23,71 @@ fn lower(text: &str) -> etas_hir::HirProgram {
 }
 
 #[test]
+fn std_namespace_calls_lower_to_resolved_callees_without_orphans() {
+    for expression in ["std.text.trim(\" x \")", "text.trim(\" x \")"] {
+        let hir = lower(&format!(
+            "import std.text as text; flow main() -> string {{ return {expression}; }}"
+        ));
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        HirTreeView::try_new(&hir).expect("normalized namespace receiver stays attached");
+        let callee = hir
+            .exprs
+            .iter()
+            .find_map(|(_, expr)| match expr {
+                HirExpr::Call { callee, .. } => Some(*callee),
+                _ => None,
+            })
+            .expect("namespace invocation must be an ordinary call");
+        let HirExpr::Path(path) = &hir.exprs[callee] else {
+            panic!("resolved callee path");
+        };
+        let ResolveResult::Resolved(symbol) = path.resolution else {
+            panic!("resolved std symbol");
+        };
+        let SymbolDef::ImportAlias {
+            path: canonical, ..
+        } = &hir.symbols.get(symbol).expect("callee symbol").def
+        else {
+            panic!("standard import identity");
+        };
+        assert_eq!(canonical, &["std", "text", "trim"]);
+        assert_eq!(
+            etas_hir::path_text(&path.syntax_path),
+            expression.split('(').next().unwrap()
+        );
+        assert!(
+            hir.exprs
+                .iter()
+                .all(|(_, expr)| !matches!(expr, HirExpr::MethodCall { .. }))
+        );
+    }
+}
+
+#[test]
+fn std_namespace_normalization_preserves_lexical_receivers_and_type_methods() {
+    let hir = lower(
+        r#"
+flow main(std: { text: string }) -> string {
+    let prompt = Prompt.new();
+    return std.text.trim();
+}
+"#,
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    HirTreeView::try_new(&hir).expect("method receivers remain attached");
+    assert_eq!(
+        hir.exprs
+            .iter()
+            .filter(|(_, expr)| matches!(expr, HirExpr::MethodCall { .. }))
+            .count(),
+        2
+    );
+    assert!(!hir.symbols.iter().any(|symbol| matches!(&symbol.def,
+        SymbolDef::ImportAlias { path, .. } if path == &["std", "text", "trim"]
+    )));
+}
+
+#[test]
 fn lowers_item_annotations_to_hir_item_metadata() {
     let hir = lower(
         r#"
@@ -174,11 +239,11 @@ flow main() -> i32 {
         panic!("expected first statement to be let");
     };
     assert_eq!(
-        view.index().pat_owner.get(&pat).copied(),
+        view.index().pat_owner.get(pat).copied(),
         Some(HirOwner::Stmt(statements[0].id()))
     );
     assert_eq!(
-        view.index().expr_owner.get(&value).copied(),
+        view.index().expr_owner.get(value).copied(),
         Some(HirOwner::Stmt(statements[0].id()))
     );
     let call = view.expr(*value).expect("let value expression view");

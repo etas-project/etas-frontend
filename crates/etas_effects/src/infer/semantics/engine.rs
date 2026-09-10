@@ -24,6 +24,7 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) context: HirAnalysisContext,
     pub(crate) types: &'a TypeOutput,
     pub(crate) std_registry: &'a etas_std::StdRegistry,
+    pub(crate) memory_provenance: std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>,
     pub(crate) type_symbols: TypeSymbolIndex,
     pub(crate) registry: &'a EffectRegistry,
     pub(crate) inputs: EffectMaterializationInputs,
@@ -35,6 +36,7 @@ pub(crate) struct EffectSemantics<'a> {
 }
 
 impl<'a> EffectSemantics<'a> {
+    #[cfg(test)]
     pub(crate) fn with_context(
         hir: &'a HirProgram,
         context: HirAnalysisContext,
@@ -44,11 +46,48 @@ impl<'a> EffectSemantics<'a> {
         tool_bindings: &'a [ToolProviderBindingMetadata],
         external_summaries: &'a [crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
     ) -> Self {
+        let units =
+            crate::infer::unit::collect::EffectUnitCollector::collect_with_context(hir, &context);
+        let memory_provenance =
+            std::sync::Arc::new(crate::infer::memory_provenance::MemoryProvenance::analyze(
+                hir,
+                types,
+                std_registry,
+                &units,
+            ));
+        Self::from_input(
+            context,
+            crate::infer::analysis::EffectAnalysisInput {
+                hir,
+                types,
+                std_registry,
+                registry,
+                tool_bindings,
+                external_summaries,
+                memory_provenance,
+            },
+        )
+    }
+
+    pub(crate) fn from_input(
+        context: HirAnalysisContext,
+        input: crate::infer::analysis::EffectAnalysisInput<'a>,
+    ) -> Self {
+        let crate::infer::analysis::EffectAnalysisInput {
+            hir,
+            types,
+            std_registry,
+            registry,
+            tool_bindings,
+            external_summaries,
+            memory_provenance,
+        } = input;
         Self {
             hir,
             context,
             types,
             std_registry,
+            memory_provenance,
             type_symbols: TypeSymbolIndex::build(hir),
             registry,
             inputs: EffectMaterializationInputs::default(),
@@ -350,9 +389,7 @@ impl<'a> EffectSemantics<'a> {
         if let Some(declaration_summary) = self.inputs.unit_effects.get(&EffectUnit::Item(item)) {
             summary.seq_assign(declaration_summary);
         }
-        if let Some(call) = self.agent_infer_summary(item, span) {
-            summary.seq_assign(&call);
-        }
+        summary.seq_assign(&self.agent_infer_summary(item, span)?);
         self.apply_agent_annotation_requirements(item, &mut summary);
         Some(summary)
     }

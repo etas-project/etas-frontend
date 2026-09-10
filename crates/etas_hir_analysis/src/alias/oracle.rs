@@ -8,6 +8,10 @@ use super::{
 };
 
 pub trait AliasOracle {
+    fn expression_target(&self, _expr: HirExprId) -> Option<AliasTarget> {
+        None
+    }
+
     fn symbol_target(&self, symbol: SymbolId) -> Option<AliasTarget>;
 
     fn allocation_site(&self, expr: HirExprId, kind: AllocationKind) -> Option<AliasTarget>;

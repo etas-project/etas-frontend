@@ -987,7 +987,7 @@ pub fn callable_output(ctx: &BodyCollectContext<'_, '_>, callee_ty: TypeId) -> O
     }
 }
 
-fn callable_input_types(
+pub(super) fn callable_input_types(
     ctx: &mut BodyCollectContext<'_, '_>,
     callee_ty: TypeId,
     explicit_generic_args: &[TypeId],

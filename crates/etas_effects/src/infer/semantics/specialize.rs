@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub(crate) enum EffectSpecializationError {
     StaticString(etas_hir_analysis::static_string::StaticStringEvaluationError),
+    MemoryProvenance(String),
+    InvalidActionSignature(crate::ActionRef),
     Type(etas_types::TypeSubstitutionError),
     MissingTypeBinding { param: String },
     MissingEffectRowBinding { param: String },
@@ -16,6 +18,11 @@ impl std::fmt::Display for EffectSpecializationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StaticString(error) => error.fmt(f),
+            Self::MemoryProvenance(error) => f.write_str(error),
+            Self::InvalidActionSignature(action) => write!(
+                f,
+                "action specialization requires a matching checked selector signature for {action:?}"
+            ),
             Self::Type(error) => error.fmt(f),
             Self::MissingTypeBinding { param } => {
                 write!(f, "checked generic instantiation is missing `{param}`")
@@ -415,10 +422,20 @@ impl EffectSemantics<'_> {
     ) -> Result<Effect, EffectSpecializationError> {
         match effect {
             Effect::AppliedAction(mut action) => {
+                let signature = self
+                    .registry
+                    .action_signature(&action.action)
+                    .filter(|signature| signature.effect_args.len() == action.args.len())
+                    .ok_or_else(|| {
+                        EffectSpecializationError::InvalidActionSignature(action.action.clone())
+                    })?;
                 action.args = action
                     .args
                     .into_iter()
-                    .map(|arg| self.specialize_effect_arg(arg, bindings, type_bindings))
+                    .zip(&signature.effect_args)
+                    .map(|(arg, kind)| {
+                        self.specialize_effect_arg(arg, kind, bindings, type_bindings)
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Effect::AppliedAction(action))
             }
@@ -505,6 +522,7 @@ impl EffectSemantics<'_> {
     pub(crate) fn specialize_effect_arg(
         &self,
         arg: EffectArgRef,
+        kind: &crate::EffectActionArgKind,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
     ) -> Result<EffectArgRef, EffectSpecializationError> {
@@ -523,6 +541,20 @@ impl EffectSemantics<'_> {
         let Some((_, expr)) = bindings.iter().find(|(param, _)| param == head) else {
             return Ok(arg);
         };
+        if matches!(kind, crate::EffectActionArgKind::MemoryPlace) {
+            let arguments = self
+                .memory_provenance
+                .arguments(self.hir, self.types, *expr)
+                .map_err(EffectSpecializationError::MemoryProvenance)?;
+            let [EffectArgRef::Path(origin)] = arguments.as_slice() else {
+                return Err(EffectSpecializationError::MemoryProvenance(
+                    "call argument has multiple resource origins".into(),
+                ));
+            };
+            let mut origin = origin.clone();
+            origin.extend_from_slice(tail);
+            return Ok(EffectArgRef::Path(origin));
+        }
         Ok(self.effect_arg_from_expr_path(*expr, tail)?)
     }
 

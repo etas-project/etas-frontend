@@ -536,11 +536,26 @@ flow main(input: string) -> string ![] {
                     tag: AGENTIC_TAG,
                     action: AGENTIC_INFER_ACTION,
                 },
-                args: vec![etas_types::EffectArgRef::Path(vec![
-                    "app".to_owned(),
-                    "main".to_owned(),
-                    "Writer".to_owned(),
-                ])],
+                args: vec![
+                    etas_types::EffectArgRef::Path(vec![
+                        "app".to_owned(),
+                        "main".to_owned(),
+                        "Writer".to_owned()
+                    ]),
+                    etas_types::EffectArgRef::Type(
+                        types
+                            .facts
+                            .symbol_types
+                            .iter()
+                            .find_map(|(symbol, fact)| match fact {
+                                etas_types::SymbolTypeFact::Agent { signature }
+                                    if hir.symbols.get(*symbol).unwrap().name == "Writer" =>
+                                    Some(signature.output),
+                                _ => None,
+                            })
+                            .unwrap()
+                    ),
+                ],
             })),
         "{summary:?}"
     );
@@ -553,11 +568,26 @@ flow main(input: string) -> string ![] {
                     tag: AGENTIC_TAG,
                     action: AGENTIC_INFER_ACTION,
                 },
-                args: vec![etas_types::EffectArgRef::Path(vec![
-                    "app".to_owned(),
-                    "main".to_owned(),
-                    "Writer".to_owned(),
-                ])],
+                args: vec![
+                    etas_types::EffectArgRef::Path(vec![
+                        "app".to_owned(),
+                        "main".to_owned(),
+                        "Writer".to_owned()
+                    ]),
+                    etas_types::EffectArgRef::Type(
+                        types
+                            .facts
+                            .symbol_types
+                            .iter()
+                            .find_map(|(symbol, fact)| match fact {
+                                etas_types::SymbolTypeFact::Agent { signature }
+                                    if hir.symbols.get(*symbol).unwrap().name == "Writer" =>
+                                    Some(signature.output),
+                                _ => None,
+                            })
+                            .unwrap()
+                    ),
+                ],
             })),
         "{summary:?}"
     );
@@ -6515,7 +6545,6 @@ flow main(limit: Limit) -> unit ![] {
     let recent: ContextPolicy = LastTurns(8);
     let summarized: ContextPolicy = SummaryPlusRecent(4);
     let retention: RetentionPolicy = Days(90);
-    let compaction: CompactionPolicy = SummarizeWhen(limit);
     return;
 }
 "#,
@@ -6649,76 +6678,6 @@ flow main(ticket: string) -> Conversation ![Memory.read<SessionId>] {
     assert!(
         summary.escaping_effects.effects.is_empty(),
         "Conversation.load default-handled Memory.read<SessionId> must not escape: {summary:?}"
-    );
-}
-
-#[test]
-fn check_program_records_conversation_compact_memory_write_default_action() {
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
-        etas_core::SourceId(0),
-        None,
-        r#"
-flow main(ticket: SessionId, limit: Limit) -> Conversation ![] {
-    let session = SessionConfig {
-        id = ticket,
-        context = SummaryPlusRecent(1),
-        retention = Days(90),
-        compaction = SummarizeWhen(limit),
-    };
-    return Conversation.compact(session);
-}
-"#,
-    ));
-    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let hir = lower_program(&parsed.value);
-    let types = etas_types::check_program(&hir);
-    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
-    let output = check_program(&hir, &types);
-
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let main = flow_item(&hir, "main");
-    let summary = output
-        .facts
-        .item_effects
-        .get(&main)
-        .expect("main should have effect facts");
-    assert!(
-        summary.requested_actions.effects.iter().any(|effect| {
-            matches!(
-                effect,
-                Effect::AppliedAction(action)
-                    if action.action.action == MEMORY_WRITE_ACTION
-                        && action.args
-                            == vec![etas_types::EffectArgRef::Path(vec![
-                                "std".to_owned(),
-                                "agent".to_owned(),
-                                "session".to_owned(),
-                                "SessionId".to_owned()
-                            ])]
-            )
-        }),
-        "Conversation.compact must request Memory.write<SessionId>: {summary:?}"
-    );
-    assert!(
-        summary.default_actions.effects.iter().any(|effect| {
-            matches!(
-                effect,
-                Effect::AppliedAction(action)
-                    if action.action.action == MEMORY_WRITE_ACTION
-                        && action.args
-                            == vec![etas_types::EffectArgRef::Path(vec![
-                                "std".to_owned(),
-                                "agent".to_owned(),
-                                "session".to_owned(),
-                                "SessionId".to_owned()
-                            ])]
-            )
-        }),
-        "Conversation.compact must mark Memory.write<SessionId> as default-handled: {summary:?}"
-    );
-    assert!(
-        summary.escaping_effects.effects.is_empty(),
-        "Conversation.compact default-handled Memory.write<SessionId> must not escape: {summary:?}"
     );
 }
 

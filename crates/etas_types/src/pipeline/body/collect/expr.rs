@@ -47,30 +47,47 @@ pub fn collect_expr(
             ctx.ctx.interner.intern(Type::Tuple(elems))
         }
         HirExpr::Record(record) => collect_record(ctx, &record, expected),
-        HirExpr::EmptyRecordOrMap { span } => expected.unwrap_or_else(|| {
-            ctx.validate(crate::ValidationRequest::Diagnostic {
-                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                span,
-                message: "empty brace literal requires an expected record or Map[K, V] type"
-                    .to_owned(),
-            });
-            ctx.primitive(PrimitiveType::Never)
-        }),
+        HirExpr::EmptyRecordOrMap { span } => expected
+            .map(|ty| {
+                if matches!(ctx.ctx.interner.store().get(ty), Some(Type::Map { .. })) {
+                    ty
+                } else {
+                    ctx.ctx
+                        .interner
+                        .intern(Type::Record(crate::RecordType { fields: Vec::new() }))
+                }
+            })
+            .unwrap_or_else(|| {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span,
+                    message: "empty brace literal requires an expected record or Map[K, V] type"
+                        .to_owned(),
+                });
+                ctx.primitive(PrimitiveType::Never)
+            }),
         HirExpr::Array { elems, span } => {
             collect_sequence(ctx, elems, span, SequenceKind::Array, expected)
         }
         HirExpr::List { elems, span } => {
             collect_sequence(ctx, elems, span, SequenceKind::List, expected)
         }
-        HirExpr::EmptySequence { span } => expected.unwrap_or_else(|| {
-            ctx.validate(crate::ValidationRequest::Diagnostic {
-                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                span,
-                message: "empty sequence literal requires an expected Array[T] or List[T] type"
-                    .to_owned(),
-            });
-            ctx.primitive(PrimitiveType::Never)
-        }),
+        HirExpr::EmptySequence { span } => expected
+            .filter(|ty| {
+                matches!(
+                    ctx.ctx.interner.store().get(*ty),
+                    Some(Type::Array(_) | Type::List(_))
+                )
+            })
+            .unwrap_or_else(|| {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span,
+                    message: "empty sequence literal requires an expected Array[T] or List[T] type"
+                        .to_owned(),
+                });
+                ctx.primitive(PrimitiveType::Never)
+            }),
         HirExpr::Map { entries, span: _ } => {
             let expected_entries = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
                 Some(Type::Map { key, value }) => Some((*key, *value)),
@@ -194,7 +211,8 @@ pub fn collect_expr(
                 ty
             } else {
                 let base_ty = collect_expr(ctx, base, None);
-                let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
+                let hint = super::field::declared_field_hint(ctx, base_ty, &field, span);
+                let output = expected.or(hint).unwrap_or_else(|| ctx.fresh_type_var());
                 record_field_memory_place(ctx, expr, base, &field);
                 if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field, span) {
                     ctx.emit(TypeConstraint::Assignable {
@@ -656,7 +674,8 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
                         current = field_ty;
                         continue;
                     }
-                    let output = ctx.fresh_type_var();
+                    let output = super::field::declared_field_hint(ctx, current, member, path.span)
+                        .unwrap_or_else(|| ctx.fresh_type_var());
                     ctx.emit(TypeConstraint::FieldAccess {
                         base: current,
                         field: member.clone(),
@@ -846,65 +865,67 @@ pub fn callable_candidate_from_fact(
         | SymbolTypeFact::Tool { signature } => signature,
         _ => return None,
     };
-    let mut schematic_vars = std::collections::HashMap::new();
-    if instantiate_schematics {
-        for param in &signature.generic_params {
-            schematic_vars
-                .entry(param.name.clone())
-                .or_insert_with(|| ctx.fresh_type_var());
-        }
-    }
-    let params = if instantiate_schematics {
+    let signature = if instantiate_schematics {
+        instantiate_callable_signature(ctx, signature)
+    } else {
         signature
-            .params
-            .into_iter()
-            .map(|ty| instantiate_callable_schematic_type(ctx, ty, &mut schematic_vars))
-            .collect()
-    } else {
-        signature.params
-    };
-    let output = if instantiate_schematics {
-        instantiate_callable_schematic_type(ctx, signature.output, &mut schematic_vars)
-    } else {
-        signature.output
-    };
-    let generic_params = if instantiate_schematics {
-        signature
-            .generic_params
-            .into_iter()
-            .map(|param| crate::CallableGenericParam {
-                kind: param.kind,
-                name: param.name,
-                subject: instantiate_callable_schematic_type(
-                    ctx,
-                    param.subject,
-                    &mut schematic_vars,
-                ),
-                bounds: param
-                    .bounds
-                    .into_iter()
-                    .map(|bound| crate::CheckedSpecBound {
-                        spec: bound.spec,
-                        args: bound
-                            .args
-                            .into_iter()
-                            .map(|arg| {
-                                instantiate_callable_schematic_type(ctx, arg, &mut schematic_vars)
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            })
-            .collect()
-    } else {
-        signature.generic_params
     };
     let ty = ctx.ctx.interner.intern(Type::Function(FlowType {
-        input: params,
-        output,
+        input: signature.params,
+        output: signature.output,
         effects: signature.effects,
     }));
-    Some(crate::CallableCandidate { ty, generic_params })
+    Some(crate::CallableCandidate {
+        ty,
+        generic_params: signature.generic_params,
+    })
+}
+
+pub(super) fn instantiate_callable_signature(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    signature: crate::CallableSignature,
+) -> crate::CallableSignature {
+    let mut schematic_vars = std::collections::HashMap::new();
+    for param in &signature.generic_params {
+        schematic_vars
+            .entry(param.name.clone())
+            .or_insert_with(|| ctx.fresh_type_var());
+    }
+    let params = signature
+        .params
+        .into_iter()
+        .map(|ty| instantiate_callable_schematic_type(ctx, ty, &mut schematic_vars))
+        .collect();
+    let output = instantiate_callable_schematic_type(ctx, signature.output, &mut schematic_vars);
+    let generic_params = signature
+        .generic_params
+        .into_iter()
+        .map(|param| crate::CallableGenericParam {
+            kind: param.kind,
+            name: param.name,
+            subject: instantiate_callable_schematic_type(ctx, param.subject, &mut schematic_vars),
+            bounds: param
+                .bounds
+                .into_iter()
+                .map(|bound| crate::CheckedSpecBound {
+                    spec: bound.spec,
+                    args: bound
+                        .args
+                        .into_iter()
+                        .map(|arg| {
+                            instantiate_callable_schematic_type(ctx, arg, &mut schematic_vars)
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    crate::CallableSignature {
+        params,
+        output,
+        generic_params,
+        ..signature
+    }
 }
 
 fn value_type_from_fact_with_instantiation(
@@ -939,9 +960,7 @@ fn instantiate_callable_schematic_type(
         return ty;
     };
     match ty_data {
-        Type::Named(name) if is_schematic_type_variable_name(&name.name) => *schematic_vars
-            .entry(name.name)
-            .or_insert_with(|| ctx.fresh_type_var()),
+        Type::Named(name) => schematic_vars.get(&name.name).copied().unwrap_or(ty),
         Type::Array(inner) => {
             let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
             ctx.ctx.interner.intern(Type::Array(inner))
@@ -1059,11 +1078,6 @@ fn instantiate_callable_schematic_type(
         }
         _ => ty,
     }
-}
-
-fn is_schematic_type_variable_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some(ch) if ch.is_ascii_uppercase()) && chars.next().is_none()
 }
 
 #[derive(Clone, Copy)]

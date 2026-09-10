@@ -1,6 +1,7 @@
 pub mod binding;
 pub mod expr;
 pub mod item;
+mod namespace_call;
 pub mod pattern;
 pub mod program;
 pub mod stmt;

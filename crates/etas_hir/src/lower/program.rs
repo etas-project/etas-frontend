@@ -574,6 +574,27 @@ impl LowerCtx {
         self.std_qualified_aliases.insert(key, symbol);
         Some(symbol)
     }
+
+    pub(super) fn resolve_std_enum_member(
+        &mut self,
+        prefix: SymbolId,
+        remaining: &[String],
+        span: etas_core::Span,
+    ) -> Option<SymbolId> {
+        let [member] = remaining else {
+            return None;
+        };
+        let SymbolDef::ImportAlias { path, .. } = &self.symbols.get(prefix)?.def else {
+            return None;
+        };
+        let owner = self.std_registry.lookup_qualified(path)?;
+        let path = self
+            .std_registry
+            .enum_constructor(owner.id, member)?
+            .qualified_path
+            .clone();
+        self.resolve_std_qualified_path(&path, span)
+    }
 }
 
 fn hir_visibility(visibility: ast::Visibility) -> crate::Visibility {

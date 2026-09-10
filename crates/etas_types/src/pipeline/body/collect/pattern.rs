@@ -233,10 +233,21 @@ fn collect_constructor_variant(
         });
     }
 
+    let signature = super::expr::instantiate_callable_signature(ctx, signature);
+    ctx.emit(TypeConstraint::Equal {
+        lhs: signature.output,
+        rhs: ty,
+        origin: ConstraintOrigin { span },
+    });
     let arg_tys = args
         .into_iter()
-        .map(|arg| {
-            let arg_ty = ctx.fresh_type_var();
+        .enumerate()
+        .map(|(index, arg)| {
+            let arg_ty = signature
+                .params
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| ctx.fresh_type_var());
             collect_pattern(ctx, arg, arg_ty);
             arg_ty
         })

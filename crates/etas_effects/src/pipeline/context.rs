@@ -15,6 +15,8 @@ pub(super) struct EffectPipelineContext<'a> {
     pub(super) analysis_context: HirAnalysisContext,
     pub(super) registry: Option<EffectRegistry>,
     pub(super) units: Option<Vec<EffectUnit>>,
+    pub(super) memory_provenance:
+        Option<std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>>,
     pub(super) registry_diagnostics: Vec<Diagnostic>,
     pub(super) artifacts: Option<EffectPipelineArtifacts>,
     pub(super) analysis: Option<EffectAnalysisOutput>,
@@ -31,6 +33,7 @@ impl<'a> EffectPipelineContext<'a> {
             input,
             registry: None,
             units: None,
+            memory_provenance: None,
             registry_diagnostics: Vec::new(),
             artifacts: None,
             analysis: None,

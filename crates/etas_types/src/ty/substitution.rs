@@ -12,11 +12,15 @@ pub enum TypeSubstitutionError {
     MissingType(TypeId),
     CyclicType(TypeId),
     UnmaterializedType(Type),
+    RepresentationLimit(usize),
 }
 
 impl std::fmt::Display for TypeSubstitutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RepresentationLimit(limit) => {
+                write!(f, "nominal representation expansion exceeds {limit} types")
+            }
             Self::MissingType(ty) => write!(f, "type store is missing {ty:?}"),
             Self::CyclicType(ty) => write!(f, "type graph contains a cycle at {ty:?}"),
             Self::UnmaterializedType(ty) => {

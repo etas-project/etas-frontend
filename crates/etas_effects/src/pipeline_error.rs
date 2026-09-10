@@ -5,6 +5,7 @@ use etas_utils::ArtifactKey;
 pub enum EffectStage {
     BuildRegistry,
     CollectUnits,
+    AnalyzeMemoryProvenance,
     SolveSummaries,
     MaterializeFacts,
     ValidateContracts,

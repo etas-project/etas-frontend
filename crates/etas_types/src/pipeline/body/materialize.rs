@@ -22,6 +22,24 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .provisional
         .expr_types
         .extend(state.solver_report.inferred_expr_types.clone());
+    if let Err(error) = crate::ty::materialize_representations(
+        &mut ctx.interner,
+        state
+            .provisional
+            .expr_types
+            .values()
+            .copied()
+            .chain(state.provisional.stmt_types.values().copied())
+            .chain(state.provisional.pat_types.values().copied()),
+    ) {
+        let span = ctx.hir.items[state.item].span();
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            span,
+            format!("runtime type representation could not be materialized: {error}"),
+        ));
+        return;
+    }
     ctx.signature_facts
         .expr_types
         .extend(state.provisional.expr_types);

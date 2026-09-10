@@ -280,20 +280,32 @@ impl LowerCtx {
 
         let mut receiver = self.lower_expr(current, scope, item_id);
         for call in calls.into_iter().rev() {
-            let hir_expr = HirExpr::MethodCall {
-                receiver,
-                method: call.method.text.clone(),
-                generic_args: call
-                    .generic_args
-                    .iter()
-                    .map(|arg| self.lower_generic_arg(arg, scope, item_id))
-                    .collect(),
-                args: call
-                    .args
-                    .iter()
-                    .map(|arg| self.lower_arg(arg, scope, item_id))
-                    .collect(),
-                span: call.span,
+            let namespace_call = self.lower_std_namespace_callee(receiver, &call.method);
+            let generic_args = call
+                .generic_args
+                .iter()
+                .map(|arg| self.lower_generic_arg(arg, scope, item_id))
+                .collect();
+            let args = call
+                .args
+                .iter()
+                .map(|arg| self.lower_arg(arg, scope, item_id))
+                .collect();
+            let hir_expr = if namespace_call {
+                HirExpr::Call {
+                    callee: receiver,
+                    generic_args,
+                    args,
+                    span: call.span,
+                }
+            } else {
+                HirExpr::MethodCall {
+                    receiver,
+                    method: call.method.text.clone(),
+                    generic_args,
+                    args,
+                    span: call.span,
+                }
             };
             receiver = self.alloc_expr(hir_expr, call.span);
         }

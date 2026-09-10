@@ -16,6 +16,12 @@ pub fn remap_output(output: TypeOutput) -> TypeOutput {
 
 pub fn remap_body_output(mut output: TypeOutput, target: &mut TypeInterner) -> TypeOutput {
     let mut remapper = TypeIdRemapper::new(&output.store, target);
+    // Materialization also interns applied representations whose IDs are not
+    // directly referenced by an expression fact. They are part of the checked
+    // type graph and must survive body-store merging for runtime ABI decoding.
+    for (id, _) in output.store.iter() {
+        remapper.ty(id);
+    }
     remap_facts(&mut output.facts, &mut remapper);
     output.store = remapper.target_store().clone();
     output
@@ -409,6 +415,19 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.std_enum_layouts = std::mem::take(&mut facts.std_enum_layouts)
+        .into_iter()
+        .map(|(ty, mut layout)| {
+            for variant in &mut layout.variants {
+                variant.fields = variant
+                    .fields
+                    .iter()
+                    .map(|field| remapper.ty(*field))
+                    .collect();
+            }
+            (remapper.ty(ty), layout)
+        })
+        .collect();
     for fact in facts.resource_handles.values_mut() {
         remapper.resource_handle_fact(fact);
     }

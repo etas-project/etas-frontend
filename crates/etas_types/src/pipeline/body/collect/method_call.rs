@@ -49,20 +49,46 @@ pub fn collect_method_call(
     if method == "run" {
         collect_expr(ctx, receiver, None);
     }
-    let generic_params = std_member_callable_signature(ctx, receiver, method)
-        .map(|signature| signature.generic_params)
-        .unwrap_or_default();
-    let std_member = if type_generic_args.is_empty() && generic_params.is_empty() {
-        std_member_value_type(ctx, receiver, method)
-    } else {
-        raw_std_member_value_type(ctx, receiver, method)
-    };
+    let (std_member, generic_params) =
+        if let Some(signature) = std_member_callable_signature(ctx, receiver, method) {
+            let candidate = super::expr::callable_candidate_from_fact(
+                ctx,
+                crate::SymbolTypeFact::Flow { signature },
+                type_generic_args.is_empty(),
+            );
+            match candidate {
+                Some(candidate) => (Some(candidate.ty), candidate.generic_params),
+                None => (None, Vec::new()),
+            }
+        } else {
+            let member = if type_generic_args.is_empty() {
+                std_member_value_type(ctx, receiver, method)
+            } else {
+                raw_std_member_value_type(ctx, receiver, method)
+            };
+            (member, Vec::new())
+        };
     if let Some(callee_ty) = std_member {
+        let expected_inputs =
+            super::call::callable_input_types(ctx, callee_ty, &type_generic_args, span);
         let arg_tys = args
             .iter()
-            .map(|arg| match arg {
-                HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
-                HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
+            .enumerate()
+            .map(|(index, arg)| match arg {
+                HirArg::Positional(expr) => collect_expr(
+                    ctx,
+                    *expr,
+                    expected_inputs
+                        .as_ref()
+                        .and_then(|inputs| inputs.get(index).copied()),
+                ),
+                HirArg::Named { value, .. } => collect_expr(
+                    ctx,
+                    *value,
+                    expected_inputs
+                        .as_ref()
+                        .and_then(|inputs| inputs.get(index).copied()),
+                ),
             })
             .collect::<Vec<_>>();
         let output = expected.unwrap_or_else(|| {

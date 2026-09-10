@@ -1,5 +1,6 @@
 pub(crate) mod analysis;
 pub mod domain;
+pub(crate) mod memory_provenance;
 pub(crate) mod semantics;
 pub mod unit;
 
