@@ -103,6 +103,7 @@ pub(super) fn collect_record(
         });
     }
     let mut seen = std::collections::HashSet::new();
+    let mut arguments = vec![None; names.len()];
     for field in &record.fields {
         let (name, span) = match field {
             HirFieldInit::Named { name, span, .. } | HirFieldInit::Shorthand { name, span, .. } => {
@@ -112,28 +113,42 @@ pub(super) fn collect_record(
         if !seen.insert(name) {
             invalid(ctx, span, format!("duplicate variant field `{name}`"));
         }
-        let target = names
-            .iter()
-            .position(|candidate| candidate == name)
-            .and_then(|index| signature.params.get(index))
-            .copied();
+        let slot = names.iter().position(|candidate| candidate == name);
+        let target = slot.and_then(|index| signature.params.get(index)).copied();
         if target.is_none() {
             invalid(ctx, span, format!("unknown variant field `{name}`"));
         }
         let actual = super::record::collect_field_value(ctx, field, target);
-        if let Some(target) = target {
-            ctx.emit(TypeConstraint::Assignable {
-                from: actual,
-                to: target,
-                origin: ConstraintOrigin { span },
-                reason: crate::AssignabilityReason::Argument,
-            });
+        if let Some(slot) = slot {
+            arguments[slot] = Some(actual);
         }
     }
     for name in &names {
         if !seen.contains(name) {
             invalid(ctx, record.span, format!("missing variant field `{name}`"));
         }
+    }
+    // Field expressions are collected in source order; the callable solver receives
+    // declaration-order arguments and the same generic bounds as positional calls.
+    if let Some(args) = arguments.into_iter().collect::<Option<Vec<_>>>() {
+        let callee = ctx
+            .ctx
+            .interner
+            .intern(crate::Type::Function(crate::FlowType {
+                input: signature.params,
+                output: signature.output,
+                effects: signature.effects,
+            }));
+        ctx.emit(TypeConstraint::Callable {
+            call: None,
+            callee,
+            generic_params: signature.generic_params,
+            generic_args: Vec::new(),
+            arg_exprs: Vec::new(),
+            args,
+            output: signature.output,
+            origin: ConstraintOrigin { span: record.span },
+        });
     }
     Some(signature.output)
 }

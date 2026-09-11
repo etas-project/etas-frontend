@@ -1,18 +1,26 @@
 use super::BodyPipelineState;
 use crate::{PrimitiveType, Type, TypeId, pipeline::context::TypePipelineContext};
 use etas_core::{Diagnostic, Severity, Span, TypeDiagnosticCode};
-use etas_hir::{HirLiteral, HirPat, HirPatId};
+use etas_hir::{HirLiteral, HirPat, HirPatId, ResolveResult, ResolvedPath, SymbolDef};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Pattern {
     Any,
-    Constructor(String, Vec<Pattern>),
+    Constructor(Tag, Vec<Pattern>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Tag {
+    Structural(&'static str),
+    Variant { owner: TypeId, index: usize },
+    Literal(String),
+    Invalid,
 }
 
 #[derive(Clone)]
 struct Constructor {
-    tag: String,
+    tag: Tag,
     fields: Vec<TypeId>,
     names: Option<Vec<String>>,
 }
@@ -44,11 +52,19 @@ pub(super) fn validate(
         ctx,
         active: HashSet::new(),
         span,
+        failed: false,
     };
     let mut matrix = Vec::new();
     for &arm in arms {
         let pattern = coverage.pattern(arm, ty);
-        if !coverage.useful(&matrix, std::slice::from_ref(&pattern), &[ty]) {
+        if coverage.failed {
+            return;
+        }
+        let useful = coverage.useful(&matrix, std::slice::from_ref(&pattern), &[ty]);
+        if coverage.failed {
+            return;
+        }
+        if !useful {
             let mut diagnostic = Diagnostic::type_check(
                 TypeDiagnosticCode::RedundantMatchArm,
                 coverage.ctx.hir.pats[arm].span(),
@@ -59,7 +75,8 @@ pub(super) fn validate(
         }
         matrix.push(vec![pattern]);
     }
-    if coverage.useful(&matrix, &[Pattern::Any], &[ty]) {
+    let missing = coverage.useful(&matrix, &[Pattern::Any], &[ty]);
+    if !coverage.failed && missing {
         coverage.ctx.diagnostics.push(Diagnostic::type_check(
             TypeDiagnosticCode::NonExhaustiveMatch,
             span,
@@ -73,10 +90,12 @@ struct Coverage<'a, 'hir> {
     ctx: &'a mut TypePipelineContext<'hir>,
     active: HashSet<Query>,
     span: Span,
+    failed: bool,
 }
 
 impl Coverage<'_, '_> {
     fn incomplete(&mut self, message: impl Into<String>) {
+        self.failed = true;
         self.ctx.diagnostics.push(Diagnostic::type_check(
             TypeDiagnosticCode::IncompleteTypeFacts,
             self.span,
@@ -85,8 +104,8 @@ impl Coverage<'_, '_> {
     }
 
     fn constructors(&mut self, ty: TypeId) -> Option<Vec<Constructor>> {
-        let ctor = |tag: &str, fields| Constructor {
-            tag: tag.into(),
+        let ctor = |tag: &'static str, fields| Constructor {
+            tag: Tag::Structural(tag),
             fields,
             names: None,
         };
@@ -107,7 +126,8 @@ impl Coverage<'_, '_> {
             let variants = layout
                 .variants
                 .into_iter()
-                .map(|variant| {
+                .enumerate()
+                .map(|(index, variant)| {
                     let fields = variant
                         .fields
                         .into_iter()
@@ -120,7 +140,7 @@ impl Coverage<'_, '_> {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Constructor {
-                        tag: variant.name,
+                        tag: Tag::Variant { owner: base, index },
                         fields,
                         names: variant.field_names,
                     })
@@ -144,7 +164,7 @@ impl Coverage<'_, '_> {
             Type::Result { ok, err } => Some(vec![ctor("Ok", vec![ok]), ctor("Err", vec![err])]),
             Type::Tuple(fields) => Some(vec![ctor("tuple", fields)]),
             Type::Record(record) => Some(vec![Constructor {
-                tag: "record".into(),
+                tag: Tag::Structural("record"),
                 fields: record.fields.iter().map(|f| f.ty).collect(),
                 names: Some(record.fields.into_iter().map(|f| f.name).collect()),
             }]),
@@ -162,7 +182,7 @@ impl Coverage<'_, '_> {
                     self.ctx.interner.store().get(representation).cloned()
                 {
                     Some(vec![Constructor {
-                        tag: "record".into(),
+                        tag: Tag::Structural("record"),
                         fields: record.fields.iter().map(|f| f.ty).collect(),
                         names: Some(record.fields.into_iter().map(|f| f.name).collect()),
                     }])
@@ -183,35 +203,46 @@ impl Coverage<'_, '_> {
             HirPat::Binding { .. } | HirPat::Wildcard { .. } => Pattern::Any,
             HirPat::Literal(literal) => Pattern::Constructor(
                 match literal {
-                    HirLiteral::Bool { value, .. } => value.to_string(),
-                    HirLiteral::Int { text, .. } => format!("integer:{text}"),
-                    HirLiteral::String { value, .. } => format!("string:{value}"),
-                    HirLiteral::Char { value, .. } => format!("char:{value}"),
-                    HirLiteral::Float { text, .. } => format!("float:{text}"),
+                    HirLiteral::Bool { value, .. } => {
+                        Tag::Structural(if value { "true" } else { "false" })
+                    }
+                    HirLiteral::Int { text, .. } => Tag::Literal(format!("integer:{text}")),
+                    HirLiteral::String { value, .. } => Tag::Literal(format!("string:{value}")),
+                    HirLiteral::Char { value, .. } => Tag::Literal(format!("char:{value}")),
+                    HirLiteral::Float { text, .. } => Tag::Literal(format!("float:{text}")),
                 },
                 Vec::new(),
             ),
-            HirPat::Tuple { elems, .. } => self.positional("tuple".into(), elems, ty),
-            HirPat::Variant { path, args, .. } => self.positional(
-                path.segments
-                    .last()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default(),
-                args,
-                ty,
-            ),
+            HirPat::Tuple { elems, .. } => self.positional(Tag::Structural("tuple"), elems, ty),
+            HirPat::Variant { path, args, .. } => {
+                let tag = self.variant_tag(&path, ty);
+                self.positional(tag, args, ty)
+            }
             HirPat::Record { path, fields, .. } => {
-                let constructors = self.constructors(ty).unwrap_or_default();
-                let tag = path
-                    .and_then(|path| path.segments.last().map(|s| s.name.clone()))
-                    .filter(|name| constructors.iter().any(|c| c.tag == *name))
-                    .unwrap_or_else(|| "record".into());
-                let Some(constructor) = constructors.into_iter().find(|c| c.tag == tag) else {
-                    return Pattern::Constructor(tag, vec![]);
+                let Some(constructors) = self.constructors(ty) else {
+                    self.incomplete("record pattern has no checked layout");
+                    return Pattern::Constructor(Tag::Invalid, vec![]);
                 };
-                let patterns = constructor
-                    .names
-                    .unwrap_or_default()
+                let tag = if constructors
+                    .iter()
+                    .any(|c| c.tag == Tag::Structural("record"))
+                {
+                    Tag::Structural("record")
+                } else if let Some(path) = path {
+                    self.variant_tag(&path, ty)
+                } else {
+                    self.incomplete("enum record pattern has no checked constructor");
+                    Tag::Invalid
+                };
+                let Some(constructor) = constructors.into_iter().find(|c| c.tag == tag) else {
+                    self.incomplete("record pattern does not match a checked constructor layout");
+                    return Pattern::Constructor(Tag::Invalid, vec![]);
+                };
+                let Some(names) = constructor.names else {
+                    self.incomplete("named pattern requires a checked named-field layout");
+                    return Pattern::Constructor(Tag::Invalid, vec![]);
+                };
+                let patterns = names
                     .iter()
                     .zip(constructor.fields)
                     .map(|(name, ty)| {
@@ -225,16 +256,23 @@ impl Coverage<'_, '_> {
                     .collect();
                 Pattern::Constructor(tag, patterns)
             }
-            HirPat::Error { .. } => Pattern::Constructor("invalid".into(), vec![]),
+            HirPat::Error { .. } => Pattern::Constructor(Tag::Invalid, vec![]),
         }
     }
 
-    fn positional(&mut self, tag: String, args: Vec<HirPatId>, ty: TypeId) -> Pattern {
-        let fields = self
+    fn positional(&mut self, tag: Tag, args: Vec<HirPatId>, ty: TypeId) -> Pattern {
+        let Some(fields) = self
             .constructors(ty)
             .and_then(|ctors| ctors.into_iter().find(|c| c.tag == tag))
             .map(|c| c.fields)
-            .unwrap_or_default();
+        else {
+            self.incomplete("pattern constructor has no checked payload layout");
+            return Pattern::Constructor(Tag::Invalid, vec![]);
+        };
+        if fields.len() != args.len() {
+            self.incomplete("pattern payload arity does not match its checked constructor");
+            return Pattern::Constructor(Tag::Invalid, vec![]);
+        }
         Pattern::Constructor(
             tag,
             args.into_iter()
@@ -242,6 +280,82 @@ impl Coverage<'_, '_> {
                 .map(|(pat, ty)| self.pattern(pat, ty))
                 .collect(),
         )
+    }
+
+    fn variant_tag(&mut self, path: &ResolvedPath, ty: TypeId) -> Tag {
+        if let Some(tag) = self.resolved_variant_tag(path, ty) {
+            return tag;
+        }
+        self.incomplete("pattern is missing a resolved constructor identity for its enum type");
+        Tag::Invalid
+    }
+
+    fn resolved_variant_tag(&self, path: &ResolvedPath, ty: TypeId) -> Option<Tag> {
+        let ResolveResult::Resolved(symbol) = path.resolution else {
+            return None;
+        };
+        let symbol = self.ctx.symbols.canonical_symbol(self.ctx.hir, symbol)?;
+        let symbol = self.ctx.hir.symbols.get(symbol)?;
+        let owner = match self.ctx.interner.store().get(ty)? {
+            Type::Applied { constructor, .. } => TypeId(constructor.0),
+            _ => ty,
+        };
+        match &symbol.def {
+            SymbolDef::EnumVariant {
+                enum_item,
+                variant_index,
+            } => {
+                let etas_hir::HirItem::Enum(decl) = self.ctx.hir.items.get(*enum_item)? else {
+                    return None;
+                };
+                let crate::SymbolTypeFact::Type { constructor } =
+                    self.ctx.signature_facts.symbol_types.get(&decl.symbol)?
+                else {
+                    return None;
+                };
+                (owner == TypeId(constructor.0)).then_some(Tag::Variant {
+                    owner,
+                    index: *variant_index as usize,
+                })
+            }
+            SymbolDef::ImportAlias { path, .. } => {
+                let std = self.ctx.std_registry.lookup_qualified(path)?;
+                let fact = self.ctx.signature_facts.symbol_types.get(&symbol.id)?;
+                let result = match fact {
+                    crate::SymbolTypeFact::Flow { signature } => signature.output,
+                    crate::SymbolTypeFact::Value { ty } => *ty,
+                    _ => return None,
+                };
+                let result = match self.ctx.interner.store().get(result)? {
+                    Type::Applied { constructor, .. } => TypeId(constructor.0),
+                    _ => result,
+                };
+                if let Some(layout) = self.ctx.signature_facts.enum_layouts.get(&owner) {
+                    if result != owner {
+                        return None;
+                    }
+                    let index = layout
+                        .variants
+                        .iter()
+                        .position(|variant| variant.name == std.name)?;
+                    return Some(Tag::Variant { owner, index });
+                }
+                match (
+                    self.ctx.interner.store().get(ty)?,
+                    self.ctx.interner.store().get(result)?,
+                    std.name.as_str(),
+                ) {
+                    (Type::Option(_), Type::Option(_), "Some") => Some(Tag::Structural("Some")),
+                    (Type::Option(_), Type::Option(_), "None") => Some(Tag::Structural("None")),
+                    (Type::Result { .. }, Type::Result { .. }, "Ok") => Some(Tag::Structural("Ok")),
+                    (Type::Result { .. }, Type::Result { .. }, "Err") => {
+                        Some(Tag::Structural("Err"))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     // Pattern-matrix specialization preserves correlations between payload columns.
@@ -262,11 +376,20 @@ impl Coverage<'_, '_> {
         let constructors = self.constructors(types[0]);
         let result = match &query[0] {
             Pattern::Constructor(tag, fields) => {
-                let payload_types = constructors
+                let payload_types = if matches!(tag, Tag::Literal(_)) && fields.is_empty() {
+                    Vec::new()
+                } else if let Some(payload) = constructors
                     .as_ref()
                     .and_then(|cs| cs.iter().find(|c| c.tag == *tag))
-                    .map(|c| c.fields.clone())
-                    .unwrap_or_default();
+                {
+                    payload.fields.clone()
+                } else {
+                    self.incomplete(
+                        "pattern matrix constructor is missing its checked payload layout",
+                    );
+                    self.active.remove(&key);
+                    return false;
+                };
                 let mut next = fields.clone();
                 next.extend_from_slice(&query[1..]);
                 let mut next_types = payload_types;
@@ -308,7 +431,7 @@ impl Coverage<'_, '_> {
     }
 }
 
-fn specialize(matrix: &[Vec<Pattern>], tag: &str, arity: usize) -> Vec<Vec<Pattern>> {
+fn specialize(matrix: &[Vec<Pattern>], tag: &Tag, arity: usize) -> Vec<Vec<Pattern>> {
     matrix
         .iter()
         .filter_map(|row| {

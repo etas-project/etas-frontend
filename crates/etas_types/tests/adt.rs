@@ -1,6 +1,37 @@
 use etas_core::{SourceFile, SourceId};
 
 #[test]
+fn named_enum_constructors_enforce_inferred_and_explicit_spec_bounds() {
+    for implementation in ["", "impl i32 ~ Allowed;"] {
+        for expression in [
+            "Box.Named { value = 42 }",
+            "Box.Named<i32> { value = 42 }",
+            "Box.Positional(42)",
+        ] {
+            let output = check(&format!(
+                "spec Allowed; {implementation} enum Box<T ~ Allowed> {{ Named {{ value: T }}, Positional(T) }} flow main() -> Box<i32> {{ return {expression}; }}"
+            ));
+            if implementation.is_empty() {
+                assert!(
+                    output
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("does not satisfy spec bound")),
+                    "accepted {expression}: {:?}",
+                    output.diagnostics
+                );
+            } else {
+                assert!(
+                    output.diagnostics.is_empty(),
+                    "{expression}: {:?}",
+                    output.diagnostics
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn std_enum_layouts_drive_payload_coverage_and_redundancy() {
     let output = check(
         r#"
