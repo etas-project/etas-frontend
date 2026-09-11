@@ -4,6 +4,11 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    MatchCoverage {
+        scrutinee: TypeId,
+        arms: Vec<etas_hir::HirPatId>,
+        span: Span,
+    },
     CallableArity {
         callee_ty: TypeId,
         arg_count: usize,

@@ -3,6 +3,7 @@ pub mod collect {
     pub mod block;
     pub mod call;
     pub mod entry;
+    pub mod enum_variant;
     pub mod expr;
     pub mod field;
     pub mod handler;

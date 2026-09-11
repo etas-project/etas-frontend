@@ -53,6 +53,18 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
         let Some(source_ty) = self.source.get(ty).cloned() else {
             return ty;
         };
+        if let Type::Nominal(mut nominal) = source_ty.clone() {
+            if let Some((id, _)) = self.target.store().iter().find(|(_, data)| matches!(data, Type::Nominal(existing) if existing.name == nominal.name)) {
+                self.ids.insert(ty, id);
+                return id;
+            }
+            let representation = nominal.representation.take();
+            let mapped = self.target.intern(Type::Nominal(nominal));
+            self.ids.insert(ty, mapped);
+            let representation = representation.map(|representation| self.ty(representation));
+            self.target.define_nominal(mapped, representation);
+            return mapped;
+        }
         let mapped_ty = self.type_data(source_ty);
         let mapped = self.target.intern(mapped_ty);
         self.ids.insert(ty, mapped);
@@ -415,7 +427,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
-    facts.std_enum_layouts = std::mem::take(&mut facts.std_enum_layouts)
+    facts.enum_layouts = std::mem::take(&mut facts.enum_layouts)
         .into_iter()
         .map(|(ty, mut layout)| {
             for variant in &mut layout.variants {

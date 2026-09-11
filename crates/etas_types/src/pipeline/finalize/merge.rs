@@ -19,8 +19,8 @@ pub fn merge_outputs(
         signatures.facts.type_refs.extend(body.facts.type_refs);
         signatures
             .facts
-            .std_enum_layouts
-            .extend(body.facts.std_enum_layouts);
+            .enum_layouts
+            .extend(body.facts.enum_layouts);
         signatures
             .facts
             .symbol_types

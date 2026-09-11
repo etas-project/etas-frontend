@@ -445,6 +445,11 @@ pub fn collect_match_statement(
     arms: Vec<etas_hir::HirMatchArm>,
 ) {
     let scrutinee_ty = collect_expr(ctx, scrutinee, None);
+    ctx.validate(crate::ValidationRequest::MatchCoverage {
+        scrutinee: scrutinee_ty,
+        arms: arms.iter().map(|arm| arm.pat).collect(),
+        span: ctx.ctx.hir.exprs[scrutinee].span(&ctx.ctx.hir.blocks),
+    });
     let mut arm_types = Vec::new();
     for arm in arms {
         crate::pipeline::body::collect::pattern::collect_pattern(ctx, arm.pat, scrutinee_ty);
@@ -499,6 +504,11 @@ fn collect_match(
     expected: Option<TypeId>,
 ) -> TypeId {
     let scrutinee_ty = collect_expr(ctx, scrutinee, None);
+    ctx.validate(crate::ValidationRequest::MatchCoverage {
+        scrutinee: scrutinee_ty,
+        arms: arms.iter().map(|arm| arm.pat).collect(),
+        span,
+    });
     let branch_expected = expected;
     let mut arm_types = Vec::new();
     for arm in arms {
@@ -647,6 +657,24 @@ fn collect_pipeline(
 }
 
 fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedPath) -> TypeId {
+    if let Some(variant) = super::enum_variant::declaration(ctx, path) {
+        if variant.fields.is_empty() && variant.field_names.is_none() {
+            if let Some(signature) = super::enum_variant::signature(ctx, path) {
+                return signature.output;
+            }
+        }
+    }
+    if let ResolveResult::Resolved(symbol) = path.resolution
+        && let Some(etas_hir::SymbolDef::ImportAlias { path, .. }) =
+            ctx.ctx.hir.symbols.get(symbol).map(|symbol| &symbol.def)
+        && let Some(descriptor) = ctx.ctx.std_registry.lookup_qualified(path)
+        && descriptor.kind == etas_std::StdSymbolKind::Constructor
+        && let Some(SymbolTypeFact::Flow { signature }) =
+            ctx.ctx.signature_facts.symbol_types.get(&symbol)
+        && signature.params.is_empty()
+    {
+        return instantiate_callable_signature(ctx, signature.clone()).output;
+    }
     match path.resolution {
         ResolveResult::Resolved(symbol) => symbol_value_type(ctx, symbol).unwrap_or_else(|| {
             if let Some(ty) = std_qualified_path_value_type(ctx, path) {

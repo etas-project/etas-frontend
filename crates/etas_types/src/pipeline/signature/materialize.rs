@@ -5,6 +5,9 @@ pub fn materialize_signature_facts(
     mut state: SignaturePipelineState,
 ) {
     ctx.signature_facts
+        .enum_layouts
+        .extend(state.enum_layouts.drain());
+    ctx.signature_facts
         .symbol_types
         .extend(state.symbol_types.drain());
     ctx.signature_facts

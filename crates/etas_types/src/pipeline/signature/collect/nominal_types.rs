@@ -33,10 +33,7 @@ fn collect_type_decl(
 ) {
     let name = canonical_source_type_name(ctx, decl.symbol)
         .unwrap_or_else(|| format!("type{}", decl.symbol.0));
-    let representation = match decl.body {
-        HirTypeDeclBody::Bodyless => None,
-        HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
-    };
+    let representation = None;
     let params = decl
         .type_params
         .iter()
@@ -76,4 +73,105 @@ fn collect_enum_decl(
             constructor: TypeConstructorId(ty.0),
         },
     );
+}
+
+pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePipelineState) {
+    use crate::{CallableSignature, EnumLayoutFact, EnumVariantLayoutFact};
+    use etas_core::{Diagnostic, TypeDiagnosticCode};
+    let items = ctx
+        .hir
+        .items
+        .iter()
+        .map(|(_, item)| item.clone())
+        .collect::<Vec<_>>();
+    for item in items {
+        match item {
+            HirItem::Type(decl) => {
+                let representation = match decl.body {
+                    HirTypeDeclBody::Bodyless => None,
+                    HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
+                };
+                if let Some(SymbolTypeFact::NominalType {
+                    constructor,
+                    representation: slot,
+                    ..
+                }) = state.symbol_types.get_mut(&decl.symbol)
+                {
+                    ctx.interner
+                        .define_nominal(crate::TypeId(constructor.0), representation);
+                    *slot = representation;
+                }
+            }
+            HirItem::Enum(decl) => {
+                let SymbolTypeFact::Type { constructor } = state.symbol_types[&decl.symbol] else {
+                    unreachable!("enum identity was predeclared")
+                };
+                let base = crate::TypeId(constructor.0);
+                let generic_params =
+                    super::callables::callable_generic_params(ctx, state, &decl.type_params);
+                let output = if generic_params.is_empty() {
+                    base
+                } else {
+                    ctx.interner.intern(Type::Applied {
+                        constructor,
+                        args: generic_params.iter().map(|param| param.subject).collect(),
+                    })
+                };
+                let mut variants = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for variant in decl.variants {
+                    let name = ctx.hir.symbols.get(variant.symbol).unwrap().name.clone();
+                    if !seen.insert(name.clone()) {
+                        ctx.diagnostics.push(Diagnostic::type_check(
+                            TypeDiagnosticCode::DuplicateField,
+                            variant.span,
+                            "duplicate enum variant",
+                        ));
+                    }
+                    if let Some(names) = &variant.field_names {
+                        let mut fields = std::collections::HashSet::new();
+                        for name in names {
+                            if !fields.insert(name) {
+                                ctx.diagnostics.push(Diagnostic::type_check(
+                                    TypeDiagnosticCode::DuplicateField,
+                                    variant.span,
+                                    "duplicate enum payload field",
+                                ));
+                            }
+                        }
+                    }
+                    let fields = variant
+                        .fields
+                        .iter()
+                        .filter_map(|ty| lower_type_ref(ctx, *ty))
+                        .collect::<Vec<_>>();
+                    state.symbol_types.insert(
+                        variant.symbol,
+                        SymbolTypeFact::Flow {
+                            signature: CallableSignature {
+                                generic_params: generic_params.clone(),
+                                params: fields.clone(),
+                                output,
+                                effects: None,
+                                requested_actions: None,
+                            },
+                        },
+                    );
+                    variants.push(EnumVariantLayoutFact {
+                        name,
+                        fields,
+                        field_names: variant.field_names,
+                    });
+                }
+                state.enum_layouts.insert(
+                    base,
+                    EnumLayoutFact {
+                        type_params: generic_params.into_iter().map(|param| param.name).collect(),
+                        variants,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
 }

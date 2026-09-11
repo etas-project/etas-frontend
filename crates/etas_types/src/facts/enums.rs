@@ -10,4 +10,5 @@ pub struct EnumLayoutFact {
 pub struct EnumVariantLayoutFact {
     pub name: String,
     pub fields: Vec<TypeId>,
+    pub field_names: Option<Vec<String>>,
 }

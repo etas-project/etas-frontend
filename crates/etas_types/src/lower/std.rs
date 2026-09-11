@@ -665,7 +665,7 @@ fn lower_std_enum_layout(
     params: &[etas_std::StdGenericParam],
     scope: Option<&[String]>,
 ) {
-    if ctx.signature_facts.std_enum_layouts.contains_key(&ty) {
+    if ctx.signature_facts.enum_layouts.contains_key(&ty) {
         return;
     }
     let Some(owner) = registry.lookup_qualified(&name.split('.').collect::<Vec<_>>()) else {
@@ -676,7 +676,7 @@ fn lower_std_enum_layout(
         return;
     }
     // Reserve the layout before descending into recursive enum fields.
-    ctx.signature_facts.std_enum_layouts.insert(
+    ctx.signature_facts.enum_layouts.insert(
         ty,
         crate::EnumLayoutFact {
             type_params: params.iter().map(|param| param.name.clone()).collect(),
@@ -690,6 +690,7 @@ fn lower_std_enum_layout(
                 return None;
             };
             Some(crate::EnumVariantLayoutFact {
+                field_names: None,
                 name: constructor.name.clone(),
                 fields: decl
                     .params
@@ -699,7 +700,7 @@ fn lower_std_enum_layout(
             })
         })
         .collect();
-    ctx.signature_facts.std_enum_layouts.insert(
+    ctx.signature_facts.enum_layouts.insert(
         ty,
         crate::EnumLayoutFact {
             type_params: params.iter().map(|param| param.name.clone()).collect(),

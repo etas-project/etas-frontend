@@ -100,6 +100,7 @@ pub struct HirEnumDecl {
 pub struct HirEnumVariant {
     pub symbol: SymbolId,
     pub fields: Vec<HirTypeId>,
+    pub field_names: Option<Vec<String>>,
     pub span: Span,
 }
 

@@ -3,6 +3,7 @@ use etas_core::Diagnostic;
 use crate::{SolverFailure, ValidationRequest};
 
 use super::state::BodyPipelineState;
+mod coverage;
 
 pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &BodyPipelineState) {
     for failure in &state.solver_report.failures {
@@ -11,6 +12,13 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &
 
     for validation in &state.validations {
         match validation {
+            ValidationRequest::MatchCoverage {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                coverage::validate(ctx, state, *scrutinee, arms, *span);
+            }
             ValidationRequest::CallableArity { .. } => {}
             ValidationRequest::Diagnostic {
                 code,

@@ -2269,6 +2269,11 @@ fn json_schema_for_primitive(primitive: PrimitiveType) -> Value {
 }
 
 fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageMetadataError> {
+    super::type_graph::require_tree_representation(ty, store)?;
+    metadata_type_tree(ty, store)
+}
+
+fn metadata_type_tree(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageMetadataError> {
     let Some(ty_value) = store.get(ty) else {
         return Err(PackageMetadataError::UnsupportedType {
             ty,
@@ -2295,8 +2300,8 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
         Type::List(element) => unary_type(MetadataTypeKind::List, *element, store, &mut metadata)?,
         Type::Map { key, value } => {
             metadata.kind = MetadataTypeKind::Map;
-            metadata.children.push(metadata_type(*key, store)?);
-            metadata.children.push(metadata_type(*value, store)?);
+            metadata.children.push(metadata_type_tree(*key, store)?);
+            metadata.children.push(metadata_type_tree(*value, store)?);
         }
         Type::Set(element) => unary_type(MetadataTypeKind::Set, *element, store, &mut metadata)?,
         Type::Range { index } => unary_type(MetadataTypeKind::Range, *index, store, &mut metadata)?,
@@ -2306,14 +2311,14 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
         Type::Option(inner) => unary_type(MetadataTypeKind::Option, *inner, store, &mut metadata)?,
         Type::Result { ok, err } => {
             metadata.kind = MetadataTypeKind::Result;
-            metadata.children.push(metadata_type(*ok, store)?);
-            metadata.children.push(metadata_type(*err, store)?);
+            metadata.children.push(metadata_type_tree(*ok, store)?);
+            metadata.children.push(metadata_type_tree(*err, store)?);
         }
         Type::Tuple(elements) => {
             metadata.kind = MetadataTypeKind::Tuple;
             metadata.children = elements
                 .iter()
-                .map(|element| metadata_type(*element, store))
+                .map(|element| metadata_type_tree(*element, store))
                 .collect::<Result<Vec<_>, _>>()?;
         }
         Type::Function(flow) => {
@@ -2321,9 +2326,11 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
             metadata.children = flow
                 .input
                 .iter()
-                .map(|input| metadata_type(*input, store))
+                .map(|input| metadata_type_tree(*input, store))
                 .collect::<Result<Vec<_>, _>>()?;
-            metadata.children.push(metadata_type(flow.output, store)?);
+            metadata
+                .children
+                .push(metadata_type_tree(flow.output, store)?);
             metadata.effects = flow
                 .effects
                 .as_ref()
@@ -2340,7 +2347,7 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
                 }
             };
             if let Some(result) = handler.result {
-                metadata.children.push(metadata_type(result, store)?);
+                metadata.children.push(metadata_type_tree(result, store)?);
             }
         }
         Type::Enum(enum_ref) => {
@@ -2357,7 +2364,7 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
             if let Some(representation) = nominal.representation {
                 metadata
                     .children
-                    .push(metadata_type(representation, store)?);
+                    .push(metadata_type_tree(representation, store)?);
             }
         }
         Type::Applied { constructor, args } => {
@@ -2365,12 +2372,12 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
             metadata.path = applied_type_constructor_path(*constructor, store)?;
             metadata.children = args
                 .iter()
-                .map(|arg| metadata_type(*arg, store))
+                .map(|arg| metadata_type_tree(*arg, store))
                 .collect::<Result<Vec<_>, _>>()?;
         }
         Type::Trust { wrapper, inner } => {
             metadata.kind = trust_wrapper_kind(*wrapper);
-            metadata.children.push(metadata_type(*inner, store)?);
+            metadata.children.push(metadata_type_tree(*inner, store)?);
         }
         Type::Prompt => metadata.kind = MetadataTypeKind::Prompt,
         Type::PromptPart => metadata.kind = MetadataTypeKind::PromptPart,
@@ -2385,8 +2392,8 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
         )?,
         Type::Store { key, value } => {
             metadata.kind = MetadataTypeKind::Store;
-            metadata.children.push(metadata_type(*key, store)?);
-            metadata.children.push(metadata_type(*value, store)?);
+            metadata.children.push(metadata_type_tree(*key, store)?);
+            metadata.children.push(metadata_type_tree(*value, store)?);
         }
         Type::MemoryRegion(schema) => unary_type(
             MetadataTypeKind::MemoryRegion,
@@ -2399,17 +2406,19 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
             match handle {
                 ResourceHandleType::MemoryRegion { schema } => {
                     metadata.name = "MemoryRegion".to_owned();
-                    metadata.children.push(metadata_type(*schema, store)?);
+                    metadata.children.push(metadata_type_tree(*schema, store)?);
                 }
                 ResourceHandleType::ExternalTool { signature } => {
                     metadata.name = "ExternalTool".to_owned();
-                    metadata.children.push(metadata_type(*signature, store)?);
+                    metadata
+                        .children
+                        .push(metadata_type_tree(*signature, store)?);
                 }
                 ResourceHandleType::Other { name, args } => {
                     metadata.name = name.clone();
                     metadata.children = args
                         .iter()
-                        .map(|arg| metadata_type(*arg, store))
+                        .map(|arg| metadata_type_tree(*arg, store))
                         .collect::<Result<Vec<_>, _>>()?;
                 }
             }
@@ -2422,7 +2431,7 @@ fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageM
                 .map(|field| {
                     Ok(MetadataTypeField {
                         name: field.name.clone(),
-                        ty: metadata_type(field.ty, store)?,
+                        ty: metadata_type_tree(field.ty, store)?,
                     })
                 })
                 .collect::<Result<Vec<_>, PackageMetadataError>>()?;
@@ -2491,7 +2500,7 @@ fn unary_type(
     metadata: &mut MetadataType,
 ) -> Result<(), PackageMetadataError> {
     metadata.kind = kind;
-    metadata.children.push(metadata_type(inner, store)?);
+    metadata.children.push(metadata_type_tree(inner, store)?);
     Ok(())
 }
 

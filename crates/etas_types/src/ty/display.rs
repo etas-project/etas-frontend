@@ -27,13 +27,14 @@ pub fn display_type(store: &TypeStore, ty: TypeId) -> String {
         }
         Some(Type::Named(named)) => named.name.clone(),
         Some(Type::Nominal(nominal)) => nominal.name.clone(),
+        Some(Type::Enum(enumeration)) => enumeration.name.clone(),
         Some(Type::Applied { constructor, args }) => {
             let args = args
                 .iter()
                 .map(|arg| display_type(store, *arg))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("type{}<{args}>", constructor.0)
+            format!("{}<{args}>", display_type(store, TypeId(constructor.0)))
         }
         Some(Type::Prompt) => "Prompt".to_owned(),
         Some(Type::PromptPart) => "PromptPart".to_owned(),

@@ -1,5 +1,5 @@
 pub const FRONTEND_CACHE_NAMESPACE: &str = "frontend";
-pub const FRONTEND_ARTIFACT_SCHEMA_VERSION: u32 = 2;
+pub const FRONTEND_ARTIFACT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,

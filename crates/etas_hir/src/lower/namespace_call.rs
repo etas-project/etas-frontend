@@ -12,6 +12,23 @@ impl LowerCtx {
         let HirExpr::Path(path) = &self.hir.exprs[receiver] else {
             return false;
         };
+        if let ResolveResult::Resolved(owner) = path.resolution {
+            let resolution = self.symbols.resolve_member(owner, &member.text);
+            if !matches!(resolution, ResolveResult::Unresolved) {
+                let mut path = path.clone();
+                path.span = path.span.cover(member.span);
+                path.syntax_path.segments.push(member.clone());
+                path.syntax_path.span = path.span;
+                path.segments.push(PathSegment {
+                    name: member.text.clone(),
+                    span: member.span,
+                });
+                path.resolution = resolution;
+                self.source_map.map_expr(receiver, path.span);
+                *self.hir.exprs.get_mut(receiver).expect("lowered receiver") = HirExpr::Path(path);
+                return true;
+            }
+        }
         let mut qualified = match &path.resolution {
             ResolveResult::Resolved(symbol) => {
                 let Some(symbol) = self.symbols.get(*symbol) else {

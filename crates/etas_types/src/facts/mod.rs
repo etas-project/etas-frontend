@@ -41,7 +41,7 @@ pub struct TypeFacts {
     pub symbol_types: HashMap<SymbolId, SymbolTypeFact>,
     pub known_std_types: KnownStdTypes,
     #[serde(default)]
-    pub std_enum_layouts: HashMap<TypeId, EnumLayoutFact>,
+    pub enum_layouts: HashMap<TypeId, EnumLayoutFact>,
     pub resource_handles: HashMap<SymbolId, ResourceHandleFact>,
     pub item_signatures: HashMap<HirItemId, ItemSignature>,
     pub action_signatures: HashMap<SymbolId, EffectActionSignature>,

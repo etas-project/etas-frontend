@@ -299,7 +299,7 @@ impl Parser<'_> {
         };
         if let Some(semi) = self.cursor.eat_punct(Punct::Semi) {
             span = span.cover(semi.span);
-        } else {
+        } else if !matches!(&body, TypeDeclBody::Representation(TypeExpr::Record(_))) {
             self.expect_punct(Punct::Semi, "expected `;` after type declaration");
         }
         TypeDecl {
@@ -321,15 +321,45 @@ impl Parser<'_> {
             let before = self.cursor.position();
             let variant_name = self.name("expected enum variant");
             let mut fields = Vec::new();
+            let mut field_names = None;
+            let mut end = variant_name.span;
             if self.eat_open_punct(Punct::LParen).is_some() {
-                fields = self.comma_list(Punct::RParen, |this| this.type_expr());
-                self.expect_punct(Punct::RParen, "expected `)` after enum variant fields");
+                fields = self.comma_list(Punct::RParen, |this| {
+                    if this.cursor.at_ident_like()
+                        && this.cursor.nth(1).kind == TokenKind::Punct(Punct::Colon)
+                    {
+                        this.name("expected payload label");
+                        this.expect_punct(Punct::Colon, "expected `:` after payload label");
+                    }
+                    this.type_expr()
+                });
+                end = self.expect_punct(Punct::RParen, "expected `)` after enum variant fields");
+            } else if self.eat_open_punct(Punct::LBrace).is_some() {
+                let named = self.comma_list(Punct::RBrace, |this| {
+                    let name = this.name("expected variant field name");
+                    this.expect_punct(Punct::Colon, "expected `:` after variant field name");
+                    (name, this.type_expr())
+                });
+                let (names, types) = named.into_iter().unzip();
+                field_names = Some(names);
+                fields = types;
+                end = self.expect_punct(Punct::RBrace, "expected `}` after enum variant fields");
             }
-            let end = self.expect_punct(Punct::Semi, "expected `;` after enum variant");
+            // Semicolons remain accepted for existing source enum declarations.
+            if let Some(separator) = self
+                .cursor
+                .eat_punct(Punct::Comma)
+                .or_else(|| self.cursor.eat_punct(Punct::Semi))
+            {
+                end = separator.span;
+            } else if !self.cursor.at_punct(Punct::RBrace) {
+                self.expect_punct(Punct::Comma, "expected `,` after enum variant");
+            }
             variants.push(EnumVariant {
                 span: variant_name.span.cover(end),
                 name: variant_name,
                 fields,
+                field_names,
             });
             self.ensure_progress(before, "expected enum variant");
         }
