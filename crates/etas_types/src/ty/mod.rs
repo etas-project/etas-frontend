@@ -2,6 +2,7 @@ mod display;
 mod nominal;
 mod normalize;
 mod primitive;
+mod representation;
 mod row;
 mod scheme;
 mod substitution;
@@ -15,6 +16,7 @@ pub use normalize::{
     type_contains_named_param,
 };
 pub use primitive::PrimitiveType;
+pub(crate) use representation::materialize_representations;
 pub use row::{EffectArgRef, EffectRef, EffectRowRef};
 pub use scheme::{TypeConstructorId, TypeScheme, TypeVarId};
 pub use substitution::{
@@ -198,6 +200,18 @@ pub struct TypeInterner {
 }
 
 impl TypeInterner {
+    /// Complete a predeclared nominal without changing its identity or its references.
+    pub(crate) fn define_nominal(&mut self, id: TypeId, representation: Option<TypeId>) {
+        let Type::Nominal(mut nominal) = self.store.types[id.0 as usize].clone() else {
+            unreachable!("only nominal declarations can be completed")
+        };
+        self.types.remove(&Type::Nominal(nominal.clone()));
+        nominal.representation = representation;
+        let ty = Type::Nominal(nominal);
+        self.store.types[id.0 as usize] = ty.clone();
+        self.types.insert(ty, id);
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

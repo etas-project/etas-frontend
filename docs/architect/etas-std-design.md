@@ -4,7 +4,7 @@ Status: `Draft`
 
 Owner: `Architect`
 
-Last updated: `2026-07-02`
+Last updated: `2026-09-10`
 
 ## 1. Purpose
 
@@ -530,6 +530,42 @@ markers, and opaque handles.
 `std.memory.region[...]`, `MemoryRegion[S]`, `Store[K, V]`, and store
 operations. Execution belongs to the interpreter/runtime host layers.
 
+### 6.2.1 Persistent Storage Contracts
+
+The accepted [Storage Design](../../../etas-core/docs/architect/etas-storage-design.md)
+defines the source API target. Keep existing `std.memory.get_entry` and bounded
+`page` values. Add `prepare_put`, `prepare_delete`, `commit` and `reconcile` in
+that module, rather than another versioned-read API or a generic storage crate.
+
+`MemoryWriteIntent<K,V>` is an opaque immutable nominal value containing a typed
+mutation, condition and runtime-issued operation reference. Provide a read-only
+operation-reference accessor. Preparation does not mutate storage; it allocates
+identity before dispatch and must not be classified as a deterministic pure
+builtin. Intents/references support checked lossless checkpoint serialization,
+not arbitrary source construction or serialized authority grants.
+
+`commit` returns `WriteOutcome<MemoryWriteReceipt<K>, MemoryWriteRejection>`:
+confirmed commit, confirmed non-commit with reason, or unknown with an operation
+reference. `reconcile` returns a confirmed recorded outcome, unresolved, or
+expired evidence and never resubmits a mutation. All outcomes use closed ADTs
+whose variants are available to ordinary pattern matching. Preserve the
+operation reference on uncertain convenience writes as well.
+
+Declare scoped `Memory.write` for commit and scoped `Memory.read` for lookup,
+reads and paging. Separate requested actions from escaping effects after wrapper
+handling. Typed Error effects report validation/permission/lookup failures;
+`Unknown` remains an inspectable result, not an Error captured or erased by `?`.
+Existing convenience APIs may preserve their Error contract only if uncertain
+write errors carry the recoverable operation reference.
+
+These names and semantics are architecture-approved, not yet source-SPEC
+declarations. Synchronize exact generic types, variant fields, signatures and
+Error rows with the language designer before registration. Update declarations,
+generated stubs, nominal identity, type/effect facts, package metadata and engine
+codecs together. No special parser construct is needed. Acceptance requires
+source-level matching, CAS conflict, unknown/reconcile and checkpoint/restore
+tests through a real SQLite backend, not only Rust protocol tests.
+
 ### 6.3 `std.option`
 
 Owns:
@@ -893,30 +929,50 @@ It is not a source keyword.
 
 ### 7.4 `std.agent.session`
 
-Owns session and conversation support:
+The current [Session SPEC](../../../etas/docs/design/03-agents-tools-prompts-memory.md#33-sessions-and-conversations)
+defines this data substrate, not an automatic summarization service:
 
-- `SessionId`;
-- `SessionConfig`;
-- `Conversation`;
-- `ContextPolicy`;
-- `RetentionPolicy`;
-- `CompactionPolicy`;
-- helpers such as:
-  - `current_session()`;
-  - `SessionConfig.continue_or_new(...)`;
-  - `LastTurns(n)`;
-  - `SummaryPlusRecent(recent = n)`;
-  - `SummarizeWhen(ContextTokens(n))`;
-  - `Days(n)` for retention policy.
+- `SessionId`, `SessionConfig { id, context, retention }`, typed messages and `Conversation`;
+- atomic append/deduplication and bounded history/context pages;
+- opaque session/history revision fences and expected context versions;
+- `history_page` returning bounded history, cursor, `SessionHistoryFence` and optional published context;
+- `prepare_context` binding caller-produced `SessionContextContent` and its fence to a `StorageOperationRef` before dispatch;
+- `publish_context(session, fence, content, operation)` returning structured commit certainty and a `SessionContextReceipt` on commit;
+- query-only `reconcile_context` using the same operation reference under current authority;
+- execution of configured bounded retention/storage maintenance, without choosing what users should keep.
 
-Session support is used by stage options such as:
+Publication accepts already-produced content. Its transaction validates history
+and context versions, including concurrent appends, then stores content and
+receipt atomically. Matching receipt replay returns the original outcome before
+checking current versions. No model call, tokenization or implicit deletion is
+part of publication. The detailed algorithm and bounds are in the
+[Session contract](../../../etas-core/docs/architect/etas-storage-design.md#7-session-semantics).
 
-```etas
-msg ~> Agent with { session = session }
-```
+`prepare_context` must bind content and provenance as well as target/fence;
+changed requests under one operation reference are rejected. Receipts identify
+the operation, session generation, published context version and actual
+backend-confirmed durability. Context content preserves source/producer
+provenance; publication does not certify accuracy or promote it to trusted
+instruction content. Std types and codecs must retain these distinctions.
 
-The compiler and AIR make this visible as message append, context selection,
-handoff, and trace metadata. It is not a `session` keyword.
+EDK/application flows own summary thresholds, tokenizer/model/provider selection,
+prompts, validation and retry. They read history, call ordinary checked APIs and
+conditionally publish the result. Etas still enforces cancellation, budgets,
+authority and action trace on those calls. `LastTurns` selects bounded data;
+`SummaryPlusRecent` selects existing context plus recent turns. If no summary
+exists, it selects recent turns only with visible absence, never fabricated
+summary data. Neither selection claims full history or deletes messages.
+`ContextTokens` remains a budget bound: failure follows limit semantics rather
+than causing a hidden inference call to shrink the context.
+
+Remove implicit `CompactionPolicy`/`SummarizeWhen` model orchestration and its
+configuration requirement; this removal is now backed by the current SPEC.
+Delete `SessionConfig.compaction` from declarations/stubs and reject old options
+explicitly. Keep retention, archival, deletion and storage compaction as separate
+runtime operations, with provenance and replay limitations preserved. Session
+operations stay in the existing
+`std.agent.session` namespace, with no parallel `std.session` forwarding module.
+They are ordinary APIs, not new keywords or a second meaning of `with`.
 
 ### 7.5 `std.agent.group`
 
@@ -1412,7 +1468,7 @@ Execution support may be staged for:
 
 - full group chat combinators;
 - rich `Conversation`;
-- complete context/retention/compaction policies;
+- bounded context/history access and conditional context publication;
 - complete persistent store backend execution;
 - advanced JSON/schema customization;
 - full trace redaction policy surface;
@@ -1422,3 +1478,7 @@ Execution support may be staged for:
 Staged execution must not change the registry's type vocabulary. It only
 affects which declarations the Phase 1 HIR interpreter can execute versus which
 ones produce explicit runtime-required diagnostics.
+
+Application summarization/tokenization policies are outside this execution
+support list. Lack of an Etas-provided production summarizer is not a missing
+standard-library/runtime feature.

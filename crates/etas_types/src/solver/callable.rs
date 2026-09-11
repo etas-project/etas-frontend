@@ -112,7 +112,13 @@ pub fn solve_callable_with_named_substitutions(
         infer_type_substitution(store, expected, actual, &mut type_substitutions);
     }
     for (actual, expected) in args.iter().copied().zip(flow.input.iter().copied()) {
-        if !is_assignable_to_schematic(store, actual, expected, &mut type_substitutions) {
+        if !is_assignable_to_schematic(
+            store,
+            actual,
+            expected,
+            &mut type_substitutions,
+            &report.substitutions,
+        ) {
             report.push(SolverFailure {
                 code: etas_core::TypeDiagnosticCode::TypeMismatch,
                 span: origin.span,
@@ -517,6 +523,7 @@ fn solve_nominal_constructor_call(
         args[0],
         constructor.representation,
         &mut substitutions,
+        &report.substitutions,
     ) {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -831,7 +838,18 @@ fn is_assignable_to_schematic(
     actual: TypeId,
     expected: TypeId,
     substitutions: &mut HashMap<String, TypeId>,
+    solved: &crate::Substitution,
 ) -> bool {
+    if let Some(Type::Var(var)) = store.get(expected)
+        && let Some(bound) = solved.get(*var).filter(|bound| *bound != expected)
+    {
+        return is_assignable_to_schematic(store, actual, bound, substitutions, solved);
+    }
+    if let Some(Type::Var(var)) = store.get(actual)
+        && let Some(bound) = solved.get(*var).filter(|bound| *bound != actual)
+    {
+        return is_assignable_to_schematic(store, bound, expected, substitutions, solved);
+    }
     match store.get(expected) {
         Some(Type::Var(_)) => true,
         Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
@@ -839,7 +857,11 @@ fn is_assignable_to_schematic(
                 return true;
             }
             if let Some(bound) = substitutions.get(&name.name).copied() {
-                is_assignable(store, actual, bound)
+                if bound == expected {
+                    is_assignable(store, actual, bound)
+                } else {
+                    is_assignable_to_schematic(store, actual, bound, substitutions, solved)
+                }
             } else {
                 substitutions.insert(name.name.clone(), actual);
                 true
@@ -847,37 +869,37 @@ fn is_assignable_to_schematic(
         }
         Some(Type::Array(expected)) => match store.get(actual) {
             Some(Type::Array(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::List(expected)) => match store.get(actual) {
             Some(Type::List(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::Set(expected)) => match store.get(actual) {
             Some(Type::Set(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::Slice(expected)) => match store.get(actual) {
             Some(Type::Slice(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::Option(expected)) => match store.get(actual) {
             Some(Type::Option(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::Schema(expected)) => match store.get(actual) {
             Some(Type::Schema(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
@@ -889,31 +911,31 @@ fn is_assignable_to_schematic(
                 wrapper: actual_wrapper,
                 inner: actual,
             }) if expected_wrapper == actual_wrapper => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::Message(expected)) => match store.get(actual) {
             Some(Type::Message(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::MemorySelection(expected)) => match store.get(actual) {
             Some(Type::MemorySelection(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::MemoryRegion(expected)) => match store.get(actual) {
             Some(Type::MemoryRegion(actual)) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
         Some(Type::Range { index: expected }) => match store.get(actual) {
             Some(Type::Range { index: actual }) => {
-                is_assignable_to_schematic(store, *actual, *expected, substitutions)
+                is_assignable_to_schematic(store, *actual, *expected, substitutions, solved)
             }
             _ => false,
         },
@@ -925,12 +947,13 @@ fn is_assignable_to_schematic(
                 key: actual_key,
                 value: actual_value,
             }) => {
-                is_assignable_to_schematic(store, *actual_key, *expected_key, substitutions)
+                is_assignable_to_schematic(store, *actual_key, *expected_key, substitutions, solved)
                     && is_assignable_to_schematic(
                         store,
                         *actual_value,
                         *expected_value,
                         substitutions,
+                        solved,
                     )
             }
             _ => false,
@@ -943,12 +966,13 @@ fn is_assignable_to_schematic(
                 key: actual_key,
                 value: actual_value,
             }) => {
-                is_assignable_to_schematic(store, *actual_key, *expected_key, substitutions)
+                is_assignable_to_schematic(store, *actual_key, *expected_key, substitutions, solved)
                     && is_assignable_to_schematic(
                         store,
                         *actual_value,
                         *expected_value,
                         substitutions,
+                        solved,
                     )
             }
             _ => false,
@@ -961,8 +985,14 @@ fn is_assignable_to_schematic(
                 ok: actual_ok,
                 err: actual_err,
             }) => {
-                is_assignable_to_schematic(store, *actual_ok, *expected_ok, substitutions)
-                    && is_assignable_to_schematic(store, *actual_err, *expected_err, substitutions)
+                is_assignable_to_schematic(store, *actual_ok, *expected_ok, substitutions, solved)
+                    && is_assignable_to_schematic(
+                        store,
+                        *actual_err,
+                        *expected_err,
+                        substitutions,
+                        solved,
+                    )
             }
             _ => false,
         },
@@ -975,7 +1005,7 @@ fn is_assignable_to_schematic(
                     .copied()
                     .zip(expected_elements.iter().copied())
                     .all(|(actual, expected)| {
-                        is_assignable_to_schematic(store, actual, expected, substitutions)
+                        is_assignable_to_schematic(store, actual, expected, substitutions, solved)
                     })
             }
             _ => false,
@@ -995,7 +1025,7 @@ fn is_assignable_to_schematic(
                     .copied()
                     .zip(expected_args.iter().copied())
                     .all(|(actual, expected)| {
-                        is_assignable_to_schematic(store, actual, expected, substitutions)
+                        is_assignable_to_schematic(store, actual, expected, substitutions, solved)
                     })
             }
             _ => false,

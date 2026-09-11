@@ -1,4 +1,5 @@
 pub mod effects;
+pub mod enums;
 pub mod expressions;
 pub mod signatures;
 pub mod specs;
@@ -9,6 +10,7 @@ use std::collections::HashMap;
 use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 
 pub use effects::{EffectActionArgKind, EffectActionSignature};
+pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
 pub use expressions::{
     CheckedIndexKind, CheckedSliceKind, DeferredEffectRowObligation, GenericInstantiationFact,
     TryExprTypeFact,
@@ -38,6 +40,8 @@ pub struct TypeFacts {
     pub type_refs: HashMap<HirTypeId, TypeId>,
     pub symbol_types: HashMap<SymbolId, SymbolTypeFact>,
     pub known_std_types: KnownStdTypes,
+    #[serde(default)]
+    pub enum_layouts: HashMap<TypeId, EnumLayoutFact>,
     pub resource_handles: HashMap<SymbolId, ResourceHandleFact>,
     pub item_signatures: HashMap<HirItemId, ItemSignature>,
     pub action_signatures: HashMap<SymbolId, EffectActionSignature>,

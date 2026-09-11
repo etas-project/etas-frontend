@@ -197,6 +197,7 @@ pub struct EnumDecl {
 pub struct EnumVariant {
     pub name: Name,
     pub fields: Vec<TypeExpr>,
+    pub field_names: Option<Vec<Name>>,
     pub span: Span,
 }
 

@@ -85,7 +85,7 @@ fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry
         };
         let items = registry
             .symbols()
-            .filter(|symbol| symbol.module == module.id)
+            .filter(|symbol| symbol.module == module.id && symbol.enum_owner.is_none())
             .map(|symbol| {
                 (
                     symbol.name.clone(),

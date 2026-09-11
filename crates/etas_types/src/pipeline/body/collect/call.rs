@@ -31,6 +31,17 @@ pub fn collect_call(
     span: etas_core::Span,
     expected: Option<TypeId>,
 ) -> TypeId {
+    if let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] {
+        if super::enum_variant::declaration(ctx, path)
+            .is_some_and(|variant| variant.field_names.is_some())
+        {
+            super::enum_variant::invalid(
+                ctx,
+                span,
+                "named-field variant requires brace construction",
+            );
+        }
+    }
     let checked_generic_args = lower_callable_generic_args(ctx, generic_args);
     let callable_signature = callee_callable_signature(ctx, callee);
     validate_generic_args(
@@ -779,6 +790,9 @@ fn collect_standard_variant_constructor_call(
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
         return None;
     };
+    if super::enum_variant::declaration(ctx, path).is_some() {
+        return None;
+    }
     let name = path.segments.last()?.name.as_str();
     match name {
         "Ok" => Some(collect_result_constructor_call(
@@ -987,7 +1001,7 @@ pub fn callable_output(ctx: &BodyCollectContext<'_, '_>, callee_ty: TypeId) -> O
     }
 }
 
-fn callable_input_types(
+pub(super) fn callable_input_types(
     ctx: &mut BodyCollectContext<'_, '_>,
     callee_ty: TypeId,
     explicit_generic_args: &[TypeId],

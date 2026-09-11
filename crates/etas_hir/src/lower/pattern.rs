@@ -11,6 +11,37 @@ impl LowerCtx {
     ) -> HirPatId {
         let span = pat.span();
         if let Pattern::Ident(name) = pat {
+            let syntax_path = Path {
+                segments: vec![name.clone()],
+                span,
+            };
+            let path = self.resolve_path(&syntax_path, scope, false);
+            let constructor = match path.resolution {
+                ResolveResult::Resolved(symbol) => self.symbols.get(symbol).is_some_and(|symbol| {
+                    symbol.kind == SymbolKind::EnumVariant
+                        || match &symbol.def {
+                            SymbolDef::ImportAlias { path, .. } => self
+                                .std_registry
+                                .lookup_qualified(path)
+                                .is_some_and(|symbol| {
+                                    symbol.enum_owner.is_some()
+                                        || symbol.kind == etas_std::StdSymbolKind::Constructor
+                                        || matches!(symbol.decl, etas_std::StdDecl::Value(_))
+                                }),
+                            _ => false,
+                        }
+                }),
+                _ => false,
+            };
+            if constructor {
+                let id = self.hir.pats.alloc(HirPat::Variant {
+                    path,
+                    args: Vec::new(),
+                    span,
+                });
+                self.source_map.map_pat(id, span);
+                return id;
+            }
             let local = self.local_binding;
             let symbol = if let Some(local) = local {
                 self.bind_symbol_with_def(
@@ -91,10 +122,16 @@ impl LowerCtx {
                     .iter()
                     .map(|field| HirRecordPatField {
                         name: field.name.text.clone(),
-                        pat: field
-                            .pattern
-                            .as_ref()
-                            .map(|pat| self.lower_pattern(pat, scope, item_id)),
+                        pat: Some(
+                            self.lower_pattern(
+                                &field
+                                    .pattern
+                                    .clone()
+                                    .unwrap_or_else(|| Pattern::Ident(field.name.clone())),
+                                scope,
+                                item_id,
+                            ),
+                        ),
                         span: field.span,
                     })
                     .collect(),

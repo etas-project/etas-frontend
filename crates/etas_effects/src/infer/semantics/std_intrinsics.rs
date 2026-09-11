@@ -4,7 +4,7 @@ use etas_hir::{
     PartialResolutionReason, ResolveResult, SymbolDef,
 };
 use etas_hir_analysis::interprocedural::CallSite;
-use etas_std::{IntrinsicRuntimeRequirement, StdDecl, TypeDeclKind};
+use etas_std::{IntrinsicMemoryAccess, IntrinsicRuntimeRequirement, StdDecl, TypeDeclKind};
 use etas_types::{EffectArgRef, SymbolTypeFact, Type, TypeId};
 
 use crate::{
@@ -226,7 +226,6 @@ impl EffectSemantics<'_> {
         }
         let effect = match method.as_str() {
             "load" => self.session_memory_action("Memory.read"),
-            "compact" => self.session_memory_action("Memory.write"),
             _ => return None,
         };
         let Some(effect) = effect else {
@@ -293,16 +292,11 @@ impl EffectSemantics<'_> {
         ) {
             return None;
         }
-        let Some(arg) = self.memory_place_arg_for_expr(*receiver) else {
-            return Some(self.reject_effect_state(
-                span,
-                "std store method effect solving requires checked memory place facts",
-                state,
-            ));
+        let summary = match self.memory_action_alternatives(*receiver, actions, span) {
+            Ok(summary) => summary,
+            Err(error) => return Some(self.reject_effect_state(span, error, state)),
         };
-        for action in actions {
-            self.apply_memory_action(&mut state, *action, arg.clone(), span);
-        }
+        state.summary.seq_assign(&summary);
         Some(state)
     }
 
@@ -311,20 +305,20 @@ impl EffectSemantics<'_> {
         site: CallSite<crate::infer::unit::EffectUnit>,
         mut state: EffectState,
     ) -> Option<EffectState> {
-        let (module_path, name) = self.std_import_path(site.callee_expr)?;
-        if module_path.as_slice() != ["std", "memory"] {
-            return None;
-        }
-        let actions = match name.as_str() {
-            "get" | "contains" | "keys" | "select" | "query" | "scan" | "related_to" => {
-                Some(&[MEMORY_READ_ACTION][..])
+        let path = self.std_qualified_path_for_expr(site.callee_expr)?;
+        let declaration = self
+            .std_registry
+            .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let descriptor = declaration.intrinsic.as_ref()?;
+        let actions = match descriptor.memory_access {
+            IntrinsicMemoryAccess::None => return None,
+            IntrinsicMemoryAccess::ReadFirstArgStore => &[MEMORY_READ_ACTION][..],
+            IntrinsicMemoryAccess::WriteFirstArgStore
+            | IntrinsicMemoryAccess::WriteFirstArgIntent => &[MEMORY_WRITE_ACTION][..],
+            IntrinsicMemoryAccess::ReadWriteFirstArgStore => {
+                &[MEMORY_READ_ACTION, MEMORY_WRITE_ACTION][..]
             }
-            "put" | "put_versioned" | "insert" | "update" | "delete" | "delete_versioned"
-            | "clear" => Some(&[MEMORY_WRITE_ACTION][..]),
-            "upsert" => Some(&[MEMORY_READ_ACTION, MEMORY_WRITE_ACTION][..]),
-            "limit" => return Some(state),
-            _ => None,
-        }?;
+        };
         let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(site.call) else {
             return Some(self.reject_effect_state(
                 site.span,
@@ -339,17 +333,70 @@ impl EffectSemantics<'_> {
                 state,
             ));
         };
-        let Some(arg) = self.memory_place_arg_for_expr(receiver) else {
+        let summary = match self.memory_action_alternatives(receiver, actions, site.span) {
+            Ok(summary) => summary,
+            Err(error) => return Some(self.reject_effect_state(site.span, error, state)),
+        };
+        state.summary.seq_assign(&summary);
+        let Some(symbol) = self.callee_symbol(site.callee_expr) else {
             return Some(self.reject_effect_state(
                 site.span,
-                "std memory wrapper effect solving requires a receiver argument",
+                "memory intrinsic is missing its checked symbol",
                 state,
             ));
         };
-        for action in actions {
-            self.apply_memory_action(&mut state, *action, arg.clone(), site.span);
+        let (StdDecl::Flow(flow), Some(SymbolTypeFact::Flow { signature })) = (
+            &declaration.decl,
+            self.type_symbols
+                .symbol_fact(self.hir, &self.types.facts, symbol),
+        ) else {
+            return Some(self.reject_effect_state(
+                site.span,
+                "memory intrinsic is missing its checked flow signature",
+                state,
+            ));
+        };
+        if let Some(row) = &signature.effects {
+            let Some(row) = self.specialize_std_effect_row(site.call, flow, row, site.span) else {
+                state.mark_incomplete();
+                return Some(state);
+            };
+            self.apply_public_row_to_summary(
+                &mut state.summary,
+                &self.row_from_type_ref(&row),
+                site.span,
+            );
+        } else if !flow.public_effects.is_empty() {
+            return Some(self.reject_effect_state(
+                site.span,
+                "memory intrinsic is missing its checked public effect row",
+                state,
+            ));
         }
         Some(state)
+    }
+
+    fn memory_action_alternatives(
+        &self,
+        receiver: HirExprId,
+        actions: &[EffectActionId],
+        span: Span,
+    ) -> Result<crate::EffectSummary, String> {
+        let origins = self.memory_place_args_for_expr(receiver)?;
+        let mut alternatives = origins.into_iter().map(|origin| {
+            let mut branch = EffectState::default();
+            for action in actions {
+                self.apply_memory_action(&mut branch, *action, origin.clone(), span);
+            }
+            branch.summary
+        });
+        let mut summary = alternatives
+            .next()
+            .ok_or_else(|| "memory operation has no checked resource origin".to_owned())?;
+        for branch in alternatives {
+            summary.join_branch(&branch);
+        }
+        Ok(summary)
     }
 
     fn apply_memory_action(
@@ -420,12 +467,35 @@ impl EffectSemantics<'_> {
         Some(state)
     }
 
-    fn memory_place_arg_for_expr(&self, expr: HirExprId) -> Option<etas_types::EffectArgRef> {
-        let ty = self.types.facts.expr_memory_places.get(&expr)?;
-        let etas_types::Type::MemoryPlace(place) = self.types.store.get(*ty)? else {
-            return None;
+    fn memory_place_args_for_expr(
+        &self,
+        expr: HirExprId,
+    ) -> Result<Vec<etas_types::EffectArgRef>, String> {
+        let Some(ty) = self.types.facts.expr_memory_places.get(&expr) else {
+            let indirect = match self.hir.exprs.get(expr) {
+                Some(HirExpr::Call { .. }) => true,
+                Some(HirExpr::Path(path)) => match path.resolution {
+                    ResolveResult::Resolved(symbol) => {
+                        self.hir.symbols.get(symbol).is_some_and(|symbol| {
+                            matches!(
+                                symbol.def,
+                                SymbolDef::Local { .. } | SymbolDef::Param { .. }
+                            )
+                        })
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !indirect {
+                return Err("memory operation requires a checked memory place fact".into());
+            }
+            return self.memory_provenance.arguments(self.hir, self.types, expr);
         };
-        Some(etas_types::EffectArgRef::Path(place.segments.clone()))
+        let Some(etas_types::Type::MemoryPlace(place)) = self.types.store.get(*ty) else {
+            return Err("checked memory place fact has the wrong type".into());
+        };
+        Ok(vec![etas_types::EffectArgRef::Path(place.segments.clone())])
     }
 
     fn static_resource_path_arg_for_expr(

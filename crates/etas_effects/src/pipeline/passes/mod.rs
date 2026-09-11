@@ -15,7 +15,8 @@ use crate::{
 
 use super::artifacts::{
     EFFECT_FACTS, EFFECT_OUTPUT, EFFECT_REGISTRY, EFFECT_SUMMARIES, EFFECT_UNITS,
-    TRACE_SPEC_ANALYSIS, TRACE_SPEC_MODELS, VALIDATED_EFFECT_FACTS, VALIDATED_TRACE_SPEC_FACTS,
+    MEMORY_PROVENANCE, TRACE_SPEC_ANALYSIS, TRACE_SPEC_MODELS, VALIDATED_EFFECT_FACTS,
+    VALIDATED_TRACE_SPEC_FACTS,
 };
 use super::context::EffectPipelineContext;
 use super::{EffectPipelineArtifacts, ExternalArtifactAnchor};
@@ -24,7 +25,9 @@ mod build_registry;
 pub(super) use build_registry::BuildRegistryPass;
 mod collect_units;
 pub(super) use collect_units::CollectUnitsPass;
+mod analyze_memory_provenance;
 mod solve_summaries;
+pub(super) use analyze_memory_provenance::AnalyzeMemoryProvenancePass;
 pub(super) use solve_summaries::SolveSummariesPass;
 mod materialize_facts;
 pub(super) use materialize_facts::MaterializeFactsPass;
@@ -43,6 +46,7 @@ pub(super) fn build_effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>>
     Pipeline::new("effects.run")
         .pass(BuildRegistryPass)
         .pass(CollectUnitsPass)
+        .pass(AnalyzeMemoryProvenancePass)
         .pass(SolveSummariesPass)
         .pass(MaterializeFactsPass)
         .pass(ValidateContractsPass)

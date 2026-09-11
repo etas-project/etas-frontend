@@ -3,9 +3,28 @@ use crate::{Symbol, SymbolData, SymbolId};
 #[derive(Clone, Debug, Default)]
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
+    members: std::collections::HashMap<(SymbolId, String), Vec<SymbolId>>,
 }
 
 impl SymbolTable {
+    pub fn insert_member(&mut self, owner: SymbolId, name: String, member: SymbolId) {
+        self.members.entry((owner, name)).or_default().push(member);
+    }
+
+    pub fn resolve_member(&self, owner: SymbolId, name: &str) -> crate::ResolveResult {
+        match self
+            .members
+            .get(&(owner, name.to_owned()))
+            .map(Vec::as_slice)
+        {
+            Some([symbol]) => crate::ResolveResult::Resolved(*symbol),
+            Some(symbols) if !symbols.is_empty() => {
+                crate::ResolveResult::Ambiguous(symbols.to_vec())
+            }
+            _ => crate::ResolveResult::Unresolved,
+        }
+    }
+
     pub fn alloc(&mut self, data: SymbolData) -> SymbolId {
         let id = SymbolId(self.symbols.len().min(u32::MAX as usize) as u32);
         self.symbols.push(Symbol {

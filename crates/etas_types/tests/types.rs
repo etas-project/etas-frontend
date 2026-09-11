@@ -2002,6 +2002,35 @@ flow main() -> i32 {
 }
 
 #[test]
+fn empty_literals_cannot_adopt_non_collection_expected_types() {
+    for (declaration, output, literal) in [
+        ("type Opaque;", "Opaque", "{}"),
+        ("type Opaque;", "Opaque", "[]"),
+        ("type Row = { name: string };", "Row", "{}"),
+        ("", "{ name: string }", "{}"),
+        ("", "string", "[]"),
+    ] {
+        let text = format!("{declaration} flow main() -> {output} {{ return {literal}; }}");
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            text,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.code,
+                DiagnosticCode::Type(
+                    TypeDiagnosticCode::TypeMismatch | TypeDiagnosticCode::IncompleteTypeFacts
+                )
+            )),
+            "{declaration} {literal}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+#[test]
 fn check_program_rejects_uncontextualized_empty_brace_and_set_literals() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -2602,7 +2631,6 @@ flow main(limit: Limit) -> unit {
   let recent: ContextPolicy = LastTurns(8);
   let summarized: ContextPolicy = SummaryPlusRecent(4);
   let retention: RetentionPolicy = Days(90);
-  let compaction: CompactionPolicy = SummarizeWhen(limit);
   return;
 }
 "#,
@@ -2641,7 +2669,6 @@ flow main(ticket: SessionId, limit: Limit) -> SessionConfig {
     id = ticket,
     context = SummaryPlusRecent(4),
     retention = Days(90),
-    compaction = SummarizeWhen(limit),
   };
 }
 "#,
@@ -2658,15 +2685,14 @@ fn check_program_types_session_config_fields() {
         etas_core::SourceId(0),
         None,
         r#"
-flow main(ticket: string, limit: Limit) -> (SessionId, ContextPolicy, RetentionPolicy, CompactionPolicy) {
+flow main(ticket: string, limit: Limit) -> (SessionId, ContextPolicy, RetentionPolicy) {
   let continued = SessionConfig.continue_or_new(ticket);
   let configured = SessionConfig {
     id = continued.id,
     context = SummaryPlusRecent(4),
     retention = Days(90),
-    compaction = SummarizeWhen(limit),
   };
-  return (continued.id, configured.context, configured.retention, configured.compaction);
+  return (continued.id, configured.context, configured.retention);
 }
 "#,
     ));
@@ -3392,7 +3418,7 @@ fn check_program_types_memory_version_and_conflict_fields() {
         etas_core::SourceId(0),
         None,
         r#"
-flow main(version: MemoryVersion, conflict: MemoryConflict) -> (string, Option<MemoryVersion>, Option<MemoryVersion>, Option<JsonValue>) {
+flow main(version: MemoryVersion, conflict: MemoryConflict) -> (string, Option<MemoryVersion>, Option<MemoryVersion>, Option<std.json.JsonValue>) {
   return (version.opaque, conflict.expected, conflict.actual, conflict.current_value);
 }
 "#,
@@ -4674,6 +4700,43 @@ flow header_name(item: Header) -> UserHeaderName {
     let output = check_program(&hir);
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn nested_nominal_generic_field_projection_preserves_concrete_identity() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+type Cell<T> = { value: T };
+type Bundle<T> = { cell: Cell<List<T>> };
+flow project(bundle: Bundle<string>) -> List<string> {
+    return bundle.cell.value;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    for (expr, data) in hir.exprs.iter() {
+        if let etas_hir::HirExpr::Field { field, .. } = data {
+            let ty = output.facts.expr_types[&expr];
+            if field == "cell" {
+                let Some(Type::Applied { args, .. }) = output.store.get(ty) else {
+                    panic!("field must preserve Cell identity")
+                };
+                assert!(
+                    matches!(output.store.get(args[0]), Some(Type::List(inner)) if matches!(output.store.get(*inner), Some(Type::Primitive(PrimitiveType::String))))
+                );
+            }
+            if field == "value" {
+                assert!(
+                    matches!(output.store.get(ty), Some(Type::List(inner)) if matches!(output.store.get(*inner), Some(Type::Primitive(PrimitiveType::String))))
+                );
+            }
+        }
+    }
 }
 
 #[test]

@@ -3,7 +3,9 @@ pub mod collect {
     pub mod block;
     pub mod call;
     pub mod entry;
+    pub mod enum_variant;
     pub mod expr;
+    pub mod field;
     pub mod handler;
     pub mod index;
     pub mod lambda;
@@ -47,7 +49,12 @@ pub fn run(ctx: &mut TypePipelineContext<'_>, item: etas_hir::HirItemId) {
         std_impls: ctx.signature_facts.std_spec_impls.clone(),
         std_spec_aliases: ctx.signature_facts.std_spec_aliases.clone(),
     };
-    solve::run(&mut state, ctx.interner.store(), &spec_facts);
+    solve::run(
+        &mut state,
+        &mut ctx.interner,
+        &spec_facts,
+        ctx.hir.items[item].span(),
+    );
     validate::run(ctx, &state);
     materialize::run(ctx, state);
 }

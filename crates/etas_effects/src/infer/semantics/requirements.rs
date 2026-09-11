@@ -178,9 +178,14 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn agent_infer_summary(&self, item: HirItemId, span: Span) -> Option<EffectSummary> {
-        if !matches!(self.hir.items.get(item), Some(etas_hir::HirItem::Agent(_))) {
+        let Some(etas_hir::HirItem::Agent(agent)) = self.hir.items.get(item) else {
             return None;
-        }
+        };
+        let Some(etas_types::SymbolTypeFact::Agent { signature }) =
+            self.types.facts.symbol_types.get(&agent.symbol)
+        else {
+            return None;
+        };
         let action = self
             .registry
             .core_action(CoreEffect::Agentic, AGENTIC_INFER_ACTION)?;
@@ -188,7 +193,10 @@ impl EffectSemantics<'_> {
         let mut summary = EffectSummary::local();
         let effect = Effect::AppliedAction(ActionInstanceRef {
             action: action.clone(),
-            args: vec![EffectArgRef::Path(path)],
+            args: vec![
+                EffectArgRef::Path(path),
+                EffectArgRef::Type(signature.output),
+            ],
         });
         summary.record_requested_action(effect.clone());
         summary.record_default_handled_action(effect.clone());

@@ -33,6 +33,23 @@ impl LowerCtx {
         }
 
         for item in items {
+            if let ast::Item::Enum(decl) = &item.item {
+                let owner = self.top_item_symbols[&item_key(&item.item)];
+                for variant in &decl.variants {
+                    let symbol = self.alloc_symbol_with_def(SymbolData {
+                        name: variant.name.text.clone(),
+                        kind: SymbolKind::EnumVariant,
+                        visibility: hir_visibility(decl.visibility),
+                        defining_module: self.current_module,
+                        defining_item: None,
+                        def: SymbolDef::Error,
+                        declared_type: None,
+                        definition_span: variant.name.span,
+                    });
+                    self.symbols
+                        .insert_member(owner, variant.name.text.clone(), symbol);
+                }
+            }
             if let ast::Item::Effect(effect) = &item.item {
                 for action in effect.body.actions() {
                     let qualified = format!("{}.{}", effect.name.text, action.name.text);
@@ -214,7 +231,7 @@ impl LowerCtx {
             .iter()
             .enumerate()
             .map(|(variant_index, variant)| {
-                let variant_symbol = self.alloc_symbol_with_def(SymbolData {
+                let data = SymbolData {
                     name: variant.name.text.clone(),
                     kind: SymbolKind::EnumVariant,
                     visibility: crate::Visibility::Public,
@@ -226,7 +243,16 @@ impl LowerCtx {
                     },
                     declared_type: None,
                     definition_span: variant.name.span,
-                });
+                };
+                let variant_symbol = match self.symbols.resolve_member(symbol, &variant.name.text) {
+                    ResolveResult::Resolved(symbol) => {
+                        let target = self.symbols.get_mut(symbol).expect("predeclared variant");
+                        target.def = data.def;
+                        target.defining_item = data.defining_item;
+                        symbol
+                    }
+                    _ => self.alloc_symbol_with_def(data),
+                };
                 self.insert_symbol(scope, &variant.name.text, variant_symbol, variant.name.span);
                 let fields = variant
                     .fields
@@ -236,6 +262,10 @@ impl LowerCtx {
                 HirEnumVariant {
                     symbol: variant_symbol,
                     fields,
+                    field_names: variant
+                        .field_names
+                        .as_ref()
+                        .map(|names| names.iter().map(|name| name.text.clone()).collect()),
                     span: variant.span,
                 }
             })

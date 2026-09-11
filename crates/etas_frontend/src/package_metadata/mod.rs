@@ -10,6 +10,7 @@ use crate::{CheckedProject, ProjectOutput};
 mod error;
 mod input;
 mod projection;
+mod type_graph;
 
 use projection::ProjectMetadataProjection;
 

@@ -14,10 +14,20 @@ pub fn collect_record(
     record: &HirRecordExpr,
     expected: Option<TypeId>,
 ) -> TypeId {
+    if let Some(ty) = super::enum_variant::collect_record(ctx, record, expected) {
+        return ty;
+    }
     let constructor_target = record
         .path
         .as_ref()
         .and_then(|path| record_constructor_type(ctx, path, &record.generic_args, record.span));
+    if record.path.is_some() && constructor_target.is_none() {
+        super::enum_variant::invalid(
+            ctx,
+            record.span,
+            "record constructor is not resolved to a type or named enum variant",
+        );
+    }
     let field_hint_target = constructor_target.or(expected);
     let target_fields = field_hint_target.and_then(|ty| record_fields(ctx, ty, record.span));
     let mut seen = HashSet::new();
@@ -38,9 +48,7 @@ pub fn collect_record(
                 .find(|candidate| candidate.name == name)
                 .map(|candidate| candidate.ty)
         });
-        let ty = field_value(field)
-            .map(|value| collect_expr(ctx, value, expected_field))
-            .unwrap_or_else(|| ctx.fresh_type_var());
+        let ty = collect_field_value(ctx, field, expected_field);
         fields.push(FieldType { name, ty });
     }
     let actual = ctx.ctx.interner.intern(Type::Record(RecordType { fields }));
@@ -186,14 +194,28 @@ fn field_name(field: &HirFieldInit) -> &str {
     }
 }
 
-fn field_value(field: &HirFieldInit) -> Option<etas_hir::HirExprId> {
+pub(super) fn collect_field_value(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    field: &HirFieldInit,
+    expected: Option<TypeId>,
+) -> TypeId {
     match field {
-        HirFieldInit::Named { value, .. } => Some(*value),
+        HirFieldInit::Named { value, .. } => collect_expr(ctx, *value, expected),
         HirFieldInit::Shorthand {
-            resolution: ResolveResult::Resolved(_),
+            resolution: ResolveResult::Resolved(symbol),
             ..
-        } => None,
-        HirFieldInit::Shorthand { .. } => None,
+        } => super::expr::symbol_value_type(ctx, *symbol).unwrap_or_else(|| {
+            super::enum_variant::invalid(
+                ctx,
+                field_span(field),
+                "shorthand field has no checked symbol type",
+            );
+            ctx.primitive(crate::PrimitiveType::Never)
+        }),
+        HirFieldInit::Shorthand { .. } => {
+            super::enum_variant::invalid(ctx, field_span(field), "unresolved shorthand field");
+            ctx.primitive(crate::PrimitiveType::Never)
+        }
     }
 }
 

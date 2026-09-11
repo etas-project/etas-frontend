@@ -635,9 +635,13 @@ fn lower_std_type_constructor(
     }
 
     match kind {
-        TypeDeclKind::Enum => ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
-            name: name.to_owned(),
-        })),
+        TypeDeclKind::Enum => {
+            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
+                name: name.to_owned(),
+            }));
+            lower_std_enum_layout(ctx, registry, ty, name, params, scope);
+            ty
+        }
         TypeDeclKind::Struct | TypeDeclKind::Wrapper => {
             ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 name: name.to_owned(),
@@ -651,6 +655,58 @@ fn lower_std_type_constructor(
             }))
         }
     }
+}
+
+fn lower_std_enum_layout(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    ty: TypeId,
+    name: &str,
+    params: &[etas_std::StdGenericParam],
+    scope: Option<&[String]>,
+) {
+    if ctx.signature_facts.enum_layouts.contains_key(&ty) {
+        return;
+    }
+    let Some(owner) = registry.lookup_qualified(&name.split('.').collect::<Vec<_>>()) else {
+        return;
+    };
+    let constructors = registry.enum_constructors(owner.id).collect::<Vec<_>>();
+    if constructors.is_empty() {
+        return;
+    }
+    // Reserve the layout before descending into recursive enum fields.
+    ctx.signature_facts.enum_layouts.insert(
+        ty,
+        crate::EnumLayoutFact {
+            type_params: params.iter().map(|param| param.name.clone()).collect(),
+            variants: Vec::new(),
+        },
+    );
+    let variants = constructors
+        .into_iter()
+        .filter_map(|constructor| {
+            let StdDecl::Flow(decl) = &constructor.decl else {
+                return None;
+            };
+            Some(crate::EnumVariantLayoutFact {
+                field_names: None,
+                name: constructor.name.clone(),
+                fields: decl
+                    .params
+                    .iter()
+                    .map(|field| lower_std_type_with_scope(ctx, registry, field, scope))
+                    .collect(),
+            })
+        })
+        .collect();
+    ctx.signature_facts.enum_layouts.insert(
+        ty,
+        crate::EnumLayoutFact {
+            type_params: params.iter().map(|param| param.name.clone()).collect(),
+            variants,
+        },
+    );
 }
 
 fn qualified_scope(name: &str) -> Option<Vec<String>> {

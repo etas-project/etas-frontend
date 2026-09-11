@@ -51,7 +51,12 @@ pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirP
                 collect_pattern(ctx, elem, elem_ty);
             }
         }
-        HirPat::Record { fields, span, .. } => {
+        HirPat::Record { path, fields, span } => {
+            if let Some(path) = &path {
+                if super::enum_variant::collect_pattern(ctx, path, &fields, span, ty) {
+                    return;
+                }
+            }
             let expected_fields = record_fields(ctx, ty, span);
             let field_tys = fields
                 .iter()
@@ -127,6 +132,18 @@ fn collect_variant_pattern(
     span: etas_core::Span,
     ty: TypeId,
 ) {
+    if let Some(variant) = super::enum_variant::declaration(ctx, path) {
+        if variant.field_names.is_some() {
+            super::enum_variant::invalid(
+                ctx,
+                span,
+                "named-field variant requires a named-field pattern",
+            );
+            return;
+        }
+        collect_constructor_variant(ctx, path, args, span, ty);
+        return;
+    }
     match variant_leaf_name(path).as_deref() {
         Some("Ok") => collect_result_variant(ctx, "Ok", args, span, ty, ResultVariant::Ok),
         Some("Err") => collect_result_variant(ctx, "Err", args, span, ty, ResultVariant::Err),
@@ -233,10 +250,21 @@ fn collect_constructor_variant(
         });
     }
 
+    let signature = super::expr::instantiate_callable_signature(ctx, signature);
+    ctx.emit(TypeConstraint::Equal {
+        lhs: signature.output,
+        rhs: ty,
+        origin: ConstraintOrigin { span },
+    });
     let arg_tys = args
         .into_iter()
-        .map(|arg| {
-            let arg_ty = ctx.fresh_type_var();
+        .enumerate()
+        .map(|(index, arg)| {
+            let arg_ty = signature
+                .params
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| ctx.fresh_type_var());
             collect_pattern(ctx, arg, arg_ty);
             arg_ty
         })
@@ -278,6 +306,13 @@ fn constructor_signature(
         SymbolTypeFact::Flow { signature }
         | SymbolTypeFact::Agent { signature }
         | SymbolTypeFact::Tool { signature } => Some(signature.clone()),
+        SymbolTypeFact::Value { ty } => Some(CallableSignature {
+            generic_params: Vec::new(),
+            params: Vec::new(),
+            output: *ty,
+            effects: None,
+            requested_actions: None,
+        }),
         _ => None,
     }
 }

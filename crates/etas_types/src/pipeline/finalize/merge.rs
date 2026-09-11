@@ -19,6 +19,10 @@ pub fn merge_outputs(
         signatures.facts.type_refs.extend(body.facts.type_refs);
         signatures
             .facts
+            .enum_layouts
+            .extend(body.facts.enum_layouts);
+        signatures
+            .facts
             .symbol_types
             .extend(body.facts.symbol_types);
         if signatures.facts.known_std_types.index_error.is_none() {

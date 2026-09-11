@@ -472,6 +472,21 @@ fn std_member_fact(
     if !matches!(base_std_symbol.decl, etas_std::StdDecl::Type(_)) {
         return None;
     }
+    if let Some(member_symbol) = registry.enum_constructor(base_std_symbol.id, member) {
+        return Some(lower_std_symbol(
+            ctx.ctx,
+            &registry,
+            base_symbol,
+            member_symbol,
+        ));
+    }
+    if registry
+        .enum_constructors(base_std_symbol.id)
+        .next()
+        .is_some()
+    {
+        return None;
+    }
     let module = registry.module(base_std_symbol.module)?;
     let mut member_path = module.path.clone();
     member_path.push(member.to_owned());

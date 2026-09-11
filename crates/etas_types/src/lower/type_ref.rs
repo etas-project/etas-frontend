@@ -217,6 +217,16 @@ fn lower_named_path(
                             "nominal type was given the wrong number of type arguments",
                         ),
                         crate::SymbolTypeFact::Type { constructor } => {
+                            if let Some(symbol) = ctx.hir.symbols.get(canonical_symbol) {
+                                if let SymbolDef::Item { item } = symbol.def {
+                                    if let Some(HirItem::Enum(decl)) = ctx.hir.items.get(item) {
+                                        if args.len() != decl.type_params.len() {
+                                            ctx.diagnostics.push(Diagnostic::type_check(TypeDiagnosticCode::ArityMismatch, span, "enum type was given the wrong number of type arguments"));
+                                            return ctx.interner.primitive(PrimitiveType::Never);
+                                        }
+                                    }
+                                }
+                            }
                             known_or_named_path(ctx, name, TypeId(constructor.0), args, span)
                         }
                         _ => named_or_applied(ctx, name, args),

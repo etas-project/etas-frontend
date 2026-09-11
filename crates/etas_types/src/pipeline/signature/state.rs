@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Default)]
 pub struct SignaturePipelineState {
+    pub enum_layouts: HashMap<TypeId, crate::EnumLayoutFact>,
     pub symbol_types: HashMap<SymbolId, SymbolTypeFact>,
     pub resource_handles: HashMap<SymbolId, ResourceHandleFact>,
     pub item_signatures: HashMap<HirItemId, ItemSignature>,

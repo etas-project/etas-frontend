@@ -904,8 +904,9 @@ fn nominal_representation(store: &TypeStore, ty: crate::TypeId) -> Option<crate:
         if !visited.insert(current) {
             return None;
         }
-        let (representation, _) = crate::nominal_representation_parts(store, current)?;
-        current = representation;
+        let (representation, substitutions) = crate::nominal_representation_parts(store, current)?;
+        current =
+            crate::substitute_named_params_in_store(store, representation, &substitutions).ok()?;
         if crate::nominal_representation_parts(store, current).is_none() {
             return Some(current);
         }

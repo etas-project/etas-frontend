@@ -1074,7 +1074,13 @@ where
         state
     }
 
-    fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+    fn after_expr(&mut self, expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
+        if let Some(target) = self.oracle.expression_target(expr) {
+            let value = AliasValue::from_target(target);
+            state.set_expr_alias(expr, value.clone());
+            self.facts.record_expr(expr, value);
+            return state;
+        }
         self.finish_expr_alias(expr, state)
     }
 

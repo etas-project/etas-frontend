@@ -315,6 +315,17 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         let wildcard_imports = resolved_imports.wildcard_imports;
         install_wildcard_import_aliases(context, &wildcard_imports);
         install_external_effect_action_refs(context);
+        if let Some(output) = &mut context.hir {
+            let resolved = super::source_members::resolve_members(&mut output.hir);
+            prune_resolved_wildcard_diagnostics(&mut output.hir.diagnostics, &resolved);
+            prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved);
+            output.tree_index = match etas_hir::HirTreeIndex::try_build(&output.hir) {
+                Ok(index) => index,
+                Err(error) => {
+                    return PassResult::failed(format!("invalid imported member HIR: {error}"));
+                }
+            };
+        }
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(HIR_OUTPUT))
     }
 }
@@ -572,6 +583,18 @@ fn install_wildcard_import_aliases(
                 definition_span: wildcard.span,
             });
             hir.scopes.insert(part_scope, name.clone(), symbol);
+            if let crate::ResolvedModuleTarget::Source { module, .. } = &wildcard.target_module
+                && let Some(export) = modules
+                    .modules
+                    .get(*module)
+                    .and_then(|module| module.visibility_exports.items.get(name))
+                && let Some(item) = context
+                    .hir_item_bindings
+                    .as_ref()
+                    .and_then(|bindings| bindings.ast_to_hir.get(&export.item))
+            {
+                super::source_members::bind_members(hir, symbol, *item);
+            }
         }
     }
 
@@ -633,6 +656,7 @@ fn install_explicit_import_aliases(context: &mut ProjectContext, imports: &[Reso
         else {
             continue;
         };
+        let binding_symbol = symbol;
         let Some(symbol) = hir.symbols.get_mut(symbol) else {
             continue;
         };
@@ -640,6 +664,14 @@ fn install_explicit_import_aliases(context: &mut ProjectContext, imports: &[Reso
             continue;
         };
         *path = target_path;
+        if let ImportTarget::SourceItem { item, .. } = &import.target
+            && let Some(item) = context
+                .hir_item_bindings
+                .as_ref()
+                .and_then(|bindings| bindings.ast_to_hir.get(item))
+        {
+            super::source_members::bind_members(hir, binding_symbol, *item);
+        }
     }
 }
 

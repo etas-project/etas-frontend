@@ -265,9 +265,11 @@ mod tests {
     use etas_utils::{ArtifactKey, PassControl, PassManager, Pipeline};
 
     use super::*;
-    use crate::pipeline::artifacts::EFFECT_REGISTRY;
+    use crate::pipeline::artifacts::{EFFECT_REGISTRY, MEMORY_PROVENANCE};
     use crate::pipeline::context::EffectPipelineContext;
-    use crate::pipeline::passes::SolveSummariesPass;
+    use crate::pipeline::passes::{
+        AnalyzeMemoryProvenancePass, BuildRegistryPass, CollectUnitsPass, SolveSummariesPass,
+    };
 
     #[test]
     fn pass_manager_failure_preserves_missing_artifact_without_fabricating_stage() {
@@ -285,27 +287,35 @@ mod tests {
 
     #[test]
     fn pass_manager_rejects_effect_stage_when_required_artifact_is_absent() {
-        let hir = HirProgram::default();
-        let types = TypeOutput::default();
-        let input = EffectPipelineInput {
-            hir: &hir,
-            types: &types,
-            std_registry: &etas_std::standard_registry(),
-            dependency_metadata: None,
-            tool_bindings: &[],
-            external_summaries: &[],
-            external_trace_specs: &[],
-            external_artifact_anchors: &[],
-            reachable_items: None,
-        };
-        let mut context = EffectPipelineContext::new(input);
-        let mut pipeline = Pipeline::new("effects.missing_artifact").pass(SolveSummariesPass);
-        let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
+        for missing in [EFFECT_REGISTRY, MEMORY_PROVENANCE] {
+            let hir = HirProgram::default();
+            let types = TypeOutput::default();
+            let input = EffectPipelineInput {
+                hir: &hir,
+                types: &types,
+                std_registry: &etas_std::standard_registry(),
+                dependency_metadata: None,
+                tool_bindings: &[],
+                external_summaries: &[],
+                external_trace_specs: &[],
+                external_artifact_anchors: &[],
+                reachable_items: None,
+            };
+            let mut context = EffectPipelineContext::new(input);
+            let pipeline = Pipeline::new("effects.missing_artifact").pass(CollectUnitsPass);
+            let mut pipeline = if missing == EFFECT_REGISTRY {
+                pipeline.pass(AnalyzeMemoryProvenancePass)
+            } else {
+                pipeline.pass(BuildRegistryPass)
+            }
+            .pass(SolveSummariesPass);
+            let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
 
-        let PassControl::Failed(failure) = result.control else {
-            panic!("effect pass manager accepted a stage without its required artifacts");
-        };
-        assert_eq!(failure.missing_artifact, Some(EFFECT_REGISTRY));
-        assert!(context.analysis.is_none());
+            let PassControl::Failed(failure) = result.control else {
+                panic!("effect pass manager accepted a stage without its required artifacts");
+            };
+            assert_eq!(failure.missing_artifact, Some(missing));
+            assert!(context.analysis.is_none());
+        }
     }
 }

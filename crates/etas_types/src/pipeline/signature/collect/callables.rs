@@ -98,7 +98,7 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
     }
 }
 
-fn callable_generic_params(
+pub(super) fn callable_generic_params(
     ctx: &mut TypePipelineContext<'_>,
     state: &SignaturePipelineState,
     params: &[etas_hir::SymbolId],

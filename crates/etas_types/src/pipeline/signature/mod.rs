@@ -50,6 +50,8 @@ pub fn run(ctx: &mut TypePipelineContext<'_>) {
     collect::specs::collect_specs(ctx, &mut state);
     collect::specs::record_type_param_bounds(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
+    collect::nominal_types::collect_members(ctx, &mut state);
+    publish_signature_prefix(ctx, &state);
     collect::effect_actions::collect_effect_actions(ctx, &mut state);
     collect::std_actions::collect_std_actions(ctx, &mut state);
     publish_action_signature_prefix(ctx, &state);

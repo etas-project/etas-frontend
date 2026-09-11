@@ -349,7 +349,7 @@ impl EffectSemantics<'_> {
     pub(crate) fn reject_effect_state(
         &mut self,
         span: Span,
-        message: &'static str,
+        message: impl Into<String>,
         mut state: EffectState,
     ) -> EffectState {
         self.diagnostics.push(Diagnostic::effect_check(

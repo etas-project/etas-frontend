@@ -2,6 +2,7 @@ use etas_utils::ArtifactKey;
 
 pub(crate) const EFFECT_REGISTRY: ArtifactKey = ArtifactKey::new("effects", "registry");
 pub(crate) const EFFECT_UNITS: ArtifactKey = ArtifactKey::new("effects", "units");
+pub(crate) const MEMORY_PROVENANCE: ArtifactKey = ArtifactKey::new("effects", "memory_provenance");
 pub(crate) const EFFECT_SUMMARIES: ArtifactKey = ArtifactKey::new("effects", "summaries");
 pub(crate) const EFFECT_FACTS: ArtifactKey = ArtifactKey::new("effects", "facts");
 pub(crate) const VALIDATED_EFFECT_FACTS: ArtifactKey =

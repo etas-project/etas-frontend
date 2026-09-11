@@ -186,6 +186,12 @@ fn resolve_qualified_prefix(
                     .iter()
                     .map(|segment| segment.text.clone())
                     .collect::<Vec<_>>();
+                if let [name] = remaining.as_slice() {
+                    let member = symbols.resolve_member(symbol, name);
+                    if !matches!(member, ResolveResult::Unresolved) {
+                        return member;
+                    }
+                }
                 return ResolveResult::PartiallyResolved(PartialResolution {
                     resolved_prefix: Some(symbol),
                     resolved_segments: prefix_len.min(u32::MAX as usize) as u32,
