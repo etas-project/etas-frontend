@@ -1011,6 +1011,40 @@ flow main(value: string) -> unit {
 }
 
 #[test]
+fn map_entry_separator_does_not_consume_a_key_as_lambda_parameters() {
+    let parsed = parse_program(source(
+        r#"
+flow main() {
+    let entries = { key => 10, (left, right) => 20, key + 1 => 30,
+        (x => x) => 40, key => x => x, key => { nested => 50 }, };
+    let ordinary_lambda = x => x;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let Item::Flow(flow) = &parsed.value.items[0].item else {
+        panic!("flow");
+    };
+    let Stmt::Let(binding) = &flow.body.stmts[0] else {
+        panic!("binding");
+    };
+    let Expr::Map(map) = &binding.value else {
+        panic!("map");
+    };
+    assert_eq!(map.entries.len(), 6);
+    assert!(matches!(map.entries[0].key, Expr::Path(_)));
+    assert!(matches!(map.entries[1].key, Expr::Tuple { .. }));
+    assert!(matches!(map.entries[2].key, Expr::Binary { .. }));
+    assert!(matches!(map.entries[3].key, Expr::Lambda(_)));
+    assert!(matches!(map.entries[4].value, Expr::Lambda(_)));
+    assert!(matches!(map.entries[5].value, Expr::Map(_)));
+    let Stmt::Let(binding) = &flow.body.stmts[1] else {
+        panic!("lambda binding");
+    };
+    assert!(matches!(binding.value, Expr::Lambda(_)));
+}
+
+#[test]
 fn parses_map_set_and_empty_brace_literals_without_defaulting_empty_braces() {
     let parsed = parse_program(source(
         r#"

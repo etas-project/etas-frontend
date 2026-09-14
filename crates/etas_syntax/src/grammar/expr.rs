@@ -583,7 +583,9 @@ impl Parser<'_> {
         let mut entries = Vec::new();
         while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
             let before = self.cursor.position();
-            let key = self.expr();
+            // At this level `=>` separates the entry, not a lambda. Grouped
+            // expressions and the value still admit the full expression grammar.
+            let key = self.pipeline_expr();
             self.expect_punct(Punct::FatArrow, "expected `=>` in map entry");
             let value = self.expr();
             let span = key.span().cover(value.span());
