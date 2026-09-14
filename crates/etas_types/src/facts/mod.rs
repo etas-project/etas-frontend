@@ -12,8 +12,8 @@ use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 pub use effects::{EffectActionArgKind, EffectActionSignature};
 pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
 pub use expressions::{
-    CheckedIndexKind, CheckedSliceKind, DeferredEffectRowObligation, GenericInstantiationFact,
-    TryExprTypeFact,
+    CheckedIndexKind, CheckedSliceKind, DeferredEffectRowObligation, FieldProjectionFact,
+    GenericInstantiationFact, TryExprTypeFact,
 };
 pub use signatures::{
     AgentSignature, CallableGenericParam, CallableGenericParamKind, CallableSignature,
@@ -35,6 +35,8 @@ use crate::TypeId;
 pub struct TypeFacts {
     pub expr_types: HashMap<HirExprId, TypeId>,
     pub expr_memory_places: HashMap<HirExprId, TypeId>,
+    #[serde(default)]
+    pub field_projections: HashMap<HirExprId, Vec<FieldProjectionFact>>,
     pub stmt_types: HashMap<HirStmtId, TypeId>,
     pub pattern_types: HashMap<HirPatId, TypeId>,
     pub type_refs: HashMap<HirTypeId, TypeId>,

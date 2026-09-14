@@ -32,11 +32,12 @@ pub use facts::{
     CheckedSpecRef, CheckedStdSpecImplFact, DeferredEffectRowObligation, EffectActionArgKind,
     EffectActionSignature, EnumLayoutFact, EnumVariantLayoutFact,
     ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
-    ExternalTraceSpecConformanceTarget, FlowSignature, GenericInstantiationFact, ItemSignature,
-    KnownStdTypes, ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind,
-    SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact, SymbolTypeFact,
-    ToolSignature, TopLevelLetSignature, TraceSpecConformanceFact, TraceSpecConformanceTarget,
-    TryExprTypeFact, TypeFacts, TypeParamBoundFact, TypeSpecSatisfactionFact,
+    ExternalTraceSpecConformanceTarget, FieldProjectionFact, FlowSignature,
+    GenericInstantiationFact, ItemSignature, KnownStdTypes, ResourceHandleFact, SpecFacts,
+    SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
+    SpecSuperBoundFact, SymbolTypeFact, ToolSignature, TopLevelLetSignature,
+    TraceSpecConformanceFact, TraceSpecConformanceTarget, TryExprTypeFact, TypeFacts,
+    TypeParamBoundFact, TypeSpecSatisfactionFact,
 };
 pub use solver::{
     Assignable, SolverFailure, SolverReport, Substitution, TypeRelation, TypeSolver, TypeUnifier,

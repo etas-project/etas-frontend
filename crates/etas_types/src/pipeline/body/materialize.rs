@@ -30,7 +30,15 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
             .values()
             .copied()
             .chain(state.provisional.stmt_types.values().copied())
-            .chain(state.provisional.pat_types.values().copied()),
+            .chain(state.provisional.pat_types.values().copied())
+            .chain(
+                state
+                    .provisional
+                    .field_projections
+                    .values()
+                    .flatten()
+                    .flat_map(|fact| [fact.receiver, fact.output]),
+            ),
     ) {
         let span = ctx.hir.items[state.item].span();
         ctx.diagnostics.push(Diagnostic::type_check(
@@ -46,6 +54,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .expr_memory_places
         .extend(state.provisional.expr_memory_places);
+    ctx.signature_facts
+        .field_projections
+        .extend(state.provisional.field_projections);
     ctx.signature_facts
         .stmt_types
         .extend(state.provisional.stmt_types);
@@ -96,6 +107,10 @@ fn apply_solver_substitutions(
     }
     for ty in state.provisional.expr_memory_places.values_mut() {
         *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
+    }
+    for fact in state.provisional.field_projections.values_mut().flatten() {
+        fact.receiver = substitute_type(ctx, &substitutions, &named_substitutions, fact.receiver)?;
+        fact.output = substitute_type(ctx, &substitutions, &named_substitutions, fact.output)?;
     }
     for ty in state.provisional.stmt_types.values_mut() {
         *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;

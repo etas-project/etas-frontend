@@ -35,7 +35,7 @@ pub fn collect_expr(
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Path(path) => {
-            let ty = collect_path(ctx, &path);
+            let ty = collect_path(ctx, expr, &path);
             record_path_memory_place(ctx, expr, &path, ty);
             ty
         }
@@ -215,6 +215,14 @@ pub fn collect_expr(
                 let output = expected.or(hint).unwrap_or_else(|| ctx.fresh_type_var());
                 record_field_memory_place(ctx, expr, base, &field);
                 if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field, span) {
+                    ctx.state.provisional.field_projections.insert(
+                        expr,
+                        vec![crate::FieldProjectionFact {
+                            receiver: base_ty,
+                            field: field.clone(),
+                            output: field_ty,
+                        }],
+                    );
                     ctx.emit(TypeConstraint::Assignable {
                         from: field_ty,
                         to: output,
@@ -223,6 +231,14 @@ pub fn collect_expr(
                     });
                     field_ty
                 } else {
+                    ctx.state.provisional.field_projections.insert(
+                        expr,
+                        vec![crate::FieldProjectionFact {
+                            receiver: base_ty,
+                            field: field.clone(),
+                            output,
+                        }],
+                    );
                     ctx.emit(TypeConstraint::FieldAccess {
                         base: base_ty,
                         field,
@@ -656,7 +672,11 @@ fn collect_pipeline(
     }
 }
 
-fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedPath) -> TypeId {
+fn collect_path(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    expr: etas_hir::HirExprId,
+    path: &etas_hir::ResolvedPath,
+) -> TypeId {
     if let Some(variant) = super::enum_variant::declaration(ctx, path) {
         if variant.fields.is_empty() && variant.field_names.is_none() {
             if let Some(signature) = super::enum_variant::signature(ctx, path) {
@@ -696,9 +716,15 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
                 return ty;
             }
             if let Some(mut current) = symbol_value_type(ctx, symbol) {
+                let mut projections = Vec::with_capacity(partial.remaining.len());
                 for member in &partial.remaining {
                     if let Some(field_ty) = std_declared_field_type(ctx, current, member, path.span)
                     {
+                        projections.push(crate::FieldProjectionFact {
+                            receiver: current,
+                            field: member.clone(),
+                            output: field_ty,
+                        });
                         current = field_ty;
                         continue;
                     }
@@ -710,8 +736,17 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
                         output,
                         origin: ConstraintOrigin { span: path.span },
                     });
+                    projections.push(crate::FieldProjectionFact {
+                        receiver: current,
+                        field: member.clone(),
+                        output,
+                    });
                     current = output;
                 }
+                ctx.state
+                    .provisional
+                    .field_projections
+                    .insert(expr, projections);
                 current
             } else {
                 let never = ctx.primitive(PrimitiveType::Never);
@@ -1018,6 +1053,10 @@ fn instantiate_callable_schematic_type(
             let key = instantiate_callable_schematic_type(ctx, key, schematic_vars);
             let value = instantiate_callable_schematic_type(ctx, value, schematic_vars);
             ctx.ctx.interner.intern(Type::Map { key, value })
+        }
+        Type::Range { index } => {
+            let index = instantiate_callable_schematic_type(ctx, index, schematic_vars);
+            ctx.ctx.interner.intern(Type::Range { index })
         }
         Type::Tuple(elements) => {
             let elements = elements

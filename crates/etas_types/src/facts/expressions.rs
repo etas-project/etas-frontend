@@ -1,6 +1,13 @@
 use crate::{EffectRowRef, TypeId};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FieldProjectionFact {
+    pub receiver: TypeId,
+    pub field: String,
+    pub output: TypeId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeferredEffectRowObligation {
     pub param: String,
     pub source: etas_hir::HirExprId,

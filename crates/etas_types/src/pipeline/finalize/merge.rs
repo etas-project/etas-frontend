@@ -45,6 +45,10 @@ pub fn merge_outputs(
             .qualified_action_signatures
             .extend(body.facts.qualified_action_signatures);
         signatures.facts.index_facts.extend(body.facts.index_facts);
+        signatures
+            .facts
+            .field_projections
+            .extend(body.facts.field_projections);
         signatures.facts.slice_facts.extend(body.facts.slice_facts);
         signatures
             .facts

@@ -885,6 +885,13 @@ fn is_assignable_for_reason(
             || assignability::is_assignable(store, representation, to);
     }
     if matches!(reason, crate::AssignabilityReason::Pattern)
+        && matches!(store.get(from), Some(crate::Type::Applied { .. }))
+        && let Ok(Some(from_record)) = crate::record_fields_with_applied_params(store, from)
+        && let Some(to_record) = record_fields(store, to)
+    {
+        return record_fields_subset_assignable(store, &from_record, &to_record);
+    }
+    if matches!(reason, crate::AssignabilityReason::Pattern)
         && record_subset_assignable(store, from, to)
     {
         return true;
@@ -1137,6 +1144,14 @@ fn record_subset_assignable(store: &TypeStore, from: crate::TypeId, to: crate::T
     let Some(to_record) = record_fields(store, to) else {
         return false;
     };
+    record_fields_subset_assignable(store, &from_record, &to_record)
+}
+
+fn record_fields_subset_assignable(
+    store: &TypeStore,
+    from_record: &crate::RecordType,
+    to_record: &crate::RecordType,
+) -> bool {
     to_record.fields.iter().all(|expected| {
         from_record
             .fields

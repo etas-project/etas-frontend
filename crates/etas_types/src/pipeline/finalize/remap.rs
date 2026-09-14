@@ -483,6 +483,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     for kind in facts.index_facts.values_mut() {
         remapper.index_kind(kind);
     }
+    for fact in facts.field_projections.values_mut().flatten() {
+        fact.receiver = remapper.ty(fact.receiver);
+        fact.output = remapper.ty(fact.output);
+    }
     for kind in facts.slice_facts.values_mut() {
         remapper.slice_kind(kind);
     }

@@ -19,6 +19,54 @@ fn primitive_types_have_source_names_and_stable_ids() {
 }
 
 #[test]
+fn range_constructor_propagates_expected_integer_width_to_argument_facts() {
+    for constructor in ["closed", "open"] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            format!("flow main() -> Range<u8> {{ return Range.{constructor}(254, 255); }}"),
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let output = check_program(&hir);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let mut literals = 0;
+        for (expr, data) in hir.exprs.iter() {
+            if matches!(
+                data,
+                etas_hir::HirExpr::Literal(etas_hir::HirLiteral::Int { .. })
+            ) {
+                literals += 1;
+                assert_eq!(
+                    output.store.get(output.facts.expr_types[&expr]),
+                    Some(&Type::Primitive(PrimitiveType::U8))
+                );
+            }
+        }
+        assert_eq!(literals, 2);
+    }
+}
+
+#[test]
+fn range_constructor_rejects_literal_outside_expected_integer_width() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow main() -> Range<u8> { return Range.closed(0, 256); }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("256")),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn numeric_literal_facts_preserve_each_expression_context() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -3054,6 +3102,51 @@ flow bind(row: Row) -> i64 {
     let output = check_program(&hir);
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_projects_applied_record_patterns_with_generic_field_types() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+type Row<T> = { first: T, second: i32 };
+flow bind(row: Row<string>) -> string {
+    let { first: value } = row;
+    return value;
+}
+flow reordered(row: Row<i32>) -> i32 {
+    return match row { { second, first } => first + second };
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_rejects_wrong_applied_record_payload_pattern() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+type Row<T> = { first: T };
+flow bad(row: Row<string>) -> i32 {
+    return match row { { first: 42 } => 1, _ => 0 };
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.code, DiagnosticCode::Type(_))),
+        "{:?}",
+        output.diagnostics
+    );
 }
 
 #[test]
