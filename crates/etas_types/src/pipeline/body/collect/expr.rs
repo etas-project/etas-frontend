@@ -1,7 +1,7 @@
 use etas_hir::{HirBinaryOp, HirElseBranch, HirExpr, ResolveResult};
 
 use crate::{
-    AssignabilityReason, ConstraintOrigin, FlowType, MemoryPlaceType, NamedTypeRef, PrimitiveType,
+    AssignabilityReason, ConstraintOrigin, FlowType, MemoryPlaceType, PrimitiveType,
     SymbolTypeFact, Type, TypeConstraint, TypeId,
     pipeline::{
         body::collect::{
@@ -174,26 +174,34 @@ pub fn collect_expr(
         HirExpr::Range {
             start, end, span, ..
         } => {
-            let start_ty = collect_expr(ctx, start, None);
-            let end_ty = collect_expr(ctx, end, Some(start_ty));
-            let index_trait = ctx.ctx.interner.intern(Type::Named(NamedTypeRef {
-                name: "Index".to_owned(),
-            }));
-            ctx.emit(TypeConstraint::Assignable {
-                from: start_ty,
-                to: index_trait,
-                origin: ConstraintOrigin { span },
-                reason: AssignabilityReason::Other,
+            let expected_index = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
+                Some(Type::Range { index }) => Some(*index),
+                _ => None,
             });
+            let start_ty = collect_expr(ctx, start, expected_index);
+            let end_ty = collect_expr(ctx, end, Some(start_ty));
+            let index_spec = ctx.ctx.std_registry.lookup_prelude("Index")
+                .filter(|symbol| matches!(&symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec))
+                .map(|symbol| crate::CheckedSpecRef::Std(symbol.qualified_path.clone()));
+            if let Some(spec) = index_spec {
+                for ty in [start_ty, end_ty] {
+                    ctx.state.spec_obligations.push(crate::SpecObligation {
+                        ty,
+                        spec: spec.clone(),
+                        args: Vec::new(),
+                        span,
+                    });
+                }
+            } else {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span,
+                    message: "range literal is missing the canonical Index spec".into(),
+                });
+            }
             ctx.emit(TypeConstraint::Assignable {
                 from: end_ty,
                 to: start_ty,
-                origin: ConstraintOrigin { span },
-                reason: AssignabilityReason::Other,
-            });
-            ctx.emit(TypeConstraint::Assignable {
-                from: end_ty,
-                to: index_trait,
                 origin: ConstraintOrigin { span },
                 reason: AssignabilityReason::Other,
             });

@@ -41,7 +41,8 @@ impl TypeSolver {
                 TypeConstraint::Equal { lhs, rhs, origin } => {
                     let lhs = resolve_known_substitutions(input.store, &report, *lhs);
                     let rhs = resolve_known_substitutions(input.store, &report, *rhs);
-                    let mut unifier = TypeUnifier::new(input.store);
+                    let mut unifier =
+                        TypeUnifier::with_known_substitution(input.store, &report.substitutions);
                     if unifier.unify(lhs, rhs).is_err() {
                         report.push(SolverFailure {
                             code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -49,7 +50,7 @@ impl TypeSolver {
                             message: "type equality constraint could not be solved".to_owned(),
                         });
                     } else {
-                        report.substitutions.extend(unifier.substitution());
+                        report.substitutions.extend(&unifier.into_substitution());
                     }
                 }
                 TypeConstraint::Assignable {
@@ -72,9 +73,12 @@ impl TypeSolver {
                             ),
                         });
                     } else {
-                        let mut unifier = TypeUnifier::new(input.store);
+                        let mut unifier = TypeUnifier::with_known_substitution(
+                            input.store,
+                            &report.substitutions,
+                        );
                         if unifier.unify(from, to).is_ok() {
-                            report.substitutions.extend(unifier.substitution());
+                            report.substitutions.extend(&unifier.into_substitution());
                         }
                     }
                 }
@@ -198,9 +202,12 @@ impl TypeSolver {
                     let item = resolve_known_substitutions(input.store, &report, *item);
                     let iter = resolve_known_substitutions(input.store, &report, iter);
                     if let Some(iter_item) = iterable_item(input.store, iter) {
-                        let mut unifier = TypeUnifier::new(input.store);
+                        let mut unifier = TypeUnifier::with_known_substitution(
+                            input.store,
+                            &report.substitutions,
+                        );
                         if unifier.unify(iter_item, item).is_ok() {
-                            report.substitutions.extend(unifier.substitution());
+                            report.substitutions.extend(&unifier.into_substitution());
                         } else if !assignability::is_assignable(input.store, iter_item, item) {
                             report.push(SolverFailure {
                                 code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -239,9 +246,12 @@ impl TypeSolver {
                             message: "try operand value does not match Result ok type".to_owned(),
                         });
                     } else {
-                        let mut unifier = TypeUnifier::new(input.store);
+                        let mut unifier = TypeUnifier::with_known_substitution(
+                            input.store,
+                            &report.substitutions,
+                        );
                         if unifier.unify(operand, output).is_ok() {
-                            report.substitutions.extend(unifier.substitution());
+                            report.substitutions.extend(&unifier.into_substitution());
                         }
                     }
                 }
@@ -250,10 +260,24 @@ impl TypeSolver {
         solve_numeric_literals(input.store, &mut report, numeric_literals);
         solve_unary_constraints(input.store, &mut report, pending_unary_constraints);
         solve_pending_access_constraints(input.store, &mut report, pending_access_constraints);
+        let obligations = input
+            .spec_obligations
+            .iter()
+            .map(|obligation| crate::SpecObligation {
+                ty: resolve_known_substitutions(input.store, &report, obligation.ty),
+                spec: obligation.spec.clone(),
+                args: obligation
+                    .args
+                    .iter()
+                    .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
+                    .collect(),
+                span: obligation.span,
+            })
+            .collect::<Vec<_>>();
         report.append(spec_solver::solve_spec_obligations(
             input.store,
             input.spec_facts,
-            input.spec_obligations,
+            &obligations,
             &report.named_substitutions,
         ));
         report
@@ -614,9 +638,9 @@ fn solve_numeric_literals(
                 });
                 continue;
             };
-            let mut unifier = TypeUnifier::new(store);
+            let mut unifier = TypeUnifier::with_known_substitution(store, &report.substitutions);
             if unifier.unify(resolved, default).is_ok() {
-                report.substitutions.extend(unifier.substitution());
+                report.substitutions.extend(&unifier.into_substitution());
                 resolved = default;
             }
         }

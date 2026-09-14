@@ -190,6 +190,37 @@ fn unifier_solves_variables_and_detects_occurs_check() {
 }
 
 #[test]
+fn unifier_preserves_borrowed_substitutions_in_nested_types() {
+    let mut types = TypeInterner::new();
+    let first = types.intern(Type::Var(TypeVarId(0)));
+    let second = types.intern(Type::Var(TypeVarId(1)));
+    let third = types.intern(Type::Var(TypeVarId(2)));
+    let string = types.primitive(PrimitiveType::String);
+    let int = types.primitive(PrimitiveType::I32);
+    let first_set = types.intern(Type::Set(first));
+    let third_set = types.intern(Type::Set(third));
+    let integer_set = types.intern(Type::Set(int));
+    let mut known = etas_types::solver::Substitution::default();
+    known.insert(TypeVarId(0), second);
+    known.insert(TypeVarId(1), string);
+    let mut unifier = TypeUnifier::with_known_substitution(types.store(), &known);
+    unifier.unify(first_set, third_set).unwrap();
+    assert_eq!(unifier.substitution().get(TypeVarId(2)), Some(string));
+    assert_eq!(unifier.substitution().get(TypeVarId(0)), None);
+    assert!(unifier.unify(first_set, integer_set).is_err());
+    assert_eq!(known.get(TypeVarId(0)), Some(second));
+
+    let mut cycle = etas_types::solver::Substitution::default();
+    cycle.insert(TypeVarId(0), second);
+    cycle.insert(TypeVarId(1), first);
+    let mut unifier = TypeUnifier::with_known_substitution(types.store(), &cycle);
+    assert!(matches!(
+        unifier.unify(first, string),
+        Err(etas_types::solver::UnifyError::OccursCheck { .. })
+    ));
+}
+
+#[test]
 fn assignability_allows_never_and_structural_function_match() {
     let mut types = TypeInterner::new();
     let never = types.primitive(PrimitiveType::Never);
