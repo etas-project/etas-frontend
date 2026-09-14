@@ -90,6 +90,8 @@ pub enum TypeConstraint {
     Iterable {
         iter: TypeId,
         item: TypeId,
+        // A fresh (key, value) shape for entry iterables; solved, not guessed by collect.
+        entry_pair: TypeId,
         origin: ConstraintOrigin,
     },
     Unary {

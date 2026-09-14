@@ -3,6 +3,7 @@ pub mod callable;
 pub mod effect_row;
 pub mod field;
 pub mod index;
+mod iterable;
 mod numeric_literal;
 pub mod report;
 pub mod spec_solver;
@@ -197,34 +198,12 @@ impl TypeSolver {
                         &mut pending_access_constraints,
                     );
                 }
-                TypeConstraint::Iterable { iter, item, origin } => {
-                    let iter = resolve_known_substitutions(input.store, &report, *iter);
-                    let item = resolve_known_substitutions(input.store, &report, *item);
-                    let iter = resolve_known_substitutions(input.store, &report, iter);
-                    if let Some(iter_item) = iterable_item(input.store, iter) {
-                        let mut unifier = TypeUnifier::with_known_substitution(
-                            input.store,
-                            &report.substitutions,
-                        );
-                        if unifier.unify(iter_item, item).is_ok() {
-                            report.substitutions.extend(&unifier.into_substitution());
-                        } else if !assignability::is_assignable(input.store, iter_item, item) {
-                            report.push(SolverFailure {
-                                code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                                span: origin.span,
-                                message: "for-loop iterator item type does not match pattern"
-                                    .to_owned(),
-                            });
-                        }
-                    } else {
-                        report.push(SolverFailure {
-                            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                            span: origin.span,
-                            message: "for-loop iterator must be an iterable collection or range"
-                                .to_owned(),
-                        });
-                    }
-                }
+                TypeConstraint::Iterable {
+                    iter,
+                    item,
+                    entry_pair,
+                    origin,
+                } => iterable::solve(input.store, &mut report, *iter, *item, *entry_pair, origin),
                 TypeConstraint::Unary { .. } => pending_unary_constraints.push(constraint),
                 TypeConstraint::TryOperand {
                     operand,
@@ -851,18 +830,6 @@ fn unresolved_access_failure(
             }
         }
         _ => unreachable!("only access constraints can remain pending"),
-    }
-}
-
-fn iterable_item(store: &TypeStore, ty: TypeId) -> Option<TypeId> {
-    match store.get(ty)? {
-        Type::Array(inner)
-        | Type::List(inner)
-        | Type::Set(inner)
-        | Type::Slice(inner)
-        | Type::MemorySelection(inner) => Some(*inner),
-        Type::Range { index } => Some(*index),
-        _ => None,
     }
 }
 
