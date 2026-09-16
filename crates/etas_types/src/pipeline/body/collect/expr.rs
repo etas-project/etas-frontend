@@ -29,6 +29,14 @@ pub fn collect_expr(
     expr: etas_hir::HirExprId,
     expected: Option<TypeId>,
 ) -> TypeId {
+    // A support constraint checks an inferred value; it is not a value type hint.
+    let expected = expected.filter(|ty| {
+        !ctx.ctx
+            .signature_facts
+            .known_std_types
+            .support_constraints
+            .contains(ty)
+    });
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
         return ty;
     }

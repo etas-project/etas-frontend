@@ -427,6 +427,12 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.support_constraints = facts
+        .known_std_types
+        .support_constraints
+        .iter()
+        .map(|ty| remapper.ty(*ty))
+        .collect();
     facts.enum_layouts = std::mem::take(&mut facts.enum_layouts)
         .into_iter()
         .map(|(ty, mut layout)| {

@@ -11,6 +11,7 @@ pub enum ResourceHandleFact {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
+    pub support_constraints: std::collections::BTreeSet<TypeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

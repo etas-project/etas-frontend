@@ -61,6 +61,18 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    for kind in [
+        etas_std::StdSupportConstraint::Index,
+        etas_std::StdSupportConstraint::LengthInput,
+        etas_std::StdSupportConstraint::EmptinessInput,
+    ] {
+        let ty =
+            crate::lower::std::lower_std_type(ctx, registry, &etas_std::StdType::Support(kind));
+        ctx.signature_facts
+            .known_std_types
+            .support_constraints
+            .insert(ty);
+    }
     let Some(index_error) = registry
         .lookup_qualified(&["std", "runtime", "error", "IndexError"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))

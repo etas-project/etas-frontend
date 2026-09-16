@@ -7,6 +7,86 @@ use etas_types::{
 };
 
 #[test]
+fn nested_count_argument_calls_keep_concrete_expression_types() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow text() -> string { return "abc"; }
+flow texts() -> Array<string> { return ["a", "b"]; }
+flow identity<T>(value: T) -> T { return value; }
+flow main() -> bool { return std.collections.len(text()) == 3 && !std.collections.is_empty(texts()) && std.collections.len(identity("x")) == 1; }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checked = 0;
+    for (expr, node) in hir.exprs.iter() {
+        let etas_hir::HirExpr::Call { callee, .. } = node else {
+            continue;
+        };
+        let etas_hir::HirExpr::Path(path) = &hir.exprs[*callee] else {
+            continue;
+        };
+        let expected = match path.segments.last().map(|segment| segment.name.as_str()) {
+            Some("text" | "identity") => PrimitiveType::String,
+            Some("texts") => {
+                let Type::Array(inner) = output.store.get(output.facts.expr_types[&expr]).unwrap()
+                else {
+                    panic!("call result replaced with support constraint")
+                };
+                assert_eq!(
+                    output.store.get(*inner),
+                    Some(&Type::Primitive(PrimitiveType::String))
+                );
+                checked += 1;
+                continue;
+            }
+            _ => continue,
+        };
+        assert_eq!(
+            output.store.get(output.facts.expr_types[&expr]),
+            Some(&Type::Primitive(expected))
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+    assert!(output.facts.expr_types.values().all(|ty| {
+        !output
+            .facts
+            .known_std_types
+            .support_constraints
+            .contains(ty)
+    }));
+}
+
+#[test]
+fn support_constraints_still_reject_invalid_inferred_call_results() {
+    for expression in [
+        "std.collections.len(value())",
+        "std.collections.is_empty(value())",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            format!(
+                "flow value() -> bool {{ return false; }} flow main() -> unit {{ {expression}; return; }}"
+            ),
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)),
+            "constraint was not enforced: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
 fn sequence_get_methods_infer_index_literal_and_preserve_typed_indices() {
     for source in [
         "flow main(i: u8) -> Option<i32> { return [1; 2].get(i); }",
