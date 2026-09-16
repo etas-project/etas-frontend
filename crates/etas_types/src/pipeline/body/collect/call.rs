@@ -458,6 +458,7 @@ fn collect_partially_resolved_method_call(
             .unwrap_or_else(|| ctx.fresh_type_var())
     });
     ctx.emit(TypeConstraint::MethodCall {
+        expr: call,
         method: method.clone(),
         candidates,
         generic_args: type_generic_args

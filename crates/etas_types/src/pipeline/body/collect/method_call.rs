@@ -20,13 +20,14 @@ use crate::{
 
 pub fn collect_method_call(
     ctx: &mut BodyCollectContext<'_, '_>,
+    expr: etas_hir::HirExprId,
     receiver: etas_hir::HirExprId,
     method: &str,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
-    span: etas_core::Span,
     expected: Option<TypeId>,
 ) -> TypeId {
+    let span = ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks);
     if generic_args.iter().any(|arg| {
         matches!(
             arg,
@@ -152,6 +153,7 @@ pub fn collect_method_call(
                 .unwrap_or_else(|| ctx.fresh_type_var())
         });
         ctx.emit(TypeConstraint::MethodCall {
+            expr,
             method: method.to_owned(),
             candidates,
             generic_args: type_generic_args

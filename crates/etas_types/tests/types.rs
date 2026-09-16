@@ -7,6 +7,109 @@ use etas_types::{
 };
 
 #[test]
+fn sequence_get_methods_infer_index_literal_and_preserve_typed_indices() {
+    for source in [
+        "flow main(i: u8) -> Option<i32> { return [1; 2].get(i); }",
+        "flow main() -> Option<i32> { return [1; 2].get(1); }",
+        "flow main() -> Option<i32> { return [1, 2].get(-1); }",
+        "flow main<I ~ Index>(xs: List<i32>, i: I) -> Option<i32> { return xs.get(i); }",
+        "flow main<I ~ Index>(xs: List<i32>, i: I) -> i32 { return xs.at(i); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn deferred_numeric_bound_is_proved_and_materialized_for_source_calls() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow consume<I ~ Index>(i: I) -> unit { return; } flow main() -> unit { consume(1); }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.facts.generic_instantiations.values().any(|fact| {
+        fact.type_bindings.iter().any(|(name, ty)| {
+            name == "I" && output.store.get(*ty) == Some(&Type::Primitive(PrimitiveType::I32))
+        })
+    }));
+
+    for source in [
+        "spec Allowed; flow consume<I ~ Allowed>(i: I) -> unit { return; } flow main() -> unit { consume(1); }",
+        "flow consume<I ~ Index>(i: I) -> unit { return; } flow main() -> unit { consume(1.0); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("does not satisfy spec bound")),
+            "deferred obligation was not checked: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn index_methods_reject_non_integer_and_unproven_generic_indices() {
+    for source in [
+        "flow main() -> Option<i32> { return [1; 2].get(1.0); }",
+        "flow main() -> i32 { return [1; 2].at(\"one\"); }",
+        "flow main<I>(xs: List<i32>, i: I) -> i32 { return xs.at(i); }",
+        "type IndexLike = i32; flow main(i: IndexLike) -> Option<i32> { return [1; 2].get(i); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            !output.diagnostics.is_empty(),
+            "unproven Index evidence accepted: {source}"
+        );
+    }
+}
+
+#[test]
+fn checked_index_methods_materialize_index_and_error_facts() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow main() -> i32 { return [1; 2].at(1) + [3, 4].at(0); }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_index_errors.len(), 2);
+    for (expr, error) in &output.facts.checked_index_errors {
+        assert!(matches!(
+            output.facts.index_facts.get(expr),
+            Some(etas_types::CheckedIndexKind::Sequence { .. })
+        ));
+        assert_eq!(Some(*error), output.facts.known_std_types.index_error);
+    }
+}
+
+#[test]
 fn primitive_types_have_source_names_and_stable_ids() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);

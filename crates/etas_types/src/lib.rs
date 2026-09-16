@@ -23,8 +23,8 @@ pub use api::{
     check_project, check_signatures,
 };
 pub use constraint::{
-    AssignabilityReason, CallableCandidate, CallableGenericArg, ConstraintOrigin,
-    NumericLiteralKind, SpecObligation, TypeConstraint, ValidationRequest,
+    AssignabilityReason, CallableCandidate, CallableCandidateOperation, CallableGenericArg,
+    ConstraintOrigin, NumericLiteralKind, SpecObligation, TypeConstraint, ValidationRequest,
 };
 pub use facts::{
     AgentSignature, CallableGenericParam, CallableGenericParamKind, CallableSignature,

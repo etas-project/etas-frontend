@@ -142,10 +142,7 @@ pub fn std_method_candidates(
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
-        .filter_map(|symbol| {
-            let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
-            callable_candidate_from_fact(ctx, fact, true)
-        })
+        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, true))
         .collect()
 }
 
@@ -157,11 +154,28 @@ pub fn raw_std_method_candidates(
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
-        .filter_map(|symbol| {
-            let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
-            callable_candidate_from_fact(ctx, fact, false)
-        })
+        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, false))
         .collect()
+}
+
+fn std_method_candidate(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    registry: &StdRegistry,
+    symbol: &StdSymbol,
+    instantiate: bool,
+) -> Option<CallableCandidate> {
+    let fact = lower_std_symbol(ctx.ctx, registry, etas_hir::SymbolId(0), symbol);
+    let mut candidate = callable_candidate_from_fact(ctx, fact, instantiate)?;
+    if let StdDecl::Flow(flow) = &symbol.decl
+        && flow.source_method.as_ref().is_some_and(|method| {
+            method.operation == etas_std::FlowSourceMethodOperation::CheckedIndex
+        })
+    {
+        candidate.operation = crate::CallableCandidateOperation::CheckedIndex {
+            error: ctx.ctx.signature_facts.known_std_types.index_error,
+        };
+    }
+    Some(candidate)
 }
 
 pub fn std_qualified_path_callable_signature(

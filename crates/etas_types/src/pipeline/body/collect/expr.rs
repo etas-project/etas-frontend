@@ -366,8 +366,8 @@ pub fn collect_expr(
             method,
             generic_args,
             args,
-            span,
-        } => collect_method_call(ctx, receiver, &method, &generic_args, &args, span, expected),
+            ..
+        } => collect_method_call(ctx, expr, receiver, &method, &generic_args, &args, expected),
         HirExpr::SpecMethodCall {
             receiver,
             spec_path,
@@ -949,6 +949,7 @@ pub fn callable_candidate_from_fact(
     Some(crate::CallableCandidate {
         ty,
         generic_params: signature.generic_params,
+        operation: crate::CallableCandidateOperation::Call,
     })
 }
 

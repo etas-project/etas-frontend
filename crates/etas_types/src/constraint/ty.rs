@@ -58,6 +58,7 @@ pub enum TypeConstraint {
         origin: ConstraintOrigin,
     },
     MethodCall {
+        expr: etas_hir::HirExprId,
         method: String,
         candidates: Vec<CallableCandidate>,
         generic_args: Vec<CallableGenericArg>,
@@ -112,4 +113,14 @@ pub enum TypeConstraint {
 pub struct CallableCandidate {
     pub ty: TypeId,
     pub generic_params: Vec<CallableGenericParam>,
+    pub operation: CallableCandidateOperation,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CallableCandidateOperation {
+    #[default]
+    Call,
+    CheckedIndex {
+        error: Option<TypeId>,
+    },
 }
