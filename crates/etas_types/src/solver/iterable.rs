@@ -3,6 +3,7 @@ use crate::{ConstraintOrigin, Type, TypeId, TypeStore};
 
 pub(super) fn solve(
     store: &TypeStore,
+    known_std_types: &crate::KnownStdTypes,
     report: &mut SolverReport,
     iter: TypeId,
     item: TypeId,
@@ -21,6 +22,26 @@ pub(super) fn solve(
             | Type::MemorySelection(inner),
         ) => *inner,
         Some(Type::Range { index }) => *index,
+        Some(Type::Applied { constructor, args })
+            if known_std_types
+                .iterables
+                .contains_key(&TypeId(constructor.0)) =>
+        {
+            let fact = &known_std_types.iterables[&TypeId(constructor.0)];
+            let Some(element) = args
+                .get(fact.element_parameter)
+                .filter(|_| args.len() == fact.arity)
+            else {
+                report.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span: origin.span,
+                    message: "standard iterable arguments do not match its checked declaration"
+                        .into(),
+                });
+                return;
+            };
+            *element
+        }
         Some(Type::Map { key, value }) => {
             let Some(Type::Tuple(fields)) = store.get(entry_pair) else {
                 report.push(SolverFailure {

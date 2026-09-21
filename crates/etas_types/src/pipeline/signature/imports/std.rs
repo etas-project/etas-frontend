@@ -61,6 +61,20 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    for symbol in registry.symbols() {
+        if let etas_std::StdDecl::Type(declaration) = &symbol.decl
+            && let Some(element_parameter) = declaration.iterable_element_param
+            && let Some(constructor) = lower_std_type_symbol(ctx, registry, symbol)
+        {
+            ctx.signature_facts.known_std_types.iterables.insert(
+                constructor,
+                crate::facts::symbols::StdIterableFact {
+                    arity: declaration.params.len(),
+                    element_parameter,
+                },
+            );
+        }
+    }
     for kind in [
         etas_std::StdSupportConstraint::Index,
         etas_std::StdSupportConstraint::LengthInput,

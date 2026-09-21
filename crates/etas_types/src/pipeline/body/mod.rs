@@ -53,6 +53,7 @@ pub fn run(ctx: &mut TypePipelineContext<'_>, item: etas_hir::HirItemId) {
         &mut state,
         &mut ctx.interner,
         &spec_facts,
+        &ctx.signature_facts.known_std_types,
         ctx.hir.items[item].span(),
     );
     validate::run(ctx, &state);

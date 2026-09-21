@@ -6,6 +6,7 @@ pub fn run(
     state: &mut BodyPipelineState,
     interner: &mut crate::TypeInterner,
     spec_facts: &SpecFacts,
+    known_std_types: &crate::KnownStdTypes,
     span: etas_core::Span,
 ) {
     // Pattern/call collection can introduce generic aggregate types after field
@@ -32,5 +33,6 @@ pub fn run(
         spec_obligations: &state.spec_obligations,
         spec_facts,
         store: interner.store(),
+        known_std_types,
     });
 }

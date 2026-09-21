@@ -23,6 +23,7 @@ use crate::{
 
 pub struct TypeSolveInput<'a> {
     pub store: &'a TypeStore,
+    pub known_std_types: &'a crate::KnownStdTypes,
     pub spec_facts: &'a SpecFacts,
     pub constraints: &'a [TypeConstraint],
     pub spec_obligations: &'a [SpecObligation],
@@ -227,7 +228,15 @@ impl TypeSolver {
                     item,
                     entry_pair,
                     origin,
-                } => iterable::solve(input.store, &mut report, *iter, *item, *entry_pair, origin),
+                } => iterable::solve(
+                    input.store,
+                    input.known_std_types,
+                    &mut report,
+                    *iter,
+                    *item,
+                    *entry_pair,
+                    origin,
+                ),
                 TypeConstraint::Unary { .. } => pending_unary_constraints.push(constraint),
                 TypeConstraint::TryOperand {
                     operand,

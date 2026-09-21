@@ -427,6 +427,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.iterables = std::mem::take(&mut facts.known_std_types.iterables)
+        .into_iter()
+        .map(|(constructor, fact)| (remapper.ty(constructor), fact))
+        .collect();
     facts.known_std_types.support_constraints = facts
         .known_std_types
         .support_constraints

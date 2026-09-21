@@ -35,6 +35,11 @@ pub fn merge_outputs(
             .extend(body.facts.known_std_types.support_constraints);
         signatures
             .facts
+            .known_std_types
+            .iterables
+            .extend(body.facts.known_std_types.iterables);
+        signatures
+            .facts
             .resource_handles
             .extend(body.facts.resource_handles);
         signatures
