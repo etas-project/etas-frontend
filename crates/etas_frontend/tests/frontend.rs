@@ -11021,6 +11021,118 @@ flow main() -> i32 {
 }
 
 #[test]
+fn frontend_external_selector_names_are_kind_checked() {
+    let check = |kind, name: &str, generic_params| {
+        let mut environment = external_environment();
+        environment.external_modules[0]
+            .exports
+            .push(ProjectExternalExportInput {
+                symbol: ExternalSymbolId(3),
+                name: "Transport".into(),
+                visibility: etas_hir::Visibility::Public,
+            });
+        environment.external_public_metadata[0]
+            .effects
+            .push(ProjectExternalNamedSignatureInput {
+                path: vec!["dep".into(), "math".into(), "Transport".into()],
+                visibility: "public".into(),
+                ty: None,
+            });
+        environment.external_public_metadata[0]
+            .actions
+            .push(ProjectExternalActionSignatureInput {
+                path: vec![
+                    "dep".into(),
+                    "math".into(),
+                    "Transport".into(),
+                    "request".into(),
+                ],
+                generic_params,
+                params: Vec::new(),
+                effect_args: vec![kind],
+                selector_param_names: vec![name.into()],
+                selector_defaults: vec![None],
+                output: ProjectExternalTypeInput::Primitive("unit".into()),
+                returns_never: false,
+                visibility: "public".into(),
+            });
+        Frontend.check_project(ProjectInput {
+            project_root: "/workspace/demo".into(),
+            source_root: None,
+            options: Default::default(),
+            environment,
+            sources: vec![SourceInput {
+                id: etas_core::SourceId(91),
+                path: Some("src/app/main.es".into()),
+                text:
+                    "module app.main; import dep.math.add; flow main() -> i32 { return add(1, 2); }"
+                        .into(),
+                kind: SourceKind::SourceProjectFile,
+            }],
+            entry: ProjectEntry {
+                module: Some(ModulePath {
+                    segments: vec!["app".into(), "main".into()],
+                }),
+                flow: "main".into(),
+            },
+        })
+    };
+    for kind in [
+        ProjectExternalActionArgKindInput::MemoryPlace,
+        ProjectExternalActionArgKindInput::StringPattern,
+        ProjectExternalActionArgKindInput::StaticResourcePath {
+            ty: "BrowserProfile".into(),
+        },
+    ] {
+        for name in ["", "resource"] {
+            let output = check(kind.clone(), name, Vec::new());
+            assert!(output.checked.is_some(), "{:?}", output.diagnostics);
+            assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        }
+    }
+    for (name, generic_params) in [
+        ("", Vec::new()),
+        ("Missing", Vec::new()),
+        (
+            "E",
+            vec![ProjectExternalActionGenericParamInput {
+                name: "E".into(),
+                kind: ProjectExternalCallableGenericParamKindInput::Effect,
+                bounds: Vec::new(),
+            }],
+        ),
+    ] {
+        let output = check(
+            ProjectExternalActionArgKindInput::Type,
+            name,
+            generic_params,
+        );
+        assert!(output.checked.is_none());
+        let diagnostic = output
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                matches!(
+                    diagnostic.code,
+                    DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
+                ) && diagnostic.message.contains("compatible generic parameter")
+            })
+            .expect("invalid type selector must be diagnosed at the import");
+        assert_eq!(diagnostic.primary.span.source, etas_core::SourceId(91));
+    }
+    let output = check(
+        ProjectExternalActionArgKindInput::Type,
+        "R",
+        vec![ProjectExternalActionGenericParamInput {
+            name: "R".into(),
+            kind: ProjectExternalCallableGenericParamKindInput::Type,
+            bounds: Vec::new(),
+        }],
+    );
+    assert!(output.checked.is_some(), "{:?}", output.diagnostics);
+}
+
+#[test]
 fn frontend_check_project_records_external_wildcard_re_exports() {
     let frontend = Frontend;
     let output = frontend.check_project(ProjectInput {
