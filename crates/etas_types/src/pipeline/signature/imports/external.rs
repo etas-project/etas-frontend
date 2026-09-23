@@ -8,6 +8,7 @@ use crate::{
     lower::external::{
         lower_external_action_signature, lower_external_callable_generic_params,
         lower_external_effect_row, lower_external_type, lower_external_type_declaration,
+        resolve_external_spec,
     },
     pipeline::context::TypePipelineContext,
 };
@@ -273,19 +274,25 @@ fn apply_external_spec_facts(
             continue;
         };
         for implementation in &metadata.spec_impls {
-            let Some(spec_symbol) = binding_symbols
-                .get(&(metadata.package, implementation.spec.clone()))
-                .copied()
-            else {
-                incomplete_external_type_facts(
-                    ctx,
-                    package_span,
-                    format!(
-                        "external spec implementation references `{}` without an imported spec binding",
-                        implementation.spec.join(".")
-                    ),
-                );
-                continue;
+            let spec = match resolve_external_spec(
+                ctx,
+                metadata.package,
+                &implementation.spec,
+                implementation.args.len(),
+                binding_symbols,
+            ) {
+                Ok(spec) => spec,
+                Err(reason) => {
+                    incomplete_external_type_facts(
+                        ctx,
+                        package_span,
+                        format!(
+                            "external spec implementation references `{}`: {reason}",
+                            implementation.spec.join(".")
+                        ),
+                    );
+                    continue;
+                }
             };
             let span =
                 binding_span(input, metadata.package, &implementation.spec).unwrap_or(package_span);
@@ -295,6 +302,13 @@ fn apply_external_spec_facts(
                 .iter()
                 .map(|arg| lower_external_type(ctx, span, arg))
                 .collect();
+            let spec_symbol = match spec {
+                crate::CheckedSpecRef::Source(symbol) => symbol,
+                crate::CheckedSpecRef::Std(path) => {
+                    record_std_spec_evidence(ctx, self_type, path, args);
+                    continue;
+                }
+            };
             ctx.signature_facts.spec_impls.push(SpecImplFact {
                 self_type,
                 spec_symbol,
@@ -306,19 +320,25 @@ fn apply_external_spec_facts(
         }
         for fact in &metadata.type_spec_satisfactions {
             let span = binding_span(input, metadata.package, &fact.spec).unwrap_or(package_span);
-            let Some(spec_symbol) = binding_symbols
-                .get(&(metadata.package, fact.spec.clone()))
-                .copied()
-            else {
-                incomplete_external_type_facts(
-                    ctx,
-                    package_span,
-                    format!(
-                        "external type satisfaction references `{}` without an imported spec binding",
-                        fact.spec.join(".")
-                    ),
-                );
-                continue;
+            let spec = match resolve_external_spec(
+                ctx,
+                metadata.package,
+                &fact.spec,
+                fact.args.len(),
+                binding_symbols,
+            ) {
+                Ok(spec) => spec,
+                Err(reason) => {
+                    incomplete_external_type_facts(
+                        ctx,
+                        package_span,
+                        format!(
+                            "external type satisfaction references `{}`: {reason}",
+                            fact.spec.join(".")
+                        ),
+                    );
+                    continue;
+                }
             };
             let self_type = lower_external_type(ctx, span, &fact.self_type);
             let args = fact
@@ -326,6 +346,13 @@ fn apply_external_spec_facts(
                 .iter()
                 .map(|arg| lower_external_type(ctx, span, arg))
                 .collect();
+            let spec_symbol = match spec {
+                crate::CheckedSpecRef::Source(symbol) => symbol,
+                crate::CheckedSpecRef::Std(path) => {
+                    record_std_spec_evidence(ctx, self_type, path, args);
+                    continue;
+                }
+            };
             ctx.signature_facts
                 .type_spec_satisfactions
                 .push(TypeSpecSatisfactionFact {
@@ -414,6 +441,23 @@ fn package_binding_span(
                 .find(|binding| binding.package == package)
                 .map(|binding| binding.span)
         })
+}
+
+fn record_std_spec_evidence(
+    ctx: &mut TypePipelineContext<'_>,
+    self_type: TypeId,
+    spec: Vec<String>,
+    args: Vec<TypeId>,
+) {
+    let evidence = crate::CheckedStdSpecImplFact {
+        self_type,
+        spec,
+        args,
+    };
+    // Metadata may contain both an impl and its materialized satisfaction.
+    if !ctx.signature_facts.std_spec_impls.contains(&evidence) {
+        ctx.signature_facts.std_spec_impls.push(evidence);
+    }
 }
 
 fn lower_external_spec_signature(
