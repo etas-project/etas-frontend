@@ -11021,6 +11021,91 @@ flow main() -> i32 {
 }
 
 #[test]
+fn frontend_replays_std_spec_evidence_without_consumer_import_aliases() {
+    for evidence_kind in ["impl", "satisfaction", "both"] {
+        for (path, args, expected_error) in [
+            (vec!["std", "fs", "Region"], vec![], None),
+            (
+                vec!["std", "fs", "MissingRegion"],
+                vec![],
+                Some("unknown standard spec"),
+            ),
+            (
+                vec!["std", "crypto", "Digest"],
+                vec![],
+                Some("not a standard type spec"),
+            ),
+            (
+                vec!["std", "fs", "Region"],
+                vec![ProjectExternalTypeInput::Primitive("i32".into())],
+                Some("expects 0 arguments"),
+            ),
+        ] {
+            let mut environment = external_environment();
+            let spec = path.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+            let self_type = ProjectExternalTypeInput::Nominal {
+                path: vec!["dep".into(), "math".into(), "PrivateRoot".into()],
+                representation: None,
+            };
+            if evidence_kind != "satisfaction" {
+                environment.external_public_metadata[0].spec_impls.push(
+                    etas_frontend::ProjectExternalSpecImplInput {
+                        self_type: self_type.clone(),
+                        spec: spec.clone(),
+                        args: args.clone(),
+                        methods: vec![],
+                    },
+                );
+            }
+            if evidence_kind != "impl" {
+                environment.external_public_metadata[0]
+                    .type_spec_satisfactions
+                    .push(etas_frontend::ProjectExternalTypeSpecSatisfactionInput {
+                        self_type,
+                        spec: spec.clone(),
+                        args,
+                    });
+            }
+            let output = Frontend.check_project(ProjectInput {
+                project_root: "/workspace/spec-evidence".into(), source_root: None,
+                options: Default::default(), environment,
+                sources: vec![SourceInput {
+                    id: etas_core::SourceId(92), path: Some("src/app/main.es".into()),
+                    text: "module app.main; import dep.math.add; flow main() -> i32 { return add(1, 2); }".into(),
+                    kind: SourceKind::SourceProjectFile,
+                }],
+                entry: ProjectEntry { module: Some(ModulePath { segments: vec!["app".into(), "main".into()] }), flow: "main".into() },
+            });
+            if let Some(message) = expected_error {
+                assert!(output.checked.is_none());
+                let diagnostic = output
+                    .diagnostics
+                    .iter()
+                    .find(|diagnostic| {
+                        diagnostic.code
+                            == DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
+                            && diagnostic.message.contains(message)
+                    })
+                    .unwrap_or_else(|| panic!("{evidence_kind}: {:?}", output.diagnostics));
+                assert_eq!(diagnostic.primary.span.source, etas_core::SourceId(92));
+            } else {
+                assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+                let checked = output.checked.unwrap();
+                let evidence = checked.types.std_spec_impls.iter().filter(|fact| {
+                    fact.spec == spec && matches!(checked.type_store.get(fact.self_type), Some(Type::Nominal(nominal)) if nominal.name == "dep.math.PrivateRoot")
+                }).collect::<Vec<_>>();
+                assert_eq!(
+                    evidence.len(),
+                    1,
+                    "{evidence_kind}: evidence must survive exactly once"
+                );
+                assert!(evidence[0].args.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn frontend_external_selector_names_are_kind_checked() {
     let check = |kind, name: &str, generic_params| {
         let mut environment = external_environment();

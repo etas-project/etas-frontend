@@ -1,5 +1,8 @@
 use etas_core::{Diagnostic, Span, TypeDiagnosticCode};
 
+mod spec_ref;
+pub(crate) use spec_ref::resolve_external_spec;
+
 use crate::{
     EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FieldType,
     FlowType, HandlerProducedEffects, HandlerType, NamedTypeRef, NominalTypeRef, PrimitiveType,
@@ -90,22 +93,27 @@ pub fn lower_external_callable_generic_params(
     for param in params {
         let mut bounds = Vec::with_capacity(param.bounds.len());
         for bound in &param.bounds {
-            let spec = if bound.spec.first().is_some_and(|segment| segment == "std") {
-                crate::CheckedSpecRef::Std(bound.spec.clone())
-            } else if let Some(symbol) = binding_symbols.get(&(package, bound.spec.clone())) {
-                crate::CheckedSpecRef::Source(*symbol)
-            } else {
-                invalid_external_metadata(
-                    ctx,
-                    span,
-                    format!(
-                        "invalid external package metadata: callable `{}` generic `{}` references spec `{}` without a checked package binding",
-                        callable_path.join("."),
-                        param.name,
-                        bound.spec.join(".")
-                    ),
-                );
-                return None;
+            let spec = match resolve_external_spec(
+                ctx,
+                package,
+                &bound.spec,
+                bound.args.len(),
+                binding_symbols,
+            ) {
+                Ok(spec) => spec,
+                Err(reason) => {
+                    invalid_external_metadata(
+                        ctx,
+                        span,
+                        format!(
+                            "invalid external package metadata: callable `{}` generic `{}` references spec `{}`: {reason}",
+                            callable_path.join("."),
+                            param.name,
+                            bound.spec.join(".")
+                        ),
+                    );
+                    return None;
+                }
             };
             bounds.push(crate::CheckedSpecBound {
                 spec,
