@@ -733,9 +733,10 @@ fn std_signature_input(
                 {
                     continue;
                 }
-                let Some(std_symbol) = registry.symbols().find(|symbol| {
-                    symbol.module == *module && symbol.enum_owner.is_none() && symbol.name == *name
-                }) else {
+                let Some((_, std_symbol)) = registry
+                    .module_exports(*module)
+                    .find(|(exported_name, _)| *exported_name == name)
+                else {
                     continue;
                 };
                 let Some(binding_symbol) = wildcard_alias_symbol(context, wildcard, path, name)
