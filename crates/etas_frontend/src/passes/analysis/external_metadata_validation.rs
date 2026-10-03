@@ -652,9 +652,8 @@ pub(super) fn validate_external_metadata(
             }
         }
         for (kind, name) in action.effect_args.iter().zip(&action.selector_param_names) {
-            if name.is_empty()
-                || matches!(kind, crate::ProjectExternalActionArgKindInput::Type)
-                    && !scope.types.contains(name)
+            if matches!(kind, crate::ProjectExternalActionArgKindInput::Type)
+                && (name.is_empty() || !scope.types.contains(name))
             {
                 return Err(format!(
                     "action `{}` selector `{name}` does not name a compatible generic parameter",
