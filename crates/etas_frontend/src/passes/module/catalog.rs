@@ -84,13 +84,12 @@ fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry
             segments: module.path.clone(),
         };
         let items = registry
-            .symbols()
-            .filter(|symbol| symbol.module == module.id && symbol.enum_owner.is_none())
-            .map(|symbol| {
+            .module_exports(module.id)
+            .map(|(name, symbol)| {
                 (
-                    symbol.name.clone(),
+                    name.to_owned(),
                     ModuleExport {
-                        name: symbol.name.clone(),
+                        name: name.to_owned(),
                         visibility: etas_hir::Visibility::Public,
                         target: ModuleExportTarget::Std {
                             module: module.id,
