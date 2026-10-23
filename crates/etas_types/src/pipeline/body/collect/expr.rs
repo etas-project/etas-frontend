@@ -30,13 +30,8 @@ pub fn collect_expr(
     expected: Option<TypeId>,
 ) -> TypeId {
     // A support constraint checks an inferred value; it is not a value type hint.
-    let expected = expected.filter(|ty| {
-        !ctx.ctx
-            .signature_facts
-            .known_std_types
-            .support_constraints
-            .contains(ty)
-    });
+    let expected =
+        expected.filter(|ty| !ctx.ctx.known_std_types().support_constraints.contains(ty));
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
         return ty;
     }
@@ -705,8 +700,7 @@ fn collect_path(
             ctx.ctx.hir.symbols.get(symbol).map(|symbol| &symbol.def)
         && let Some(descriptor) = ctx.ctx.std_registry.lookup_qualified(path)
         && descriptor.kind == etas_std::StdSymbolKind::Constructor
-        && let Some(SymbolTypeFact::Flow { signature }) =
-            ctx.ctx.signature_facts.symbol_types.get(&symbol)
+        && let Some(SymbolTypeFact::Flow { signature }) = ctx.ctx.symbol_type(symbol)
         && signature.params.is_empty()
     {
         return instantiate_callable_signature(ctx, signature.clone()).output;
@@ -873,7 +867,7 @@ fn record_field_memory_place(
         .provisional
         .expr_memory_places
         .get(&base)
-        .or_else(|| ctx.ctx.signature_facts.expr_memory_places.get(&base))
+        .or_else(|| ctx.ctx.expr_memory_place(base))
         .copied()
     else {
         return;
@@ -910,11 +904,7 @@ pub fn symbol_value_type(
         .provisional
         .symbol_types
         .get(&symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-        })?
+        .or_else(|| ctx.ctx.symbol_fact(symbol))?
         .clone();
     value_type_from_fact(ctx, fact)
 }

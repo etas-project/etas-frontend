@@ -29,14 +29,14 @@ pub fn analyze_trace_spec_monitors(
         units.iter().copied(),
         TraceSpecSemantics::with_context(
             hir,
-            context,
+            context.clone(),
             types,
             registry,
             &effects.facts,
             trace_spec_items,
         ),
     )
-    .solve();
+    .solve_with_context(&context);
     let InterproceduralAnalysisResult {
         semantics,
         summaries,

@@ -7,7 +7,9 @@ mod type_check_body;
 mod type_check_bridge;
 mod type_check_common;
 mod type_check_finalize;
+mod type_environment;
 mod type_reuse;
+pub use type_environment::PrepareBodyTypeEnvironmentPass;
 
 pub use effect_check::RunEffectPipelinePass;
 pub use external_metadata_validation::ValidateExternalEnvironmentPass;

@@ -380,11 +380,7 @@ fn type_arg_from_path(
         .provisional
         .symbol_types
         .get(&symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-        })
+        .or_else(|| ctx.ctx.symbol_fact(symbol))
         .and_then(type_from_symbol_fact)
 }
 

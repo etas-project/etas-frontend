@@ -11,7 +11,8 @@ pub fn run_effect_analysis(
     units: &[EffectUnit],
     context: HirAnalysisContext,
 ) -> Result<EffectAnalysisOutput, EffectPipelineError> {
-    let semantics = EffectSemantics::from_input(context, input);
-    let result = InterproceduralAnalysis::new(units.iter().copied(), semantics).solve();
+    let semantics = EffectSemantics::from_input(context.clone(), input);
+    let result =
+        InterproceduralAnalysis::new(units.iter().copied(), semantics).solve_with_context(&context);
     output_from_result(result)
 }

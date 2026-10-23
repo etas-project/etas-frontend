@@ -1410,7 +1410,9 @@ flow main() -> unit ![Network] {
         Some(HirItem::Flow(flow)) => flow.params[0],
         _ => unreachable!("apply should lower as a flow"),
     };
-    types.facts.symbol_types.remove(&callback_param);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .remove(&callback_param);
 
     let output = check_program(&hir, &types);
 
@@ -1523,7 +1525,9 @@ flow apply(callback: unit -> unit) -> unit {
                 .then_some(*callee)
         })
         .expect("callback call callee should lower");
-    types.facts.expr_types.remove(&callback_callee);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .expr_types
+        .remove(&callback_callee);
 
     let output = check_program(&hir, &types);
 
@@ -1560,7 +1564,9 @@ flow main() -> unit ![Network] {
     let mut types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let main = flow_item(&hir, "main");
-    types.facts.item_signatures.remove(&main);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .item_signatures
+        .remove(&main);
 
     let output = check_program(&hir, &types);
 
@@ -1613,7 +1619,9 @@ flow main() -> unit ![Network] {
             _ => None,
         })
         .expect("helper flow should lower");
-    types.facts.symbol_types.remove(&helper_symbol);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .remove(&helper_symbol);
 
     let output = check_program(&hir, &types);
 
@@ -1920,7 +1928,9 @@ let Later: unit -> unit ![Network] = () => {
             _ => None,
         })
         .expect("Later top-level value should lower");
-    types.facts.symbol_types.remove(&later_symbol);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .remove(&later_symbol);
 
     let output = check_program(&hir, &types);
 
@@ -2028,7 +2038,9 @@ public flow main() -> unit ![Network] {
     let hir = lower_program(&parsed.value);
     let mut types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
-    types.facts.item_signatures.remove(&flow_item(&hir, "main"));
+    std::sync::Arc::make_mut(&mut types.facts)
+        .item_signatures
+        .remove(&flow_item(&hir, "main"));
 
     let output = check_program(&hir, &types);
 
@@ -3475,7 +3487,9 @@ flow main() -> unit ![Memory.read<ProjectMemory>]
             }
         })
         .expect("store receiver should lower as a method-call receiver");
-    types.facts.expr_memory_places.remove(&receiver);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .expr_memory_places
+        .remove(&receiver);
 
     let output = check_program(&hir, &types);
 
@@ -3540,7 +3554,9 @@ flow main() -> unit ![Memory.read<ProjectMemory>]
             }
         })
         .expect("store receiver should lower as a method-call receiver");
-    types.facts.expr_types.remove(&receiver);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .expr_types
+        .remove(&receiver);
 
     let output = check_program(&hir, &types);
 
@@ -3687,7 +3703,9 @@ flow main() -> unit ![Memory.read<ProjectMemory>]
         unreachable!("callee id came from path expression");
     };
     path.resolution = ResolveResult::Unresolved;
-    types.facts.expr_types.remove(&callee);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .expr_types
+        .remove(&callee);
 
     let output = check_program(&hir, &types);
 
@@ -6711,7 +6729,9 @@ flow main(values: Array<i32>) -> usize {
             }
         })
         .expect("len receiver should lower");
-    types.facts.expr_types.remove(&receiver);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .expr_types
+        .remove(&receiver);
 
     let output = check_program(&hir, &types);
 
@@ -7476,7 +7496,9 @@ flow main() -> unit {
     let hir = lower_program(&parsed.value);
     let mut types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
-    types.facts.action_signatures.clear();
+    std::sync::Arc::make_mut(&mut types.facts)
+        .action_signatures
+        .clear();
     let output = check_program(&hir, &types);
 
     assert!(
@@ -7528,7 +7550,9 @@ flow main() -> unit {
     let hir = lower_program(&parsed.value);
     let mut types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
-    types.facts.action_signatures.clear();
+    std::sync::Arc::make_mut(&mut types.facts)
+        .action_signatures
+        .clear();
 
     let output = check_program(&hir, &types);
 
@@ -7914,7 +7938,9 @@ flow main() -> unit ![Failure<IOError>] {
     let ResolveResult::Resolved(owner_arg_symbol) = owner_arg.resolution else {
         panic!("perform owner effect arg should resolve to the IOError type symbol");
     };
-    types.facts.symbol_types.remove(&owner_arg_symbol);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .remove(&owner_arg_symbol);
     let output = check_program(&hir, &types);
 
     assert!(
@@ -7975,7 +8001,9 @@ flow main() -> unit ![Failure<IOError>] {
         .iter()
         .find_map(|symbol| (symbol.name == "IOError").then_some(symbol.id))
         .expect("IOError type symbol should lower");
-    types.facts.symbol_types.remove(&io_error_symbol);
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .remove(&io_error_symbol);
     let output = check_program(&hir, &types);
 
     assert!(
@@ -8187,9 +8215,10 @@ flow main() -> unit ![Error<IOError>] {
         .iter()
         .find_map(|symbol| (symbol.name == "IOError").then_some(symbol.id))
         .expect("IOError type symbol should lower");
-    types.facts.symbol_types.remove(&io_error_symbol);
-    let signature = types
-        .facts
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .remove(&io_error_symbol);
+    let signature = std::sync::Arc::make_mut(&mut types.facts)
         .item_signatures
         .get_mut(&main)
         .expect("main signature should be checked");

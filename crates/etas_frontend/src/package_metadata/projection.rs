@@ -49,7 +49,7 @@ pub(super) struct ProjectMetadataProjection<'a> {
     checked: &'a CheckedProject,
     hir_items_by_origin: BTreeMap<(u32, u32, u32), HirItemId>,
     canonical_type_paths: BTreeMap<String, Option<Vec<String>>>,
-    effect_registry: EffectRegistry,
+    effect_registry: &'a EffectRegistry,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
@@ -64,7 +64,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             checked,
             hir_items_by_origin,
             canonical_type_paths: build_canonical_type_paths(checked),
-            effect_registry: checked.effect_registry.clone(),
+            effect_registry: &checked.effect_registry,
         }
     }
 
@@ -1410,7 +1410,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         effect_generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
         let coverage = EffectCoverage {
-            registry: &self.effect_registry,
+            registry: self.effect_registry,
             types: &self.checked.type_store,
         };
         let effects = summary

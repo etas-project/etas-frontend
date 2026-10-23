@@ -11,7 +11,7 @@ use crate::{
 
 pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Option<TypeId> {
     let is_path_type = matches!(ctx.hir.types[ty], HirType::Path { .. });
-    if !is_path_type && let Some(existing) = ctx.signature_facts.type_refs.get(&ty).copied() {
+    if !is_path_type && let Some(existing) = ctx.type_ref(ty) {
         return Some(existing);
     }
     let lowered = match ctx.hir.types[ty].clone() {
@@ -179,8 +179,7 @@ fn lower_named_path(
                     return named_or_applied(ctx, name, args);
                 }
                 if ctx
-                    .symbols
-                    .symbol_fact(ctx.hir, &ctx.signature_facts, symbol)
+                    .symbol_fact(symbol)
                     .is_some_and(|fact| matches!(fact, crate::SymbolTypeFact::Spec { .. }))
                     || ctx
                         .hir
@@ -195,10 +194,7 @@ fn lower_named_path(
                     ));
                     return ctx.interner.primitive(PrimitiveType::Never);
                 }
-                let fact = ctx
-                    .symbols
-                    .symbol_fact(ctx.hir, &ctx.signature_facts, symbol)
-                    .cloned();
+                let fact = ctx.symbol_fact(symbol).cloned();
                 if let Some(fact) = fact {
                     return match fact {
                         crate::SymbolTypeFact::TypeAlias { target, params } => {
@@ -232,10 +228,7 @@ fn lower_named_path(
                         _ => named_or_applied(ctx, name, args),
                     };
                 }
-                if let Some(base_type) =
-                    ctx.symbols
-                        .type_fact_as_type_id(ctx.hir, &ctx.signature_facts, symbol)
-                {
+                if let Some(base_type) = ctx.type_fact_as_type_id(symbol) {
                     applied_or_constructor(ctx, base_type, args)
                 } else if let Some(alias_type) =
                     lower_source_declared_alias(ctx, canonical_symbol, args.clone(), span)

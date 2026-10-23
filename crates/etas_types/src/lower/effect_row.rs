@@ -135,13 +135,10 @@ fn action_arg_kinds_for_effect_ref(
     effect: &HirEffectRef,
 ) -> Option<Vec<EffectActionArgKind>> {
     if let Some(symbol) = action_symbol_for_effect_ref(ctx, effect) {
-        if let Some(signature) = ctx.signature_facts.action_signatures.get(&symbol) {
+        if let Some(signature) = ctx.action_signature(symbol) {
             return Some(signature.effect_args.clone());
         }
-        if let Some(SymbolTypeFact::EffectAction { signature }) =
-            ctx.symbols
-                .symbol_fact(ctx.hir, &ctx.signature_facts, symbol)
-        {
+        if let Some(SymbolTypeFact::EffectAction { signature }) = ctx.symbol_fact(symbol) {
             return Some(signature.effect_args.clone());
         }
     }
@@ -152,11 +149,7 @@ fn action_arg_kinds_for_effect_ref(
         .map(|segment| segment.name.as_str())
         .collect::<Vec<_>>()
         .join(".");
-    if let Some(signature) = ctx
-        .signature_facts
-        .qualified_action_signatures
-        .get(&qualified)
-    {
+    if let Some(signature) = ctx.qualified_action_signature(&qualified) {
         return Some(signature.effect_args.clone());
     }
     None
@@ -172,9 +165,7 @@ fn action_symbol_for_effect_ref(
             .canonical_symbol(ctx.hir, symbol)
             .unwrap_or(symbol);
         if ctx
-            .signature_facts
-            .symbol_types
-            .get(&symbol)
+            .symbol_type(symbol)
             .is_some_and(|fact| matches!(fact, SymbolTypeFact::EffectAction { .. }))
         {
             return Some(symbol);
@@ -250,9 +241,7 @@ fn type_arg_from_path(
             name: symbol_data.name.clone(),
         })));
     }
-    ctx.symbols
-        .symbol_fact(ctx.hir, &ctx.signature_facts, symbol)
-        .and_then(type_from_symbol_fact)
+    ctx.symbol_fact(symbol).and_then(type_from_symbol_fact)
 }
 
 fn invalid_static_effect_arg(

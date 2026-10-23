@@ -1,5 +1,6 @@
 use etas_utils::FixpointEngine;
 
+use crate::HirAnalysisContext;
 use crate::intraprocedural::HirAnalysisSemantics;
 
 use super::{
@@ -47,9 +48,17 @@ where
         self
     }
 
-    pub fn solve(mut self) -> InterproceduralAnalysisResult<S::Unit, S::Summary, S> {
+    pub fn solve(self) -> InterproceduralAnalysisResult<S::Unit, S::Summary, S> {
+        let context = HirAnalysisContext::new(self.semantics.hir());
+        self.solve_with_context(&context)
+    }
+
+    pub fn solve_with_context(
+        mut self,
+        context: &HirAnalysisContext,
+    ) -> InterproceduralAnalysisResult<S::Unit, S::Summary, S> {
         let solver = SummarySolver::new(self.engine);
-        let result = solver.solve(self.units, &mut self.semantics);
+        let result = solver.solve_with_context(self.units, &mut self.semantics, context);
         InterproceduralAnalysisResult {
             semantics: self.semantics,
             summaries: result.summaries,

@@ -1,6 +1,6 @@
 use etas_cache::ArtifactKey;
 use etas_core::{SourceId, Span};
-use etas_types::TypeOutput;
+use etas_types::BodyTypeOutput;
 
 use crate::artifact::{FrontendArtifactDependency, FrontendArtifactManifest};
 use crate::{AstItemKind, SourceSet, UnitId, UnitKind, UnitTarget, UnitTree};
@@ -61,7 +61,7 @@ pub(crate) struct CachedTypeBodyArtifact {
     pub cache_key: ArtifactKey,
     pub identity: BodyArtifactIdentity,
     pub dependencies: Vec<FrontendArtifactDependency>,
-    pub output: TypeOutput,
+    pub output: std::sync::Arc<BodyTypeOutput>,
 }
 
 #[derive(Clone, Debug)]

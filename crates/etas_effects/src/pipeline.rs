@@ -163,7 +163,7 @@ pub struct EffectPipelineInput<'a> {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EffectPipelineArtifacts {
-    pub registry: EffectRegistry,
+    pub registry: std::sync::Arc<EffectRegistry>,
     pub dependency_metadata: DependencyEffectMetadata,
     pub tool_bindings: Vec<ToolProviderBindingMetadata>,
     pub external_summaries: Vec<ExternalEffectSummaryMetadata>,
@@ -189,7 +189,7 @@ pub struct RunEffectPipeline;
 
 #[derive(Clone, Debug)]
 pub struct EffectInferencePlan {
-    pub registry: EffectRegistry,
+    pub registry: std::sync::Arc<EffectRegistry>,
 }
 
 impl RunEffectPipeline {
@@ -207,7 +207,16 @@ impl RunEffectPipeline {
     pub fn run(
         input: EffectPipelineInput<'_>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        let mut context = EffectPipelineContext::new(input);
+        let analysis_context = etas_hir_analysis::HirAnalysisContext::try_new(input.hir)
+            .map_err(EffectPipelineError::InvalidHir)?;
+        Self::run_with_context(input, analysis_context)
+    }
+
+    pub fn run_with_context(
+        input: EffectPipelineInput<'_>,
+        analysis_context: etas_hir_analysis::HirAnalysisContext,
+    ) -> Result<EffectPipelineOutput, EffectPipelineError> {
+        let mut context = EffectPipelineContext::new(input, analysis_context);
         let mut pipeline = effect_pipeline();
         let mut manager = PassManager::with_config(PipelineConfig::default().with_timing(true));
         let result = manager.run_global_pipeline(&mut pipeline, &mut context);
@@ -272,6 +281,28 @@ mod tests {
     };
 
     #[test]
+    fn standalone_pipeline_rejects_invalid_hir_before_analysis() {
+        let mut hir = HirProgram::default();
+        hir.modules.push(etas_hir::HirModuleId(0));
+        let types = TypeOutput::default();
+        let registry = etas_std::standard_registry();
+        let before = etas_hir::HirTreeIndex::thread_build_count();
+        let result = RunEffectPipeline::run(EffectPipelineInput {
+            hir: &hir,
+            types: &types,
+            std_registry: &registry,
+            dependency_metadata: None,
+            tool_bindings: &[],
+            external_summaries: &[],
+            external_trace_specs: &[],
+            external_artifact_anchors: &[],
+            reachable_items: None,
+        });
+        assert!(matches!(result, Err(EffectPipelineError::InvalidHir(_))));
+        assert_eq!(etas_hir::HirTreeIndex::thread_build_count() - before, 1);
+    }
+
+    #[test]
     fn pass_manager_failure_preserves_missing_artifact_without_fabricating_stage() {
         let artifact = ArtifactKey::new("effects", "registry");
         let failure = PassFailure::missing_artifact(artifact);
@@ -301,7 +332,8 @@ mod tests {
                 external_artifact_anchors: &[],
                 reachable_items: None,
             };
-            let mut context = EffectPipelineContext::new(input);
+            let mut context =
+                EffectPipelineContext::new(input, etas_hir_analysis::HirAnalysisContext::new(&hir));
             let pipeline = Pipeline::new("effects.missing_artifact").pass(CollectUnitsPass);
             let mut pipeline = if missing == EFFECT_REGISTRY {
                 pipeline.pass(AnalyzeMemoryProvenancePass)

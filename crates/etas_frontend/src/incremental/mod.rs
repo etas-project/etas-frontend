@@ -20,7 +20,8 @@ pub use diagnostics::DiagnosticSet;
 pub(crate) use dirty::DirtyArtifactRoots;
 pub(crate) use invalidation::invalidate_dirty_roots;
 pub use request::{
-    CheckMode, CheckRequest, CheckResponse, CheckScope, MemoryArtifactReuse, SnapshotDetailLevel,
+    CheckMode, CheckRequest, CheckResponse, CheckRetention, CheckScope, MemoryArtifactReuse,
+    SnapshotDetailLevel,
 };
 pub use reuse::CacheReuseReport;
 pub(crate) use reuse::artifact_meta_matches;

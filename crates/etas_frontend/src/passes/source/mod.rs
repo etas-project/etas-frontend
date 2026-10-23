@@ -30,7 +30,7 @@ impl Pass<ProjectContext> for BuildSourceSetPass {
             .iter()
             .map(SourceFile::from_input)
             .collect::<Vec<_>>();
-        context.sources = Some(SourceSet {
+        context.sources = Some(std::sync::Arc::new(SourceSet {
             project_root: context.input.project_root.clone(),
             source_root: crate::project::source_root_for_project_input(&context.input),
             environment_fingerprint: context
@@ -42,7 +42,7 @@ impl Pass<ProjectContext> for BuildSourceSetPass {
                 .environment
                 .canonical_external_modules_fingerprint(),
             files,
-        });
+        }));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(SOURCE_SET))
     }
 }
@@ -132,7 +132,7 @@ impl Pass<ProjectContext> for ParseSourceFilePass {
         context.parsed_sources.push(ParsedSource {
             source: source.id,
             source_file: source,
-            parse: parsed,
+            parse: std::sync::Arc::new(parsed),
             declared_module,
             imports,
             items,

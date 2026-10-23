@@ -1077,17 +1077,19 @@ mod tests {
             args: vec![concrete_arg],
         });
         let mut types = TypeOutput {
-            store: interner.into_store(),
+            store: interner.into_store().into(),
             ..TypeOutput::default()
         };
-        types.facts.generic_instantiations.insert(
-            call,
-            GenericInstantiationFact {
-                type_bindings: vec![("T".to_owned(), concrete_arg)],
-                effect_row_bindings: Vec::new(),
-                deferred_effect_row_obligations: Vec::new(),
-            },
-        );
+        std::sync::Arc::make_mut(&mut types.facts)
+            .generic_instantiations
+            .insert(
+                call,
+                GenericInstantiationFact {
+                    type_bindings: vec![("T".to_owned(), concrete_arg)],
+                    effect_row_bindings: Vec::new(),
+                    deferred_effect_row_obligations: Vec::new(),
+                },
+            );
         let flow = etas_std::FlowDecl {
             name: "std.test.nested_selector".to_owned(),
             type_params: vec![etas_std::StdGenericParam::new("T")],

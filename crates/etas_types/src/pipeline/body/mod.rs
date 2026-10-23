@@ -34,26 +34,19 @@ pub fn run(ctx: &mut TypePipelineContext<'_>, item: etas_hir::HirItemId) {
     collect_body_item(ctx, &mut state);
     ctx.interner.primitive(crate::PrimitiveType::I32);
     ctx.interner.primitive(crate::PrimitiveType::F64);
-    let spec_facts = crate::SpecFacts {
-        signatures: ctx.signature_facts.spec_signatures.clone(),
-        impls: ctx.signature_facts.spec_impls.clone(),
-        type_satisfactions: ctx.signature_facts.type_spec_satisfactions.clone(),
-        callable_satisfactions: ctx.signature_facts.callable_spec_satisfactions.clone(),
-        trace_conformances: ctx.signature_facts.trace_spec_conformances.clone(),
-        external_callable_satisfactions: ctx
-            .signature_facts
-            .external_callable_spec_satisfactions
-            .clone(),
-        external_trace_conformances: ctx.signature_facts.external_trace_spec_conformances.clone(),
-        type_param_bounds: ctx.signature_facts.type_param_bounds.clone(),
-        std_impls: ctx.signature_facts.std_spec_impls.clone(),
-        std_spec_aliases: ctx.signature_facts.std_spec_aliases.clone(),
-    };
+    let spec_facts = ctx
+        .signature_base
+        .map(|base| base.specs.clone())
+        .unwrap_or_else(|| std::sync::Arc::new(crate::SpecFacts::from(&ctx.signature_facts)));
+    let known = &ctx
+        .signature_base
+        .map_or(&ctx.signature_facts, |base| &base.facts)
+        .known_std_types;
     solve::run(
         &mut state,
         &mut ctx.interner,
         &spec_facts,
-        &ctx.signature_facts.known_std_types,
+        known,
         ctx.hir.items[item].span(),
     );
     validate::run(ctx, &state);

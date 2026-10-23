@@ -27,9 +27,12 @@ pub(super) struct EffectPipelineContext<'a> {
 }
 
 impl<'a> EffectPipelineContext<'a> {
-    pub(super) fn new(input: EffectPipelineInput<'a>) -> Self {
+    pub(super) fn new(
+        input: EffectPipelineInput<'a>,
+        analysis_context: HirAnalysisContext,
+    ) -> Self {
         Self {
-            analysis_context: HirAnalysisContext::new(input.hir),
+            analysis_context,
             input,
             registry: None,
             units: None,

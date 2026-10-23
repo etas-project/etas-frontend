@@ -29,7 +29,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for EmitOutputPass {
             return context.fail(missing(EffectStage::Emit, "validated effect output"));
         };
         let artifacts = EffectPipelineArtifacts {
-            registry,
+            registry: std::sync::Arc::new(registry),
             dependency_metadata: context
                 .input
                 .dependency_metadata

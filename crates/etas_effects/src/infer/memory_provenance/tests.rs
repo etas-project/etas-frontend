@@ -13,8 +13,13 @@ fn copied_origin(source: &str) -> Result<Vec<EffectArgRef>, String> {
     let context = etas_hir_analysis::HirAnalysisContext::new(&hir);
     let units =
         crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&hir, &context);
-    let provenance =
-        MemoryProvenance::analyze(&hir, &types, &etas_std::standard_registry(), &units);
+    let provenance = MemoryProvenance::analyze(
+        &hir,
+        &types,
+        &etas_std::standard_registry(),
+        &units,
+        &context,
+    );
     let expr = hir
         .exprs
         .iter()
@@ -116,8 +121,13 @@ flow main() -> MemoryWriteIntent<string, string> {
     let context = etas_hir_analysis::HirAnalysisContext::new(&hir);
     let units =
         crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&hir, &context);
-    let provenance =
-        MemoryProvenance::analyze(&hir, &types, &etas_std::standard_registry(), &units);
+    let provenance = MemoryProvenance::analyze(
+        &hir,
+        &types,
+        &etas_std::standard_registry(),
+        &units,
+        &context,
+    );
     let expr = hir
         .exprs
         .iter()

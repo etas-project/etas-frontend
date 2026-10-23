@@ -254,11 +254,7 @@ fn collect_callable_callee(
         return None;
     };
     let symbol = resolved_callee_symbol(path)?;
-    let fact = ctx
-        .ctx
-        .symbols
-        .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)?
-        .clone();
+    let fact = ctx.ctx.symbol_fact(symbol)?.clone();
     let candidate = callable_candidate_from_fact(ctx, fact, instantiate_schematics)?;
     ctx.record_expr_type(callee, candidate.ty);
     Some(candidate)
@@ -277,11 +273,7 @@ fn callee_callable_signature(
         .provisional
         .symbol_types
         .get(&symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-        })?;
+        .or_else(|| ctx.ctx.symbol_fact(symbol))?;
     match fact {
         SymbolTypeFact::Flow { signature }
         | SymbolTypeFact::Agent { signature }
@@ -300,11 +292,7 @@ fn collect_type_constructor_callee(
         return None;
     };
     let symbol = resolved_callee_symbol(path)?;
-    let fact = ctx
-        .ctx
-        .symbols
-        .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)?
-        .clone();
+    let fact = ctx.ctx.symbol_fact(symbol)?.clone();
     match fact {
         SymbolTypeFact::NominalType { constructor, .. } => {
             if type_generic_args.is_empty() {
@@ -440,11 +428,7 @@ fn collect_partially_resolved_method_call(
         .provisional
         .symbol_types
         .get(&receiver_symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, receiver_symbol)
-        })
+        .or_else(|| ctx.ctx.symbol_fact(receiver_symbol))
         .cloned()?;
     let receiver_ty = value_type_from_fact(ctx, receiver_fact)?;
     let mut arg_tys = Vec::with_capacity(args.len() + 1);

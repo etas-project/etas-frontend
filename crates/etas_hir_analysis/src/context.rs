@@ -2,21 +2,28 @@ use etas_hir::{
     HirBlockId, HirBodyRef, HirExprId, HirHandlerArmId, HirItemId, HirProgram, HirTreeIndex,
     HirTreeIndexError, HirTreeView,
 };
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct HirAnalysisContext {
-    tree_index: HirTreeIndex,
+    tree_index: Arc<HirTreeIndex>,
 }
 
 impl HirAnalysisContext {
     pub fn try_new(hir: &HirProgram) -> Result<Self, HirTreeIndexError> {
         Ok(Self {
-            tree_index: HirTreeIndex::try_build(hir)?,
+            tree_index: Arc::new(HirTreeIndex::try_build(hir)?),
         })
     }
 
     pub fn new(hir: &HirProgram) -> Self {
         Self::try_new(hir).expect("HIR tree invariants should hold for analysis")
+    }
+
+    pub fn from_view(view: &HirTreeView<'_>) -> Self {
+        Self {
+            tree_index: view.shared_index(),
+        }
     }
 
     pub fn tree_index(&self) -> &HirTreeIndex {

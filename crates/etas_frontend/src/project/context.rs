@@ -1,8 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
+use crate::SharedEffectOutput;
 use etas_cache::{ArtifactKey as CacheArtifactKey, ProjectRevision};
 use etas_core::{Diagnostic, SourceId};
-use etas_effects::{EffectOutput, EffectPipelineArtifacts};
+use etas_effects::EffectPipelineArtifacts;
 use etas_types::TypeOutput;
 use etas_utils::{UnitFilterKey, UnitKey, UnitKindKey, UnitOrder, UnitProvider, UnitSelector};
 
@@ -33,28 +34,29 @@ pub struct ProjectContext {
     pub(crate) body_artifact_reuse: BodyArtifactReuseInput,
     pub(crate) parsed_source_reuse: HashMap<SourceId, crate::ParsedSource>,
     pub(crate) reused_cache_artifacts: Vec<CacheArtifactKey>,
-    pub sources: Option<SourceSet>,
+    pub sources: Option<std::sync::Arc<SourceSet>>,
     pub parsed_sources: Vec<crate::ParsedSource>,
     pub reused_parsed_sources: usize,
-    pub modules: Option<ModuleIndex>,
+    pub modules: Option<std::sync::Arc<ModuleIndex>>,
     pub module_catalog: Option<ModuleCatalog>,
-    pub units: Option<UnitTree>,
-    pub import_graph: Option<crate::ImportGraph>,
+    pub units: Option<std::sync::Arc<UnitTree>>,
+    pub import_graph: Option<Arc<crate::ImportGraph>>,
     pub module_topo_order: Option<ModuleTopoOrder>,
     pub affected_modules: Option<AffectedModuleSet>,
-    pub resolved_imports: Option<ResolvedImports>,
+    pub resolved_imports: Option<std::sync::Arc<ResolvedImports>>,
     pub(crate) validated_external_environment: Option<ValidatedExternalEnvironment>,
-    pub resolved_paths: Option<ResolvedPaths>,
+    pub resolved_paths: Option<std::sync::Arc<ResolvedPaths>>,
     pub hir_item_bindings: Option<HirItemBindings>,
     pub hir_body_bindings: Option<HirBodyBindings>,
     pub hir: Option<HirOutput>,
     pub(crate) signature_types: Option<TypeOutput>,
+    pub(crate) type_environment: Option<etas_types::SignatureEnvironment>,
     pub top_level_lets: Option<TopLevelLetFacts>,
-    pub(crate) type_body_outputs: HashMap<UnitId, TypeOutput>,
-    pub(crate) effect_body_outputs: HashMap<UnitId, EffectOutput>,
-    pub(crate) effect_pipeline_artifacts: Option<EffectPipelineArtifacts>,
+    pub(crate) type_body_outputs: HashMap<UnitId, Arc<etas_types::BodyTypeOutput>>,
+    pub(crate) effect_body_outputs: HashMap<UnitId, Arc<etas_effects::BodyEffectOutput>>,
+    pub(crate) effect_pipeline_artifacts: Option<Arc<EffectPipelineArtifacts>>,
     pub types: Option<TypeOutput>,
-    pub effects: Option<EffectOutput>,
+    pub effects: Option<SharedEffectOutput>,
     pub entry: Option<ProjectEntryFact>,
     pub reachability: Option<ReachabilityFacts>,
     pub runtime_source_requirements: Option<RuntimeSourceRequirements>,
@@ -99,6 +101,7 @@ impl ProjectContext {
             hir_body_bindings: None,
             hir: None,
             signature_types: None,
+            type_environment: None,
             top_level_lets: None,
             type_body_outputs: HashMap::new(),
             effect_body_outputs: HashMap::new(),
@@ -194,35 +197,9 @@ impl ProjectContext {
     }
 
     pub(crate) fn current_artifact_manifest(&self) -> FrontendArtifactManifest {
-        FrontendArtifactManifest::from_output(
+        FrontendArtifactManifest::from_input(
             ProjectRevision(0),
-            &crate::ProjectOutput {
-                checked: self.checked.clone(),
-                diagnostics: self.diagnostics.clone(),
-                sources: self.sources.clone(),
-                parsed_sources: self.parsed_sources.clone(),
-                reused_parsed_sources: self.reused_parsed_sources,
-                modules: self.modules.clone(),
-                units: self.units.clone(),
-                import_graph: self.import_graph.clone(),
-                module_topo_order: self.module_topo_order.clone(),
-                affected_modules: self.affected_modules.clone(),
-                resolved_imports: self.resolved_imports.clone(),
-                resolved_paths: self.resolved_paths.clone(),
-                hir_item_bindings: self.hir_item_bindings.clone(),
-                hir_body_bindings: self.hir_body_bindings.clone(),
-                hir: self.hir.clone(),
-                signature_types: self.signature_types.clone(),
-                top_level_lets: self.top_level_lets.clone(),
-                type_body_outputs: self.type_body_outputs.clone(),
-                types: self.types.clone(),
-                effect_body_outputs: self.effect_body_outputs.clone(),
-                effect_pipeline_artifacts: self.effect_pipeline_artifacts.clone(),
-                effects: self.effects.clone(),
-                entry: self.entry.clone(),
-                reachability: self.reachability.clone(),
-                runtime_source_requirements: self.runtime_source_requirements.clone(),
-            },
+            &crate::artifact::ArtifactManifestInput::from(self),
         )
     }
 
@@ -444,7 +421,7 @@ impl UnitProvider for ProjectContext {
 
     fn parent(&self, unit: UnitKey) -> Option<UnitKey> {
         let tree = self.units.as_ref()?;
-        let node = unit_node(tree, self.sources.as_ref(), unit)?;
+        let node = unit_node(tree, self.sources.as_deref(), unit)?;
         let parent = node.parent?;
         let parent_node = tree.nodes.get(parent)?;
         Some(unit_key_for_node(parent_node))
@@ -454,7 +431,7 @@ impl UnitProvider for ProjectContext {
         let Some(tree) = self.units.as_ref() else {
             return Vec::new();
         };
-        let Some(node) = unit_node(tree, self.sources.as_ref(), unit) else {
+        let Some(node) = unit_node(tree, self.sources.as_deref(), unit) else {
             return Vec::new();
         };
         node.children

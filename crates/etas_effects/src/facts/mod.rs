@@ -1,8 +1,10 @@
+mod body;
 pub mod effect_facts;
 pub mod projector;
 pub mod requirement_facts;
 pub mod support_facts;
 
+pub use body::BodyEffectOutput;
 pub use effect_facts::{
     EffectAcknowledgement, EffectAnalysisOutput, EffectComponentConvergence,
     EffectConvergenceStatus, EffectFacts, EffectMaterializationInputs, EffectOutput,

@@ -124,11 +124,7 @@ fn action_signature(
         .provisional
         .symbol_types
         .get(&symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-        })
+        .or_else(|| ctx.ctx.symbol_fact(symbol))
         .and_then(|fact| match fact {
             SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
             _ => None,

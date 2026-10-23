@@ -8,7 +8,7 @@ use etas_utils::{
 };
 
 use self::anchors::{ExternalImportAnchorIndex, external_artifact_anchors};
-use self::body_artifacts::{local_effect_output, record_reused_effect_body_artifacts};
+use self::body_artifacts::record_reused_effect_body_artifacts;
 use self::external_metadata::{
     external_effect_metadata, external_effect_summaries, external_trace_spec_summaries,
     tool_provider_bindings,
@@ -88,8 +88,8 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             .then_some(context.reachability.as_ref())
             .flatten()
             .map(|reachability| &reachability.reachable_items);
-        let pipeline_output =
-            match etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        let pipeline_output = match etas_effects::RunEffectPipeline::run_with_context(
+            etas_effects::EffectPipelineInput {
                 hir: &hir.hir,
                 types,
                 std_registry: context.std_registry.as_ref(),
@@ -99,14 +99,17 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 external_trace_specs: &external_trace_specs,
                 external_artifact_anchors: &external_artifact_anchors,
                 reachable_items,
-            }) {
-                Ok(output) => output,
-                Err(error) => return PassResult::failed(error.to_string()),
-            };
+            },
+            etas_hir_analysis::HirAnalysisContext::from_view(&hir.view()),
+        ) {
+            Ok(output) => output,
+            Err(error) => return PassResult::failed(error.to_string()),
+        };
         let output = pipeline_output.effects;
-        context.effect_pipeline_artifacts = Some(pipeline_output.artifacts);
+        context.effect_pipeline_artifacts = Some(std::sync::Arc::new(pipeline_output.artifacts));
         context.effect_body_outputs.clear();
         if let (Some(units), Some(bindings)) = (&context.units, &context.hir_item_bindings) {
+            let mut body_items = Vec::new();
             for (unit, node) in units.nodes.iter() {
                 if node.kind != UnitKind::Body {
                     continue;
@@ -125,16 +128,33 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 let Some(item) = bindings.ast_to_hir.get(&body.item).copied() else {
                     continue;
                 };
+                body_items.push((unit, item));
+            }
+            let mut bodies = match etas_effects::BodyEffectOutput::project(
+                &output,
+                &hir.hir,
+                &hir.tree_index,
+                body_items.iter().map(|(_, item)| *item),
+            ) {
+                Ok(bodies) => bodies,
+                Err(error) => return PassResult::failed(error),
+            };
+            for (unit, item) in body_items {
+                let Some(body) = bodies.remove(&item) else {
+                    return PassResult::failed(
+                        "effect body has duplicate or missing item ownership",
+                    );
+                };
                 context
                     .effect_body_outputs
-                    .insert(unit, local_effect_output(output.clone(), &hir.hir, item));
+                    .insert(unit, std::sync::Arc::new(body));
             }
         }
         context.diagnostics.extend(external_metadata_diagnostics);
         context
             .diagnostics
             .extend(output.diagnostics.iter().cloned());
-        context.effects = Some(output);
+        context.effects = Some(output.into());
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(EFFECT_OUTPUT))
     }
 }

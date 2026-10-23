@@ -39,7 +39,11 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
             .take()
             .expect("signature facts should exist before top-level let validation");
         types.diagnostics.clear();
-        let mut checked = etas_types::check_top_level_items(&hir.hir, types);
+        let mut checked = etas_types::pipeline::check_top_level_items(
+            &hir.hir,
+            types,
+            context.std_registry.clone(),
+        );
         context
             .diagnostics
             .extend(checked.diagnostics.iter().cloned());
@@ -77,10 +81,11 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
             }
         }
 
+        let program = std::sync::Arc::make_mut(&mut hir.hir);
         for (item_id, fact) in &facts.items {
-            if let Some(HirItem::TopLevelLet(item)) = hir.hir.items.get_mut(*item_id) {
+            if let Some(HirItem::TopLevelLet(item)) = program.items.get_mut(*item_id) {
                 item.classification = fact.classification.clone();
-                if let Some(symbol) = hir.hir.symbols.get_mut(item.symbol)
+                if let Some(symbol) = program.symbols.get_mut(item.symbol)
                     && let SymbolDef::TopLevelLet { classification, .. } = &mut symbol.def
                 {
                     *classification = fact.classification.clone();
@@ -88,9 +93,10 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
             }
         }
 
+        let checked_facts = std::sync::Arc::make_mut(&mut checked.facts);
         for (symbol_id, fact) in &facts.symbols {
             if let Some(etas_types::SymbolTypeFact::TopLevelLet { classification, .. }) =
-                checked.facts.symbol_types.get_mut(symbol_id)
+                checked_facts.symbol_types.get_mut(symbol_id)
             {
                 *classification = fact.classification.clone();
             }

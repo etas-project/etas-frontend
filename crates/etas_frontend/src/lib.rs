@@ -15,15 +15,16 @@ pub use artifact::{
 };
 pub use etas_cache::ProjectRevision;
 pub use incremental::{
-    ChangeSummary, CheckMode, CheckRequest, CheckResponse, CheckScope, CompilerOptionChange,
-    DependencyOverlayChange, DiagnosticSet, EnvironmentChange, MemoryArtifactReuse,
-    ProjectChangeSet, SnapshotDetailLevel, SourceChange, SourceVersion, TextEdit,
+    ChangeSummary, CheckMode, CheckRequest, CheckResponse, CheckRetention, CheckScope,
+    CompilerOptionChange, DependencyOverlayChange, DiagnosticSet, EnvironmentChange,
+    MemoryArtifactReuse, ProjectChangeSet, SnapshotDetailLevel, SourceChange, SourceVersion,
+    TextEdit,
 };
 pub(crate) use output::ValidatedExternalEnvironment;
 pub use output::{
-    BLOCK_UNIT_KIND, BODY_UNIT_KIND, CheckOutput, CheckedProgram, CheckedProject,
-    DiagnosticDocument, DiagnosticDumpOptions, DiagnosticLabelRecord, DiagnosticRecord,
-    DiagnosticSpanRecord, DiagnosticSuggestionRecord, DiagnosticTextEditRecord,
+    BLOCK_UNIT_KIND, BODY_UNIT_KIND, CheckOutput, CheckedProgram, CheckedProgramData,
+    CheckedProject, DiagnosticDocument, DiagnosticDumpOptions, DiagnosticLabelRecord,
+    DiagnosticRecord, DiagnosticSpanRecord, DiagnosticSuggestionRecord, DiagnosticTextEditRecord,
     EXPRESSION_UNIT_KIND, EntryPolicy, ExternalModuleId, ExternalPackageId, ExternalSymbolId,
     ITEM_UNIT_KIND, MODULE_PART_UNIT_KIND, MODULE_UNIT_KIND, ModuleId, ModulePartId, ModulePath,
     PROJECT_UNIT_KIND, ProjectCompileOptions, ProjectEntry, ProjectEntryFact,
@@ -45,8 +46,8 @@ pub use output::{
     ProjectExternalTraceSpecClauseKindInput, ProjectExternalTraceSpecConformanceInput,
     ProjectExternalTraceSpecConformanceTargetInput, ProjectExternalTraceSpecSummaryInput,
     ProjectExternalTypeInput, ProjectExternalTypeSpecSatisfactionInput, ProjectId, ProjectInput,
-    ProjectOutput, ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, TopLevelLetFact,
-    TopLevelLetFacts, UnitId,
+    ProjectOutput, ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, SharedEffectOutput,
+    TopLevelLetFact, TopLevelLetFacts, UnitId,
 };
 pub use package_metadata::{
     PackageMetadataArtifact, PackageMetadataBinInput, PackageMetadataBuildInput,
@@ -69,9 +70,10 @@ pub use project::{
     SourceKind, SourceLoader, SourceSet, UnitKind, UnitNode, UnitTarget, UnitTree,
 };
 pub use session::{
-    DefinitionTarget, DiagnosticDelta, FrontendArtifactStore, FrontendCacheConfig, FrontendSession,
-    FrontendSessionError, FrontendSessionOptions, FrontendSessionStore, ProjectSemanticDelta,
-    ProjectSemanticSnapshot, ProjectSessionId, SnapshotDefinitionTargets,
+    AllocationSnapshot, CheckMemoryReport, DefinitionTarget, DiagnosticDelta,
+    FrontendArtifactStore, FrontendCacheConfig, FrontendMemoryProbe, FrontendSession,
+    FrontendSessionError, FrontendSessionOptions, FrontendSessionStore, PassMemorySample,
+    ProjectSemanticDelta, ProjectSemanticSnapshot, ProjectSessionId, SnapshotDefinitionTargets,
 };
 
 use etas_core::{Diagnostic, SourceFile as CoreSourceFile};
@@ -87,13 +89,19 @@ impl Frontend {
     pub fn parse(&self, input: SourceInput) -> ParseOutput {
         let source = CoreSourceFile::new(input.id, input.path, input.text);
         let parsed = etas_syntax::parse_program(source.clone());
-        ParseOutput { source, parsed }
+        ParseOutput {
+            source,
+            parsed: std::sync::Arc::new(parsed),
+        }
     }
 
     pub fn lower(&self, parsed: &ParseOutput) -> HirOutput {
         let hir = etas_hir::lower_program(&parsed.parsed.value);
-        let tree_index = etas_hir::HirTreeIndex::build(&hir);
-        HirOutput { hir, tree_index }
+        let tree_index = std::sync::Arc::new(etas_hir::HirTreeIndex::build(&hir));
+        HirOutput {
+            hir: std::sync::Arc::new(hir),
+            tree_index,
+        }
     }
 
     pub fn check(&self, input: SourceInput) -> CheckOutput {
@@ -105,7 +113,7 @@ impl Frontend {
         let mut session = FrontendSession::new();
         let project = session.open_project(input);
         session
-            .check(project, CheckRequest::default())
+            .check(project, CheckRequest::one_shot())
             .expect("one-shot frontend check uses a valid project session")
             .output
     }

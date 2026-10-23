@@ -17,6 +17,7 @@ pub enum EffectStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectPipelineError {
+    InvalidHir(etas_hir::HirTreeIndexError),
     MissingStageArtifact {
         stage: EffectStage,
         artifact: &'static str,
@@ -44,6 +45,9 @@ pub enum EffectPipelineError {
 impl std::fmt::Display for EffectPipelineError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidHir(error) => {
+                write!(formatter, "invalid HIR for effect analysis: {error}")
+            }
             Self::MissingStageArtifact { stage, artifact } => {
                 write!(
                     formatter,

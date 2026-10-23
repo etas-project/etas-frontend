@@ -71,7 +71,7 @@ impl Pass<ProjectContext> for BuildImportGraphPass {
             );
         }
 
-        context.import_graph = Some(graph);
+        context.import_graph = Some(std::sync::Arc::new(graph));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(IMPORT_GRAPH))
     }
 }

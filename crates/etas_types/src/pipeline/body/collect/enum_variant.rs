@@ -33,13 +33,7 @@ pub(super) fn signature(
     path: &ResolvedPath,
 ) -> Option<CallableSignature> {
     let variant = declaration(ctx, path)?;
-    let SymbolTypeFact::Flow { signature } = ctx
-        .ctx
-        .signature_facts
-        .symbol_types
-        .get(&variant.symbol)?
-        .clone()
-    else {
+    let SymbolTypeFact::Flow { signature } = ctx.ctx.symbol_type(variant.symbol)?.clone() else {
         return None;
     };
     Some(super::expr::instantiate_callable_signature(ctx, signature))

@@ -65,3 +65,20 @@ pub struct TypeFacts {
     pub generic_instantiations: HashMap<HirExprId, GenericInstantiationFact>,
     pub try_facts: HashMap<HirExprId, TryExprTypeFact>,
 }
+
+impl From<&TypeFacts> for SpecFacts {
+    fn from(facts: &TypeFacts) -> Self {
+        Self {
+            signatures: facts.spec_signatures.clone(),
+            impls: facts.spec_impls.clone(),
+            type_satisfactions: facts.type_spec_satisfactions.clone(),
+            callable_satisfactions: facts.callable_spec_satisfactions.clone(),
+            trace_conformances: facts.trace_spec_conformances.clone(),
+            external_callable_satisfactions: facts.external_callable_spec_satisfactions.clone(),
+            external_trace_conformances: facts.external_trace_spec_conformances.clone(),
+            type_param_bounds: facts.type_param_bounds.clone(),
+            std_impls: facts.std_spec_impls.clone(),
+            std_spec_aliases: facts.std_spec_aliases.clone(),
+        }
+    }
+}

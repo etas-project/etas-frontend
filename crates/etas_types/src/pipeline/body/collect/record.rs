@@ -88,11 +88,7 @@ fn record_constructor_type(
         return None;
     };
     let args = lower_record_generic_args(ctx, generic_args);
-    let fact = ctx
-        .ctx
-        .symbols
-        .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)?
-        .clone();
+    let fact = ctx.ctx.symbol_fact(symbol)?.clone();
     match fact {
         SymbolTypeFact::TypeAlias { target, params } => {
             Some(apply_alias_type_args(ctx, target, params, args, span))
@@ -104,10 +100,7 @@ fn record_constructor_type(
                 args,
             ))
         }
-        _ => ctx
-            .ctx
-            .symbols
-            .type_fact_as_type_id(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol),
+        _ => ctx.ctx.type_fact_as_type_id(symbol),
     }
 }
 

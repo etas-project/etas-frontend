@@ -172,7 +172,7 @@ fn std_method_candidate(
         })
     {
         candidate.operation = crate::CallableCandidateOperation::CheckedIndex {
-            error: ctx.ctx.signature_facts.known_std_types.index_error,
+            error: ctx.ctx.known_std_types().index_error,
         };
     }
     Some(candidate)
@@ -456,11 +456,7 @@ fn std_member_fact(
             .provisional
             .symbol_types
             .get(&base_symbol)
-            .or_else(|| {
-                ctx.ctx
-                    .symbols
-                    .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, base_symbol)
-            })
+            .or_else(|| ctx.ctx.symbol_fact(base_symbol))
             .cloned()
     {
         let ty = ctx.ctx.interner.intern(Type::Function(FlowType {

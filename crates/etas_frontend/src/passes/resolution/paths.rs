@@ -114,11 +114,11 @@ impl Pass<ProjectContext> for ResolvePathsPass {
             });
         }
         context.diagnostics.extend(diagnostics);
-        context.resolved_paths = Some(ResolvedPaths {
+        context.resolved_paths = Some(std::sync::Arc::new(ResolvedPaths {
             module_names,
             import_targets,
             expr_paths,
-        });
+        }));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(RESOLVED_PATHS))
     }
 }

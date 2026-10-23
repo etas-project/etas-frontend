@@ -12,8 +12,8 @@ mod source;
 
 pub use analysis::{
     AnalyzeLoopProgressPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
-    ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
-    ValidateExternalEnvironmentPass, ValidateTopLevelLetPass,
+    PrepareBodyTypeEnvironmentPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass,
+    TypeCheckBodyPass, ValidateExternalEnvironmentPass, ValidateTopLevelLetPass,
 };
 pub use dependency::ComputeEntryReachabilityPass;
 pub use execution::VerifyInterpreterSupportPass;

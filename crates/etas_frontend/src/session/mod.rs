@@ -11,7 +11,10 @@ use crate::{ExternalPackageId, ProjectInput, SourceSet};
 
 mod change;
 mod delta;
+mod memory;
 mod options;
+#[cfg(test)]
+mod ownership_tests;
 mod project;
 mod snapshot;
 mod source_state;
@@ -20,6 +23,8 @@ mod store;
 use project::FrontendProjectState;
 
 pub use delta::{DiagnosticDelta, ProjectSemanticDelta};
+pub(crate) use memory::MemoryInstrumentation;
+pub use memory::{AllocationSnapshot, CheckMemoryReport, FrontendMemoryProbe, PassMemorySample};
 pub use options::{FrontendCacheConfig, FrontendSessionOptions};
 pub use snapshot::{DefinitionTarget, ProjectSemanticSnapshot, SnapshotDefinitionTargets};
 pub use store::{FrontendArtifactStore, FrontendSessionStore};
@@ -71,6 +76,7 @@ where
     projects: HashMap<ProjectSessionId, FrontendProjectState<S>>,
     new_store: Box<dyn Fn() -> Result<S, FrontendSessionError>>,
     std_registry: Arc<etas_std::StdRegistry>,
+    memory_probe: Option<FrontendMemoryProbe>,
 }
 
 impl Default for FrontendSession<MemoryArtifactStore> {
@@ -95,6 +101,7 @@ impl FrontendSession<FrontendSessionStore> {
                 FrontendSessionStore::from_options(&options).map_err(cache_error)
             }),
             std_registry: Arc::new(etas_std::standard_registry()),
+            memory_probe: None,
         })
     }
 }
@@ -109,6 +116,7 @@ where
             projects: HashMap::new(),
             new_store: Box::new(move || Ok(new_store())),
             std_registry: Arc::new(etas_std::standard_registry()),
+            memory_probe: None,
         }
     }
 
@@ -148,13 +156,26 @@ where
         project: ProjectSessionId,
         request: CheckRequest,
     ) -> Result<CheckResponse, FrontendSessionError> {
-        self.project_mut(project)?.check(request)
+        let probe = self.memory_probe;
+        self.project_mut(project)?
+            .check_with_memory_probe(request, probe)
+    }
+
+    pub fn set_memory_probe(&mut self, probe: Option<FrontendMemoryProbe>) {
+        self.memory_probe = probe;
     }
 
     pub fn snapshot(&self, project: ProjectSessionId) -> Option<ProjectSemanticSnapshot> {
         self.projects
             .get(&project)
             .and_then(|state| state.last_good_snapshot.clone())
+    }
+
+    pub fn close_project(&mut self, project: ProjectSessionId) -> Result<(), FrontendSessionError> {
+        self.projects
+            .remove(&project)
+            .map(drop)
+            .ok_or(FrontendSessionError::UnknownProject(project))
     }
 
     pub fn source_set(&self, project: ProjectSessionId) -> Option<&SourceSet> {

@@ -23,6 +23,10 @@ where
 {
     pub fn new(semantics: S) -> Self {
         let context = HirAnalysisContext::new(semantics.hir());
+        Self::with_context(semantics, context)
+    }
+
+    pub fn with_context(semantics: S, context: HirAnalysisContext) -> Self {
         Self { semantics, context }
     }
 

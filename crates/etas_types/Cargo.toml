@@ -12,6 +12,7 @@ etas_hir.workspace = true
 etas_std.workspace = true
 etas_utils.workspace = true
 serde.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 etas_syntax.workspace = true

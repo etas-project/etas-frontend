@@ -27,6 +27,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for AnalyzeMemoryProvenancePass {
                 context.input.types,
                 context.input.std_registry,
                 units,
+                &context.analysis_context,
             ),
         ));
         produced(MEMORY_PROVENANCE)

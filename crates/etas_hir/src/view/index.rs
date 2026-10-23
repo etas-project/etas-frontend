@@ -12,8 +12,18 @@ use super::model::{
     HirTreeIndexError, HirTreeNodeKind,
 };
 
+thread_local! {
+    static INDEX_BUILD_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl HirTreeIndex {
+    /// Counts validation attempts on the calling compiler thread, including failed builds.
+    pub fn thread_build_count() -> u64 {
+        INDEX_BUILD_COUNT.get()
+    }
+
     pub fn try_build(program: &HirProgram) -> Result<Self, HirTreeIndexError> {
+        INDEX_BUILD_COUNT.set(INDEX_BUILD_COUNT.get() + 1);
         let mut builder = HirTreeIndexBuilder {
             program,
             index: HirTreeIndex::default(),
@@ -209,6 +219,7 @@ impl HirTreeIndexBuilder<'_> {
             self.missing(HirTreeNodeKind::Statement, stmt_id.0, None);
             return;
         }
+        self.index.stmt_item.insert(stmt_id, item_id);
         let program = self.program;
         for_each_stmt_child(program, stmt_id, |child| match child {
             HirTreeChild::Expr(expr) => self.index_expr(expr, HirOwner::Stmt(stmt_id), item_id),
@@ -225,6 +236,7 @@ impl HirTreeIndexBuilder<'_> {
             if !self.insert_expr_owner(expr_id, owner) {
                 continue;
             }
+            self.index.expr_item.insert(expr_id, item_id);
             self.index_expr_body(expr_id, item_id, owner, &mut stack);
 
             children.clear();

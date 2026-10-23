@@ -117,7 +117,7 @@ impl Coverage<'_, '_> {
             Type::Applied { constructor, args } => (TypeId(constructor.0), args.clone()),
             _ => (ty, Vec::new()),
         };
-        if let Some(layout) = self.ctx.signature_facts.enum_layouts.get(&base).cloned() {
+        if let Some(layout) = self.ctx.enum_layout(base).cloned() {
             let substitutions = layout
                 .type_params
                 .into_iter()
@@ -309,7 +309,7 @@ impl Coverage<'_, '_> {
                     return None;
                 };
                 let crate::SymbolTypeFact::Type { constructor } =
-                    self.ctx.signature_facts.symbol_types.get(&decl.symbol)?
+                    self.ctx.symbol_type(decl.symbol)?
                 else {
                     return None;
                 };
@@ -320,7 +320,7 @@ impl Coverage<'_, '_> {
             }
             SymbolDef::ImportAlias { path, .. } => {
                 let std = self.ctx.std_registry.lookup_qualified(path)?;
-                let fact = self.ctx.signature_facts.symbol_types.get(&symbol.id)?;
+                let fact = self.ctx.symbol_type(symbol.id)?;
                 let result = match fact {
                     crate::SymbolTypeFact::Flow { signature } => signature.output,
                     crate::SymbolTypeFact::Value { ty } => *ty,
@@ -330,7 +330,7 @@ impl Coverage<'_, '_> {
                     Type::Applied { constructor, .. } => TypeId(constructor.0),
                     _ => result,
                 };
-                if let Some(layout) = self.ctx.signature_facts.enum_layouts.get(&owner) {
+                if let Some(layout) = self.ctx.enum_layout(owner) {
                     if result != owner {
                         return None;
                     }

@@ -13,6 +13,7 @@ pub(crate) struct FrontendPipelineRun {
     pub(crate) reused_artifacts: Vec<etas_cache::ArtifactKey>,
     pub(crate) control: PassControl,
     pub(crate) records: Vec<PassRunRecord>,
+    pub(crate) memory_samples: Vec<crate::session::PassMemorySample>,
 }
 
 pub(crate) struct FrontendPipelineRequest {
@@ -25,6 +26,7 @@ pub(crate) struct FrontendPipelineRequest {
     pub(crate) check_scope: CheckScope,
     pub(crate) collect_timing: bool,
     pub(crate) std_registry: Arc<etas_std::StdRegistry>,
+    pub(crate) memory_probe: Option<crate::session::FrontendMemoryProbe>,
 }
 
 pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPipelineRun {
@@ -38,6 +40,7 @@ pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPi
         check_scope,
         collect_timing,
         std_registry,
+        memory_probe,
     } = request;
     let mut context = if incremental {
         ProjectContext::new_incremental_with_reuse_and_std_registry(
@@ -55,6 +58,10 @@ pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPi
     let mut pipeline = project_pipeline();
     let mut manager =
         PassManager::with_config(PipelineConfig::default().with_timing(collect_timing));
+    let memory = memory_probe.map(crate::session::MemoryInstrumentation::new);
+    if let Some(hook) = &memory {
+        manager.add_instrumentation(hook.clone());
+    }
     let result = manager.run_pipeline(&mut pipeline, &mut context);
     let control = result.control.clone();
     let records = result.records;
@@ -65,5 +72,6 @@ pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPi
         reused_artifacts,
         control,
         records,
+        memory_samples: memory.map(|hook| hook.take_samples()).unwrap_or_default(),
     }
 }

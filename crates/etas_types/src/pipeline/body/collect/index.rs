@@ -82,7 +82,7 @@ fn checked_index_error_type(
     ctx: &mut BodyCollectContext<'_, '_>,
     span: etas_core::Span,
 ) -> Option<TypeId> {
-    let found = ctx.ctx.signature_facts.known_std_types.index_error;
+    let found = ctx.ctx.known_std_types().index_error;
     if found.is_none() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,

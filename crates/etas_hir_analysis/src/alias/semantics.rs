@@ -51,6 +51,7 @@ where
         units: &[HirSemanticUnit],
         config: AliasPrecisionConfig,
         oracle: O,
+        context: HirAnalysisContext,
     ) -> Self {
         let mut lambda_units = BTreeMap::new();
         let mut handler_units = BTreeMap::new();
@@ -67,7 +68,7 @@ where
         }
         Self {
             hir,
-            context: HirAnalysisContext::new(hir),
+            context,
             config,
             oracle,
             lambda_units,

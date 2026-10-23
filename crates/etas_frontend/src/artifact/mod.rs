@@ -5,6 +5,7 @@ mod fingerprint;
 mod key;
 mod kind;
 mod manifest;
+mod manifest_input;
 mod metadata;
 mod policy;
 mod signature_facts;
@@ -22,6 +23,7 @@ pub use key::{FrontendArtifactKey, FrontendUnitKey};
 pub use kind::{FRONTEND_ARTIFACT_SCHEMA_VERSION, FRONTEND_CACHE_NAMESPACE, FrontendArtifactKind};
 pub(crate) use manifest::PersistedFrontendArtifactManifest;
 pub use manifest::{FrontendArtifactManifest, FrontendArtifactRecord};
+pub(crate) use manifest_input::ArtifactManifestInput;
 pub use metadata::FRONTEND_COMPILER_VERSION;
 pub(crate) use metadata::{
     changed_compiler_options_hash, frontend_artifact_meta, frontend_std_version,
