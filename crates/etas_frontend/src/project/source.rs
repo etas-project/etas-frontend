@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use etas_core::{Diagnostic, LineIndex, SourceFile as CoreSourceFile, SourceId};
-use etas_hir::{HirProgram, HirTreeIndex, HirTreeView};
+use etas_hir::{HirRevision, HirTreeView};
 use etas_syntax::{Parse, ast};
 
 use super::module_index::{AstImportRef, AstItemRef};
@@ -34,13 +34,12 @@ pub struct ParseOutput {
 
 #[derive(Clone, Debug)]
 pub struct HirOutput {
-    pub hir: Arc<HirProgram>,
-    pub tree_index: Arc<HirTreeIndex>,
+    pub hir: HirRevision,
 }
 
 impl HirOutput {
     pub fn view(&self) -> HirTreeView<'_> {
-        HirTreeView::from_validated_index(&self.hir, self.tree_index.clone())
+        self.hir.view()
     }
 }
 

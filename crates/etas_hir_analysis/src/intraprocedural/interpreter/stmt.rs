@@ -12,7 +12,7 @@ where
 
     pub fn stmt_control(&mut self, stmt: HirStmtId, state: S::Domain) -> Control<S::Domain> {
         let state = self.semantics.before_stmt(stmt, state);
-        let stmt_data = self.semantics.hir().stmts[stmt].clone();
+        let stmt_data = self.context().program().stmts[stmt].clone();
         let next = match stmt_data {
             HirStmt::Let { value, .. } | HirStmt::Var { value, .. } => {
                 self.expr_control(value, state)

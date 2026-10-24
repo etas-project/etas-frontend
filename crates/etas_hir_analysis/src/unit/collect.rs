@@ -1,4 +1,4 @@
-use etas_hir::{HirBodyKind, HirItem, HirProgram, HirToolBody};
+use etas_hir::{HirBodyKind, HirItem, HirRevision, HirToolBody};
 
 use crate::HirAnalysisContext;
 
@@ -7,16 +7,13 @@ use super::{HirAnonymousFlowBody, HirSemanticUnit};
 pub struct HirSemanticUnitCollector;
 
 impl HirSemanticUnitCollector {
-    pub fn collect(hir: &HirProgram) -> Vec<HirSemanticUnit> {
+    pub fn collect(hir: &HirRevision) -> Vec<HirSemanticUnit> {
         let context = HirAnalysisContext::new(hir);
-        Self::collect_with_context(hir, &context)
+        Self::collect_with_context(&context)
     }
 
-    pub fn collect_with_context(
-        hir: &HirProgram,
-        context: &HirAnalysisContext,
-    ) -> Vec<HirSemanticUnit> {
-        let view = context.view(hir);
+    pub fn collect_with_context(context: &HirAnalysisContext) -> Vec<HirSemanticUnit> {
+        let view = context.view();
         let mut units = Vec::new();
 
         for module in view.modules() {

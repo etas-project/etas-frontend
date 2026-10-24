@@ -39,7 +39,6 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
                 external_summaries: context.input.external_summaries,
             },
             units,
-            context.analysis_context.clone(),
         );
         match analysis {
             Ok(analysis) => context.analysis = Some(analysis),

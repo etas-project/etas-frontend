@@ -150,7 +150,7 @@ pub struct ExternalTraceSpecEffectMetadata {
 
 #[derive(Clone, Copy)]
 pub struct EffectPipelineInput<'a> {
-    pub hir: &'a etas_hir::HirProgram,
+    pub hir: &'a etas_hir::HirRevision,
     pub types: &'a etas_types::TypeOutput,
     pub std_registry: &'a etas_std::StdRegistry,
     pub dependency_metadata: Option<&'a DependencyEffectMetadata>,
@@ -207,16 +207,7 @@ impl RunEffectPipeline {
     pub fn run(
         input: EffectPipelineInput<'_>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        let analysis_context = etas_hir_analysis::HirAnalysisContext::try_new(input.hir)
-            .map_err(EffectPipelineError::InvalidHir)?;
-        Self::run_with_context(input, analysis_context)
-    }
-
-    pub fn run_with_context(
-        input: EffectPipelineInput<'_>,
-        analysis_context: etas_hir_analysis::HirAnalysisContext,
-    ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        let mut context = EffectPipelineContext::new(input, analysis_context);
+        let mut context = EffectPipelineContext::new(input);
         let mut pipeline = effect_pipeline();
         let mut manager = PassManager::with_config(PipelineConfig::default().with_timing(true));
         let result = manager.run_global_pipeline(&mut pipeline, &mut context);
@@ -281,24 +272,12 @@ mod tests {
     };
 
     #[test]
-    fn standalone_pipeline_rejects_invalid_hir_before_analysis() {
+    fn unvalidated_hir_cannot_enter_effect_pipeline() {
         let mut hir = HirProgram::default();
         hir.modules.push(etas_hir::HirModuleId(0));
-        let types = TypeOutput::default();
-        let registry = etas_std::standard_registry();
         let before = etas_hir::HirTreeIndex::thread_build_count();
-        let result = RunEffectPipeline::run(EffectPipelineInput {
-            hir: &hir,
-            types: &types,
-            std_registry: &registry,
-            dependency_metadata: None,
-            tool_bindings: &[],
-            external_summaries: &[],
-            external_trace_specs: &[],
-            external_artifact_anchors: &[],
-            reachable_items: None,
-        });
-        assert!(matches!(result, Err(EffectPipelineError::InvalidHir(_))));
+        let result = etas_hir::HirRevision::try_new(hir);
+        assert!(result.is_err());
         assert_eq!(etas_hir::HirTreeIndex::thread_build_count() - before, 1);
     }
 
@@ -319,7 +298,7 @@ mod tests {
     #[test]
     fn pass_manager_rejects_effect_stage_when_required_artifact_is_absent() {
         for missing in [EFFECT_REGISTRY, MEMORY_PROVENANCE] {
-            let hir = HirProgram::default();
+            let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
             let types = TypeOutput::default();
             let input = EffectPipelineInput {
                 hir: &hir,
@@ -332,8 +311,7 @@ mod tests {
                 external_artifact_anchors: &[],
                 reachable_items: None,
             };
-            let mut context =
-                EffectPipelineContext::new(input, etas_hir_analysis::HirAnalysisContext::new(&hir));
+            let mut context = EffectPipelineContext::new(input);
             let pipeline = Pipeline::new("effects.missing_artifact").pass(CollectUnitsPass);
             let mut pipeline = if missing == EFFECT_REGISTRY {
                 pipeline.pass(AnalyzeMemoryProvenancePass)

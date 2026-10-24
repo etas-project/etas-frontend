@@ -18,38 +18,16 @@ pub struct EffectContractValidator;
 
 impl EffectContractValidator {
     pub fn validate(
-        hir: &etas_hir::HirProgram,
+        hir: &etas_hir::HirRevision,
         types: &etas_types::TypeOutput,
         registry: &EffectRegistry,
         tool_bindings: &[ToolProviderBindingMetadata],
         effects: &mut EffectOutput,
         reachable_items: Option<&BTreeSet<HirItemId>>,
-    ) -> Result<(), EffectPipelineError> {
-        let context = etas_hir_analysis::HirAnalysisContext::try_new(hir)
-            .map_err(EffectPipelineError::InvalidHir)?;
-        Self::validate_with_context(
-            hir,
-            types,
-            registry,
-            tool_bindings,
-            effects,
-            reachable_items,
-            &context,
-        )
-    }
-
-    pub fn validate_with_context(
-        hir: &etas_hir::HirProgram,
-        types: &etas_types::TypeOutput,
-        registry: &EffectRegistry,
-        tool_bindings: &[ToolProviderBindingMetadata],
-        effects: &mut EffectOutput,
-        reachable_items: Option<&BTreeSet<HirItemId>>,
-        context: &etas_hir_analysis::HirAnalysisContext,
     ) -> Result<(), EffectPipelineError> {
         let mut validator = ContractValidator {
             hir,
-            tree: context.view(hir),
+            tree: hir.view(),
             types,
             registry,
             tool_bindings,

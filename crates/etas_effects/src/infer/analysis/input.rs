@@ -5,7 +5,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct EffectAnalysisInput<'a> {
-    pub hir: &'a etas_hir::HirProgram,
+    pub hir: &'a etas_hir::HirRevision,
     pub types: &'a etas_types::TypeOutput,
     pub std_registry: &'a etas_std::StdRegistry,
     pub(crate) memory_provenance: std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>,

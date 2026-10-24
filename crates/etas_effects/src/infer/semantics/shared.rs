@@ -3,7 +3,7 @@ pub(super) use std::collections::BTreeSet;
 pub(super) use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
 pub(super) use etas_hir::{
     HirArg, HirExpr, HirExprId, HirGenericArg, HirHandlerArmId, HirItemId, HirLiteral, HirPat,
-    HirPatId, HirProgram, HirStmt, HirStmtId, ResolveResult, ResolvedActionRef, SymbolDef,
+    HirPatId, HirStmt, HirStmtId, ResolveResult, ResolvedActionRef, SymbolDef,
 };
 pub(super) use etas_hir_analysis::interprocedural::{
     CallSite, CallTarget, HirAnalysisBody, InterproceduralSemantics, UnitContext,

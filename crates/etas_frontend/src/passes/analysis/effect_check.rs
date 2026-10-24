@@ -88,8 +88,8 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             .then_some(context.reachability.as_ref())
             .flatten()
             .map(|reachability| &reachability.reachable_items);
-        let pipeline_output = match etas_effects::RunEffectPipeline::run_with_context(
-            etas_effects::EffectPipelineInput {
+        let pipeline_output =
+            match etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
                 hir: &hir.hir,
                 types,
                 std_registry: context.std_registry.as_ref(),
@@ -99,12 +99,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 external_trace_specs: &external_trace_specs,
                 external_artifact_anchors: &external_artifact_anchors,
                 reachable_items,
-            },
-            etas_hir_analysis::HirAnalysisContext::from_view(&hir.view()),
-        ) {
-            Ok(output) => output,
-            Err(error) => return PassResult::failed(error.to_string()),
-        };
+            }) {
+                Ok(output) => output,
+                Err(error) => return PassResult::failed(error.to_string()),
+            };
         let output = pipeline_output.effects;
         context.effect_pipeline_artifacts = Some(std::sync::Arc::new(pipeline_output.artifacts));
         context.effect_body_outputs.clear();
@@ -133,7 +131,6 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             let mut bodies = match etas_effects::BodyEffectOutput::project(
                 &output,
                 &hir.hir,
-                &hir.tree_index,
                 body_items.iter().map(|(_, item)| *item),
             ) {
                 Ok(bodies) => bodies,

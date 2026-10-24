@@ -30,7 +30,7 @@ flow main() -> unit {
         source,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let hir = etas_hir::lower_program(&parsed.value);
+    let hir = etas_hir::HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let registry = etas_std::standard_registry();

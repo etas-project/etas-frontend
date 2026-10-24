@@ -18,13 +18,17 @@ pub struct ValidateTopLevelLetPass;
 
 impl Pass<ProjectContext> for ValidateTopLevelLetPass {
     fn descriptor(&self) -> PassDescriptor {
-        PassDescriptor::new("ValidateTopLevelLetPass", PassKind::Analysis)
+        PassDescriptor::new("ValidateTopLevelLetPass", PassKind::Transform)
             .requires(ArtifactSet::from([
                 HIR_OUTPUT,
                 SIGNATURE_FACTS,
                 RESOLVED_PATHS,
             ]))
-            .produces(global_with_diagnostics([TOP_LEVEL_LET_FACTS]))
+            .produces(global_with_diagnostics([
+                HIR_OUTPUT,
+                SIGNATURE_FACTS,
+                TOP_LEVEL_LET_FACTS,
+            ]))
     }
 
     fn run(
@@ -33,7 +37,7 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let hir = context.hir.as_mut().expect("HIR output should exist");
+        let mut hir = context.hir.take().expect("HIR output should exist");
         let mut types = context
             .signature_types
             .take()
@@ -81,18 +85,26 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
             }
         }
 
-        let program = std::sync::Arc::make_mut(&mut hir.hir);
-        for (item_id, fact) in &facts.items {
-            if let Some(HirItem::TopLevelLet(item)) = program.items.get_mut(*item_id) {
-                item.classification = fact.classification.clone();
-                if let Some(symbol) = program.symbols.get_mut(item.symbol)
-                    && let SymbolDef::TopLevelLet { classification, .. } = &mut symbol.def
-                {
-                    *classification = fact.classification.clone();
+        if !facts.items.is_empty() {
+            let mut editor = hir.hir.edit();
+            let program = editor.program_mut();
+            for (item_id, fact) in &facts.items {
+                if let Some(HirItem::TopLevelLet(item)) = program.items.get_mut(*item_id) {
+                    item.classification = fact.classification.clone();
+                    if let Some(symbol) = program.symbols.get_mut(item.symbol)
+                        && let SymbolDef::TopLevelLet { classification, .. } = &mut symbol.def
+                    {
+                        *classification = fact.classification.clone();
+                    }
                 }
             }
+            hir.hir = match editor.finish() {
+                Ok(revision) => revision,
+                Err(error) => {
+                    return PassResult::failed(format!("invalid classified HIR: {error}"));
+                }
+            };
         }
-
         let checked_facts = std::sync::Arc::make_mut(&mut checked.facts);
         for (symbol_id, fact) in &facts.symbols {
             if let Some(etas_types::SymbolTypeFact::TopLevelLet { classification, .. }) =
@@ -114,11 +126,12 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
             }
         }
 
+        context.hir = Some(hir);
         context.signature_types = Some(checked);
         context.top_level_lets = Some(facts);
         PassResult::changed(
             PreservedArtifacts::All,
-            ArtifactSet::one(TOP_LEVEL_LET_FACTS),
+            ArtifactSet::from([HIR_OUTPUT, SIGNATURE_FACTS, TOP_LEVEL_LET_FACTS]),
         )
     }
 }

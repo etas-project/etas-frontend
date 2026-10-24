@@ -95,13 +95,11 @@ impl Frontend {
         }
     }
 
-    pub fn lower(&self, parsed: &ParseOutput) -> HirOutput {
+    pub fn lower(&self, parsed: &ParseOutput) -> Result<HirOutput, etas_hir::HirTreeIndexError> {
         let hir = etas_hir::lower_program(&parsed.parsed.value);
-        let tree_index = std::sync::Arc::new(etas_hir::HirTreeIndex::build(&hir));
-        HirOutput {
-            hir: std::sync::Arc::new(hir),
-            tree_index,
-        }
+        Ok(HirOutput {
+            hir: etas_hir::HirRevision::try_new(hir)?,
+        })
     }
 
     pub fn check(&self, input: SourceInput) -> CheckOutput {

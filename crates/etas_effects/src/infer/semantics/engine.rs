@@ -1,7 +1,5 @@
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
-use etas_hir::{
-    HirAnnotationArg, HirArg, HirExpr, HirExprId, HirItemId, HirProgram, ResolveResult,
-};
+use etas_hir::{HirAnnotationArg, HirArg, HirExpr, HirExprId, HirItemId, ResolveResult};
 use etas_hir_analysis::HirAnalysisContext;
 use etas_std::StdLimitKind;
 use etas_types::{
@@ -20,7 +18,7 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
-    pub(crate) hir: &'a HirProgram,
+    pub(crate) hir: &'a etas_hir::HirRevision,
     pub(crate) context: HirAnalysisContext,
     pub(crate) types: &'a TypeOutput,
     pub(crate) std_registry: &'a etas_std::StdRegistry,
@@ -37,43 +35,36 @@ pub(crate) struct EffectSemantics<'a> {
 
 impl<'a> EffectSemantics<'a> {
     #[cfg(test)]
-    pub(crate) fn with_context(
-        hir: &'a HirProgram,
-        context: HirAnalysisContext,
+    pub(crate) fn new(
+        hir: &'a etas_hir::HirRevision,
         types: &'a TypeOutput,
         std_registry: &'a etas_std::StdRegistry,
         registry: &'a EffectRegistry,
         tool_bindings: &'a [ToolProviderBindingMetadata],
         external_summaries: &'a [crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
     ) -> Self {
+        let context = HirAnalysisContext::new(hir);
         let units =
-            crate::infer::unit::collect::EffectUnitCollector::collect_with_context(hir, &context);
+            crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&context);
         let memory_provenance =
             std::sync::Arc::new(crate::infer::memory_provenance::MemoryProvenance::analyze(
-                hir,
                 types,
                 std_registry,
                 &units,
                 &context,
             ));
-        Self::from_input(
-            context,
-            crate::infer::analysis::EffectAnalysisInput {
-                hir,
-                types,
-                std_registry,
-                registry,
-                tool_bindings,
-                external_summaries,
-                memory_provenance,
-            },
-        )
+        Self::from_input(crate::infer::analysis::EffectAnalysisInput {
+            hir,
+            types,
+            std_registry,
+            registry,
+            tool_bindings,
+            external_summaries,
+            memory_provenance,
+        })
     }
 
-    pub(crate) fn from_input(
-        context: HirAnalysisContext,
-        input: crate::infer::analysis::EffectAnalysisInput<'a>,
-    ) -> Self {
+    pub(crate) fn from_input(input: crate::infer::analysis::EffectAnalysisInput<'a>) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
             hir,
             types,
@@ -85,7 +76,7 @@ impl<'a> EffectSemantics<'a> {
         } = input;
         Self {
             hir,
-            context,
+            context: HirAnalysisContext::new(hir),
             types,
             std_registry,
             memory_provenance,
@@ -592,7 +583,6 @@ mod tests {
     use super::{EffectSemantics, external_summary_matches_path};
     use etas_core::SourceId;
     use etas_hir::{HirExpr, lower_program};
-    use etas_hir_analysis::HirAnalysisContext;
     use etas_types::{EffectArgRef, TypeOutput};
 
     #[test]
@@ -651,7 +641,7 @@ flow main() -> unit {
 "#,
         ));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         let call = hir
             .exprs
             .iter()
@@ -669,18 +659,9 @@ flow main() -> unit {
             })
             .expect("normalize call should lower");
         let types = TypeOutput::default();
-        let context = HirAnalysisContext::new(&hir);
         let std_registry = etas_std::standard_registry();
         let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
-        let semantics = EffectSemantics::with_context(
-            &hir,
-            context,
-            &types,
-            &std_registry,
-            &registry,
-            &[],
-            &[],
-        );
+        let semantics = EffectSemantics::new(&hir, &types, &std_registry, &registry, &[], &[]);
 
         let value = semantics
             .effect_arg_from_expr_path(call, &[])
@@ -706,7 +687,7 @@ flow main() -> unit {
         let parsed =
             etas_syntax::parse_program(etas_core::SourceFile::new(SourceId(0), None, source));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         let call = hir
             .exprs
             .iter()
@@ -724,18 +705,9 @@ flow main() -> unit {
             })
             .expect("f0 call should lower");
         let types = TypeOutput::default();
-        let context = HirAnalysisContext::new(&hir);
         let std_registry = etas_std::standard_registry();
         let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
-        let semantics = EffectSemantics::with_context(
-            &hir,
-            context,
-            &types,
-            &std_registry,
-            &registry,
-            &[],
-            &[],
-        );
+        let semantics = EffectSemantics::new(&hir, &types, &std_registry, &registry, &[], &[]);
 
         let value = semantics
             .effect_arg_from_expr_path(call, &[])
@@ -761,25 +733,16 @@ flow main() -> unit {
 "#,
         ));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         let call = hir
             .exprs
             .iter()
             .find_map(|(expr, data)| matches!(data, HirExpr::Call { .. }).then_some(expr))
             .expect("parse_url call should lower");
         let types = TypeOutput::default();
-        let context = HirAnalysisContext::new(&hir);
         let std_registry = etas_std::standard_registry();
         let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
-        let semantics = EffectSemantics::with_context(
-            &hir,
-            context,
-            &types,
-            &std_registry,
-            &registry,
-            &[],
-            &[],
-        );
+        let semantics = EffectSemantics::new(&hir, &types, &std_registry, &registry, &[], &[]);
 
         let error = semantics
             .effect_arg_from_expr_path(call, &["host".to_owned()])
@@ -811,7 +774,7 @@ flow main() -> unit {
 "#,
         ));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         let call = hir
             .exprs
             .iter()
@@ -830,18 +793,9 @@ flow main() -> unit {
             })
             .expect("recurse call should lower");
         let types = TypeOutput::default();
-        let context = HirAnalysisContext::new(&hir);
         let std_registry = etas_std::standard_registry();
         let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
-        let semantics = EffectSemantics::with_context(
-            &hir,
-            context,
-            &types,
-            &std_registry,
-            &registry,
-            &[],
-            &[],
-        );
+        let semantics = EffectSemantics::new(&hir, &types, &std_registry, &registry, &[], &[]);
 
         let error = semantics
             .effect_arg_from_expr_path(call, &[])
@@ -874,7 +828,7 @@ flow main() -> unit {
 "#,
         ));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         let call = hir
             .exprs
             .iter()
@@ -892,18 +846,9 @@ flow main() -> unit {
             })
             .expect("ambiguous call should lower");
         let types = TypeOutput::default();
-        let context = HirAnalysisContext::new(&hir);
         let std_registry = etas_std::standard_registry();
         let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
-        let semantics = EffectSemantics::with_context(
-            &hir,
-            context,
-            &types,
-            &std_registry,
-            &registry,
-            &[],
-            &[],
-        );
+        let semantics = EffectSemantics::new(&hir, &types, &std_registry, &registry, &[], &[]);
 
         let error = semantics
             .effect_arg_from_expr_path(call, &[])

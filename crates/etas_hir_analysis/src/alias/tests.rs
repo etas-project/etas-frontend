@@ -249,7 +249,7 @@ impl HirBuilder {
         }))
     }
 
-    fn finish(self) -> etas_hir::HirProgram {
+    fn finish(self) -> etas_hir::HirRevision {
         let mut program = self.program;
         let items = program
             .items
@@ -273,7 +273,7 @@ impl HirBuilder {
             .expect("new test module should exist")
             .scope = scope;
         program.modules.push(module);
-        program
+        etas_hir::HirRevision::try_new(program).unwrap()
     }
 }
 
@@ -282,12 +282,12 @@ fn span() -> Span {
 }
 
 fn run(
-    program: &etas_hir::HirProgram,
+    program: &etas_hir::HirRevision,
     config: AliasPrecisionConfig,
     oracle: TestOracle,
 ) -> crate::alias::AliasAnalysisOutput {
     let context = crate::HirAnalysisContext::new(program);
-    let units = HirSemanticUnitCollector::collect_with_context(program, &context);
+    let units = HirSemanticUnitCollector::collect_with_context(&context);
     analyze_aliases(AliasAnalysisInput {
         hir: program,
         units,

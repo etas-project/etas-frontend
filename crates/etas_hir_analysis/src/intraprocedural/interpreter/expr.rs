@@ -14,8 +14,8 @@ where
 
     pub fn expr_control(&mut self, expr: HirExprId, state: S::Domain) -> Control<S::Domain> {
         let state = self.semantics.before_expr(expr, state);
-        let expr_data = self.semantics.hir().exprs[expr].clone();
-        let span = expr_data.span(&self.semantics.hir().blocks);
+        let expr_data = self.context().program().exprs[expr].clone();
+        let span = expr_data.span(&self.context().program().blocks);
         let next = match expr_data {
             HirExpr::Perform {
                 action,
@@ -222,14 +222,14 @@ where
     ) -> Control<S::Domain> {
         let mut chain = Vec::new();
         let mut current = expr;
-        while let HirExpr::MethodCall { receiver, .. } = &self.semantics.hir().exprs[current] {
+        while let HirExpr::MethodCall { receiver, .. } = &self.context().program().exprs[current] {
             chain.push(current);
             current = *receiver;
         }
 
         let mut control = self.expr_control(current, state);
         for call in chain.into_iter().rev() {
-            let (args, span) = match &self.semantics.hir().exprs[call] {
+            let (args, span) = match &self.context().program().exprs[call] {
                 HirExpr::MethodCall { args, span, .. } => (args.clone(), *span),
                 _ => unreachable!("method call chain should contain only method calls"),
             };
@@ -247,16 +247,16 @@ where
         let mut current = expr;
 
         loop {
-            let (cond, then_block, else_branch) = match self.semantics.hir().exprs[current].clone()
-            {
-                HirExpr::If {
-                    cond,
-                    then_block,
-                    else_branch,
-                    ..
-                } => (cond, then_block, else_branch),
-                _ => unreachable!("if chain should contain only if expressions"),
-            };
+            let (cond, then_block, else_branch) =
+                match self.context().program().exprs[current].clone() {
+                    HirExpr::If {
+                        cond,
+                        then_block,
+                        else_branch,
+                        ..
+                    } => (cond, then_block, else_branch),
+                    _ => unreachable!("if chain should contain only if expressions"),
+                };
 
             let mut cond_control =
                 else_control.with_normal_processed(|state| self.expr_control(cond, state));
@@ -290,13 +290,13 @@ where
     }
 
     fn tail_if_expr_in_empty_block(&self, block: etas_hir::HirBlockId) -> Option<HirExprId> {
-        let block = &self.semantics.hir().blocks[block];
+        let block = &self.context().program().blocks[block];
         if !block.stmts.is_empty() {
             return None;
         }
         let expr = block.final_expr?;
         matches!(
-            self.semantics.hir().exprs.get(expr),
+            self.context().program().exprs.get(expr),
             Some(HirExpr::If { .. })
         )
         .then_some(expr)

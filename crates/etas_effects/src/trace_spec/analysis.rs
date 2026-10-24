@@ -1,4 +1,3 @@
-use etas_hir_analysis::HirAnalysisContext;
 use etas_hir_analysis::interprocedural::{
     InterproceduralAnalysis, InterproceduralAnalysisResult, SummaryStore,
 };
@@ -16,27 +15,19 @@ pub struct TraceSpecAnalysisOutput {
 }
 
 pub fn analyze_trace_spec_monitors(
-    hir: &etas_hir::HirProgram,
+    hir: &etas_hir::HirRevision,
     types: &etas_types::TypeOutput,
     registry: &EffectRegistry,
     effects: &mut EffectOutput,
     models: &TraceSpecModelStore,
     units: &[EffectUnit],
-    context: HirAnalysisContext,
 ) -> Result<TraceSpecAnalysisOutput, EffectPipelineError> {
     let trace_spec_items = models.referenced_by_item.keys().copied().collect();
     let result = InterproceduralAnalysis::new(
         units.iter().copied(),
-        TraceSpecSemantics::with_context(
-            hir,
-            context.clone(),
-            types,
-            registry,
-            &effects.facts,
-            trace_spec_items,
-        ),
+        TraceSpecSemantics::new(hir, types, registry, &effects.facts, trace_spec_items),
     )
-    .solve_with_context(&context);
+    .solve();
     let InterproceduralAnalysisResult {
         semantics,
         summaries,

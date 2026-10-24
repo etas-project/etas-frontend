@@ -29,16 +29,13 @@ impl HirSemanticUnit {
         }
     }
 
-    pub fn analysis_body(self, hir: &HirProgram) -> HirAnalysisBody {
+    pub fn analysis_body(self, hir: &etas_hir::HirRevision) -> HirAnalysisBody {
         let context = HirAnalysisContext::new(hir);
-        self.analysis_body_with_context(hir, &context)
+        self.analysis_body_with_context(&context)
     }
 
-    pub fn analysis_body_with_context(
-        self,
-        hir: &HirProgram,
-        context: &HirAnalysisContext,
-    ) -> HirAnalysisBody {
+    pub fn analysis_body_with_context(self, context: &HirAnalysisContext) -> HirAnalysisBody {
+        let hir = context.program();
         match self {
             Self::Item(item) => item_body(hir, context, item),
             Self::TopLevelLet(item) => match hir.items.get(item) {

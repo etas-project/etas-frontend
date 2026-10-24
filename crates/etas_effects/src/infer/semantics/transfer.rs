@@ -4,8 +4,8 @@ use super::shared::*;
 impl HirAnalysisSemantics for EffectSemantics<'_> {
     type Domain = EffectState;
 
-    fn hir(&self) -> &HirProgram {
-        self.hir
+    fn analysis_context(&self) -> &etas_hir_analysis::HirAnalysisContext {
+        &self.context
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {

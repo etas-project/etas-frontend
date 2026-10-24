@@ -11,7 +11,7 @@ where
     }
 
     pub fn block_control(&mut self, block: HirBlockId, state: S::Domain) -> Control<S::Domain> {
-        let block = self.semantics.hir().blocks[block].clone();
+        let block = self.context().program().blocks[block].clone();
         let mut control = Control::normal(state);
         for stmt in block.stmts {
             control = control.with_normal_processed(|state| self.stmt_control(stmt, state));
