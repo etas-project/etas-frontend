@@ -8,6 +8,7 @@ use crate::{
 };
 
 pub struct IndexAccessSolveInput<'a> {
+    pub spec_facts: &'a crate::SpecFacts,
     pub expr: etas_hir::HirExprId,
     pub base: TypeId,
     pub index: TypeId,
@@ -19,6 +20,7 @@ pub struct IndexAccessSolveInput<'a> {
 
 pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -> SolverReport {
     let IndexAccessSolveInput {
+        spec_facts,
         expr,
         base,
         index,
@@ -34,7 +36,7 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
     match store.get(base) {
         Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
             let value = resolve_substitution(store, substitutions, *value);
-            if !is_index_type(store, index) {
+            if !is_index_type(store, spec_facts, index) {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
                     span: origin.span,
@@ -56,7 +58,7 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
         }
         Some(Type::Primitive(PrimitiveType::String)) => {
             let char_ty = primitive_type_id(store, PrimitiveType::Char).unwrap_or(output);
-            if !is_index_type(store, index) {
+            if !is_index_type(store, spec_facts, index) {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
                     span: origin.span,
@@ -78,7 +80,7 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
         }
         Some(Type::Primitive(PrimitiveType::Bytes)) => {
             let byte_ty = primitive_type_id(store, PrimitiveType::U8).unwrap_or(output);
-            if !is_index_type(store, index) {
+            if !is_index_type(store, spec_facts, index) {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
                     span: origin.span,
@@ -121,6 +123,7 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
 }
 
 pub struct SliceAccessSolveInput<'a> {
+    pub spec_facts: &'a crate::SpecFacts,
     pub expr: etas_hir::HirExprId,
     pub base: TypeId,
     pub start: TypeId,
@@ -132,6 +135,7 @@ pub struct SliceAccessSolveInput<'a> {
 
 pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -> SolverReport {
     let SliceAccessSolveInput {
+        spec_facts,
         expr,
         base,
         start,
@@ -145,7 +149,7 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
     let start = resolve_substitution(store, substitutions, start);
     let end = resolve_substitution(store, substitutions, end);
     let output = resolve_substitution(store, substitutions, output);
-    if !is_index_type(store, start) || !is_index_type(store, end) {
+    if !is_index_type(store, spec_facts, start) || !is_index_type(store, spec_facts, end) {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span: origin.span,
@@ -225,25 +229,14 @@ fn unify_or_assign(
     }
 }
 
-fn is_index_type(store: &TypeStore, ty: TypeId) -> bool {
-    matches!(
-        store.get(ty),
-        Some(Type::IntegerLiteral { .. })
-            | Some(Type::Primitive(
-                PrimitiveType::I8
-                    | PrimitiveType::I16
-                    | PrimitiveType::I32
-                    | PrimitiveType::I64
-                    | PrimitiveType::I128
-                    | PrimitiveType::ISize
-                    | PrimitiveType::U8
-                    | PrimitiveType::U16
-                    | PrimitiveType::U32
-                    | PrimitiveType::U64
-                    | PrimitiveType::U128
-                    | PrimitiveType::USize
-            ))
-    )
+fn is_index_type(store: &TypeStore, facts: &crate::SpecFacts, ty: TypeId) -> bool {
+    let spec = etas_std::StdSupportConstraint::Index
+        .spec_path()
+        .iter()
+        .map(|segment| (*segment).to_owned())
+        .collect::<Vec<_>>();
+    matches!(store.get(ty), Some(Type::IntegerLiteral { .. }))
+        || super::spec_solver::std_type_satisfies_spec(store, facts, ty, &spec, &[])
 }
 
 fn primitive_type_id(store: &TypeStore, primitive: PrimitiveType) -> Option<TypeId> {

@@ -4,7 +4,7 @@ use etas_utils::{
 };
 
 use crate::incremental::{BodyArtifactIdentity, dependency_fingerprints_match};
-use crate::passes::artifacts::{AFFECTED_MODULE_SET, TYPE_OUTPUT, UNIT_TREE};
+use crate::passes::artifacts::{AFFECTED_MODULE_SET, TYPE_ENVIRONMENT, TYPE_OUTPUT, UNIT_TREE};
 use crate::{BODY_UNIT_KIND, ProjectContext};
 
 pub struct ReuseTypeBodyFactsPass;
@@ -12,7 +12,11 @@ pub struct ReuseTypeBodyFactsPass;
 impl Pass<ProjectContext> for ReuseTypeBodyFactsPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("ReuseTypeBodyFactsPass", PassKind::Analysis)
-            .requires(ArtifactSet::from([UNIT_TREE, AFFECTED_MODULE_SET]))
+            .requires(ArtifactSet::from([
+                UNIT_TREE,
+                AFFECTED_MODULE_SET,
+                TYPE_ENVIRONMENT,
+            ]))
             .produces(ArtifactSet::from_iter([ArtifactRef::unit_kind(
                 TYPE_OUTPUT,
                 BODY_UNIT_KIND,
@@ -35,6 +39,9 @@ impl Pass<ProjectContext> for ReuseTypeBodyFactsPass {
         let Some(sources) = context.sources.as_ref() else {
             return PassResult::failed("source set should exist before reusing body type facts");
         };
+        let Some(base) = context.type_environment.as_ref() else {
+            return PassResult::failed("body reuse requires prepared signature environment");
+        };
 
         let current_manifest = context.current_artifact_manifest();
         let mut produced = ArtifactSet::new();
@@ -55,6 +62,9 @@ impl Pass<ProjectContext> for ReuseTypeBodyFactsPass {
                 continue;
             }
             if !dependency_fingerprints_match(&artifact.dependencies, &current_manifest) {
+                continue;
+            }
+            if !base.accepts(&artifact.output) {
                 continue;
             }
             context

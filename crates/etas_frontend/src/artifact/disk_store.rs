@@ -455,7 +455,8 @@ fn encode_persisted<T: Clone + 'static>(
         (FrontendArtifactKind::TypeFacts, FrontendUnitKey::Unit(unit))
             if unit.kind == BODY_UNIT_KIND =>
         {
-            let Some(value) = any.downcast_ref::<etas_types::TypeOutput>() else {
+            let Some(value) = any.downcast_ref::<std::sync::Arc<etas_types::BodyTypeOutput>>()
+            else {
                 return Ok(None);
             };
             encode_bincode(value).map(Some)
@@ -463,7 +464,8 @@ fn encode_persisted<T: Clone + 'static>(
         (FrontendArtifactKind::EffectFacts, FrontendUnitKey::Unit(unit))
             if unit.kind == BODY_UNIT_KIND =>
         {
-            let Some(value) = any.downcast_ref::<etas_effects::EffectOutput>() else {
+            let Some(value) = any.downcast_ref::<std::sync::Arc<etas_effects::BodyEffectOutput>>()
+            else {
                 return Ok(None);
             };
             encode_bincode(value).map(Some)
@@ -513,16 +515,18 @@ fn decode_persisted<T: Clone + 'static>(
         }
         (FrontendArtifactKind::TypeFacts, FrontendUnitKey::Unit(unit))
             if unit.kind == BODY_UNIT_KIND
-                && RustTypeId::of::<T>() == RustTypeId::of::<etas_types::TypeOutput>() =>
+                && RustTypeId::of::<T>()
+                    == RustTypeId::of::<std::sync::Arc<etas_types::BodyTypeOutput>>() =>
         {
-            let value: etas_types::TypeOutput = decode_bincode(payload)?;
+            let value: std::sync::Arc<etas_types::BodyTypeOutput> = decode_bincode(payload)?;
             downcast_decoded(value).map(Some)
         }
         (FrontendArtifactKind::EffectFacts, FrontendUnitKey::Unit(unit))
             if unit.kind == BODY_UNIT_KIND
-                && RustTypeId::of::<T>() == RustTypeId::of::<etas_effects::EffectOutput>() =>
+                && RustTypeId::of::<T>()
+                    == RustTypeId::of::<std::sync::Arc<etas_effects::BodyEffectOutput>>() =>
         {
-            let value: etas_effects::EffectOutput = decode_bincode(payload)?;
+            let value: std::sync::Arc<etas_effects::BodyEffectOutput> = decode_bincode(payload)?;
             downcast_decoded(value).map(Some)
         }
         _ => Ok(None),

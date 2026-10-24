@@ -1,13 +1,10 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use etas_core::{Diagnostic, SourceId, id_type};
 use etas_effects::{
-    DependencyEffectMetadata, EffectFacts, EffectOutput, EffectPipelineArtifacts, EffectRegistry,
-    InterpreterSupportFacts,
+    DependencyEffectMetadata, EffectFacts, EffectPipelineArtifacts, EffectRegistry,
 };
-use etas_hir::{
-    HirItemId, HirModuleId, HirProgram, ScopeTree, SymbolId, SymbolTable, TopLevelLetClassification,
-};
+use etas_hir::{HirItemId, HirModuleId, HirProgram, SymbolId, TopLevelLetClassification};
 use etas_syntax::ast;
 use etas_types::{TypeFacts, TypeId, TypeOutput, TypeStore};
 use etas_utils::UnitKindKey;
@@ -1140,33 +1137,33 @@ pub struct CheckOutput {
     pub parse: Option<ParseOutput>,
     pub hir: Option<HirOutput>,
     pub types: Option<TypeOutput>,
-    pub effects: Option<EffectOutput>,
+    pub effects: Option<SharedEffectOutput>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ProjectOutput {
     pub checked: Option<CheckedProject>,
     pub diagnostics: Vec<Diagnostic>,
-    pub sources: Option<SourceSet>,
+    pub sources: Option<std::sync::Arc<SourceSet>>,
     pub parsed_sources: Vec<ParsedSource>,
     pub reused_parsed_sources: usize,
-    pub modules: Option<ModuleIndex>,
-    pub units: Option<UnitTree>,
-    pub import_graph: Option<ImportGraph>,
+    pub modules: Option<std::sync::Arc<ModuleIndex>>,
+    pub units: Option<std::sync::Arc<UnitTree>>,
+    pub import_graph: Option<std::sync::Arc<ImportGraph>>,
     pub module_topo_order: Option<ModuleTopoOrder>,
     pub affected_modules: Option<AffectedModuleSet>,
-    pub resolved_imports: Option<ResolvedImports>,
-    pub resolved_paths: Option<ResolvedPaths>,
+    pub resolved_imports: Option<std::sync::Arc<ResolvedImports>>,
+    pub resolved_paths: Option<std::sync::Arc<ResolvedPaths>>,
     pub hir_item_bindings: Option<HirItemBindings>,
     pub hir_body_bindings: Option<HirBodyBindings>,
     pub hir: Option<HirOutput>,
     pub signature_types: Option<TypeOutput>,
     pub top_level_lets: Option<TopLevelLetFacts>,
-    pub type_body_outputs: HashMap<UnitId, TypeOutput>,
+    pub type_body_outputs: HashMap<UnitId, Arc<etas_types::BodyTypeOutput>>,
     pub types: Option<TypeOutput>,
-    pub effect_body_outputs: HashMap<UnitId, EffectOutput>,
-    pub effect_pipeline_artifacts: Option<EffectPipelineArtifacts>,
-    pub effects: Option<EffectOutput>,
+    pub effect_body_outputs: HashMap<UnitId, Arc<etas_effects::BodyEffectOutput>>,
+    pub effect_pipeline_artifacts: Option<Arc<EffectPipelineArtifacts>>,
+    pub effects: Option<SharedEffectOutput>,
     pub entry: Option<ProjectEntryFact>,
     pub reachability: Option<crate::ReachabilityFacts>,
     pub runtime_source_requirements: Option<crate::RuntimeSourceRequirements>,
@@ -1174,7 +1171,10 @@ pub struct ProjectOutput {
 
 impl ProjectOutput {
     pub fn into_check_output(self) -> CheckOutput {
-        let sources = self.sources.as_ref().map(SourceSet::to_source_bundle);
+        let sources = self
+            .sources
+            .as_ref()
+            .map(|sources| sources.to_source_bundle());
         let parse = self
             .parsed_sources
             .first()
@@ -1198,30 +1198,53 @@ impl ProjectOutput {
 }
 
 #[derive(Clone, Debug)]
-pub struct CheckedProgram {
+pub struct CheckedProgramData {
     pub compiler_version: String,
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
     pub project_environment_fingerprint: String,
     pub dependency_metadata_fingerprints: Vec<(String, String)>,
     pub sources: SourceBundle,
-    pub module_index: ModuleIndex,
-    pub hir: HirProgram,
-    pub symbols: SymbolTable,
-    pub scopes: ScopeTree,
-    pub source_map: etas_hir::SourceMap,
+    pub module_index: Arc<ModuleIndex>,
+    pub hir: Arc<HirProgram>,
+    pub hir_index: Arc<etas_hir::HirTreeIndex>,
     pub top_level_lets: TopLevelLetFacts,
-    pub types: TypeFacts,
-    pub type_store: TypeStore,
-    pub effects: EffectFacts,
-    pub effect_registry: EffectRegistry,
-    pub interpreter_support: InterpreterSupportFacts,
+    pub types: Arc<TypeFacts>,
+    pub type_store: Arc<TypeStore>,
+    pub effects: Arc<EffectFacts>,
+    pub effect_registry: Arc<EffectRegistry>,
     pub external_tool_schemas: Vec<ProjectExternalToolSchemaInput>,
     pub entry_fact: ProjectEntryFact,
     pub entry: Option<HirItemId>,
     pub reachability: crate::ReachabilityFacts,
 }
 
+impl std::ops::Deref for CheckedProgramData {
+    type Target = HirProgram;
+
+    fn deref(&self) -> &Self::Target {
+        &self.hir
+    }
+}
+
+pub type CheckedProgram = Arc<CheckedProgramData>;
 pub type CheckedProject = CheckedProgram;
+
+/// Finalized effect facts are shared by outputs, snapshots and cache entries.
+/// Mutable stage output remains owned by the effect pipeline until publication.
+#[derive(Clone, Debug)]
+pub struct SharedEffectOutput {
+    pub facts: Arc<EffectFacts>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl From<etas_effects::EffectOutput> for SharedEffectOutput {
+    fn from(output: etas_effects::EffectOutput) -> Self {
+        Self {
+            facts: Arc::new(output.facts),
+            diagnostics: output.diagnostics,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct TopLevelLetFacts {

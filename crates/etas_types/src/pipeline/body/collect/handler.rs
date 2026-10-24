@@ -56,11 +56,7 @@ pub fn collect_handler(
                 .provisional
                 .symbol_types
                 .get(&symbol)
-                .or_else(|| {
-                    ctx.ctx
-                        .symbols
-                        .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-                })
+                .or_else(|| ctx.ctx.symbol_fact(symbol))
                 .and_then(|fact| match fact {
                     SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
                     _ => None,
@@ -183,11 +179,7 @@ fn handler_effect_arg(
                     return None;
                 }
             };
-            match ctx.ctx.symbols.type_fact_as_type_id(
-                ctx.ctx.hir,
-                &ctx.ctx.signature_facts,
-                symbol,
-            ) {
+            match ctx.ctx.type_fact_as_type_id(symbol) {
                 Some(ty) => Some(EffectArgRef::Type(ty)),
                 None => match static_resource_path_segments(ctx, symbol, remaining) {
                     Some(segments) => Some(EffectArgRef::Path(segments)),

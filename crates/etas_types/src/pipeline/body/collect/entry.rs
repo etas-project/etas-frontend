@@ -12,28 +12,24 @@ pub fn collect_body_item(ctx: &mut TypePipelineContext<'_>, state: &mut BodyPipe
     let item = ctx.hir.items[state.item].clone();
     match item {
         HirItem::Flow(flow) => {
-            state.expected_return = ctx
-                .signature_facts
-                .item_signatures
-                .get(&state.item)
-                .and_then(|signature| match signature {
-                    ItemSignature::Flow(signature) => Some(signature.output),
-                    _ => None,
-                });
+            state.expected_return =
+                ctx.item_signature(state.item)
+                    .and_then(|signature| match signature {
+                        ItemSignature::Flow(signature) => Some(signature.output),
+                        _ => None,
+                    });
             let mut body = BodyCollectContext { ctx, state };
             let expected = body.state.expected_return;
             collect_block(&mut body, flow.body.block(), expected);
         }
         HirItem::Tool(tool) => {
             if let HirToolBody::Source(body_decl) = tool.body {
-                state.expected_return = ctx
-                    .signature_facts
-                    .item_signatures
-                    .get(&state.item)
-                    .and_then(|signature| match signature {
-                        ItemSignature::Tool(signature) => Some(signature.output),
-                        _ => None,
-                    });
+                state.expected_return =
+                    ctx.item_signature(state.item)
+                        .and_then(|signature| match signature {
+                            ItemSignature::Tool(signature) => Some(signature.output),
+                            _ => None,
+                        });
                 let mut body = BodyCollectContext { ctx, state };
                 let expected = body.state.expected_return;
                 collect_block(&mut body, body_decl.block(), expected);
@@ -53,9 +49,7 @@ pub fn collect_body_item(ctx: &mut TypePipelineContext<'_>, state: &mut BodyPipe
                 .type_annotation
                 .and_then(|ty| crate::lower::type_ref::lower_type_ref(ctx, ty))
                 .or_else(|| {
-                    ctx.signature_facts
-                        .item_signatures
-                        .get(&state.item)
+                    ctx.item_signature(state.item)
                         .and_then(|signature| match signature {
                             ItemSignature::TopLevelLet(crate::TopLevelLetSignature { ty }) => {
                                 Some(*ty)

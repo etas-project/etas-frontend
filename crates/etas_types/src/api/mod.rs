@@ -1,6 +1,8 @@
+mod body;
 mod output;
 mod request;
 
+pub use body::{BodyTypeOutput, SignatureEnvironment};
 pub use output::TypeOutput;
 pub use request::{
     CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest, ExternalActionArgKindInput,

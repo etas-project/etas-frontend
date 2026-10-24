@@ -58,6 +58,7 @@ pub enum TypeConstraint {
         origin: ConstraintOrigin,
     },
     MethodCall {
+        expr: etas_hir::HirExprId,
         method: String,
         candidates: Vec<CallableCandidate>,
         generic_args: Vec<CallableGenericArg>,
@@ -90,6 +91,8 @@ pub enum TypeConstraint {
     Iterable {
         iter: TypeId,
         item: TypeId,
+        // A fresh (key, value) shape for entry iterables; solved, not guessed by collect.
+        entry_pair: TypeId,
         origin: ConstraintOrigin,
     },
     Unary {
@@ -110,4 +113,14 @@ pub enum TypeConstraint {
 pub struct CallableCandidate {
     pub ty: TypeId,
     pub generic_params: Vec<CallableGenericParam>,
+    pub operation: CallableCandidateOperation,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CallableCandidateOperation {
+    #[default]
+    Call,
+    CheckedIndex {
+        error: Option<TypeId>,
+    },
 }

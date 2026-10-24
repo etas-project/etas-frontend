@@ -5,9 +5,10 @@ mod primitive;
 mod representation;
 mod row;
 mod scheme;
+mod store;
 mod substitution;
 
-use std::collections::HashMap;
+pub use store::{SharedTypeBase, TypeBaseId, TypeInterner, TypeStore};
 
 pub use display::display_type;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
@@ -161,103 +162,5 @@ impl std::fmt::Display for TrustWrapper {
             Self::Public => "Public",
             Self::Sanitized => "Sanitized",
         })
-    }
-}
-
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct TypeStore {
-    types: Vec<Type>,
-}
-
-impl TypeStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn intern(&mut self, ty: Type) -> TypeId {
-        let id = TypeId(self.types.len() as u32);
-        self.types.push(ty);
-        id
-    }
-
-    pub fn get(&self, id: TypeId) -> Option<&Type> {
-        self.types.get(id.0 as usize)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (TypeId, &Type)> {
-        self.types
-            .iter()
-            .enumerate()
-            .map(|(index, ty)| (TypeId(index as u32), ty))
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct TypeInterner {
-    store: TypeStore,
-    types: HashMap<Type, TypeId>,
-    primitives: HashMap<PrimitiveType, TypeId>,
-}
-
-impl TypeInterner {
-    /// Complete a predeclared nominal without changing its identity or its references.
-    pub(crate) fn define_nominal(&mut self, id: TypeId, representation: Option<TypeId>) {
-        let Type::Nominal(mut nominal) = self.store.types[id.0 as usize].clone() else {
-            unreachable!("only nominal declarations can be completed")
-        };
-        self.types.remove(&Type::Nominal(nominal.clone()));
-        nominal.representation = representation;
-        let ty = Type::Nominal(nominal);
-        self.store.types[id.0 as usize] = ty.clone();
-        self.types.insert(ty, id);
-    }
-
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn from_store(store: TypeStore) -> Self {
-        let mut types = HashMap::new();
-        let mut primitives = HashMap::new();
-        for (id, ty) in store.iter() {
-            types.entry(ty.clone()).or_insert(id);
-            if let Type::Primitive(primitive) = ty {
-                primitives.entry(*primitive).or_insert(id);
-            }
-        }
-        Self {
-            store,
-            types,
-            primitives,
-        }
-    }
-
-    pub fn primitive(&mut self, primitive: PrimitiveType) -> TypeId {
-        if let Some(id) = self.primitives.get(&primitive).copied() {
-            return id;
-        }
-        self.intern(Type::Primitive(primitive))
-    }
-
-    pub fn intern(&mut self, ty: Type) -> TypeId {
-        if let Some(id) = self.types.get(&ty).copied() {
-            return id;
-        }
-        let id = self.store.intern(ty.clone());
-        if let Type::Primitive(primitive) = ty {
-            self.primitives.insert(primitive, id);
-            self.types.insert(Type::Primitive(primitive), id);
-        } else {
-            self.types.insert(ty, id);
-        }
-        id
-    }
-
-    pub fn store(&self) -> &TypeStore {
-        &self.store
-    }
-
-    pub fn into_store(self) -> TypeStore {
-        self.store
     }
 }

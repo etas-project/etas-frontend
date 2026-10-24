@@ -11,6 +11,14 @@ pub enum ResourceHandleFact {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
+    pub support_constraints: std::collections::BTreeSet<TypeId>,
+    pub iterables: std::collections::BTreeMap<TypeId, StdIterableFact>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StdIterableFact {
+    pub arity: usize,
+    pub element_parameter: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -11,6 +11,7 @@ etas_cache.workspace = true
 etas_core.workspace = true
 etas_effects.workspace = true
 etas_hir.workspace = true
+etas_hir_analysis.workspace = true
 etas_package_metadata.workspace = true
 etas_std.workspace = true
 etas_syntax.workspace = true

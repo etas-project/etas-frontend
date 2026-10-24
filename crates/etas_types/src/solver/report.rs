@@ -14,6 +14,7 @@ pub struct SolverReport {
     pub index_facts: HashMap<HirExprId, CheckedIndexKind>,
     pub slice_facts: HashMap<HirExprId, CheckedSliceKind>,
     pub checked_index_errors: HashMap<HirExprId, TypeId>,
+    pub(crate) pending_spec_obligations: Vec<crate::SpecObligation>,
     pub failures: Vec<SolverFailure>,
 }
 
@@ -33,6 +34,8 @@ impl SolverReport {
         self.index_facts.extend(other.index_facts);
         self.slice_facts.extend(other.slice_facts);
         self.checked_index_errors.extend(other.checked_index_errors);
+        self.pending_spec_obligations
+            .extend(other.pending_spec_obligations);
         self.failures.extend(other.failures);
     }
 

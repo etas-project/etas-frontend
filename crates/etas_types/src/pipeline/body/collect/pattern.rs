@@ -298,11 +298,8 @@ fn constructor_signature(
         .provisional
         .symbol_types
         .get(&symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-        })? {
+        .or_else(|| ctx.ctx.symbol_fact(symbol))?
+    {
         SymbolTypeFact::Flow { signature }
         | SymbolTypeFact::Agent { signature }
         | SymbolTypeFact::Tool { signature } => Some(signature.clone()),

@@ -7,6 +7,189 @@ use etas_types::{
 };
 
 #[test]
+fn nested_count_argument_calls_keep_concrete_expression_types() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow text() -> string { return "abc"; }
+flow texts() -> Array<string> { return ["a", "b"]; }
+flow identity<T>(value: T) -> T { return value; }
+flow main() -> bool { return std.collections.len(text()) == 3 && !std.collections.is_empty(texts()) && std.collections.len(identity("x")) == 1; }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checked = 0;
+    for (expr, node) in hir.exprs.iter() {
+        let etas_hir::HirExpr::Call { callee, .. } = node else {
+            continue;
+        };
+        let etas_hir::HirExpr::Path(path) = &hir.exprs[*callee] else {
+            continue;
+        };
+        let expected = match path.segments.last().map(|segment| segment.name.as_str()) {
+            Some("text" | "identity") => PrimitiveType::String,
+            Some("texts") => {
+                let Type::Array(inner) = output.store.get(output.facts.expr_types[&expr]).unwrap()
+                else {
+                    panic!("call result replaced with support constraint")
+                };
+                assert_eq!(
+                    output.store.get(*inner),
+                    Some(&Type::Primitive(PrimitiveType::String))
+                );
+                checked += 1;
+                continue;
+            }
+            _ => continue,
+        };
+        assert_eq!(
+            output.store.get(output.facts.expr_types[&expr]),
+            Some(&Type::Primitive(expected))
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+    assert!(output.facts.expr_types.values().all(|ty| {
+        !output
+            .facts
+            .known_std_types
+            .support_constraints
+            .contains(ty)
+    }));
+}
+
+#[test]
+fn support_constraints_still_reject_invalid_inferred_call_results() {
+    for expression in [
+        "std.collections.len(value())",
+        "std.collections.is_empty(value())",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            format!(
+                "flow value() -> bool {{ return false; }} flow main() -> unit {{ {expression}; return; }}"
+            ),
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)),
+            "constraint was not enforced: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn sequence_get_methods_infer_index_literal_and_preserve_typed_indices() {
+    for source in [
+        "flow main(i: u8) -> Option<i32> { return [1; 2].get(i); }",
+        "flow main() -> Option<i32> { return [1; 2].get(1); }",
+        "flow main() -> Option<i32> { return [1, 2].get(-1); }",
+        "flow main<I ~ Index>(xs: List<i32>, i: I) -> Option<i32> { return xs.get(i); }",
+        "flow main<I ~ Index>(xs: List<i32>, i: I) -> i32 { return xs.at(i); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn deferred_numeric_bound_is_proved_and_materialized_for_source_calls() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow consume<I ~ Index>(i: I) -> unit { return; } flow main() -> unit { consume(1); }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.facts.generic_instantiations.values().any(|fact| {
+        fact.type_bindings.iter().any(|(name, ty)| {
+            name == "I" && output.store.get(*ty) == Some(&Type::Primitive(PrimitiveType::I32))
+        })
+    }));
+
+    for source in [
+        "spec Allowed; flow consume<I ~ Allowed>(i: I) -> unit { return; } flow main() -> unit { consume(1); }",
+        "flow consume<I ~ Index>(i: I) -> unit { return; } flow main() -> unit { consume(1.0); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("does not satisfy spec bound")),
+            "deferred obligation was not checked: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn index_methods_reject_non_integer_and_unproven_generic_indices() {
+    for source in [
+        "flow main() -> Option<i32> { return [1; 2].get(1.0); }",
+        "flow main() -> i32 { return [1; 2].at(\"one\"); }",
+        "flow main<I>(xs: List<i32>, i: I) -> i32 { return xs.at(i); }",
+        "type IndexLike = i32; flow main(i: IndexLike) -> Option<i32> { return [1; 2].get(i); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            !output.diagnostics.is_empty(),
+            "unproven Index evidence accepted: {source}"
+        );
+    }
+}
+
+#[test]
+fn checked_index_methods_materialize_index_and_error_facts() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow main() -> i32 { return [1; 2].at(1) + [3, 4].at(0); }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_index_errors.len(), 2);
+    for (expr, error) in &output.facts.checked_index_errors {
+        assert!(matches!(
+            output.facts.index_facts.get(expr),
+            Some(etas_types::CheckedIndexKind::Sequence { .. })
+        ));
+        assert_eq!(Some(*error), output.facts.known_std_types.index_error);
+    }
+}
+
+#[test]
 fn primitive_types_have_source_names_and_stable_ids() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
@@ -16,6 +199,54 @@ fn primitive_types_have_source_names_and_stable_ids() {
     assert_eq!(PrimitiveType::String.source_name(), "string");
     assert_eq!(string, string_again);
     assert_ne!(string, unit);
+}
+
+#[test]
+fn range_constructor_propagates_expected_integer_width_to_argument_facts() {
+    for constructor in ["closed", "open"] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            format!("flow main() -> Range<u8> {{ return Range.{constructor}(254, 255); }}"),
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let output = check_program(&hir);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let mut literals = 0;
+        for (expr, data) in hir.exprs.iter() {
+            if matches!(
+                data,
+                etas_hir::HirExpr::Literal(etas_hir::HirLiteral::Int { .. })
+            ) {
+                literals += 1;
+                assert_eq!(
+                    output.store.get(output.facts.expr_types[&expr]),
+                    Some(&Type::Primitive(PrimitiveType::U8))
+                );
+            }
+        }
+        assert_eq!(literals, 2);
+    }
+}
+
+#[test]
+fn range_constructor_rejects_literal_outside_expected_integer_width() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow main() -> Range<u8> { return Range.closed(0, 256); }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("256")),
+        "{:?}",
+        output.diagnostics
+    );
 }
 
 #[test]
@@ -139,6 +370,37 @@ fn unifier_solves_variables_and_detects_occurs_check() {
 
     let mut recursive = TypeUnifier::new(store);
     assert!(recursive.unify(var, list_var).is_err());
+}
+
+#[test]
+fn unifier_preserves_borrowed_substitutions_in_nested_types() {
+    let mut types = TypeInterner::new();
+    let first = types.intern(Type::Var(TypeVarId(0)));
+    let second = types.intern(Type::Var(TypeVarId(1)));
+    let third = types.intern(Type::Var(TypeVarId(2)));
+    let string = types.primitive(PrimitiveType::String);
+    let int = types.primitive(PrimitiveType::I32);
+    let first_set = types.intern(Type::Set(first));
+    let third_set = types.intern(Type::Set(third));
+    let integer_set = types.intern(Type::Set(int));
+    let mut known = etas_types::solver::Substitution::default();
+    known.insert(TypeVarId(0), second);
+    known.insert(TypeVarId(1), string);
+    let mut unifier = TypeUnifier::with_known_substitution(types.store(), &known);
+    unifier.unify(first_set, third_set).unwrap();
+    assert_eq!(unifier.substitution().get(TypeVarId(2)), Some(string));
+    assert_eq!(unifier.substitution().get(TypeVarId(0)), None);
+    assert!(unifier.unify(first_set, integer_set).is_err());
+    assert_eq!(known.get(TypeVarId(0)), Some(second));
+
+    let mut cycle = etas_types::solver::Substitution::default();
+    cycle.insert(TypeVarId(0), second);
+    cycle.insert(TypeVarId(1), first);
+    let mut unifier = TypeUnifier::with_known_substitution(types.store(), &cycle);
+    assert!(matches!(
+        unifier.unify(first, string),
+        Err(etas_types::solver::UnifyError::OccursCheck { .. })
+    ));
 }
 
 #[test]
@@ -3054,6 +3316,51 @@ flow bind(row: Row) -> i64 {
     let output = check_program(&hir);
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_projects_applied_record_patterns_with_generic_field_types() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+type Row<T> = { first: T, second: i32 };
+flow bind(row: Row<string>) -> string {
+    let { first: value } = row;
+    return value;
+}
+flow reordered(row: Row<i32>) -> i32 {
+    return match row { { second, first } => first + second };
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_rejects_wrong_applied_record_payload_pattern() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+type Row<T> = { first: T };
+flow bad(row: Row<string>) -> i32 {
+    return match row { { first: 42 } => 1, _ => 0 };
+}
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.code, DiagnosticCode::Type(_))),
+        "{:?}",
+        output.diagnostics
+    );
 }
 
 #[test]

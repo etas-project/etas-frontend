@@ -1,7 +1,7 @@
 use etas_hir::{HirBinaryOp, HirElseBranch, HirExpr, ResolveResult};
 
 use crate::{
-    AssignabilityReason, ConstraintOrigin, FlowType, MemoryPlaceType, NamedTypeRef, PrimitiveType,
+    AssignabilityReason, ConstraintOrigin, FlowType, MemoryPlaceType, PrimitiveType,
     SymbolTypeFact, Type, TypeConstraint, TypeId,
     pipeline::{
         body::collect::{
@@ -29,13 +29,16 @@ pub fn collect_expr(
     expr: etas_hir::HirExprId,
     expected: Option<TypeId>,
 ) -> TypeId {
+    // A support constraint checks an inferred value; it is not a value type hint.
+    let expected =
+        expected.filter(|ty| !ctx.ctx.known_std_types().support_constraints.contains(ty));
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
         return ty;
     }
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Path(path) => {
-            let ty = collect_path(ctx, &path);
+            let ty = collect_path(ctx, expr, &path);
             record_path_memory_place(ctx, expr, &path, ty);
             ty
         }
@@ -174,26 +177,34 @@ pub fn collect_expr(
         HirExpr::Range {
             start, end, span, ..
         } => {
-            let start_ty = collect_expr(ctx, start, None);
-            let end_ty = collect_expr(ctx, end, Some(start_ty));
-            let index_trait = ctx.ctx.interner.intern(Type::Named(NamedTypeRef {
-                name: "Index".to_owned(),
-            }));
-            ctx.emit(TypeConstraint::Assignable {
-                from: start_ty,
-                to: index_trait,
-                origin: ConstraintOrigin { span },
-                reason: AssignabilityReason::Other,
+            let expected_index = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
+                Some(Type::Range { index }) => Some(*index),
+                _ => None,
             });
+            let start_ty = collect_expr(ctx, start, expected_index);
+            let end_ty = collect_expr(ctx, end, Some(start_ty));
+            let index_spec = ctx.ctx.std_registry.lookup_prelude("Index")
+                .filter(|symbol| matches!(&symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec))
+                .map(|symbol| crate::CheckedSpecRef::Std(symbol.qualified_path.clone()));
+            if let Some(spec) = index_spec {
+                for ty in [start_ty, end_ty] {
+                    ctx.state.spec_obligations.push(crate::SpecObligation {
+                        ty,
+                        spec: spec.clone(),
+                        args: Vec::new(),
+                        span,
+                    });
+                }
+            } else {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span,
+                    message: "range literal is missing the canonical Index spec".into(),
+                });
+            }
             ctx.emit(TypeConstraint::Assignable {
                 from: end_ty,
                 to: start_ty,
-                origin: ConstraintOrigin { span },
-                reason: AssignabilityReason::Other,
-            });
-            ctx.emit(TypeConstraint::Assignable {
-                from: end_ty,
-                to: index_trait,
                 origin: ConstraintOrigin { span },
                 reason: AssignabilityReason::Other,
             });
@@ -215,6 +226,14 @@ pub fn collect_expr(
                 let output = expected.or(hint).unwrap_or_else(|| ctx.fresh_type_var());
                 record_field_memory_place(ctx, expr, base, &field);
                 if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field, span) {
+                    ctx.state.provisional.field_projections.insert(
+                        expr,
+                        vec![crate::FieldProjectionFact {
+                            receiver: base_ty,
+                            field: field.clone(),
+                            output: field_ty,
+                        }],
+                    );
                     ctx.emit(TypeConstraint::Assignable {
                         from: field_ty,
                         to: output,
@@ -223,6 +242,14 @@ pub fn collect_expr(
                     });
                     field_ty
                 } else {
+                    ctx.state.provisional.field_projections.insert(
+                        expr,
+                        vec![crate::FieldProjectionFact {
+                            receiver: base_ty,
+                            field: field.clone(),
+                            output,
+                        }],
+                    );
                     ctx.emit(TypeConstraint::FieldAccess {
                         base: base_ty,
                         field,
@@ -342,8 +369,8 @@ pub fn collect_expr(
             method,
             generic_args,
             args,
-            span,
-        } => collect_method_call(ctx, receiver, &method, &generic_args, &args, span, expected),
+            ..
+        } => collect_method_call(ctx, expr, receiver, &method, &generic_args, &args, expected),
         HirExpr::SpecMethodCall {
             receiver,
             spec_path,
@@ -656,7 +683,11 @@ fn collect_pipeline(
     }
 }
 
-fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedPath) -> TypeId {
+fn collect_path(
+    ctx: &mut BodyCollectContext<'_, '_>,
+    expr: etas_hir::HirExprId,
+    path: &etas_hir::ResolvedPath,
+) -> TypeId {
     if let Some(variant) = super::enum_variant::declaration(ctx, path) {
         if variant.fields.is_empty() && variant.field_names.is_none() {
             if let Some(signature) = super::enum_variant::signature(ctx, path) {
@@ -669,8 +700,7 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
             ctx.ctx.hir.symbols.get(symbol).map(|symbol| &symbol.def)
         && let Some(descriptor) = ctx.ctx.std_registry.lookup_qualified(path)
         && descriptor.kind == etas_std::StdSymbolKind::Constructor
-        && let Some(SymbolTypeFact::Flow { signature }) =
-            ctx.ctx.signature_facts.symbol_types.get(&symbol)
+        && let Some(SymbolTypeFact::Flow { signature }) = ctx.ctx.symbol_type(symbol)
         && signature.params.is_empty()
     {
         return instantiate_callable_signature(ctx, signature.clone()).output;
@@ -696,9 +726,15 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
                 return ty;
             }
             if let Some(mut current) = symbol_value_type(ctx, symbol) {
+                let mut projections = Vec::with_capacity(partial.remaining.len());
                 for member in &partial.remaining {
                     if let Some(field_ty) = std_declared_field_type(ctx, current, member, path.span)
                     {
+                        projections.push(crate::FieldProjectionFact {
+                            receiver: current,
+                            field: member.clone(),
+                            output: field_ty,
+                        });
                         current = field_ty;
                         continue;
                     }
@@ -710,8 +746,17 @@ fn collect_path(ctx: &mut BodyCollectContext<'_, '_>, path: &etas_hir::ResolvedP
                         output,
                         origin: ConstraintOrigin { span: path.span },
                     });
+                    projections.push(crate::FieldProjectionFact {
+                        receiver: current,
+                        field: member.clone(),
+                        output,
+                    });
                     current = output;
                 }
+                ctx.state
+                    .provisional
+                    .field_projections
+                    .insert(expr, projections);
                 current
             } else {
                 let never = ctx.primitive(PrimitiveType::Never);
@@ -822,7 +867,7 @@ fn record_field_memory_place(
         .provisional
         .expr_memory_places
         .get(&base)
-        .or_else(|| ctx.ctx.signature_facts.expr_memory_places.get(&base))
+        .or_else(|| ctx.ctx.expr_memory_place(base))
         .copied()
     else {
         return;
@@ -859,11 +904,7 @@ pub fn symbol_value_type(
         .provisional
         .symbol_types
         .get(&symbol)
-        .or_else(|| {
-            ctx.ctx
-                .symbols
-                .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)
-        })?
+        .or_else(|| ctx.ctx.symbol_fact(symbol))?
         .clone();
     value_type_from_fact(ctx, fact)
 }
@@ -906,6 +947,7 @@ pub fn callable_candidate_from_fact(
     Some(crate::CallableCandidate {
         ty,
         generic_params: signature.generic_params,
+        operation: crate::CallableCandidateOperation::Call,
     })
 }
 
@@ -1018,6 +1060,10 @@ fn instantiate_callable_schematic_type(
             let key = instantiate_callable_schematic_type(ctx, key, schematic_vars);
             let value = instantiate_callable_schematic_type(ctx, value, schematic_vars);
             ctx.ctx.interner.intern(Type::Map { key, value })
+        }
+        Type::Range { index } => {
+            let index = instantiate_callable_schematic_type(ctx, index, schematic_vars);
+            ctx.ctx.interner.intern(Type::Range { index })
         }
         Type::Tuple(elements) => {
             let elements = elements

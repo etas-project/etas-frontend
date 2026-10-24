@@ -105,6 +105,7 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
         };
         for re_export in &re_exports {
             let modules = context.modules.as_mut().expect("module index should exist");
+            let modules = std::sync::Arc::make_mut(modules);
             let module_id = part_module(modules, &re_export.import);
             if let Some(module) = modules.modules.get_mut(module_id) {
                 module.visibility_exports.re_exports.push(re_export.clone());
@@ -112,11 +113,11 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
         }
         apply_re_exports_to_catalog(context, &imports, &wildcard_imports);
         context.diagnostics.extend(diagnostics);
-        context.resolved_imports = Some(ResolvedImports {
+        context.resolved_imports = Some(std::sync::Arc::new(ResolvedImports {
             imports,
             wildcard_imports,
             re_exports,
-        });
+        }));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(RESOLVED_IMPORTS))
     }
 }
@@ -312,15 +313,16 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
             .expect("resolved import targets should exist")
             .clone();
         install_explicit_import_aliases(context, &resolved_imports.imports);
-        let wildcard_imports = resolved_imports.wildcard_imports;
-        install_wildcard_import_aliases(context, &wildcard_imports);
+        let wildcard_imports = &resolved_imports.wildcard_imports;
+        install_wildcard_import_aliases(context, wildcard_imports);
         install_external_effect_action_refs(context);
         if let Some(output) = &mut context.hir {
-            let resolved = super::source_members::resolve_members(&mut output.hir);
-            prune_resolved_wildcard_diagnostics(&mut output.hir.diagnostics, &resolved);
+            let hir = std::sync::Arc::make_mut(&mut output.hir);
+            let resolved = super::source_members::resolve_members(hir);
+            prune_resolved_wildcard_diagnostics(&mut hir.diagnostics, &resolved);
             prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved);
             output.tree_index = match etas_hir::HirTreeIndex::try_build(&output.hir) {
-                Ok(index) => index,
+                Ok(index) => std::sync::Arc::new(index),
                 Err(error) => {
                     return PassResult::failed(format!("invalid imported member HIR: {error}"));
                 }
@@ -341,7 +343,7 @@ fn install_external_effect_action_refs(context: &mut ProjectContext) {
     let Some(hir_output) = context.hir.as_mut() else {
         return;
     };
-    let hir = &mut hir_output.hir;
+    let hir = std::sync::Arc::make_mut(&mut hir_output.hir);
     let module_to_hir = modules
         .modules
         .iter()
@@ -521,7 +523,7 @@ fn install_wildcard_import_aliases(
     let Some(hir_output) = context.hir.as_mut() else {
         return;
     };
-    let hir = &mut hir_output.hir;
+    let hir = std::sync::Arc::make_mut(&mut hir_output.hir);
     let module_to_hir = modules
         .modules
         .iter()
@@ -616,7 +618,7 @@ fn install_explicit_import_aliases(context: &mut ProjectContext, imports: &[Reso
     let Some(hir_output) = context.hir.as_mut() else {
         return;
     };
-    let hir = &mut hir_output.hir;
+    let hir = std::sync::Arc::make_mut(&mut hir_output.hir);
     let module_to_hir = modules
         .modules
         .iter()

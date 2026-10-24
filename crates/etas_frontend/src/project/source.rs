@@ -29,13 +29,13 @@ impl SourceInput {
 #[derive(Clone, Debug)]
 pub struct ParseOutput {
     pub source: CoreSourceFile,
-    pub parsed: Parse<ast::Program>,
+    pub parsed: Arc<Parse<ast::Program>>,
 }
 
 #[derive(Clone, Debug)]
 pub struct HirOutput {
-    pub hir: HirProgram,
-    pub tree_index: HirTreeIndex,
+    pub hir: Arc<HirProgram>,
+    pub tree_index: Arc<HirTreeIndex>,
 }
 
 impl HirOutput {
@@ -129,7 +129,7 @@ impl SourceKind {
 pub struct ParsedSource {
     pub source: SourceId,
     pub source_file: CoreSourceFile,
-    pub parse: Parse<ast::Program>,
+    pub parse: Arc<Parse<ast::Program>>,
     pub declared_module: Option<ModulePath>,
     pub imports: Vec<AstImportRef>,
     pub items: Vec<AstItemRef>,

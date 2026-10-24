@@ -6,31 +6,38 @@ use crate::{
     ExternalTraceSpecConformanceFact, ExternalTraceSpecConformanceTarget, FieldType,
     HandlerProducedEffects, ItemSignature, ResourceHandleFact, ResourceHandleType, SpecImplFact,
     SpecSignature, SymbolTypeFact, TraceSpecConformanceFact, TraceSpecConformanceTarget,
-    TryExprTypeFact, Type, TypeConstructorId, TypeId, TypeInterner, TypeOutput,
-    TypeSpecSatisfactionFact, TypeStore,
+    TryExprTypeFact, Type, TypeConstructorId, TypeId, TypeInterner, TypeSpecSatisfactionFact,
+    TypeStore,
 };
 
-pub fn remap_output(output: TypeOutput) -> TypeOutput {
-    output
-}
-
-pub fn remap_body_output(mut output: TypeOutput, target: &mut TypeInterner) -> TypeOutput {
-    let mut remapper = TypeIdRemapper::new(&output.store, target);
-    // Materialization also interns applied representations whose IDs are not
-    // directly referenced by an expression fact. They are part of the checked
-    // type graph and must survive body-store merging for runtime ABI decoding.
-    for (id, _) in output.store.iter() {
-        remapper.ty(id);
+pub(crate) fn remap_body_delta(
+    output: &crate::BodyTypeOutput,
+    base: &crate::SignatureEnvironment,
+    target: &mut TypeInterner,
+) -> Result<crate::TypeFacts, String> {
+    if !base.accepts(output) {
+        return Err("body type delta belongs to a different signature type base".to_owned());
     }
-    remap_facts(&mut output.facts, &mut remapper);
-    output.store = remapper.target_store().clone();
-    output
+    let source = TypeStore::with_local_types(base.types.clone(), output.types.clone());
+    let mut remapper = TypeIdRemapper::new(&source, target);
+    remapper.base_len = output.base_len;
+    for index in 0..output.types.len() {
+        remapper.ty(TypeId((output.base_len + index) as u32));
+    }
+    let mut facts = output.facts.clone();
+    remap_facts(&mut facts, &mut remapper);
+    if let Some(error) = remapper.error {
+        return Err(error);
+    }
+    Ok(facts)
 }
 
 struct TypeIdRemapper<'a, 'b> {
     source: &'a TypeStore,
     target: &'b mut TypeInterner,
     ids: HashMap<TypeId, TypeId>,
+    base_len: usize,
+    error: Option<String>,
 }
 
 impl<'a, 'b> TypeIdRemapper<'a, 'b> {
@@ -39,18 +46,20 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
             source,
             target,
             ids: HashMap::new(),
+            base_len: 0,
+            error: None,
         }
     }
 
-    fn target_store(&self) -> &TypeStore {
-        self.target.store()
-    }
-
     fn ty(&mut self, ty: TypeId) -> TypeId {
+        if (ty.0 as usize) < self.base_len {
+            return ty;
+        }
         if let Some(mapped) = self.ids.get(&ty).copied() {
             return mapped;
         }
         let Some(source_ty) = self.source.get(ty).cloned() else {
+            self.error = Some(format!("body type delta references missing type {}", ty.0));
             return ty;
         };
         if let Type::Nominal(mut nominal) = source_ty.clone() {
@@ -427,6 +436,16 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.iterables = std::mem::take(&mut facts.known_std_types.iterables)
+        .into_iter()
+        .map(|(constructor, fact)| (remapper.ty(constructor), fact))
+        .collect();
+    facts.known_std_types.support_constraints = facts
+        .known_std_types
+        .support_constraints
+        .iter()
+        .map(|ty| remapper.ty(*ty))
+        .collect();
     facts.enum_layouts = std::mem::take(&mut facts.enum_layouts)
         .into_iter()
         .map(|(ty, mut layout)| {
@@ -482,6 +501,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for kind in facts.index_facts.values_mut() {
         remapper.index_kind(kind);
+    }
+    for fact in facts.field_projections.values_mut().flatten() {
+        fact.receiver = remapper.ty(fact.receiver);
+        fact.output = remapper.ty(fact.output);
     }
     for kind in facts.slice_facts.values_mut() {
         remapper.slice_kind(kind);

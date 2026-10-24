@@ -1,24 +1,23 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use etas_cache::{ArtifactFingerprint, ProjectRevision};
 use etas_core::{SourceFile as CoreSourceFile, SourceId, Span};
-use etas_effects::{EffectFacts, InterpreterSupportFacts};
 use etas_hir::{
     HirBlockId, HirEffectArg, HirExpr, HirExprId, HirItem, HirItemId, HirNodeRef, HirOrigin,
-    HirPat, HirPatId, HirProgram, HirStmt, HirType, HirTypeId, ResolveResult, ScopeTree, SourceMap,
-    SymbolDef, SymbolId, SymbolTable, SyntaxNodeId, SyntaxNodeRef,
+    HirPat, HirPatId, HirProgram, HirStmt, HirType, HirTypeId, ResolveResult, SymbolDef, SymbolId,
+    SymbolTable, SyntaxNodeId, SyntaxNodeRef,
 };
-use etas_types::{EffectArgRef, ItemSignature, Type, TypeFacts, TypeId, TypeStore};
+use etas_types::{EffectArgRef, ItemSignature, Type, TypeId, TypeStore};
 
 use crate::artifact::{
-    FrontendArtifactDependency, FrontendArtifactKey, FrontendArtifactKind,
+    ArtifactManifestInput, FrontendArtifactDependency, FrontendArtifactKey, FrontendArtifactKind,
     FrontendArtifactManifest, FrontendArtifactRecord, fingerprint_text,
 };
 use crate::incremental::{BodyArtifactIdentity, DiagnosticSet};
 use crate::{
-    BODY_UNIT_KIND, HirPathResolution, ImportGraph, ImportTarget, ModuleIndex, ProjectEntryFact,
-    ProjectOutput, ResolvedImports, ResolvedModuleTarget, ResolvedPaths, SourceSet, UnitId,
-    UnitKind, UnitTarget, UnitTree,
+    BODY_UNIT_KIND, HirPathResolution, ImportGraph, ImportTarget, ModuleIndex, ProjectOutput,
+    ResolvedImports, ResolvedModuleTarget, ResolvedPaths, SourceSet, UnitId, UnitKind, UnitTarget,
+    UnitTree,
 };
 
 struct BodyFactDependencyInputs<'a> {
@@ -28,26 +27,36 @@ struct BodyFactDependencyInputs<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProjectSemanticSnapshot {
+pub struct ProjectSemanticSnapshot(Arc<ProjectSemanticSnapshotData>);
+
+#[derive(Debug)]
+pub struct ProjectSemanticSnapshotData {
     pub revision: ProjectRevision,
-    pub sources: SourceSet,
-    pub modules: ModuleIndex,
-    pub units: UnitTree,
-    pub import_graph: ImportGraph,
-    pub resolved_imports: ResolvedImports,
-    pub resolved_paths: ResolvedPaths,
-    pub hir: HirProgram,
-    pub source_map: SourceMap,
-    pub symbols: SymbolTable,
-    pub scopes: ScopeTree,
-    pub types: TypeFacts,
-    pub type_store: TypeStore,
-    pub effects: EffectFacts,
-    pub interpreter_support: InterpreterSupportFacts,
-    pub entry_fact: ProjectEntryFact,
-    pub entry: Option<HirItemId>,
+    pub sources: Arc<SourceSet>,
+    pub modules: Arc<ModuleIndex>,
+    pub units: Arc<UnitTree>,
+    pub import_graph: Arc<ImportGraph>,
+    pub resolved_imports: Arc<ResolvedImports>,
+    pub resolved_paths: Arc<ResolvedPaths>,
+    pub checked: crate::CheckedProject,
     pub definition_targets: SnapshotDefinitionTargets,
     pub diagnostics: DiagnosticSet,
+}
+
+impl std::ops::Deref for ProjectSemanticSnapshot {
+    type Target = ProjectSemanticSnapshotData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for ProjectSemanticSnapshotData {
+    type Target = crate::CheckedProgramData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.checked
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -72,7 +81,7 @@ impl ProjectSemanticSnapshot {
         let resolved_paths = output.resolved_paths.clone()?;
         let definition_targets =
             SnapshotDefinitionTargets::from_parts(&checked.symbols, &resolved_paths);
-        Some(Self {
+        Some(Self(Arc::new(ProjectSemanticSnapshotData {
             revision,
             sources: output.sources.clone()?,
             modules: output.modules.clone()?,
@@ -80,21 +89,12 @@ impl ProjectSemanticSnapshot {
             import_graph: output.import_graph.clone()?,
             resolved_imports: output.resolved_imports.clone()?,
             resolved_paths,
-            hir: checked.hir.clone(),
-            source_map: checked.source_map.clone(),
-            symbols: checked.symbols.clone(),
-            scopes: checked.scopes.clone(),
-            types: checked.types.clone(),
-            type_store: checked.type_store.clone(),
-            effects: checked.effects.clone(),
-            interpreter_support: checked.interpreter_support.clone(),
-            entry_fact: checked.entry_fact.clone(),
-            entry: checked.entry,
+            checked: checked.clone(),
             definition_targets,
             diagnostics: DiagnosticSet {
                 diagnostics: output.diagnostics.clone(),
             },
-        })
+        })))
     }
 
     pub fn definition_target_for_symbol(&self, symbol: SymbolId) -> Option<&DefinitionTarget> {
@@ -185,8 +185,15 @@ fn definition_target_for_path_resolution(
 
 impl FrontendArtifactManifest {
     pub(crate) fn from_output(revision: ProjectRevision, output: &ProjectOutput) -> Self {
+        Self::from_input(revision, &ArtifactManifestInput::from(output))
+    }
+
+    pub(crate) fn from_input(
+        revision: ProjectRevision,
+        output: &ArtifactManifestInput<'_>,
+    ) -> Self {
         let mut manifest = Self::new();
-        for parsed in &output.parsed_sources {
+        for parsed in output.parsed_sources {
             let key =
                 FrontendArtifactKey::source(FrontendArtifactKind::ParsedSource, parsed.source);
             manifest.record(FrontendArtifactRecord {
@@ -198,7 +205,7 @@ impl FrontendArtifactManifest {
             });
         }
 
-        if let Some(sources) = &output.sources {
+        if let Some(sources) = output.sources {
             let key = FrontendArtifactKey::project(FrontendArtifactKind::SourceSet);
             manifest.record(FrontendArtifactRecord {
                 fingerprint: source_set_fingerprint(sources),
@@ -404,7 +411,7 @@ impl FrontendArtifactManifest {
             ],
         );
 
-        for source in diagnostic_sources(output) {
+        for source in diagnostic_source_ids(output.diagnostics, output.parsed_sources) {
             let mut dependencies = output
                 .parsed_sources
                 .iter()
@@ -499,7 +506,7 @@ impl FrontendArtifactManifest {
         kind: FrontendArtifactKind,
         mut units: Vec<UnitId>,
         dependency_inputs: BodyFactDependencyInputs<'_>,
-        output: &ProjectOutput,
+        output: &ArtifactManifestInput<'_>,
     ) -> Vec<FrontendArtifactKey> {
         units.sort_by_key(|unit| unit.0);
         units
@@ -540,7 +547,7 @@ impl FrontendArtifactManifest {
     fn record_item_signature_facts(
         &mut self,
         revision: ProjectRevision,
-        output: &ProjectOutput,
+        output: &ArtifactManifestInput<'_>,
         project_signature_key: FrontendArtifactKey,
     ) -> Vec<FrontendArtifactKey> {
         let Some(signature_types) = output.signature_types.as_ref() else {
@@ -592,7 +599,7 @@ impl FrontendArtifactManifest {
         revision: ProjectRevision,
         mut units: Vec<UnitId>,
         body_hir: Vec<FrontendArtifactKey>,
-        output: &ProjectOutput,
+        output: &ArtifactManifestInput<'_>,
     ) -> Vec<FrontendArtifactKey> {
         units.sort_by_key(|unit| unit.0);
         units
@@ -636,7 +643,7 @@ impl FrontendArtifactManifest {
     fn record_body_hir_artifacts(
         &mut self,
         revision: ProjectRevision,
-        output: &ProjectOutput,
+        output: &ArtifactManifestInput<'_>,
     ) -> Vec<FrontendArtifactKey> {
         let Some(units) = output.units.as_ref() else {
             return Vec::new();
@@ -732,15 +739,38 @@ impl FrontendArtifactManifest {
     }
 }
 
-fn body_fingerprint_parts(output: &ProjectOutput, unit: UnitId) -> Vec<String> {
+fn body_fingerprint_parts(output: &ArtifactManifestInput<'_>, unit: UnitId) -> Vec<String> {
     let units = output.units.as_ref().expect("unit tree should exist");
     let sources = output.sources.as_ref().expect("source set should exist");
-    BodyArtifactIdentity::for_unit(unit, units, sources)
+    let mut parts = BodyArtifactIdentity::for_unit(unit, units, sources)
         .expect("body artifact unit must resolve to a source-backed AST body")
-        .fingerprint_parts(unit)
+        .fingerprint_parts(unit);
+    // Cached facts contain revision-local HIR IDs. Unchanged source text alone
+    // cannot establish reuse when an earlier body's edit relocates those IDs.
+    if let (Some(hir), Some(bindings), Some(items)) = (
+        &output.hir,
+        &output.hir_body_bindings,
+        &output.hir_item_bindings,
+    ) && let Some(node) = units.nodes.get(unit)
+        && let crate::UnitTarget::AstBody(body) = &node.target
+    {
+        if let Some(item) = items.ast_to_hir.get(&body.item) {
+            parts.push(format!("hir-item:{item:?}:{:?}", hir.hir.items.get(*item)));
+        }
+        for block in bindings.body_blocks.get(body).into_iter().flatten() {
+            parts.push(format!(
+                "hir-block:{block:?}:{:?}",
+                hir.hir.blocks.get(*block)
+            ));
+        }
+        for expr in bindings.body_exprs.get(body).into_iter().flatten() {
+            parts.push(format!("hir-expr:{expr:?}:{:?}", hir.hir.exprs.get(*expr)));
+        }
+    }
+    parts
 }
 
-fn effect_pipeline_fingerprint_parts(output: &ProjectOutput) -> Vec<String> {
+fn effect_pipeline_fingerprint_parts(output: &ArtifactManifestInput<'_>) -> Vec<String> {
     let Some(artifacts) = output.effect_pipeline_artifacts.as_ref() else {
         return Vec::new();
     };
@@ -780,7 +810,7 @@ fn effect_pipeline_fingerprint_parts(output: &ProjectOutput) -> Vec<String> {
 }
 
 fn body_signature_dependencies(
-    output: &ProjectOutput,
+    output: &ArtifactManifestInput<'_>,
     unit: UnitId,
     item_signatures: &[FrontendArtifactKey],
 ) -> Vec<FrontendArtifactKey> {
@@ -823,7 +853,7 @@ fn body_signature_dependencies(
 }
 
 fn body_type_referenced_items(
-    output: &ProjectOutput,
+    output: &ArtifactManifestInput<'_>,
     body: &crate::AstBodyRef,
     hir: &HirProgram,
     item_bindings: &crate::HirItemBindings,
@@ -859,7 +889,7 @@ fn body_type_referenced_items(
 }
 
 struct BodySignatureReferenceCollector<'a> {
-    output: &'a ProjectOutput,
+    output: &'a ArtifactManifestInput<'a>,
     hir: &'a HirProgram,
     item_bindings: &'a crate::HirItemBindings,
     items: Vec<HirItemId>,
@@ -1119,7 +1149,7 @@ impl BodySignatureReferenceCollector<'_> {
 
 fn source_item_for_expr_path(
     path: &crate::HirExprPathResolution,
-    output: &ProjectOutput,
+    output: &ArtifactManifestInput<'_>,
     hir: &HirProgram,
     item_bindings: &crate::HirItemBindings,
 ) -> Option<HirItemId> {
@@ -1160,7 +1190,7 @@ fn source_item_for_resolution(
 
 fn source_item_for_path(
     path: &etas_hir::ResolvedPath,
-    output: &ProjectOutput,
+    output: &ArtifactManifestInput<'_>,
     hir: &HirProgram,
     item_bindings: &crate::HirItemBindings,
 ) -> Option<HirItemId> {
@@ -1201,7 +1231,7 @@ fn single_segment_path_name(path: &etas_hir::ResolvedPath) -> Option<&str> {
 }
 
 fn source_item_for_unambiguous_wildcard_name(
-    output: &ProjectOutput,
+    output: &ArtifactManifestInput<'_>,
     source: SourceId,
     name: &str,
     item_bindings: &crate::HirItemBindings,
@@ -1238,7 +1268,7 @@ fn source_item_for_unambiguous_wildcard_name(
 fn source_item_for_module_target_export(
     target: &ResolvedModuleTarget,
     name: &str,
-    output: &ProjectOutput,
+    output: &ArtifactManifestInput<'_>,
     item_bindings: &crate::HirItemBindings,
 ) -> Option<HirItemId> {
     let ResolvedModuleTarget::Source { module, .. } = target else {
@@ -1256,7 +1286,7 @@ fn source_item_for_module_target_export(
 }
 
 fn explicit_import_target_for_name<'a>(
-    output: &'a ProjectOutput,
+    output: &'a ArtifactManifestInput<'_>,
     source: SourceId,
     name: &str,
 ) -> Option<&'a ImportTarget> {
@@ -1968,12 +1998,18 @@ fn source_set_fingerprint(sources: &SourceSet) -> ArtifactFingerprint {
 }
 
 pub(in crate::session) fn diagnostic_sources(output: &ProjectOutput) -> Vec<SourceId> {
-    let mut sources = output
-        .diagnostics
+    diagnostic_source_ids(&output.diagnostics, &output.parsed_sources)
+}
+
+fn diagnostic_source_ids(
+    diagnostics: &[etas_core::Diagnostic],
+    parsed_sources: &[crate::ParsedSource],
+) -> Vec<SourceId> {
+    let mut sources = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.primary.span.source)
         .collect::<Vec<_>>();
-    sources.extend(output.parsed_sources.iter().map(|parsed| parsed.source));
+    sources.extend(parsed_sources.iter().map(|parsed| parsed.source));
     sources.sort_by_key(|source| source.0);
     sources.dedup();
     sources

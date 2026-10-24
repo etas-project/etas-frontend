@@ -406,6 +406,7 @@ fn solves_known_call_by_applying_callee_summary() {
 
 #[test]
 fn solves_mutually_recursive_units_by_scc_fixpoint() {
+    let builds_before = etas_hir::HirTreeIndex::thread_build_count();
     let mut builder = HirBuilder::default();
     let a_event = builder.literal();
     let a_call_b = builder.call();
@@ -425,6 +426,10 @@ fn solves_mutually_recursive_units_by_scc_fixpoint() {
 
     let result = InterproceduralAnalysis::new([Unit(0), Unit(1)], semantics).solve();
 
+    assert_eq!(
+        etas_hir::HirTreeIndex::thread_build_count() - builds_before,
+        1
+    );
     assert!(result.diagnostics.is_empty());
     let a = result.summaries.get(Unit(0)).expect("a summary");
     let b = result.summaries.get(Unit(1)).expect("b summary");

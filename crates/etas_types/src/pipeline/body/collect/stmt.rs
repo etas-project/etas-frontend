@@ -120,9 +120,16 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             }
             let elem = ctx.fresh_type_var();
             let iter_ty = collect_expr(ctx, iter, None);
+            let key = ctx.fresh_type_var();
+            let value = ctx.fresh_type_var();
+            let entry_pair = ctx
+                .ctx
+                .interner
+                .intern(crate::Type::Tuple(vec![key, value]));
             ctx.emit(TypeConstraint::Iterable {
                 iter: iter_ty,
                 item: elem,
+                entry_pair,
                 origin: ConstraintOrigin { span },
             });
             collect_pattern(ctx, pat, elem);

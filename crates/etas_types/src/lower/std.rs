@@ -665,7 +665,7 @@ fn lower_std_enum_layout(
     params: &[etas_std::StdGenericParam],
     scope: Option<&[String]>,
 ) {
-    if ctx.signature_facts.enum_layouts.contains_key(&ty) {
+    if ctx.enum_layout(ty).is_some() {
         return;
     }
     let Some(owner) = registry.lookup_qualified(&name.split('.').collect::<Vec<_>>()) else {

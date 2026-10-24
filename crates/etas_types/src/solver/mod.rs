@@ -3,6 +3,7 @@ pub mod callable;
 pub mod effect_row;
 pub mod field;
 pub mod index;
+mod iterable;
 mod numeric_literal;
 pub mod report;
 pub mod spec_solver;
@@ -22,6 +23,7 @@ use crate::{
 
 pub struct TypeSolveInput<'a> {
     pub store: &'a TypeStore,
+    pub known_std_types: &'a crate::KnownStdTypes,
     pub spec_facts: &'a SpecFacts,
     pub constraints: &'a [TypeConstraint],
     pub spec_obligations: &'a [SpecObligation],
@@ -33,6 +35,7 @@ impl TypeSolver {
     pub fn solve(input: TypeSolveInput<'_>) -> SolverReport {
         let mut report = SolverReport::default();
         let mut pending_access_constraints = Vec::new();
+        let mut checked_method_constraints = Vec::new();
         let mut pending_unary_constraints = Vec::new();
         let mut numeric_literals = Vec::new();
         for constraint in input.constraints {
@@ -41,7 +44,8 @@ impl TypeSolver {
                 TypeConstraint::Equal { lhs, rhs, origin } => {
                     let lhs = resolve_known_substitutions(input.store, &report, *lhs);
                     let rhs = resolve_known_substitutions(input.store, &report, *rhs);
-                    let mut unifier = TypeUnifier::new(input.store);
+                    let mut unifier =
+                        TypeUnifier::with_known_substitution(input.store, &report.substitutions);
                     if unifier.unify(lhs, rhs).is_err() {
                         report.push(SolverFailure {
                             code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -49,7 +53,7 @@ impl TypeSolver {
                             message: "type equality constraint could not be solved".to_owned(),
                         });
                     } else {
-                        report.substitutions.extend(unifier.substitution());
+                        report.substitutions.extend(&unifier.into_substitution());
                     }
                 }
                 TypeConstraint::Assignable {
@@ -72,9 +76,12 @@ impl TypeSolver {
                             ),
                         });
                     } else {
-                        let mut unifier = TypeUnifier::new(input.store);
+                        let mut unifier = TypeUnifier::with_known_substitution(
+                            input.store,
+                            &report.substitutions,
+                        );
                         if unifier.unify(from, to).is_ok() {
-                            report.substitutions.extend(unifier.substitution());
+                            report.substitutions.extend(&unifier.into_substitution());
                         }
                     }
                 }
@@ -112,6 +119,7 @@ impl TypeSolver {
                     ));
                 }
                 TypeConstraint::MethodCall {
+                    expr,
                     method,
                     candidates,
                     generic_args,
@@ -147,7 +155,7 @@ impl TypeSolver {
                         {
                             continue;
                         }
-                        let candidate_report = solve_callable_constraint(
+                        let mut candidate_report = solve_callable_constraint(
                             input.store,
                             input.spec_facts,
                             CallableConstraintSolveInput {
@@ -163,6 +171,26 @@ impl TypeSolver {
                             },
                         );
                         if candidate_report.failures.is_empty() {
+                            if let crate::CallableCandidateOperation::CheckedIndex { error } =
+                                &candidate.operation
+                            {
+                                if let ([base, index], Some(error)) = (args.as_slice(), error) {
+                                    checked_method_constraints.push(TypeConstraint::IndexAccess {
+                                        expr: *expr,
+                                        base: *base,
+                                        index: *index,
+                                        output,
+                                        index_error: Some(*error),
+                                        origin: *origin,
+                                    });
+                                } else {
+                                    candidate_report.push(SolverFailure {
+                                        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                                        span: origin.span,
+                                        message: "checked index method requires receiver/index arguments and the canonical IndexError fact".to_owned(),
+                                    });
+                                }
+                            }
                             solved = Some(candidate_report);
                             break;
                         }
@@ -180,6 +208,7 @@ impl TypeSolver {
                 TypeConstraint::FieldAccess { .. } => {
                     solve_or_defer_access_constraint(
                         input.store,
+                        input.spec_facts,
                         &mut report,
                         constraint,
                         &mut pending_access_constraints,
@@ -188,36 +217,26 @@ impl TypeSolver {
                 TypeConstraint::IndexAccess { .. } | TypeConstraint::SliceAccess { .. } => {
                     solve_or_defer_access_constraint(
                         input.store,
+                        input.spec_facts,
                         &mut report,
                         constraint,
                         &mut pending_access_constraints,
                     );
                 }
-                TypeConstraint::Iterable { iter, item, origin } => {
-                    let iter = resolve_known_substitutions(input.store, &report, *iter);
-                    let item = resolve_known_substitutions(input.store, &report, *item);
-                    let iter = resolve_known_substitutions(input.store, &report, iter);
-                    if let Some(iter_item) = iterable_item(input.store, iter) {
-                        let mut unifier = TypeUnifier::new(input.store);
-                        if unifier.unify(iter_item, item).is_ok() {
-                            report.substitutions.extend(unifier.substitution());
-                        } else if !assignability::is_assignable(input.store, iter_item, item) {
-                            report.push(SolverFailure {
-                                code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                                span: origin.span,
-                                message: "for-loop iterator item type does not match pattern"
-                                    .to_owned(),
-                            });
-                        }
-                    } else {
-                        report.push(SolverFailure {
-                            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                            span: origin.span,
-                            message: "for-loop iterator must be an iterable collection or range"
-                                .to_owned(),
-                        });
-                    }
-                }
+                TypeConstraint::Iterable {
+                    iter,
+                    item,
+                    entry_pair,
+                    origin,
+                } => iterable::solve(
+                    input.store,
+                    input.known_std_types,
+                    &mut report,
+                    *iter,
+                    *item,
+                    *entry_pair,
+                    origin,
+                ),
                 TypeConstraint::Unary { .. } => pending_unary_constraints.push(constraint),
                 TypeConstraint::TryOperand {
                     operand,
@@ -239,9 +258,12 @@ impl TypeSolver {
                             message: "try operand value does not match Result ok type".to_owned(),
                         });
                     } else {
-                        let mut unifier = TypeUnifier::new(input.store);
+                        let mut unifier = TypeUnifier::with_known_substitution(
+                            input.store,
+                            &report.substitutions,
+                        );
                         if unifier.unify(operand, output).is_ok() {
-                            report.substitutions.extend(unifier.substitution());
+                            report.substitutions.extend(&unifier.into_substitution());
                         }
                     }
                 }
@@ -249,11 +271,33 @@ impl TypeSolver {
         }
         solve_numeric_literals(input.store, &mut report, numeric_literals);
         solve_unary_constraints(input.store, &mut report, pending_unary_constraints);
-        solve_pending_access_constraints(input.store, &mut report, pending_access_constraints);
+        pending_access_constraints.extend(checked_method_constraints);
+        solve_pending_access_constraints(
+            input.store,
+            input.spec_facts,
+            &mut report,
+            pending_access_constraints,
+        );
+        let deferred_obligations = std::mem::take(&mut report.pending_spec_obligations);
+        let obligations = input
+            .spec_obligations
+            .iter()
+            .chain(&deferred_obligations)
+            .map(|obligation| crate::SpecObligation {
+                ty: resolve_known_substitutions(input.store, &report, obligation.ty),
+                spec: obligation.spec.clone(),
+                args: obligation
+                    .args
+                    .iter()
+                    .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
+                    .collect(),
+                span: obligation.span,
+            })
+            .collect::<Vec<_>>();
         report.append(spec_solver::solve_spec_obligations(
             input.store,
             input.spec_facts,
-            input.spec_obligations,
+            &obligations,
             &report.named_substitutions,
         ));
         report
@@ -441,7 +485,7 @@ fn solve_callable_constraint(
                 .copied()
                 .or_else(|| {
                     (solved_subject != param.subject
-                        && !matches!(store.get(solved_subject), Some(Type::Var(_))))
+                        || matches!(store.get(solved_subject), Some(Type::Var(_))))
                     .then_some(solved_subject)
                 });
             let Some(ty) = ty else {
@@ -455,12 +499,27 @@ fn solve_callable_constraint(
                 });
                 continue;
             };
-            obligations.extend(param.bounds.iter().map(|bound| SpecObligation {
-                ty,
-                spec: bound.spec.clone(),
-                args: bound.args.clone(),
-                span: input.origin.span,
-            }));
+            let param_obligations = param
+                .bounds
+                .iter()
+                .map(|bound| SpecObligation {
+                    ty,
+                    spec: bound.spec.clone(),
+                    args: bound
+                        .args
+                        .iter()
+                        .map(|arg| resolve_known_substitutions(store, &report, *arg))
+                        .collect(),
+                    span: input.origin.span,
+                })
+                .collect::<Vec<_>>();
+            if matches!(store.get(ty), Some(Type::Var(_))) {
+                // Literal/default and surrounding constraints may still bind this variable.
+                // The final obligation pass must prove the bound after those constraints solve.
+                report.pending_spec_obligations.extend(param_obligations);
+            } else {
+                obligations.extend(param_obligations);
+            }
         }
         if report.failures.is_empty() {
             report.append(spec_solver::solve_spec_obligations(
@@ -493,7 +552,7 @@ fn solve_callable_constraint(
                                     param.subject,
                                 );
                                 (solved != param.subject
-                                    && !matches!(store.get(solved), Some(Type::Var(_))))
+                                    || matches!(store.get(solved), Some(Type::Var(_))))
                                 .then_some(solved)
                             })
                     })
@@ -614,9 +673,9 @@ fn solve_numeric_literals(
                 });
                 continue;
             };
-            let mut unifier = TypeUnifier::new(store);
+            let mut unifier = TypeUnifier::with_known_substitution(store, &report.substitutions);
             if unifier.unify(resolved, default).is_ok() {
-                report.substitutions.extend(unifier.substitution());
+                report.substitutions.extend(&unifier.into_substitution());
                 resolved = default;
             }
         }
@@ -653,11 +712,12 @@ fn primitive_type_id(store: &TypeStore, primitive: PrimitiveType) -> Option<Type
 
 fn solve_or_defer_access_constraint(
     store: &TypeStore,
+    spec_facts: &SpecFacts,
     report: &mut SolverReport,
     constraint: &TypeConstraint,
     pending: &mut Vec<TypeConstraint>,
 ) {
-    match solve_access_constraint(store, report, constraint) {
+    match solve_access_constraint(store, spec_facts, report, constraint) {
         AccessConstraintOutcome::Solved(solved) => report.append(*solved),
         AccessConstraintOutcome::Pending => pending.push(constraint.clone()),
     }
@@ -665,6 +725,7 @@ fn solve_or_defer_access_constraint(
 
 fn solve_pending_access_constraints(
     store: &TypeStore,
+    spec_facts: &SpecFacts,
     report: &mut SolverReport,
     mut pending: Vec<TypeConstraint>,
 ) {
@@ -672,7 +733,7 @@ fn solve_pending_access_constraints(
         let mut next = Vec::new();
         let mut solved_any = false;
         for constraint in pending {
-            match solve_access_constraint(store, report, &constraint) {
+            match solve_access_constraint(store, spec_facts, report, &constraint) {
                 AccessConstraintOutcome::Solved(solved) => {
                     solved_any = true;
                     report.append(*solved);
@@ -697,6 +758,7 @@ enum AccessConstraintOutcome {
 
 fn solve_access_constraint(
     store: &TypeStore,
+    spec_facts: &SpecFacts,
     report: &SolverReport,
     constraint: &TypeConstraint,
 ) -> AccessConstraintOutcome {
@@ -733,6 +795,7 @@ fn solve_access_constraint(
             AccessConstraintOutcome::Solved(Box::new(index::solve_index_access(
                 store,
                 index::IndexAccessSolveInput {
+                    spec_facts,
                     expr: *expr,
                     base,
                     index,
@@ -764,6 +827,7 @@ fn solve_access_constraint(
             AccessConstraintOutcome::Solved(Box::new(index::solve_slice_access(
                 store,
                 index::SliceAccessSolveInput {
+                    spec_facts,
                     expr: *expr,
                     base,
                     start,
@@ -830,18 +894,6 @@ fn unresolved_access_failure(
     }
 }
 
-fn iterable_item(store: &TypeStore, ty: TypeId) -> Option<TypeId> {
-    match store.get(ty)? {
-        Type::Array(inner)
-        | Type::List(inner)
-        | Type::Set(inner)
-        | Type::Slice(inner)
-        | Type::MemorySelection(inner) => Some(*inner),
-        Type::Range { index } => Some(*index),
-        _ => None,
-    }
-}
-
 fn is_numeric(store: &TypeStore, ty: TypeId) -> bool {
     matches!(
         store.get(ty),
@@ -883,6 +935,13 @@ fn is_assignable_for_reason(
     {
         return record_subset_assignable(store, representation, to)
             || assignability::is_assignable(store, representation, to);
+    }
+    if matches!(reason, crate::AssignabilityReason::Pattern)
+        && matches!(store.get(from), Some(crate::Type::Applied { .. }))
+        && let Ok(Some(from_record)) = crate::record_fields_with_applied_params(store, from)
+        && let Some(to_record) = record_fields(store, to)
+    {
+        return record_fields_subset_assignable(store, &from_record, &to_record);
     }
     if matches!(reason, crate::AssignabilityReason::Pattern)
         && record_subset_assignable(store, from, to)
@@ -1137,6 +1196,14 @@ fn record_subset_assignable(store: &TypeStore, from: crate::TypeId, to: crate::T
     let Some(to_record) = record_fields(store, to) else {
         return false;
     };
+    record_fields_subset_assignable(store, &from_record, &to_record)
+}
+
+fn record_fields_subset_assignable(
+    store: &TypeStore,
+    from_record: &crate::RecordType,
+    to_record: &crate::RecordType,
+) -> bool {
     to_record.fields.iter().all(|expected| {
         from_record
             .fields

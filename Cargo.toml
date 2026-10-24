@@ -34,7 +34,7 @@ blake3 = "1"
 clap = { version = "4.5", features = ["derive"] }
 prost = "0.13"
 rusqlite = { version = "0.32", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 tracing = "0.1"
 zstd = "0.13"

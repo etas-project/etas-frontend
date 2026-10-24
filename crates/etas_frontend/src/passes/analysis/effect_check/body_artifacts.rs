@@ -1,4 +1,3 @@
-use etas_hir::{HirItem, HirItemId, SymbolId};
 use etas_utils::UnitKey;
 
 use crate::incremental::{BodyArtifactIdentity, dependency_fingerprints_match};
@@ -46,72 +45,5 @@ pub(super) fn record_reused_effect_body_artifacts(context: &mut ProjectContext) 
         {
             context.reused_cache_artifacts.push(artifact.cache_key);
         }
-    }
-}
-
-pub(super) fn local_effect_output(
-    mut output: etas_effects::EffectOutput,
-    hir: &etas_hir::HirProgram,
-    item: HirItemId,
-) -> etas_effects::EffectOutput {
-    let item_symbol = hir.items.get(item).and_then(item_symbol);
-    let effect_symbols = hir
-        .items
-        .iter()
-        .filter_map(|(id, hir_item)| matches!(hir_item, HirItem::Effect(_)).then_some(id))
-        .collect::<std::collections::HashSet<_>>();
-    let effect_symbol_ids = hir
-        .items
-        .iter()
-        .filter_map(|(_, hir_item)| match hir_item {
-            HirItem::Effect(effect) => Some(effect.symbol),
-            _ => None,
-        })
-        .collect::<std::collections::HashSet<_>>();
-
-    output
-        .facts
-        .item_effects
-        .retain(|id, _| *id == item || effect_symbols.contains(id));
-    output
-        .facts
-        .symbol_effects
-        .retain(|symbol, _| Some(*symbol) == item_symbol || effect_symbol_ids.contains(symbol));
-    output.facts.requirements.items.retain(|id, _| *id == item);
-    output
-        .facts
-        .requirements
-        .symbols
-        .retain(|symbol, _| Some(*symbol) == item_symbol);
-    output.facts.trace_specs.items.retain(|id, _| *id == item);
-    output
-        .facts
-        .trace_specs
-        .symbols
-        .retain(|symbol, _| Some(*symbol) == item_symbol);
-    output
-        .facts
-        .interpreter_support
-        .items
-        .retain(|id, _| *id == item);
-
-    if item_symbol.is_none_or(|symbol| {
-        hir.symbols
-            .get(symbol)
-            .is_none_or(|symbol| symbol.name != "main")
-    }) {
-        output.facts.interpreter_support.entry = None;
-    }
-
-    output
-}
-
-fn item_symbol(item: &HirItem) -> Option<SymbolId> {
-    match item {
-        HirItem::Effect(item) => Some(item.symbol),
-        HirItem::Tool(item) => Some(item.symbol),
-        HirItem::Agent(item) => Some(item.symbol),
-        HirItem::Flow(item) => Some(item.symbol),
-        _ => None,
     }
 }

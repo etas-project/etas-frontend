@@ -24,13 +24,14 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateContractsPass {
                 "materialized effect facts",
             ));
         };
-        if let Err(error) = crate::validate::EffectContractValidator::validate(
+        if let Err(error) = crate::validate::EffectContractValidator::validate_with_context(
             context.input.hir,
             context.input.types,
             registry,
             context.input.tool_bindings,
             &mut effects,
             context.input.reachable_items,
+            &context.analysis_context,
         ) {
             return context.fail(error);
         }

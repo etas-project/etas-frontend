@@ -8,9 +8,10 @@ use crate::passes::{
     ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
     FinalizeProjectHirPass, FinalizeTypeFactsPass, LowerModuleItemsPass,
     NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
-    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, ReuseTypeBodyFactsPass,
-    RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
-    ValidateExternalEnvironmentPass, ValidateTopLevelLetPass, VerifyInterpreterSupportPass,
+    PrepareBodyTypeEnvironmentPass, ResolveEntryItemPass, ResolveImportTargetsPass,
+    ResolvePathsPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
+    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateTopLevelLetPass,
+    VerifyInterpreterSupportPass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
@@ -49,6 +50,7 @@ pub fn project_pipeline() -> Pipeline<ProjectContext> {
         .pass(ComputeEntryReachabilityPass)
         .pass(BuildSignatureFactsPass)
         .pass(ValidateTopLevelLetPass)
+        .pass(PrepareBodyTypeEnvironmentPass)
         .pass(ReuseTypeBodyFactsPass)
         .for_each(
             UnitSelector::AffectedArtifact {

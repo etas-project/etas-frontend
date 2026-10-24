@@ -1,4 +1,5 @@
 use etas_core::Span;
+use std::sync::Arc;
 
 use crate::{
     HirBlock, HirBlockId, HirExpr, HirExprId, HirHandlerArm, HirHandlerArmId, HirItem, HirItemId,
@@ -14,18 +15,18 @@ use super::model::{HirBodyRef, HirOwner, HirTreeChild, HirTreeIndex, HirTreeInde
 
 pub struct HirTreeView<'hir> {
     program: &'hir HirProgram,
-    index: HirTreeIndex,
+    index: Arc<HirTreeIndex>,
 }
 
 impl<'hir> HirTreeView<'hir> {
     pub fn try_new(program: &'hir HirProgram) -> Result<Self, HirTreeIndexError> {
         Ok(Self {
             program,
-            index: HirTreeIndex::try_build(program)?,
+            index: Arc::new(HirTreeIndex::try_build(program)?),
         })
     }
 
-    pub fn from_validated_index(program: &'hir HirProgram, index: HirTreeIndex) -> Self {
+    pub fn from_validated_index(program: &'hir HirProgram, index: Arc<HirTreeIndex>) -> Self {
         Self { program, index }
     }
 
@@ -39,6 +40,10 @@ impl<'hir> HirTreeView<'hir> {
 
     pub fn index(&self) -> &HirTreeIndex {
         &self.index
+    }
+
+    pub fn shared_index(&self) -> Arc<HirTreeIndex> {
+        Arc::clone(&self.index)
     }
 
     pub fn modules(&self) -> impl Iterator<Item = ModuleView<'_, 'hir>> + '_ {

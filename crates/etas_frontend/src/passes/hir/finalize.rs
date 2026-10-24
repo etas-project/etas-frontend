@@ -42,7 +42,7 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
             .expect("project HIR lowering state should exist");
         let hir = lowering.lowering.finish();
         let tree_index = match etas_hir::HirTreeIndex::try_build(&hir) {
-            Ok(index) => index,
+            Ok(index) => std::sync::Arc::new(index),
             Err(error) => {
                 return PassResult::failed(format!(
                     "cannot finalize project HIR with invalid tree invariants: {error}"
@@ -54,7 +54,10 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
         context.hir_body_bindings = Some(build_hir_body_bindings(context, &hir_view));
         context.diagnostics.extend(hir.diagnostics.clone());
         attach_hir_units(context, &hir_view);
-        context.hir = Some(HirOutput { hir, tree_index });
+        context.hir = Some(HirOutput {
+            hir: std::sync::Arc::new(hir),
+            tree_index,
+        });
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(HIR_OUTPUT))
     }
 }
@@ -103,6 +106,7 @@ fn attach_hir_units(context: &mut ProjectContext, hir_view: &HirTreeView<'_>) {
         .as_ref()
         .expect("HIR item bindings should exist");
     let tree = context.units.as_mut().expect("unit tree should exist");
+    let tree = std::sync::Arc::make_mut(tree);
     let body_units = tree
         .nodes
         .iter()

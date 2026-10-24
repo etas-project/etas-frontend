@@ -21,22 +21,26 @@ impl MemoryProvenance {
         types: &TypeOutput,
         registry: &etas_std::StdRegistry,
         units: &[crate::EffectUnit],
+        context: &etas_hir_analysis::HirAnalysisContext,
     ) -> Self {
-        let analysis = analyze_aliases(AliasAnalysisInput {
-            hir,
-            units: units
-                .iter()
-                .filter_map(|unit| semantic_unit(hir, *unit))
-                .collect(),
-            config: AliasPrecisionConfig {
-                field_sensitivity: FieldSensitivity::FullProjection,
-                heap_model: HeapModel::ResourceAware,
-                // Projection depth is bounded by source structure, not a magic nesting limit.
-                max_projection_depth: hir.exprs.len(),
-                ..AliasPrecisionConfig::balanced()
+        let analysis = analyze_aliases_with_context(
+            AliasAnalysisInput {
+                hir,
+                units: units
+                    .iter()
+                    .filter_map(|unit| semantic_unit(hir, *unit))
+                    .collect(),
+                config: AliasPrecisionConfig {
+                    field_sensitivity: FieldSensitivity::FullProjection,
+                    heap_model: HeapModel::ResourceAware,
+                    // Projection depth is bounded by source structure, not a magic nesting limit.
+                    max_projection_depth: hir.exprs.len(),
+                    ..AliasPrecisionConfig::balanced()
+                },
+                oracle: oracle::MemoryOracle::new(hir, types, registry),
             },
-            oracle: oracle::MemoryOracle::new(hir, types, registry),
-        });
+            context,
+        );
         let converged = analysis
             .convergence
             .iter()

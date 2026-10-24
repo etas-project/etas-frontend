@@ -18,22 +18,20 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
 
     fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         let mut state = state;
-        if matches!(self.hir.exprs.get(expr), Some(HirExpr::Index { .. })) {
+        if let Some(error) = self.types.facts.checked_index_errors.get(&expr).copied() {
+            state.summary.record_escaping_effect(Effect::Error(error));
+        } else if matches!(self.hir.exprs.get(expr), Some(HirExpr::Index { .. }))
+            && !matches!(
+                self.types.facts.index_facts.get(&expr),
+                Some(etas_types::CheckedIndexKind::MapLookup { .. })
+            )
+        {
             let span = self.hir.exprs[expr].span(&self.hir.blocks);
-            match self.types.facts.checked_index_errors.get(&expr).copied() {
-                Some(error) => state.summary.record_escaping_effect(Effect::Error(error)),
-                None if matches!(
-                    self.types.facts.index_facts.get(&expr),
-                    Some(etas_types::CheckedIndexKind::MapLookup { .. })
-                ) => {}
-                None => {
-                    state = self.incomplete_at(
-                        span,
-                        "checked index expression requires a materialized IndexError fact",
-                        state,
-                    );
-                }
-            }
+            state = self.incomplete_at(
+                span,
+                "checked index expression requires a materialized IndexError fact",
+                state,
+            );
         }
         if let Some(EffectUnit::Item(item)) = state.unit {
             if matches!(

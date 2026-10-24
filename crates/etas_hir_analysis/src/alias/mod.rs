@@ -19,7 +19,7 @@ pub use config::{
 pub use context::{AliasContext, ContextualAliasUnit};
 pub use domain::{AliasDomain, AliasSet, AliasValue};
 pub use facts::{AliasAnalysisOutput, AliasFacts};
-pub use interprocedural::{AliasAnalysisInput, analyze_aliases};
+pub use interprocedural::{AliasAnalysisInput, analyze_aliases, analyze_aliases_with_context};
 pub use oracle::{
     AliasCallTarget, AliasIntrinsicSummary, AliasOracle, AllocationKind, NoAliasOracle,
 };

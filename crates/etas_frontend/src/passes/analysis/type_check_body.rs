@@ -4,7 +4,7 @@ use etas_utils::{
 };
 
 use crate::passes::artifacts::{
-    HIR_OUTPUT, SIGNATURE_FACTS, TYPE_OUTPUT, unit_kind_with_diagnostics,
+    HIR_OUTPUT, TYPE_ENVIRONMENT, TYPE_OUTPUT, unit_kind_with_diagnostics,
 };
 use crate::{BODY_UNIT_KIND, ProjectContext};
 
@@ -16,7 +16,7 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("TypeCheckBodyPass", PassKind::Transform)
             .scope(etas_utils::PassScope::Unit(BODY_UNIT_KIND))
-            .requires(ArtifactSet::from([HIR_OUTPUT, SIGNATURE_FACTS]))
+            .requires(ArtifactSet::from([HIR_OUTPUT, TYPE_ENVIRONMENT]))
             .produces(unit_kind_with_diagnostics(TYPE_OUTPUT, BODY_UNIT_KIND))
     }
 
@@ -51,23 +51,17 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
         if context.type_body_outputs.contains_key(&unit) {
             return PassResult::unchanged();
         }
-        let hir = context.hir.as_ref().expect("HIR output should exist");
-        let mut seed = context
-            .signature_types
-            .as_ref()
-            .cloned()
-            .expect("signature facts should exist before body type checking");
-        seed.diagnostics.clear();
-        let output = etas_types::check_body_item_with_std_registry(
-            &hir.hir,
-            seed,
-            item,
-            context.std_registry.clone(),
-        );
+        let (Some(hir), Some(base)) = (&context.hir, &context.type_environment) else {
+            return PassResult::failed("body type check requires prepared signature environment");
+        };
+        let output =
+            etas_types::check_body_delta(&hir.hir, base, item, context.std_registry.clone());
         context
             .diagnostics
             .extend(output.diagnostics.iter().cloned());
-        context.type_body_outputs.insert(unit, output);
+        context
+            .type_body_outputs
+            .insert(unit, std::sync::Arc::new(output));
         PassResult::changed(
             PreservedArtifacts::All,
             ArtifactSet::from_iter([ArtifactRef::unit_kind(TYPE_OUTPUT, BODY_UNIT_KIND)]),

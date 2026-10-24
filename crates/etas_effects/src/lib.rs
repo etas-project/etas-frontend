@@ -21,7 +21,7 @@ pub use effect::{
     effect_var_id_from_name,
 };
 pub use facts::{
-    EffectAcknowledgement, EffectAnalysisOutput, EffectComponentConvergence,
+    BodyEffectOutput, EffectAcknowledgement, EffectAnalysisOutput, EffectComponentConvergence,
     EffectConvergenceStatus, EffectFacts, EffectMaterializationInputs, EffectOutput,
     ErrorConversionFact, FinishSummary, HandleApplicationFact, HandlerActionFact, HandlerArmFact,
     HandlerCompletionSummary, HandlerValueFact, HandlerValueRef, InterpreterSupportFacts,

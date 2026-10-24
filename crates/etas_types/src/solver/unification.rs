@@ -29,6 +29,7 @@ impl Substitution {
 pub struct TypeUnifier<'a> {
     store: &'a TypeStore,
     substitution: Substitution,
+    known: Option<&'a Substitution>,
 }
 
 impl<'a> TypeUnifier<'a> {
@@ -36,6 +37,7 @@ impl<'a> TypeUnifier<'a> {
         Self {
             store,
             substitution: Substitution::default(),
+            known: None,
         }
     }
 
@@ -43,7 +45,21 @@ impl<'a> TypeUnifier<'a> {
         Self {
             store,
             substitution,
+            known: None,
         }
+    }
+
+    /// Consult existing bindings without copying them; expose only the new delta.
+    pub fn with_known_substitution(store: &'a TypeStore, known: &'a Substitution) -> Self {
+        Self {
+            store,
+            substitution: Substitution::default(),
+            known: Some(known),
+        }
+    }
+
+    pub fn into_substitution(self) -> Substitution {
+        self.substitution
     }
 
     pub fn substitution(&self) -> &Substitution {
@@ -51,8 +67,8 @@ impl<'a> TypeUnifier<'a> {
     }
 
     pub fn unify(&mut self, lhs: TypeId, rhs: TypeId) -> Result<(), UnifyError> {
-        let lhs = self.resolve(lhs);
-        let rhs = self.resolve(rhs);
+        let lhs = self.resolve(lhs)?;
+        let rhs = self.resolve(rhs)?;
         if lhs == rhs {
             return Ok(());
         }
@@ -194,14 +210,28 @@ impl<'a> TypeUnifier<'a> {
         Ok(())
     }
 
-    fn resolve(&self, ty: TypeId) -> TypeId {
-        match self.store.get(ty) {
-            Some(Type::Var(var)) => self.substitution.get(*var).unwrap_or(ty),
-            _ => ty,
+    fn resolve(&self, mut ty: TypeId) -> Result<TypeId, UnifyError> {
+        let mut visited = std::collections::HashSet::new();
+        while let Some(Type::Var(var)) = self.store.get(ty) {
+            let Some(next) = self
+                .substitution
+                .get(*var)
+                .or_else(|| self.known.and_then(|known| known.get(*var)))
+            else {
+                break;
+            };
+            if !visited.insert(*var) {
+                return Err(UnifyError::OccursCheck { var: *var, ty });
+            }
+            ty = next;
         }
+        Ok(ty)
     }
 
     fn occurs(&self, needle: TypeVarId, ty: TypeId) -> bool {
+        let Ok(ty) = self.resolve(ty) else {
+            return true;
+        };
         match self.store.get(ty) {
             Some(Type::Var(var)) => *var == needle,
             Some(Type::Array(inner))

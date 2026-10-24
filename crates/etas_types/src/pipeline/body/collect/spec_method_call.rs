@@ -48,13 +48,7 @@ pub fn collect_spec_method_call(
         return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
     };
 
-    let Some(signature) = ctx
-        .ctx
-        .signature_facts
-        .spec_signatures
-        .get(&spec_symbol)
-        .cloned()
-    else {
+    let Some(signature) = ctx.ctx.spec_signature(spec_symbol).cloned() else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: TypeDiagnosticCode::IncompleteTypeFacts,
             span,
@@ -158,11 +152,7 @@ fn resolved_spec_symbol(ctx: &BodyCollectContext<'_, '_>, path: &ResolvedPath) -
         .symbols
         .canonical_symbol(ctx.ctx.hir, symbol)
         .unwrap_or(symbol);
-    ctx.ctx
-        .signature_facts
-        .spec_signatures
-        .contains_key(&symbol)
-        .then_some(symbol)
+    ctx.ctx.spec_signature(symbol).is_some().then_some(symbol)
 }
 
 fn lower_spec_args(
@@ -193,11 +183,7 @@ fn method_callable_type(
         signature.clone()
     } else {
         let symbol = method.source_symbol()?;
-        let fact = ctx
-            .ctx
-            .symbols
-            .symbol_fact(ctx.ctx.hir, &ctx.ctx.signature_facts, symbol)?
-            .clone();
+        let fact = ctx.ctx.symbol_fact(symbol)?.clone();
         let SymbolTypeFact::Flow { signature } = fact else {
             return None;
         };

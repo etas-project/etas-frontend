@@ -85,7 +85,7 @@ fn type_satisfies_spec(
     })
 }
 
-fn std_type_satisfies_spec(
+pub(crate) fn std_type_satisfies_spec(
     store: &TypeStore,
     facts: &SpecFacts,
     ty: TypeId,

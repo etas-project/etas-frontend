@@ -41,6 +41,7 @@ impl BodyPipelineState {
 pub struct ProvisionalFacts {
     pub expr_types: HashMap<HirExprId, TypeId>,
     pub expr_memory_places: HashMap<HirExprId, TypeId>,
+    pub field_projections: HashMap<HirExprId, Vec<crate::FieldProjectionFact>>,
     pub stmt_types: HashMap<HirStmtId, TypeId>,
     pub pat_types: HashMap<HirPatId, TypeId>,
     pub symbol_types: HashMap<SymbolId, SymbolTypeFact>,

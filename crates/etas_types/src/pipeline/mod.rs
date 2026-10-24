@@ -31,37 +31,46 @@ pub fn run_signature_pipeline(input: crate::SignaturePipelineInput<'_>) -> crate
     ctx.finish()
 }
 
-pub fn check_body_with_seed(
+pub fn check_top_level_items(
     hir: &HirProgram,
     seed: crate::TypeOutput,
-    item: etas_hir::HirItemId,
-) -> crate::TypeOutput {
-    check_body_with_seed_and_std_registry(
-        hir,
-        seed,
-        item,
-        std::sync::Arc::new(etas_std::standard_registry()),
-    )
-}
-
-pub fn check_body_with_seed_and_std_registry(
-    hir: &HirProgram,
-    seed: crate::TypeOutput,
-    item: etas_hir::HirItemId,
     std_registry: std::sync::Arc<etas_std::StdRegistry>,
 ) -> crate::TypeOutput {
     let mut ctx = TypePipelineContext {
         hir,
         std_registry,
-        interner: crate::TypeInterner::from_store(seed.store),
-        signature_facts: seed.facts,
-        symbols: symbols::TypeSymbolIndex::build(hir),
+        interner: crate::TypeInterner::from_store(std::sync::Arc::unwrap_or_clone(seed.store)),
+        signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),
+        symbols: std::sync::Arc::new(symbols::TypeSymbolIndex::build(hir)),
+        signature_base: None,
         diagnostics: Vec::new(),
         lowering_type_stack: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
     };
-    body::run(&mut ctx, item);
+    for (item, data) in hir.items.iter() {
+        if matches!(data, etas_hir::HirItem::TopLevelLet(_)) {
+            body::run(&mut ctx, item);
+        }
+    }
     ctx.finish()
+}
+
+pub fn check_body_delta(
+    hir: &HirProgram,
+    base: &crate::SignatureEnvironment,
+    item: etas_hir::HirItemId,
+    std_registry: std::sync::Arc<etas_std::StdRegistry>,
+) -> crate::BodyTypeOutput {
+    let mut ctx = TypePipelineContext::for_body(hir, base, std_registry);
+    body::run(&mut ctx, item);
+    crate::BodyTypeOutput {
+        owner: item,
+        base: base.types.identity(),
+        base_len: base.types.len(),
+        types: ctx.interner.into_store().into_local_types(),
+        facts: ctx.signature_facts,
+        diagnostics: ctx.diagnostics,
+    }
 }
 
 pub fn check_body(request: crate::CheckBodyRequest<'_>) -> crate::TypeOutput {
@@ -69,11 +78,4 @@ pub fn check_body(request: crate::CheckBodyRequest<'_>) -> crate::TypeOutput {
     signature::run_for_hir(&mut ctx);
     body::run(&mut ctx, request.item);
     ctx.finish()
-}
-
-pub fn finalize_type_outputs(
-    signatures: crate::TypeOutput,
-    body_outputs: Vec<crate::TypeOutput>,
-) -> crate::TypeOutput {
-    finalize::run(signatures, body_outputs)
 }

@@ -1,6 +1,68 @@
 use etas_core::{SourceFile, SourceId};
 
 #[test]
+fn iteration_preserves_solved_nominal_constructor_expression_types() {
+    for literal in ["#{Id(1), Id(2)}", "[Id(1), Id(2)]", "[Id(1); Id(2)]"] {
+        let source = format!(
+            "type Id = i32; flow main() -> unit {{ let values = {literal}; for value in values limit Iterations(4) {{ let copy = value; }} return; }}"
+        );
+        let parsed = etas_syntax::parse_program(SourceFile::new(SourceId(1), None, source));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = etas_hir::lower_program(&parsed.value);
+        let output = etas_types::check_program(&hir);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let mut constructors = 0;
+        for (expr, value) in hir.exprs.iter() {
+            let etas_hir::HirExpr::Call { callee, .. } = value else {
+                continue;
+            };
+            let etas_hir::HirExpr::Path(path) = &hir.exprs[*callee] else {
+                continue;
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                continue;
+            };
+            let Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) =
+                output.facts.symbol_types.get(&symbol)
+            else {
+                continue;
+            };
+            constructors += 1;
+            let ty = output.facts.expr_types[&expr];
+            assert_eq!(
+                ty.0, constructor.0,
+                "{literal}: nominal result was overwritten by iteration inference"
+            );
+            assert!(matches!(
+                output.store.get(ty),
+                Some(etas_types::Type::Nominal(_))
+            ));
+        }
+        assert_eq!(constructors, 2);
+    }
+}
+
+#[test]
+fn range_bounds_use_index_evidence_not_a_concrete_index_value_type() {
+    for (declarations, literal) in [
+        ("", "[1.0, 2.0)"),
+        ("", "[\"a\", \"z\")"),
+        ("type Id = i32;", "[Id(1), Id(2))"),
+    ] {
+        let output = check(&format!(
+            "{declarations} flow main() -> unit {{ let range = {literal}; return; }}"
+        ));
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("does not satisfy spec bound `std.core.Index`")),
+            "{literal}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
 fn named_enum_constructors_enforce_inferred_and_explicit_spec_bounds() {
     for implementation in ["", "impl i32 ~ Allowed;"] {
         for expression in [

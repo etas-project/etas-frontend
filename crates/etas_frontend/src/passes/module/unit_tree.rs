@@ -141,11 +141,11 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
             }
         }
 
-        context.units = Some(UnitTree {
+        context.units = Some(std::sync::Arc::new(UnitTree {
             root,
             nodes,
             by_target,
-        });
+        }));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(UNIT_TREE))
     }
 }

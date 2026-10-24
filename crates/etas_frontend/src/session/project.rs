@@ -93,18 +93,22 @@ where
         }
     }
 
-    pub(super) fn check(
+    pub(super) fn check_with_memory_probe(
         &mut self,
         request: CheckRequest,
+        memory_probe: Option<super::FrontendMemoryProbe>,
     ) -> Result<CheckResponse, FrontendSessionError> {
-        self.check_with_pipeline(request, run_check_pipeline)
+        self.check_with_pipeline(request, memory_probe, run_check_pipeline)
     }
 
     fn check_with_pipeline(
         &mut self,
         request: CheckRequest,
+        memory_probe: Option<super::FrontendMemoryProbe>,
         run_pipeline: impl FnOnce(FrontendPipelineRequest) -> FrontendPipelineRun,
     ) -> Result<CheckResponse, FrontendSessionError> {
+        let memory_before = memory_probe.map(|probe| probe.sample());
+        let index_builds_before = etas_hir::HirTreeIndex::thread_build_count();
         let incremental = request.incremental_enabled();
         let disk_artifact_access = request.disk_artifact_access;
         let disk_read_enabled = disk_artifact_access.can_read();
@@ -145,6 +149,7 @@ where
             check_scope: request.scope,
             collect_timing: request.collect_pipeline_timing,
             std_registry: self.std_registry.clone(),
+            memory_probe,
         });
         if let PassControl::Failed(failure) = &pipeline_run.control {
             return Err(FrontendSessionError::Pipeline(failure.message.clone()));
@@ -155,14 +160,21 @@ where
         };
         let changed_sources = std::mem::take(&mut self.pending_changed_sources);
         let invalidation = std::mem::take(&mut self.pending_invalidation);
-        let snapshot = ProjectSemanticSnapshot::from_output(self.revision, &output);
+        let retain = request.retention == crate::CheckRetention::Incremental;
+        let snapshot = (retain || request.snapshot_detail.includes_snapshot())
+            .then(|| ProjectSemanticSnapshot::from_output(self.revision, &output))
+            .flatten();
 
         self.manifest = FrontendArtifactManifest::from_output(self.revision, &output);
-        let mut cache = self.store_project_artifacts(
-            &output,
-            memory_reuse_enabled && incremental && !project_wide_change,
-            disk_artifact_access,
-        )?;
+        let mut cache = if retain {
+            self.store_project_artifacts(
+                &output,
+                memory_reuse_enabled && incremental && !project_wide_change,
+                disk_artifact_access,
+            )?
+        } else {
+            CacheReuseReport::default()
+        };
         cache.record_reused_many(pipeline_run.reused_artifacts);
         let delta = Some(ProjectSemanticDelta::from_check(
             changed_sources.clone(),
@@ -170,13 +182,13 @@ where
             &invalidation,
             &cache,
         ));
-        if let Some(snapshot) = snapshot.clone() {
-            self.last_good_snapshot = Some(snapshot);
+        if retain && let Some(snapshot) = &snapshot {
+            self.last_good_snapshot = Some(snapshot.clone());
         }
         let response_snapshot = request
             .snapshot_detail
             .includes_snapshot()
-            .then(|| snapshot.clone())
+            .then_some(snapshot)
             .flatten();
 
         Ok(CheckResponse {
@@ -187,6 +199,14 @@ where
             cache,
             output,
             pipeline_records: pipeline_run.records,
+            memory: super::CheckMemoryReport {
+                before: memory_before,
+                after: memory_probe.map(|probe| probe.sample()),
+                passes: pipeline_run.memory_samples,
+                hir_index_builds: etas_hir::HirTreeIndex::thread_build_count()
+                    - index_builds_before,
+                retained_revision: self.last_good_snapshot.as_ref().map(|s| s.revision),
+            },
         })
     }
 
@@ -226,7 +246,7 @@ where
                     }
                     let Some(artifact) = self
                         .store
-                        .get_with_disk_access::<etas_types::TypeOutput>(
+                        .get_with_disk_access::<std::sync::Arc<etas_types::BodyTypeOutput>>(
                             &cache_key,
                             disk_artifact_access,
                         )
@@ -249,7 +269,7 @@ where
                     }
                     let Some(_) = self
                         .store
-                        .get_with_disk_access::<etas_effects::EffectOutput>(
+                        .get_with_disk_access::<std::sync::Arc<etas_effects::BodyEffectOutput>>(
                             &cache_key,
                             disk_artifact_access,
                         )
@@ -305,7 +325,7 @@ where
                 BodyArtifactReuseKind::TypeFacts => {
                     let Some(artifact) = self
                         .store
-                        .get_with_disk_access::<etas_types::TypeOutput>(
+                        .get_with_disk_access::<std::sync::Arc<etas_types::BodyTypeOutput>>(
                             &cache_key,
                             disk_artifact_access,
                         )
@@ -324,7 +344,7 @@ where
                 BodyArtifactReuseKind::EffectFacts => {
                     let Some(_) = self
                         .store
-                        .get_with_disk_access::<etas_effects::EffectOutput>(
+                        .get_with_disk_access::<std::sync::Arc<etas_effects::BodyEffectOutput>>(
                             &cache_key,
                             disk_artifact_access,
                         )
@@ -693,7 +713,15 @@ where
                 .with_std_version(&self.std_version)
                 .with_options_hash(&self.options_hash)
             });
-        if reuse_enabled && self.artifact_is_reusable(&cache_key, &meta, disk_artifact_access)? {
+        // Rebuilt memory views must point at the current shared graph. A matching
+        // fingerprint does not mean the old allocation is shared with this output.
+        let refresh_memory_view = key.unit == FrontendUnitKey::Project
+            && crate::artifact::persistence_class(&key)
+                == crate::artifact::PersistenceClass::MemoryOnly;
+        if !refresh_memory_view
+            && reuse_enabled
+            && self.artifact_is_reusable(&cache_key, &meta, disk_artifact_access)?
+        {
             cache.record_reused(cache_key);
             return Ok(());
         }
@@ -740,7 +768,7 @@ where
 
         if let Some(modules) = output.modules.as_ref() {
             let summary =
-                ModuleImportExportSummary::from_project(modules, output.import_graph.as_ref());
+                ModuleImportExportSummary::from_project(modules, output.import_graph.as_deref());
             let dependencies = self.summary_dependencies([
                 FrontendArtifactKey::project(FrontendArtifactKind::ModuleIndex),
                 FrontendArtifactKey::project(FrontendArtifactKind::ImportGraph),
@@ -1178,6 +1206,7 @@ mod tests {
                     mode: CheckMode::Incremental,
                     ..Default::default()
                 },
+                None,
                 |FrontendPipelineRequest {
                      input,
                      incremental,
@@ -1188,6 +1217,7 @@ mod tests {
                      check_scope: _scope,
                      collect_timing,
                      std_registry: _,
+                     memory_probe: _,
                  }| {
                     assert_eq!(
                         input.sources[0].text,
@@ -1205,6 +1235,7 @@ mod tests {
                             "synthetic pipeline failure",
                         )),
                         records: Vec::new(),
+                        memory_samples: Vec::new(),
                     }
                 },
             )

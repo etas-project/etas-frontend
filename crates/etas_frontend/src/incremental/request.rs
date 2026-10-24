@@ -71,10 +71,29 @@ pub struct CheckRequest {
     pub disk_artifact_access: DiskCacheAccess,
     pub memory_artifact_reuse: MemoryArtifactReuse,
     pub snapshot_detail: SnapshotDetailLevel,
+    pub retention: CheckRetention,
     pub collect_pipeline_timing: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CheckRetention {
+    /// Keep the valid revision and reusable artifacts for subsequent checks.
+    #[default]
+    Incremental,
+    /// Return the check result without retaining a new snapshot or cache payloads.
+    OneShot,
+}
+
 impl CheckRequest {
+    pub fn one_shot() -> Self {
+        Self {
+            retention: CheckRetention::OneShot,
+            snapshot_detail: SnapshotDetailLevel::None,
+            memory_artifact_reuse: MemoryArtifactReuse::Disabled,
+            disk_artifact_access: DiskCacheAccess::disabled(),
+            ..Self::default()
+        }
+    }
     pub fn full_project() -> Self {
         Self::default()
     }
@@ -132,4 +151,5 @@ pub struct CheckResponse {
     pub cache: CacheReuseReport,
     pub output: ProjectOutput,
     pub pipeline_records: Vec<PassRunRecord>,
+    pub memory: crate::session::CheckMemoryReport,
 }

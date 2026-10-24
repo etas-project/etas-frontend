@@ -5,7 +5,7 @@ use etas_utils::{
 
 use etas_core::{Diagnostic, DiagnosticCode, EffectDiagnosticCode, Severity};
 
-use crate::{CheckedProject, ProjectContext, SourceBundle};
+use crate::{CheckedProgramData, ProjectContext, SourceBundle};
 
 use crate::passes::artifacts::{
     CHECKED_PROJECT, EFFECT_OUTPUT, HIR_OUTPUT, INTERPRETER_SUPPORT, MODULE_INDEX, PROJECT_ENTRY,
@@ -66,7 +66,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 .as_ref()
                 .expect("external environment should be validated before checked output")
                 .environment();
-            context.checked = Some(CheckedProject {
+            context.checked = Some(std::sync::Arc::new(CheckedProgramData {
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
                 project_environment_fingerprint: environment.canonical_environment_fingerprint(),
@@ -87,15 +87,12 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 },
                 module_index: modules.clone(),
                 hir: hir.hir.clone(),
-                symbols: hir.hir.symbols.clone(),
-                scopes: hir.hir.scopes.clone(),
-                source_map: hir.hir.source_map.clone(),
+                hir_index: hir.tree_index.clone(),
                 top_level_lets: top_level_lets.clone(),
                 types: types.facts.clone(),
                 type_store: types.store.clone(),
                 effects: effects.facts.clone(),
                 effect_registry: effect_artifacts.registry.clone(),
-                interpreter_support: effects.facts.interpreter_support.clone(),
                 external_tool_schemas: environment
                     .external_public_metadata
                     .iter()
@@ -104,7 +101,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 entry_fact: entry.clone(),
                 entry: entry.resolved.as_ref().map(|entry| entry.item),
                 reachability: reachability.clone(),
-            });
+            }));
         }
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(CHECKED_PROJECT))
     }

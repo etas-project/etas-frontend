@@ -234,7 +234,7 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
         }
 
         context.diagnostics.extend(diagnostics);
-        context.modules = Some(index);
+        context.modules = Some(std::sync::Arc::new(index));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(MODULE_INDEX))
     }
 }

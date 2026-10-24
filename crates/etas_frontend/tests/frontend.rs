@@ -2061,15 +2061,15 @@ flow main() -> i64 {
         .expect("item signature artifact should be persisted to disk");
     assert_eq!(item_signature.value, original_helper_signature);
     let main_type = allowlist_store
-        .get::<TypeOutput>(&main_type_key)
+        .get::<std::sync::Arc<etas_types::BodyTypeOutput>>(&main_type_key)
         .expect("fresh store body type lookup should not fail")
         .expect("body type output should be persisted to disk");
     assert!(main_type.value.diagnostics.is_empty());
     let main_effect = allowlist_store
-        .get::<etas_effects::EffectOutput>(&main_effect_key)
+        .get::<std::sync::Arc<etas_effects::BodyEffectOutput>>(&main_effect_key)
         .expect("fresh store body effect lookup should not fail")
         .expect("body effect output should be persisted to disk");
-    assert!(main_effect.value.diagnostics.is_empty());
+    assert_eq!(main_effect.value.facts.item_effects.len(), 1);
     assert!(
         allowlist_store
             .get::<SourceSet>(&source_set_key)
