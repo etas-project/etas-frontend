@@ -1037,7 +1037,6 @@ mod tests {
     use super::*;
     use etas_core::{SourceFile, SourceId, TextSize};
     use etas_hir::{HirExpr, lower_program};
-    use etas_hir_analysis::HirAnalysisContext;
     use etas_types::{
         EffectRef, GenericInstantiationFact, NamedTypeRef, NominalTypeRef, PrimitiveType,
         TypeConstructorId, TypeInterner, TypeOutput,
@@ -1051,7 +1050,7 @@ mod tests {
             "flow main() -> unit { helper(); return; }",
         ));
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         let call = hir
             .exprs
             .iter()
@@ -1108,16 +1107,7 @@ mod tests {
         };
         let std_registry = etas_std::standard_registry();
         let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
-        let context = HirAnalysisContext::new(&hir);
-        let mut semantics = EffectSemantics::with_context(
-            &hir,
-            context,
-            &types,
-            &std_registry,
-            &registry,
-            &[],
-            &[],
-        );
+        let mut semantics = EffectSemantics::new(&hir, &types, &std_registry, &registry, &[], &[]);
 
         let specialized = semantics
             .specialize_std_effect_row(call, &flow, &row, Span::empty(SourceId(0), TextSize::ZERO))

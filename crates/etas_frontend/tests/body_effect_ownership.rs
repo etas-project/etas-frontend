@@ -38,7 +38,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
         assert!(facts.interpreter_support.entry.is_none());
         assert!(facts.item_effects.keys().all(|item| *item == body.owner));
         for expr in facts.expr_effects.keys() {
-            assert_eq!(hir.tree_index.expr_item[expr], body.owner);
+            assert_eq!(hir.hir.index().expr_item[expr], body.owner);
             assert!(
                 expressions.insert(*expr),
                 "expression duplicated across bodies"
@@ -46,7 +46,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             assert_eq!(facts.expr_effects[expr], global.expr_effects[expr]);
         }
         for stmt in facts.stmt_effects.keys() {
-            assert_eq!(hir.tree_index.stmt_item[stmt], body.owner);
+            assert_eq!(hir.hir.index().stmt_item[stmt], body.owner);
             assert!(
                 statements.insert(*stmt),
                 "statement duplicated across bodies"
@@ -78,7 +78,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
         ] {
             assert!(
                 ids.iter()
-                    .all(|id| hir.tree_index.expr_item[id] == body.owner)
+                    .all(|id| hir.hir.index().expr_item[id] == body.owner)
             );
         }
         assert!(facts.expr_effects.capacity() <= 4 * facts.expr_effects.len());
@@ -96,7 +96,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             .expr_effects
             .keys()
             .copied()
-            .filter(|expr| owners.contains(&hir.tree_index.expr_item[expr]))
+            .filter(|expr| owners.contains(&hir.hir.index().expr_item[expr]))
             .collect()
     );
     assert_eq!(
@@ -105,7 +105,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             .stmt_effects
             .keys()
             .copied()
-            .filter(|stmt| owners.contains(&hir.tree_index.stmt_item[stmt]))
+            .filter(|stmt| owners.contains(&hir.hir.index().stmt_item[stmt]))
             .collect()
     );
     assert_eq!(
@@ -209,24 +209,21 @@ fn all_effect_stages_share_the_finalized_hir_index() {
     let output = check(NESTED.into());
     let hir = output.hir.as_ref().unwrap();
     let view = hir.view();
-    let context = etas_hir_analysis::HirAnalysisContext::from_view(&view);
+    let context = etas_hir_analysis::HirAnalysisContext::new(&hir.hir);
     let other = context.clone();
-    assert!(std::ptr::eq(view.index(), other.view(&hir.hir).index()));
+    assert!(std::ptr::eq(view.index(), other.view().index()));
     let before = etas_hir::HirTreeIndex::thread_build_count();
-    let result = etas_effects::RunEffectPipeline::run_with_context(
-        etas_effects::EffectPipelineInput {
-            hir: &hir.hir,
-            types: output.types.as_ref().unwrap(),
-            std_registry: &etas_std::standard_registry(),
-            dependency_metadata: None,
-            tool_bindings: &[],
-            external_summaries: &[],
-            external_trace_specs: &[],
-            external_artifact_anchors: &[],
-            reachable_items: None,
-        },
-        context,
-    )
+    let result = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        hir: &hir.hir,
+        types: output.types.as_ref().unwrap(),
+        std_registry: &etas_std::standard_registry(),
+        dependency_metadata: None,
+        tool_bindings: &[],
+        external_summaries: &[],
+        external_trace_specs: &[],
+        external_artifact_anchors: &[],
+        reachable_items: None,
+    })
     .unwrap();
     assert_eq!(etas_hir::HirTreeIndex::thread_build_count(), before);
     let expected = &output.effects.as_ref().unwrap().facts;

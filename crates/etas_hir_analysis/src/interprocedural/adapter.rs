@@ -1,7 +1,5 @@
 use etas_core::Span;
-use etas_hir::{
-    HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirProgram, HirStmtId, ResolvedActionRef,
-};
+use etas_hir::{HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirStmtId, ResolvedActionRef};
 
 use crate::intraprocedural::{
     AnalysisStep, Control, HandleParts, HirAnalysisSemantics, UnhandledReason,
@@ -78,8 +76,8 @@ where
 {
     type Domain = <S as InterproceduralSemantics>::Domain;
 
-    fn hir(&self) -> &HirProgram {
-        <S as HirAnalysisSemantics>::hir(self.semantics)
+    fn analysis_context(&self) -> &crate::HirAnalysisContext {
+        self.semantics.analysis_context()
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {
@@ -223,7 +221,7 @@ where
         _span: Span,
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
-        let handler_expr_arms = match self.hir().exprs.get(expr) {
+        let handler_expr_arms = match self.analysis_context().program().exprs.get(expr) {
             Some(etas_hir::HirExpr::Handler { handlers, .. }) => handlers.clone(),
             _ => Vec::new(),
         };
@@ -249,8 +247,8 @@ where
 {
     type Domain = <S as InterproceduralSemantics>::Domain;
 
-    fn hir(&self) -> &HirProgram {
-        <S as HirAnalysisSemantics>::hir(self.semantics)
+    fn analysis_context(&self) -> &crate::HirAnalysisContext {
+        self.semantics.analysis_context()
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {

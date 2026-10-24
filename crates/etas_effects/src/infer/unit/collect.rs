@@ -17,12 +17,10 @@ pub(crate) struct EffectUnitCollector {
 }
 
 impl EffectUnitCollector {
-    pub(crate) fn collect_with_context(
-        hir: &HirProgram,
-        context: &HirAnalysisContext,
-    ) -> Vec<EffectUnit> {
-        let view = context.view(hir);
-        let semantic_units = HirSemanticUnitCollector::collect_with_context(hir, context);
+    pub(crate) fn collect_with_context(context: &HirAnalysisContext) -> Vec<EffectUnit> {
+        let hir = context.program();
+        let view = context.view();
+        let semantic_units = HirSemanticUnitCollector::collect_with_context(context);
         let mut collector = Self {
             static_anonymous_flow_symbols: static_anonymous_flow_symbols(hir, &semantic_units),
             ..Self::default()
@@ -249,11 +247,11 @@ flow main(input: string) -> string {
 "#,
         ));
         assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
 
         let context = HirAnalysisContext::new(&hir);
-        let view = context.view(&hir);
+        let view = context.view();
         let body_kinds = view
             .modules()
             .flat_map(|module| module.items())
@@ -286,8 +284,8 @@ flow main(input: string) -> string {
         );
 
         let semantic_units =
-            etas_hir_analysis::unit::HirSemanticUnitCollector::collect_with_context(&hir, &context);
-        let effect_units = EffectUnitCollector::collect_with_context(&hir, &context)
+            etas_hir_analysis::unit::HirSemanticUnitCollector::collect_with_context(&context);
+        let effect_units = EffectUnitCollector::collect_with_context(&context)
             .into_iter()
             .collect::<BTreeSet<_>>();
 
@@ -358,11 +356,11 @@ flow main(input: string) -> string {
 "#,
         ));
         assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-        let hir = lower_program(&parsed.value);
+        let hir = etas_hir::HirRevision::try_new(lower_program(&parsed.value)).unwrap();
         assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
 
         let context = HirAnalysisContext::new(&hir);
-        let effect_units = EffectUnitCollector::collect_with_context(&hir, &context);
+        let effect_units = EffectUnitCollector::collect_with_context(&context);
         let first_class_calls = effect_units
             .iter()
             .filter(|unit| matches!(unit, EffectUnit::FirstClassFlowCall { .. }))

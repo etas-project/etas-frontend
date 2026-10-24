@@ -30,7 +30,7 @@ pub(crate) struct AliasSemantics<'a, O>
 where
     O: AliasOracle,
 {
-    hir: &'a HirProgram,
+    hir: &'a etas_hir::HirRevision,
     context: HirAnalysisContext,
     config: AliasPrecisionConfig,
     oracle: O,
@@ -47,11 +47,10 @@ where
     O: AliasOracle,
 {
     pub(crate) fn new(
-        hir: &'a HirProgram,
+        hir: &'a etas_hir::HirRevision,
         units: &[HirSemanticUnit],
         config: AliasPrecisionConfig,
         oracle: O,
-        context: HirAnalysisContext,
     ) -> Self {
         let mut lambda_units = BTreeMap::new();
         let mut handler_units = BTreeMap::new();
@@ -68,7 +67,7 @@ where
         }
         Self {
             hir,
-            context,
+            context: HirAnalysisContext::new(hir),
             config,
             oracle,
             lambda_units,
@@ -1066,8 +1065,8 @@ where
 {
     type Domain = AliasDomain;
 
-    fn hir(&self) -> &HirProgram {
-        self.hir
+    fn analysis_context(&self) -> &HirAnalysisContext {
+        &self.context
     }
 
     fn incomplete_facts(&mut self, mut state: Self::Domain) -> Self::Domain {
@@ -1259,8 +1258,7 @@ where
     type Summary = AliasSummary;
 
     fn body_of(&self, unit: Self::Unit) -> HirAnalysisBody {
-        unit.semantic
-            .analysis_body_with_context(self.hir, &self.context)
+        unit.semantic.analysis_body_with_context(&self.context)
     }
 
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain {

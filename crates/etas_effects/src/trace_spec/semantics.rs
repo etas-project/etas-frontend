@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
 use etas_hir::{
-    HirArg, HirExpr, HirExprId, HirGenericArg, HirHandlerArmId, HirItem, HirItemId, HirProgram,
+    HirArg, HirExpr, HirExprId, HirGenericArg, HirHandlerArmId, HirItem, HirItemId,
     ImportAliasOrigin, ResolveResult, ResolvedActionRef, SymbolDef, SymbolId, SymbolKind,
 };
 use etas_hir_analysis::HirAnalysisContext;
@@ -19,7 +19,7 @@ use crate::{EffectFacts, EffectRegistry, EffectSummary, EffectUnit};
 use super::domain::{TraceSpecState, TraceSpecSummary};
 
 pub struct TraceSpecSemantics<'a> {
-    hir: &'a HirProgram,
+    hir: &'a etas_hir::HirRevision,
     context: HirAnalysisContext,
     types: &'a etas_types::TypeOutput,
     facts: &'a EffectFacts,
@@ -30,9 +30,8 @@ pub struct TraceSpecSemantics<'a> {
 }
 
 impl<'a> TraceSpecSemantics<'a> {
-    pub fn with_context(
-        hir: &'a HirProgram,
-        context: HirAnalysisContext,
+    pub fn new(
+        hir: &'a etas_hir::HirRevision,
         types: &'a etas_types::TypeOutput,
         _registry: &'a EffectRegistry,
         facts: &'a EffectFacts,
@@ -40,7 +39,7 @@ impl<'a> TraceSpecSemantics<'a> {
     ) -> Self {
         Self {
             hir,
-            context,
+            context: HirAnalysisContext::new(hir),
             types,
             facts,
             trace_spec_items,
@@ -243,8 +242,8 @@ impl<'a> TraceSpecSemantics<'a> {
 impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
     type Domain = TraceSpecState;
 
-    fn hir(&self) -> &HirProgram {
-        self.hir
+    fn analysis_context(&self) -> &HirAnalysisContext {
+        &self.context
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {
@@ -388,7 +387,7 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
     type Summary = TraceSpecSummary;
 
     fn body_of(&self, unit: Self::Unit) -> HirAnalysisBody {
-        unit.analysis_body_with_context(self.hir, &self.context)
+        unit.analysis_body_with_context(&self.context)
     }
 
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain {

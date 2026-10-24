@@ -46,7 +46,7 @@ fn body_type_payload_is_local_and_scales_linearly() {
                 body.types
             );
             for expr in body.facts.expr_types.keys() {
-                assert_eq!(hir.tree_index.expr_item[expr], body.owner);
+                assert_eq!(hir.hir.index().expr_item[expr], body.owner);
                 assert!(
                     exprs.insert(*expr),
                     "expression copied into multiple bodies"

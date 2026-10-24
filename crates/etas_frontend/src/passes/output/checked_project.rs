@@ -87,7 +87,6 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 },
                 module_index: modules.clone(),
                 hir: hir.hir.clone(),
-                hir_index: hir.tree_index.clone(),
                 top_level_lets: top_level_lets.clone(),
                 types: types.facts.clone(),
                 type_store: types.store.clone(),

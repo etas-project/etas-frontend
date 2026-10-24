@@ -4,16 +4,13 @@ use etas_hir_analysis::{HirAnalysisContext, interprocedural::HirAnalysisBody};
 use super::{EffectAnonymousFlowBody, EffectUnit};
 
 impl EffectUnit {
-    pub fn analysis_body(self, hir: &HirProgram) -> HirAnalysisBody {
+    pub fn analysis_body(self, hir: &etas_hir::HirRevision) -> HirAnalysisBody {
         let context = HirAnalysisContext::new(hir);
-        self.analysis_body_with_context(hir, &context)
+        self.analysis_body_with_context(&context)
     }
 
-    pub fn analysis_body_with_context(
-        self,
-        hir: &HirProgram,
-        context: &HirAnalysisContext,
-    ) -> HirAnalysisBody {
+    pub fn analysis_body_with_context(self, context: &HirAnalysisContext) -> HirAnalysisBody {
+        let hir = context.program();
         match self {
             EffectUnit::Item(item) => item_body(hir, context, item),
             EffectUnit::HandlerArm { arm, .. } => HirAnalysisBody::HandlerArm(arm),

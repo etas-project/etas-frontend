@@ -13,6 +13,7 @@ use super::helpers::{
 };
 use super::model::{HirBodyRef, HirOwner, HirTreeChild, HirTreeIndex, HirTreeIndexError};
 
+#[derive(Clone, Debug)]
 pub struct HirTreeView<'hir> {
     program: &'hir HirProgram,
     index: Arc<HirTreeIndex>,
@@ -26,8 +27,11 @@ impl<'hir> HirTreeView<'hir> {
         })
     }
 
-    pub fn from_validated_index(program: &'hir HirProgram, index: Arc<HirTreeIndex>) -> Self {
-        Self { program, index }
+    pub(super) fn from_revision(revision: &'hir super::HirRevision) -> Self {
+        Self {
+            program: revision.program(),
+            index: revision.shared_index().clone(),
+        }
     }
 
     pub fn new(program: &'hir HirProgram) -> Self {

@@ -312,27 +312,33 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
             .as_ref()
             .expect("resolved import targets should exist")
             .clone();
-        install_explicit_import_aliases(context, &resolved_imports.imports);
+        let Some(output) = context.hir.take() else {
+            return PassResult::failed("missing finalized HIR before import application");
+        };
+        let mut editor = output.hir.edit();
+        let hir = editor.program_mut();
+        install_explicit_import_aliases(context, hir, &resolved_imports.imports);
         let wildcard_imports = &resolved_imports.wildcard_imports;
-        install_wildcard_import_aliases(context, wildcard_imports);
-        install_external_effect_action_refs(context);
-        if let Some(output) = &mut context.hir {
-            let hir = std::sync::Arc::make_mut(&mut output.hir);
-            let resolved = super::source_members::resolve_members(hir);
-            prune_resolved_wildcard_diagnostics(&mut hir.diagnostics, &resolved);
-            prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved);
-            output.tree_index = match etas_hir::HirTreeIndex::try_build(&output.hir) {
-                Ok(index) => std::sync::Arc::new(index),
-                Err(error) => {
-                    return PassResult::failed(format!("invalid imported member HIR: {error}"));
-                }
-            };
-        }
+        install_wildcard_import_aliases(context, hir, wildcard_imports);
+        install_external_effect_action_refs(context, hir);
+        let resolved = super::source_members::resolve_members(hir);
+        prune_resolved_wildcard_diagnostics(&mut hir.diagnostics, &resolved);
+        prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved);
+        let hir = match editor.finish() {
+            Ok(revision) => revision,
+            Err(error) => {
+                return PassResult::failed(format!("invalid imported member HIR: {error}"));
+            }
+        };
+        context.hir = Some(crate::HirOutput { hir });
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(HIR_OUTPUT))
     }
 }
 
-fn install_external_effect_action_refs(context: &mut ProjectContext) {
+fn install_external_effect_action_refs(
+    context: &mut ProjectContext,
+    hir: &mut etas_hir::HirProgram,
+) {
     let Some(modules) = context.modules.as_ref() else {
         return;
     };
@@ -340,10 +346,6 @@ fn install_external_effect_action_refs(context: &mut ProjectContext) {
     if action_paths.is_empty() {
         return;
     }
-    let Some(hir_output) = context.hir.as_mut() else {
-        return;
-    };
-    let hir = std::sync::Arc::make_mut(&mut hir_output.hir);
     let module_to_hir = modules
         .modules
         .iter()
@@ -512,6 +514,7 @@ fn external_action_symbol(
 
 fn install_wildcard_import_aliases(
     context: &mut ProjectContext,
+    hir: &mut etas_hir::HirProgram,
     wildcard_imports: &[ResolvedWildcardImport],
 ) {
     if wildcard_imports.is_empty() {
@@ -520,10 +523,6 @@ fn install_wildcard_import_aliases(
     let Some(modules) = context.modules.as_ref() else {
         return;
     };
-    let Some(hir_output) = context.hir.as_mut() else {
-        return;
-    };
-    let hir = std::sync::Arc::make_mut(&mut hir_output.hir);
     let module_to_hir = modules
         .modules
         .iter()
@@ -605,7 +604,11 @@ fn install_wildcard_import_aliases(
     prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved_alias_paths);
 }
 
-fn install_explicit_import_aliases(context: &mut ProjectContext, imports: &[ResolvedImport]) {
+fn install_explicit_import_aliases(
+    context: &mut ProjectContext,
+    hir: &mut etas_hir::HirProgram,
+    imports: &[ResolvedImport],
+) {
     if imports.is_empty() {
         return;
     }
@@ -615,10 +618,6 @@ fn install_explicit_import_aliases(context: &mut ProjectContext, imports: &[Reso
     let Some(catalog) = context.module_catalog.as_ref() else {
         return;
     };
-    let Some(hir_output) = context.hir.as_mut() else {
-        return;
-    };
-    let hir = std::sync::Arc::make_mut(&mut hir_output.hir);
     let module_to_hir = modules
         .modules
         .iter()

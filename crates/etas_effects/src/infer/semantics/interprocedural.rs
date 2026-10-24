@@ -7,7 +7,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
     type Summary = EffectSummary;
 
     fn body_of(&self, unit: Self::Unit) -> HirAnalysisBody {
-        unit.analysis_body_with_context(self.hir, &self.context)
+        unit.analysis_body_with_context(&self.context)
     }
 
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain {

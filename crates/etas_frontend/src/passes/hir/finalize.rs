@@ -41,23 +41,20 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
             .take()
             .expect("project HIR lowering state should exist");
         let hir = lowering.lowering.finish();
-        let tree_index = match etas_hir::HirTreeIndex::try_build(&hir) {
-            Ok(index) => std::sync::Arc::new(index),
+        let hir = match etas_hir::HirRevision::try_new(hir) {
+            Ok(revision) => revision,
             Err(error) => {
                 return PassResult::failed(format!(
                     "cannot finalize project HIR with invalid tree invariants: {error}"
                 ));
             }
         };
-        let hir_view = HirTreeView::from_validated_index(&hir, tree_index.clone());
+        let hir_view = hir.view();
         context.hir_item_bindings = Some(lowering.item_bindings);
         context.hir_body_bindings = Some(build_hir_body_bindings(context, &hir_view));
         context.diagnostics.extend(hir.diagnostics.clone());
         attach_hir_units(context, &hir_view);
-        context.hir = Some(HirOutput {
-            hir: std::sync::Arc::new(hir),
-            tree_index,
-        });
+        context.hir = Some(HirOutput { hir });
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(HIR_OUTPUT))
     }
 }

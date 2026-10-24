@@ -18,7 +18,7 @@ use super::{
 };
 
 pub struct AliasAnalysisInput<'a, O> {
-    pub hir: &'a etas_hir::HirProgram,
+    pub hir: &'a etas_hir::HirRevision,
     pub units: Vec<HirSemanticUnit>,
     pub config: AliasPrecisionConfig,
     pub oracle: O,
@@ -28,29 +28,12 @@ pub fn analyze_aliases<O>(input: AliasAnalysisInput<'_, O>) -> AliasAnalysisOutp
 where
     O: AliasOracle,
 {
-    let context = crate::HirAnalysisContext::new(input.hir);
-    analyze_aliases_with_context(input, &context)
-}
-
-pub fn analyze_aliases_with_context<O>(
-    input: AliasAnalysisInput<'_, O>,
-    context: &crate::HirAnalysisContext,
-) -> AliasAnalysisOutput
-where
-    O: AliasOracle,
-{
     let engine = FixpointEngine::new(IterationLimit::new(input.config.max_fixpoint_iterations));
     let contextual_units = contextual_units(input.hir, &input.units, input.config);
-    let semantics = AliasSemantics::new(
-        input.hir,
-        &input.units,
-        input.config,
-        input.oracle,
-        context.clone(),
-    );
+    let semantics = AliasSemantics::new(input.hir, &input.units, input.config, input.oracle);
     let result = InterproceduralAnalysis::new(contextual_units, semantics)
         .with_engine(engine)
-        .solve_with_context(context);
+        .solve();
 
     let convergence = result.convergence;
     let mut contextual_summaries = result.summaries;

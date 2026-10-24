@@ -39,7 +39,6 @@ impl<'a> Pass<EffectPipelineContext<'a>> for AnalyzeTraceSpecMonitorsPass {
             &mut effects,
             models,
             units,
-            context.analysis_context.clone(),
         );
         match analysis {
             Ok(analysis) => context.trace_spec_analysis = Some(analysis),

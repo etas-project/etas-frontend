@@ -52,26 +52,12 @@ impl SummarySolver {
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
     {
-        let context = crate::HirAnalysisContext::new(semantics.hir());
-        self.solve_with_context(units, semantics, &context)
-    }
-
-    pub fn solve_with_context<S>(
-        &self,
-        units: impl IntoIterator<Item = S::Unit>,
-        semantics: &mut S,
-        context: &crate::HirAnalysisContext,
-    ) -> SummarySolverResult<S::Unit, S::Summary>
-    where
-        S: InterproceduralSemantics
-            + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
-    {
         let mut units = units.into_iter().collect::<Vec<_>>();
         units.sort();
         units.dedup();
 
         let mut diagnostics = Vec::new();
-        let call_graph = self.build_call_graph(&units, semantics, context);
+        let call_graph = self.build_call_graph(&units, semantics);
         let mut summaries = SummaryStore::new();
         for unit in &units {
             summaries.ensure_bottom(*unit);
@@ -96,9 +82,7 @@ impl SummarySolver {
             let result = self.engine.solve_worklist(
                 summaries,
                 component.clone(),
-                |unit, summaries| {
-                    self.transfer_unit(*unit, semantics, summaries, &mut diagnostics, context)
-                },
+                |unit, summaries| self.transfer_unit(*unit, semantics, summaries, &mut diagnostics),
                 |unit, _summaries| {
                     call_graph
                         .dependents(*unit)
@@ -131,12 +115,7 @@ impl SummarySolver {
         }
     }
 
-    fn build_call_graph<S>(
-        &self,
-        units: &[S::Unit],
-        semantics: &mut S,
-        context: &crate::HirAnalysisContext,
-    ) -> CallGraph<S::Unit>
+    fn build_call_graph<S>(&self, units: &[S::Unit], semantics: &mut S) -> CallGraph<S::Unit>
     where
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
@@ -154,7 +133,7 @@ impl SummarySolver {
 
             let entry = <S as InterproceduralSemantics>::Domain::bottom();
             let adapter = CallGraphCollectionAdapter::new(semantics, *unit, &mut graph);
-            let mut interpreter = HirAbstractInterpreter::with_context(adapter, context.clone());
+            let mut interpreter = HirAbstractInterpreter::new(adapter);
             traverse_body(&mut interpreter, body, entry);
         }
 
@@ -167,7 +146,6 @@ impl SummarySolver {
         semantics: &mut S,
         summaries: &mut SummaryStore<S::Unit, S::Summary>,
         diagnostics: &mut Vec<InterproceduralDiagnostic<S::Unit>>,
-        analysis_context: &crate::HirAnalysisContext,
     ) -> bool
     where
         S: InterproceduralSemantics
@@ -196,8 +174,7 @@ impl SummarySolver {
         let entry = semantics.begin_unit(context);
         let exit = {
             let adapter = SummaryApplicationAdapter::new(semantics, unit, summaries, diagnostics);
-            let mut interpreter =
-                HirAbstractInterpreter::with_context(adapter, analysis_context.clone());
+            let mut interpreter = HirAbstractInterpreter::new(adapter);
             traverse_body(&mut interpreter, body, entry)
         };
         let summary = semantics.end_unit(context, exit);
@@ -226,7 +203,7 @@ where
         HirAnalysisBody::HandlerArm(handler) => {
             let body = interpreter
                 .context()
-                .handler_arm_body(interpreter.semantics().hir(), handler)
+                .handler_arm_body(handler)
                 .expect("handler arm analysis body should exist in HIR tree");
             interpreter.block_control(body, state)
         }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use etas_hir::{HirItem, HirItemId, HirProgram, HirTreeIndex};
+use etas_hir::{HirItem, HirItemId, HirRevision};
 
 use crate::{EffectFacts, EffectOutput, EffectUnit};
 
@@ -15,10 +15,10 @@ pub struct BodyEffectOutput {
 impl BodyEffectOutput {
     pub fn project(
         output: &EffectOutput,
-        hir: &HirProgram,
-        index: &HirTreeIndex,
+        hir: &HirRevision,
         items: impl IntoIterator<Item = HirItemId>,
     ) -> Result<HashMap<HirItemId, Self>, String> {
+        let index = hir.index();
         let mut bodies = HashMap::new();
         let mut symbols = HashMap::new();
         for item in items {

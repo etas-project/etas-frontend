@@ -51,9 +51,8 @@ impl JoinSemiLattice for EventDomain {
     }
 }
 
-#[derive(Default)]
 struct TraceSemantics {
-    hir: HirProgram,
+    context: crate::HirAnalysisContext,
     expr_events: BTreeMap<HirExprId, &'static str>,
     before_stmt_events: BTreeMap<HirStmtId, &'static str>,
     after_stmt_events: BTreeMap<HirStmtId, &'static str>,
@@ -64,8 +63,12 @@ struct TraceSemantics {
 impl TraceSemantics {
     fn new(hir: HirProgram) -> Self {
         Self {
-            hir,
-            ..Self::default()
+            context: crate::HirAnalysisContext::new(&etas_hir::HirRevision::try_new(hir).unwrap()),
+            expr_events: BTreeMap::new(),
+            before_stmt_events: BTreeMap::new(),
+            after_stmt_events: BTreeMap::new(),
+            incomplete_calls: BTreeSet::new(),
+            handled_calls: BTreeMap::new(),
         }
     }
 
@@ -98,8 +101,8 @@ impl TraceSemantics {
 impl HirAnalysisSemantics for TraceSemantics {
     type Domain = EventDomain;
 
-    fn hir(&self) -> &HirProgram {
-        &self.hir
+    fn analysis_context(&self) -> &crate::HirAnalysisContext {
+        &self.context
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {

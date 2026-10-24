@@ -15,6 +15,7 @@
 mod helpers;
 mod index;
 mod model;
+mod revision;
 mod tree;
 mod visit;
 
@@ -22,6 +23,7 @@ pub use model::{
     HirBodyKind, HirBodyRef, HirOwner, HirTreeChild, HirTreeIndex, HirTreeIndexDiagnostic,
     HirTreeIndexError, HirTreeNodeKind,
 };
+pub use revision::{HirRevision, HirRevisionEditor};
 pub use tree::{
     BlockView, BodyView, ExprView, HandlerArmView, HirTreeView, ItemView, ModuleView, PatternView,
     ScopeView, StmtView,

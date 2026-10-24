@@ -7,19 +7,13 @@ fn copied_origin(source: &str) -> Result<Vec<EffectArgRef>, String> {
         source,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let hir = etas_hir::lower_program(&parsed.value);
+    let hir = etas_hir::HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let context = etas_hir_analysis::HirAnalysisContext::new(&hir);
-    let units =
-        crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&hir, &context);
-    let provenance = MemoryProvenance::analyze(
-        &hir,
-        &types,
-        &etas_std::standard_registry(),
-        &units,
-        &context,
-    );
+    let units = crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&context);
+    let provenance =
+        MemoryProvenance::analyze(&types, &etas_std::standard_registry(), &units, &context);
     let expr = hir
         .exprs
         .iter()
@@ -115,19 +109,13 @@ flow main() -> MemoryWriteIntent<string, string> {
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let hir = etas_hir::lower_program(&parsed.value);
+    let hir = etas_hir::HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let context = etas_hir_analysis::HirAnalysisContext::new(&hir);
-    let units =
-        crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&hir, &context);
-    let provenance = MemoryProvenance::analyze(
-        &hir,
-        &types,
-        &etas_std::standard_registry(),
-        &units,
-        &context,
-    );
+    let units = crate::infer::unit::collect::EffectUnitCollector::collect_with_context(&context);
+    let provenance =
+        MemoryProvenance::analyze(&types, &etas_std::standard_registry(), &units, &context);
     let expr = hir
         .exprs
         .iter()

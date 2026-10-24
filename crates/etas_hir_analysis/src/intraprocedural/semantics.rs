@@ -1,7 +1,5 @@
 use etas_core::Span;
-use etas_hir::{
-    HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirProgram, HirStmtId, ResolvedActionRef,
-};
+use etas_hir::{HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirStmtId, ResolvedActionRef};
 
 use crate::intraprocedural::{AbstractDomain, Control};
 
@@ -67,7 +65,7 @@ where
 pub trait HirAnalysisSemantics {
     type Domain: AbstractDomain;
 
-    fn hir(&self) -> &HirProgram;
+    fn analysis_context(&self) -> &crate::HirAnalysisContext;
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain;
 

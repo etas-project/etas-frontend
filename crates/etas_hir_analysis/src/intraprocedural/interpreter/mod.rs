@@ -14,7 +14,6 @@ where
     S: HirAnalysisSemantics,
 {
     semantics: S,
-    context: HirAnalysisContext,
 }
 
 impl<S> HirAbstractInterpreter<S>
@@ -22,12 +21,7 @@ where
     S: HirAnalysisSemantics,
 {
     pub fn new(semantics: S) -> Self {
-        let context = HirAnalysisContext::new(semantics.hir());
-        Self::with_context(semantics, context)
-    }
-
-    pub fn with_context(semantics: S, context: HirAnalysisContext) -> Self {
-        Self { semantics, context }
+        Self { semantics }
     }
 
     pub fn semantics(&self) -> &S {
@@ -35,7 +29,7 @@ where
     }
 
     pub fn context(&self) -> &HirAnalysisContext {
-        &self.context
+        self.semantics.analysis_context()
     }
 
     pub fn semantics_mut(&mut self) -> &mut S {

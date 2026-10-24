@@ -22,10 +22,13 @@ fn output_snapshot_and_cache_share_the_same_semantic_allocations() {
     let last_good = session.snapshot(project).unwrap();
     assert!(std::ptr::eq(&**snapshot, &*last_good));
     assert!(Arc::ptr_eq(&snapshot.checked, checked));
-    assert!(Arc::ptr_eq(&checked.hir, &output.hir.as_ref().unwrap().hir));
     assert!(Arc::ptr_eq(
-        &checked.hir_index,
-        &output.hir.as_ref().unwrap().tree_index
+        checked.hir.shared_program(),
+        output.hir.as_ref().unwrap().hir.shared_program()
+    ));
+    assert!(Arc::ptr_eq(
+        checked.hir.shared_index(),
+        output.hir.as_ref().unwrap().hir.shared_index()
     ));
     assert!(std::ptr::eq(&checked.symbols, &checked.hir.symbols));
     assert!(std::ptr::eq(&checked.source_map, &checked.hir.source_map));
@@ -184,7 +187,7 @@ fn unchanged_check_refreshes_memory_views_without_retaining_the_old_graph() {
     let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(SOURCE)));
     let first = session.check(project, CheckRequest::default()).unwrap();
     let old_checked = Arc::downgrade(first.output.checked.as_ref().unwrap());
-    let old_hir = Arc::downgrade(&first.output.hir.as_ref().unwrap().hir);
+    let old_hir = Arc::downgrade(first.output.hir.as_ref().unwrap().hir.shared_program());
     let old_types = Arc::downgrade(&first.output.types.as_ref().unwrap().facts);
     let old_effects = Arc::downgrade(&first.output.effects.as_ref().unwrap().facts);
     let old_registry = Arc::downgrade(
