@@ -10,6 +10,8 @@ mod execution_tests;
 pub mod field;
 mod handler;
 pub mod index;
+#[cfg(test)]
+mod index_tests;
 mod iterable;
 mod method;
 mod numeric_literal;
@@ -336,6 +338,14 @@ impl TypeSolver {
         }
         return_type::solve(input.store, &mut report, &returns, checkpoint)?;
         try_capture::solve(input.store, &mut report, &captures, checkpoint)?;
+        pending_access_constraints.extend(checked_method_constraints);
+        method::solve_ready(
+            &input,
+            &mut report,
+            &mut pending_method_constraints,
+            &mut pending_access_constraints,
+            checkpoint,
+        )?;
         solve_numeric_literals(input.store, &mut report, numeric_literals, checkpoint)?;
         solve_unary_constraints(
             input.store,
@@ -343,7 +353,6 @@ impl TypeSolver {
             pending_unary_constraints,
             checkpoint,
         )?;
-        pending_access_constraints.extend(checked_method_constraints);
         method::solve_pending(
             &input,
             &mut report,
@@ -918,6 +927,10 @@ fn solve_or_defer_access_constraint(
 ) {
     match solve_access_constraint(store, known, spec_facts, report, constraint) {
         AccessConstraintOutcome::Solved(solved) => report.append(*solved),
+        AccessConstraintOutcome::Progress(inferred) => {
+            report.append(*inferred);
+            pending.push(constraint.clone());
+        }
         AccessConstraintOutcome::Pending => pending.push(constraint.clone()),
     }
 }
@@ -958,6 +971,11 @@ fn solve_ready_access_constraints<E>(
                     solved_any = true;
                     report.append(*solved);
                 }
+                AccessConstraintOutcome::Progress(inferred) => {
+                    solved_any = true;
+                    report.append(*inferred);
+                    next.push(constraint);
+                }
                 AccessConstraintOutcome::Pending => next.push(constraint),
             }
         }
@@ -972,6 +990,7 @@ fn solve_ready_access_constraints<E>(
 
 enum AccessConstraintOutcome {
     Solved(Box<SolverReport>),
+    Progress(Box<SolverReport>),
     Pending,
 }
 
@@ -1008,23 +1027,31 @@ fn solve_access_constraint(
         } => {
             let base = resolve_known_substitutions(store, report, *base);
             let index = resolve_known_substitutions(store, report, *index);
-            if is_unresolved_type_var(store, base) || is_unresolved_type_var(store, index) {
+            if is_unresolved_type_var(store, base) {
                 return AccessConstraintOutcome::Pending;
             }
             let output = resolve_known_substitutions(store, report, *output);
-            AccessConstraintOutcome::Solved(Box::new(index::solve_index_access(
-                store,
-                index::IndexAccessSolveInput {
-                    spec_facts,
-                    expr: *expr,
-                    base,
-                    index,
-                    output,
-                    index_error: *index_error,
-                    origin: *origin,
-                    substitutions: &report.substitutions,
-                },
-            )))
+            let input = index::IndexAccessSolveInput {
+                spec_facts,
+                expr: *expr,
+                base,
+                index,
+                output,
+                index_error: *index_error,
+                origin: *origin,
+                substitutions: &report.substitutions,
+            };
+            if is_unresolved_type_var(store, index) {
+                let inferred = index::infer_index_access(store, &input);
+                if !inferred.failures.is_empty() {
+                    return AccessConstraintOutcome::Solved(Box::new(inferred));
+                }
+                if inferred.substitutions.iter().next().is_some() {
+                    return AccessConstraintOutcome::Progress(Box::new(inferred));
+                }
+                return AccessConstraintOutcome::Pending;
+            }
+            AccessConstraintOutcome::Solved(Box::new(index::solve_index_access(store, input)))
         }
         TypeConstraint::SliceAccess {
             expr,

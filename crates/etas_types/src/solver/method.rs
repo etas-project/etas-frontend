@@ -245,7 +245,28 @@ pub(super) fn solve_pending<E>(
     access: &mut Vec<TypeConstraint>,
     checkpoint: &impl Fn() -> Result<(), E>,
 ) -> Result<(), E> {
-    while !pending.is_empty() {
+    solve_ready(input, report, &mut pending, access, checkpoint)?;
+    for method in pending {
+        report.push(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+            span: method.origin.span,
+            message: format!(
+                "method `{}` requires a resolved receiver value type",
+                method.method
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn solve_ready<E>(
+    input: &TypeSolveInput<'_>,
+    report: &mut SolverReport,
+    pending: &mut Vec<Input<'_>>,
+    access: &mut Vec<TypeConstraint>,
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<(), E> {
+    loop {
         checkpoint()?;
         let mut progress = solve_ready_access_constraints(
             input.store,
@@ -257,7 +278,7 @@ pub(super) fn solve_pending<E>(
         )?;
         let mut next = Vec::new();
         let mut generated = Vec::new();
-        for method in pending {
+        for method in std::mem::take(pending) {
             checkpoint()?;
             if method.ready(input.store, report) {
                 solve(input, method, report, &mut generated, checkpoint)?;
@@ -267,20 +288,10 @@ pub(super) fn solve_pending<E>(
             }
         }
         access.extend(generated);
+        *pending = next;
         if !progress {
-            for method in next {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span: method.origin.span,
-                    message: format!(
-                        "method `{}` requires a resolved receiver value type",
-                        method.method
-                    ),
-                });
-            }
             break;
         }
-        pending = next;
     }
     Ok(())
 }

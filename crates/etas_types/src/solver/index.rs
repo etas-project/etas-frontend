@@ -2,7 +2,6 @@ use crate::{
     CheckedIndexKind, CheckedSliceKind, ConstraintOrigin, PrimitiveType, Type, TypeId, TypeStore,
     solver::{
         Substitution, TypeUnifier,
-        assignability::is_assignable,
         report::{SolverFailure, SolverReport},
     },
 };
@@ -18,7 +17,94 @@ pub struct IndexAccessSolveInput<'a> {
     pub substitutions: &'a Substitution,
 }
 
+#[derive(Clone, Copy)]
+enum IndexShape {
+    Sequence { value: TypeId },
+    Map { key: TypeId, value: TypeId },
+}
+
+fn index_shape(
+    store: &TypeStore,
+    base: TypeId,
+    origin: ConstraintOrigin,
+) -> Result<IndexShape, SolverFailure> {
+    match store.get(base) {
+        Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
+            Ok(IndexShape::Sequence { value: *value })
+        }
+        Some(Type::Primitive(primitive @ (PrimitiveType::String | PrimitiveType::Bytes))) => {
+            let element = match primitive {
+                PrimitiveType::String => PrimitiveType::Char,
+                _ => PrimitiveType::U8,
+            };
+            let value = primitive_type_id(store, element).ok_or_else(|| SolverFailure {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span: origin.span,
+                message: format!(
+                    "missing primitive type for indexed {} output",
+                    element.source_name()
+                ),
+            })?;
+            Ok(IndexShape::Sequence { value })
+        }
+        Some(Type::Map { key, value }) => Ok(IndexShape::Map {
+            key: *key,
+            value: *value,
+        }),
+        _ => Err(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::TypeMismatch,
+            span: origin.span,
+            message: "value is not indexable".to_owned(),
+        }),
+    }
+}
+
+// Propagate container types before defaulting literals, without publishing a
+// checked access until its index and Index evidence have also been validated.
+pub(super) fn infer_index_access(
+    store: &TypeStore,
+    input: &IndexAccessSolveInput<'_>,
+) -> SolverReport {
+    let mut report = SolverReport::default();
+    let base = resolve_substitution(store, input.substitutions, input.base);
+    let shape = match index_shape(store, base, input.origin) {
+        Ok(shape) => shape,
+        Err(failure) => {
+            report.push(failure);
+            return report;
+        }
+    };
+    let mut unifier = TypeUnifier::with_known_substitution(store, input.substitutions);
+    let value = match shape {
+        IndexShape::Sequence { value } => value,
+        IndexShape::Map { key, value } => {
+            let index = resolve_substitution(store, input.substitutions, input.index);
+            let key = resolve_substitution(store, input.substitutions, key);
+            unify_or_assign(store, index, key, input.origin, &mut unifier, &mut report);
+            value
+        }
+    };
+    let value = resolve_substitution(store, input.substitutions, value);
+    let output = resolve_substitution(store, input.substitutions, input.output);
+    unify_or_assign(
+        store,
+        value,
+        output,
+        input.origin,
+        &mut unifier,
+        &mut report,
+    );
+    if report.failures.is_empty() {
+        report.substitutions.extend(&unifier.into_substitution());
+    }
+    report
+}
+
 pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -> SolverReport {
+    let mut report = infer_index_access(store, &input);
+    if !report.failures.is_empty() {
+        return report;
+    }
     let IndexAccessSolveInput {
         spec_facts,
         expr,
@@ -29,13 +115,18 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
         origin,
         substitutions,
     } = input;
-    let mut report = SolverReport::default();
     let base = resolve_substitution(store, substitutions, base);
     let index = resolve_substitution(store, substitutions, index);
     let output = resolve_substitution(store, substitutions, output);
-    match store.get(base) {
-        Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
-            let value = resolve_substitution(store, substitutions, *value);
+    let shape = match index_shape(store, base, origin) {
+        Ok(shape) => shape,
+        Err(failure) => {
+            report.push(failure);
+            return report;
+        }
+    };
+    match shape {
+        IndexShape::Sequence { .. } => {
             if !is_index_type(store, spec_facts, index) {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -43,7 +134,9 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
                     message: "sequence index must satisfy Index".to_owned(),
                 });
             }
-            unify_or_assign(store, value, output, origin, &mut report);
+            if !report.failures.is_empty() {
+                return report;
+            }
             report.record_index_kind(
                 expr,
                 CheckedIndexKind::Sequence {
@@ -56,68 +149,11 @@ pub fn solve_index_access(store: &TypeStore, input: IndexAccessSolveInput<'_>) -
                 report.record_checked_index_error(expr, error);
             }
         }
-        Some(Type::Primitive(PrimitiveType::String)) => {
-            let char_ty = primitive_type_id(store, PrimitiveType::Char).unwrap_or(output);
-            if !is_index_type(store, spec_facts, index) {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                    span: origin.span,
-                    message: "string index must satisfy Index".to_owned(),
-                });
-            }
-            unify_or_assign(store, char_ty, output, origin, &mut report);
-            report.record_index_kind(
-                expr,
-                CheckedIndexKind::Sequence {
-                    base,
-                    index,
-                    output,
-                },
-            );
-            if let Some(error) = index_error {
-                report.record_checked_index_error(expr, error);
-            }
-        }
-        Some(Type::Primitive(PrimitiveType::Bytes)) => {
-            let byte_ty = primitive_type_id(store, PrimitiveType::U8).unwrap_or(output);
-            if !is_index_type(store, spec_facts, index) {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                    span: origin.span,
-                    message: "bytes index must satisfy Index".to_owned(),
-                });
-            }
-            unify_or_assign(store, byte_ty, output, origin, &mut report);
-            report.record_index_kind(
-                expr,
-                CheckedIndexKind::Sequence {
-                    base,
-                    index,
-                    output,
-                },
-            );
-            if let Some(error) = index_error {
-                report.record_checked_index_error(expr, error);
-            }
-        }
-        Some(Type::Map { key, value }) => {
-            let key = resolve_substitution(store, substitutions, *key);
-            let value = resolve_substitution(store, substitutions, *value);
-            if !is_assignable(store, index, key) {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                    span: origin.span,
-                    message: "map index type does not match key type".to_owned(),
-                });
-            }
-            unify_or_assign(store, value, output, origin, &mut report);
+        IndexShape::Map { key, value } => {
+            let key = resolve_substitution(store, substitutions, key);
+            let value = resolve_substitution(store, substitutions, value);
             report.record_index_kind(expr, CheckedIndexKind::MapLookup { key, value });
         }
-        _ => report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-            span: origin.span,
-            message: "value is not indexable".to_owned(),
-        }),
     }
     report
 }
@@ -149,6 +185,7 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
     let start = resolve_substitution(store, substitutions, start);
     let end = resolve_substitution(store, substitutions, end);
     let output = resolve_substitution(store, substitutions, output);
+    let mut unifier = TypeUnifier::with_known_substitution(store, substitutions);
     if !is_index_type(store, spec_facts, start) || !is_index_type(store, spec_facts, end) {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -160,7 +197,7 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
         Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
             let value = resolve_substitution(store, substitutions, *value);
             let slice = first_type_id(store, Type::Slice(value)).unwrap_or(output);
-            unify_or_assign(store, slice, output, origin, &mut report);
+            unify_or_assign(store, slice, output, origin, &mut unifier, &mut report);
             report.record_slice_kind(
                 expr,
                 CheckedSliceKind::Sequence {
@@ -174,7 +211,7 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
         Some(Type::Range { index }) => {
             let index = resolve_substitution(store, substitutions, *index);
             let range = first_type_id(store, Type::Range { index }).unwrap_or(output);
-            unify_or_assign(store, range, output, origin, &mut report);
+            unify_or_assign(store, range, output, origin, &mut unifier, &mut report);
             report.record_slice_kind(
                 expr,
                 CheckedSliceKind::Range {
@@ -190,6 +227,9 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
             span: origin.span,
             message: "value is not sliceable".to_owned(),
         }),
+    }
+    if report.failures.is_empty() {
+        report.substitutions.extend(&unifier.into_substitution());
     }
     report
 }
@@ -215,12 +255,16 @@ fn unify_or_assign(
     actual: TypeId,
     expected: TypeId,
     origin: ConstraintOrigin,
+    unifier: &mut TypeUnifier<'_>,
     report: &mut SolverReport,
 ) {
-    let mut unifier = TypeUnifier::new(store);
-    if unifier.unify(actual, expected).is_ok() {
-        report.substitutions.extend(unifier.substitution());
-    } else if !is_assignable(store, actual, expected) {
+    if matches!(
+        store.get(actual),
+        Some(Type::Primitive(PrimitiveType::Never))
+    ) {
+        return;
+    }
+    if unifier.unify(actual, expected).is_err() {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span: origin.span,
