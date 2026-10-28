@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 
+use super::enum_payload::EnumPayloadExpansion;
 use super::{Type, TypeId, TypeInterner, TypeSubstitutionError, applied_representation};
 
 // Expansion is a checked resource limit, not a recursion fallback. An artifact
 // that exceeds it must not publish partially materialized runtime type facts.
-const MAX_REPRESENTATION_TYPES: usize = 100_000;
+pub(super) const MAX_REPRESENTATION_TYPES: usize = 100_000;
 
 pub fn materialize_representations(
     interner: &mut TypeInterner,
@@ -14,11 +15,24 @@ pub fn materialize_representations(
 }
 
 #[derive(Default)]
-pub struct TypeRepresentationMaterializer {
+pub struct TypeRepresentationMaterializer<'a> {
     visited: HashSet<TypeId>,
+    enum_payloads: Option<super::enum_payload::AcyclicEnumPayloads<'a>>,
 }
 
-impl TypeRepresentationMaterializer {
+impl<'a> TypeRepresentationMaterializer<'a> {
+    pub fn with_acyclic_enum_payloads(
+        store: &super::TypeStore,
+        layouts: &'a std::collections::HashMap<TypeId, crate::EnumLayoutFact>,
+    ) -> Result<Self, TypeSubstitutionError> {
+        Ok(Self {
+            enum_payloads: Some(super::enum_payload::AcyclicEnumPayloads::new(
+                store, layouts,
+            )?),
+            ..Self::default()
+        })
+    }
+
     pub fn materialize(
         &mut self,
         interner: &mut TypeInterner,
@@ -40,9 +54,26 @@ impl TypeRepresentationMaterializer {
                 .cloned()
                 .ok_or(TypeSubstitutionError::MissingType(ty))?;
             match data {
-                Type::Applied { args, .. } => {
+                Type::Applied { constructor, args } => {
+                    let owner = TypeId(constructor.0);
+                    if matches!(interner.store().get(owner), Some(Type::Enum(_)))
+                        && let Some(payloads) = &self.enum_payloads
+                    {
+                        enqueue_enum_payloads(
+                            &mut pending,
+                            payloads.expand(interner, owner, &args, true)?,
+                        );
+                    }
                     pending.extend(args);
                     pending.extend(applied_representation(interner, ty)?);
+                }
+                Type::Enum(_) => {
+                    if let Some(payloads) = &self.enum_payloads {
+                        enqueue_enum_payloads(
+                            &mut pending,
+                            payloads.expand(interner, ty, &[], false)?,
+                        );
+                    }
                 }
                 Type::Nominal(_) => {
                     pending.extend(applied_representation(interner, ty)?);
@@ -96,13 +127,20 @@ impl TypeRepresentationMaterializer {
                 | Type::IntegerLiteral { .. }
                 | Type::Var(_)
                 | Type::Named(_)
-                | Type::Enum(_)
                 | Type::Prompt
                 | Type::PromptPart
                 | Type::MemoryPlace(_) => {}
             }
         }
         Ok(())
+    }
+}
+
+fn enqueue_enum_payloads(pending: &mut Vec<TypeId>, expansion: EnumPayloadExpansion) {
+    match expansion {
+        EnumPayloadExpansion::Concrete(fields) => pending.extend(fields),
+        // These are declaration-level layouts, not empty runtime payloads.
+        EnumPayloadExpansion::GenericDeclaration | EnumPayloadExpansion::RecursiveTemplate => {}
     }
 }
 

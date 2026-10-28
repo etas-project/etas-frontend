@@ -15,6 +15,7 @@ pub enum TypeSubstitutionError {
     InvalidApplication(TypeId),
     MissingType(TypeId),
     MissingTypeIdentity(TypeId),
+    MissingEnumLayout(TypeId),
     MissingEffectIdentity(String),
     OpenEffectRow(String),
     CyclicType(TypeId),
@@ -40,6 +41,9 @@ impl std::fmt::Display for TypeSubstitutionError {
             Self::MissingType(ty) => write!(f, "type store is missing {ty:?}"),
             Self::MissingTypeIdentity(ty) => {
                 write!(f, "type has no checked relocation identity: {ty:?}")
+            }
+            Self::MissingEnumLayout(ty) => {
+                write!(f, "enum has no checked payload layout: {ty:?}")
             }
             Self::MissingEffectIdentity(name) => {
                 write!(f, "effect has no checked relocation identity: {name}")

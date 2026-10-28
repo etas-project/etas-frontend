@@ -11,6 +11,8 @@ pub fn merge_body_deltas<'a>(
         merge_facts(&mut facts, body_facts);
         diagnostics.extend(body.diagnostics.iter().cloned());
     }
+    super::runtime_layouts::materialize(&facts, &mut interner)
+        .map_err(|error| error.to_string())?;
     Ok(crate::TypeOutput {
         facts: std::sync::Arc::new(facts),
         store: std::sync::Arc::new(interner.into_store()),

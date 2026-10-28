@@ -1,4 +1,5 @@
 mod display;
+mod enum_payload;
 mod nominal;
 mod normalize;
 mod primitive;
