@@ -61,6 +61,42 @@ pub fn collect_method_call<E>(
     if method == "run" {
         collect_expr(ctx, receiver, None)?;
     }
+    if let etas_hir::HirExpr::Path(path) = &ctx.ctx.hir.exprs[receiver]
+        && let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
+    {
+        let candidates = super::std_member::std_type_member_candidates_for_symbol(
+            ctx,
+            symbol,
+            method,
+            checked_generic_args.is_empty(),
+        )
+        .into_iter()
+        .filter(|candidate| {
+            matches!(
+                candidate.operation,
+                crate::CallableCandidateOperation::StdIntrinsic {
+                    has_receiver: false,
+                    ..
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+        if !candidates.is_empty() {
+            return super::std_type_member::collect(
+                ctx,
+                super::std_type_member::Call {
+                    expr,
+                    callee: None,
+                    method,
+                    candidates,
+                    generic_args: &checked_generic_args,
+                    args,
+                    span,
+                    expected,
+                },
+            );
+        }
+    }
     let (std_member, generic_params) =
         if let Some(signature) = std_member_callable_signature(ctx, receiver, method) {
             let candidate = super::expr::callable_candidate_from_fact(

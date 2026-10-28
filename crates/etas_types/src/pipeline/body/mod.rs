@@ -24,6 +24,7 @@ pub mod collect {
     pub mod reflection;
     pub mod spec_method_call;
     pub mod std_member;
+    mod std_type_member;
     pub mod stmt;
 }
 

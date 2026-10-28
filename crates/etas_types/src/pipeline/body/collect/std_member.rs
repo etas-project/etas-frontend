@@ -178,12 +178,20 @@ fn std_method_candidate<E>(
     if let StdDecl::Flow(flow) = &symbol.decl
         && flow.source_method.as_ref().is_some_and(|method| {
             method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
+                || (method.kind == FlowSourceMethodKind::TypeMember
+                    && symbol.intrinsic.as_ref().is_some_and(|descriptor| {
+                        matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))
+                    }))
         })
     {
         let descriptor = symbol.intrinsic.as_ref()?;
         candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
             qualified_path: symbol.qualified_path.clone(),
             intrinsic: descriptor.id.0,
+            has_receiver: flow
+                .source_method
+                .as_ref()
+                .is_some_and(|method| method.kind == FlowSourceMethodKind::ValueMethod),
         };
     }
     Some(candidate)
@@ -243,6 +251,7 @@ pub fn std_type_member_candidates_for_symbol<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     base_symbol: etas_hir::SymbolId,
     member: &str,
+    instantiate_schematics: bool,
 ) -> Vec<CallableCandidate> {
     let registry = ctx.ctx.std_registry.clone();
     let Some(receiver) = std_type_symbol_for_hir_symbol(ctx, &registry, base_symbol) else {
@@ -254,7 +263,7 @@ pub fn std_type_member_candidates_for_symbol<E>(
             std_symbol_is_type_member_candidate(symbol, member)
                 && std_source_method_receiver_matches(symbol, receiver)
         })
-        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, false))
+        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, instantiate_schematics))
         .collect()
 }
 
@@ -447,6 +456,14 @@ fn std_source_method_receiver_matches(symbol: &StdSymbol, receiver_symbol: &StdS
 
 fn std_type_constructor_name(ty: &StdType) -> Option<&str> {
     match ty {
+        StdType::Array(_) => Some("Array"),
+        StdType::List(_) => Some("List"),
+        StdType::Map { .. } => Some("Map"),
+        StdType::Set(_) => Some("Set"),
+        StdType::Range(_) => Some("Range"),
+        StdType::Slice(_) => Some("Slice"),
+        StdType::Option(_) => Some("Option"),
+        StdType::Result { .. } => Some("Result"),
         StdType::Named(name) => Some(name.as_str()),
         StdType::NamedApplied { name, .. } => Some(name.as_str()),
         StdType::Prompt => Some("Prompt"),

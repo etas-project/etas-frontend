@@ -7,6 +7,76 @@ use etas_types::{
 };
 
 #[test]
+fn structured_std_type_members_preserve_explicit_generic_parameters() {
+    for source in [
+        "flow main() -> Range<u8> { return Range.closed<u8>(0, 255); }",
+        "flow main() -> Range<i64> { return Range.open<i64>(-2, 3); }",
+        "flow range<I ~ Index>(start: I, end: I) -> Range<I> { return Range.closed<I>(start, end); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            output
+                .facts
+                .generic_instantiations
+                .values()
+                .any(|fact| !fact.type_bindings.is_empty()),
+            "missing generic facts: {source}"
+        );
+    }
+    for source in [
+        "flow main() -> Range<bool> { return Range.closed<bool>(false, true); }",
+        "flow range<I>(start: I, end: I) -> Range<I> { return Range.closed<I>(start, end); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("does not satisfy spec bound")),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn collection_callable_references_do_not_erase_index_bounds() {
+    let source = "import std.collections.array_get; flow main() -> unit { let getter: (Array<i32>, bool) -> Option<i32> ![] = array_get; return; }";
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("does not satisfy spec bound")),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn callback_result_uses_the_enclosing_rigid_type_parameter() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),

@@ -199,15 +199,17 @@ impl EffectSemantics<'_> {
                 );
             }
             let arguments_checked = match self.hir.exprs.get(expr) {
-                Some(HirExpr::MethodCall { args, .. }) => args.iter().all(|arg| {
-                    let (HirArg::Positional(arg) | HirArg::Named { value: arg, .. }) = arg;
-                    self.types
-                        .facts
-                        .expr_types
-                        .get(arg)
-                        .and_then(|ty| self.types.store.get(*ty))
-                        .is_some()
-                }),
+                Some(HirExpr::MethodCall { args, .. } | HirExpr::Call { args, .. }) => {
+                    args.iter().all(|arg| {
+                        let (HirArg::Positional(arg) | HirArg::Named { value: arg, .. }) = arg;
+                        self.types
+                            .facts
+                            .expr_types
+                            .get(arg)
+                            .and_then(|ty| self.types.store.get(*ty))
+                            .is_some()
+                    })
+                }
                 _ => false,
             };
             if !arguments_checked
@@ -226,7 +228,8 @@ impl EffectSemantics<'_> {
                 );
             }
             let valid = self.std_registry.lookup_qualified(&fact.qualified_path).is_some_and(|symbol| {
-                matches!(&symbol.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty() && flow.source_method.as_ref().is_some_and(|method| method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic))
+                matches!(&symbol.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty() && flow.source_method.as_ref().is_some_and(|method| method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
+                    || (method.kind == etas_std::FlowSourceMethodKind::TypeMember && symbol.intrinsic.as_ref().is_some_and(|descriptor| matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))))))
                     && symbol.intrinsic.as_ref().is_some_and(|descriptor| descriptor.id.0 == fact.intrinsic && descriptor.purity == etas_std::IntrinsicPurity::Pure)
             });
             if valid {
