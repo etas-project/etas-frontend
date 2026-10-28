@@ -82,7 +82,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         {
             return Err(TypeSubstitutionError::OpenEffectRow(tail.clone()));
         }
-        match &self.effect_rows {
+        let expanded = match &self.effect_rows {
             Some(EffectRowSubstitution::Arguments(arguments)) => {
                 let argument_start =
                     row.tail
@@ -129,6 +129,12 @@ impl<'a> TypeSubstitutionEngine<'a> {
                 row,
                 argument_start: None,
             }),
+        }?;
+        if self.closed_named_types.is_some()
+            && let Some(tail) = &expanded.row.tail
+        {
+            return Err(TypeSubstitutionError::OpenEffectRow(tail.clone()));
         }
+        Ok(expanded)
     }
 }
