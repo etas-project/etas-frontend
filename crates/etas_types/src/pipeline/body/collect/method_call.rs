@@ -240,7 +240,7 @@ pub fn collect_method_call<E>(
 }
 
 fn common_candidate_inputs<E>(
-    ctx: &BodyCollectContext<'_, '_, E>,
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     candidates: &[crate::CallableCandidate],
 ) -> Option<Vec<TypeId>> {
     let mut expected: Option<Vec<TypeId>> = None;
@@ -256,5 +256,30 @@ fn common_candidate_inputs<E>(
             expected = Some(flow.input.clone());
         }
     }
-    expected
+    let params = expected?;
+    let candidate = candidates.first()?;
+    let needs_instantiation = candidate.generic_params.iter().any(|param| {
+        param.kind == crate::CallableGenericParamKind::Type
+            && matches!(
+                ctx.ctx.interner.store().get(param.subject),
+                Some(crate::Type::Named(_))
+            )
+    });
+    if !needs_instantiation {
+        return Some(params);
+    }
+    // Context hints belong to this call site, not to the method declaration.
+    // Keep the original candidates for solving explicit arguments and bounds.
+    let output = ctx.primitive(crate::PrimitiveType::Unit);
+    super::callable_instantiation::instantiate_signature(
+        ctx,
+        crate::CallableSignature {
+            generic_params: candidate.generic_params.clone(),
+            params,
+            output,
+            effects: None,
+            requested_actions: None,
+        },
+    )
+    .map(|signature| signature.params)
 }

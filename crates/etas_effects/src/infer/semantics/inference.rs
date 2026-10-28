@@ -39,7 +39,6 @@ impl EffectSemantics<'_> {
                 };
                 for entry in entries {
                     let symbol = self.callee_symbol(*entry)?;
-                    let symbol = self.canonical_model_tool_symbol(symbol)?;
                     if symbols.insert(symbol) {
                         tools.push(self.model_tool_source(symbol)?);
                     }
@@ -47,19 +46,6 @@ impl EffectSemantics<'_> {
             }
         }
         Some(tools)
-    }
-
-    fn canonical_model_tool_symbol(&self, mut symbol: SymbolId) -> Option<SymbolId> {
-        let mut visited = BTreeSet::new();
-        loop {
-            if !visited.insert(symbol) {
-                return None;
-            }
-            match self.hir.source_import_targets.get(&symbol) {
-                Some(target) => symbol = *target,
-                None => return Some(symbol),
-            }
-        }
     }
 
     fn model_tool_source(&self, symbol: SymbolId) -> Option<ModelToolSource> {

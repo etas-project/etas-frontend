@@ -202,12 +202,7 @@ impl TraceSpecMaterializer<'_> {
         let etas_hir::ResolveResult::Resolved(symbol) = reference.spec_path.resolution else {
             return None;
         };
-        let symbol = self
-            .hir
-            .source_import_targets
-            .get(&symbol)
-            .copied()
-            .unwrap_or(symbol);
+        let symbol = self.hir.canonical_source_symbol(symbol)?;
         let is_trace = self.types.facts.spec_signatures.get(&symbol).is_some_and(|signature| signature.kind == etas_types::SpecKind::TraceSpec)
             || self.hir.symbols.get(symbol).and_then(|symbol| symbol.defining_item).and_then(|item| self.hir.items.get(item)).is_some_and(|item| matches!(item, HirItem::Spec(spec) if matches!(spec.kind, etas_hir::HirSpecKind::TraceSpec)));
         is_trace.then_some(symbol)

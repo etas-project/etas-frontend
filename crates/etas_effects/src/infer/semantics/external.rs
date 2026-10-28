@@ -21,18 +21,28 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return false;
         };
-        let Some(symbol) = self.hir.symbols.get(symbol) else {
+        let Some(binding) = self.hir.symbols.get(symbol) else {
             return false;
         };
         let etas_hir::SymbolDef::ImportAlias {
-            path,
             origin: etas_hir::ImportAliasOrigin::SourceImport,
-        } = &symbol.def
+            ..
+        } = &binding.def
         else {
             return false;
         };
+        let Some(canonical) = self.hir.canonical_source_symbol(symbol) else {
+            return true;
+        };
+        if self.source_item_for_symbol(canonical).is_some() {
+            return false;
+        }
+        let Some(etas_hir::SymbolDef::ImportAlias { path, .. }) =
+            self.hir.symbols.get(canonical).map(|symbol| &symbol.def)
+        else {
+            return true;
+        };
         path.first().is_none_or(|segment| segment != "std")
-            && self.source_item_for_path(path).is_none()
             && !self.has_external_summary_for_path(path)
     }
 

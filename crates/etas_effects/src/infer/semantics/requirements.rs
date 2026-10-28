@@ -141,40 +141,13 @@ impl EffectSemantics<'_> {
         self.external_summary_for_path(path, span)
     }
 
-    pub(crate) fn source_item_for_path(&self, path: &[String]) -> Option<HirItemId> {
-        let (name, module_path) = path.split_last()?;
-        for (item, hir_item) in self.hir.items.iter() {
-            let Some(symbol) = (match hir_item {
-                etas_hir::HirItem::Flow(flow) => Some(flow.symbol),
-                etas_hir::HirItem::Agent(agent) => Some(agent.symbol),
-                etas_hir::HirItem::Tool(tool) => Some(tool.symbol),
-                etas_hir::HirItem::TopLevelLet(value) => Some(value.symbol),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let Some(symbol) = self.hir.symbols.get(symbol) else {
-                continue;
-            };
-            if symbol.name != *name {
-                continue;
-            }
-            let Some(module) = self.hir.modules_arena.get(symbol.defining_module) else {
-                continue;
-            };
-            let Some(module_name) = &module.name else {
-                continue;
-            };
-            let actual = module_name
-                .segments
-                .iter()
-                .map(|segment| segment.name.as_str())
-                .collect::<Vec<_>>();
-            if actual == module_path.iter().map(String::as_str).collect::<Vec<_>>() {
-                return Some(item);
-            }
-        }
-        None
+    pub(crate) fn source_item_for_symbol(&self, symbol: etas_hir::SymbolId) -> Option<HirItemId> {
+        let symbol = self.hir.canonical_source_symbol(symbol)?;
+        let item = match self.hir.symbols.get(symbol)?.def {
+            SymbolDef::Item { item } | SymbolDef::TopLevelLet { item, .. } => item,
+            _ => return None,
+        };
+        (self.hir.items.get(item)?.symbol() == Some(symbol)).then_some(item)
     }
 
     pub(crate) fn item_effect_path(&self, item: HirItemId) -> Option<Vec<String>> {

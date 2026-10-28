@@ -191,36 +191,6 @@ impl<'a> TraceSpecSemantics<'a> {
         }
     }
 
-    fn source_item_for_path(&self, path: &[String]) -> Option<HirItemId> {
-        let (name, module_path) = path.split_last()?;
-        for (item, hir_item) in self.hir.items.iter() {
-            let Some(symbol) = item_symbol(hir_item) else {
-                continue;
-            };
-            let Some(symbol) = self.hir.symbols.get(symbol) else {
-                continue;
-            };
-            if symbol.name != *name {
-                continue;
-            }
-            let Some(module) = self.hir.modules_arena.get(symbol.defining_module) else {
-                continue;
-            };
-            let Some(module_name) = &module.name else {
-                continue;
-            };
-            let actual = module_name
-                .segments
-                .iter()
-                .map(|segment| segment.name.as_str())
-                .collect::<Vec<_>>();
-            if actual == module_path.iter().map(String::as_str).collect::<Vec<_>>() {
-                return Some(item);
-            }
-        }
-        None
-    }
-
     fn is_typed_flow_expr(&self, expr: HirExprId) -> bool {
         self.types
             .facts
@@ -504,6 +474,9 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return CallTarget::Incomplete;
         };
+        let Some(symbol) = self.hir.canonical_source_symbol(symbol) else {
+            return CallTarget::Incomplete;
+        };
         let Some(symbol_data) = self.hir.symbols.get(symbol) else {
             return CallTarget::Incomplete;
         };
@@ -543,28 +516,8 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
                     origin: ImportAliasOrigin::SourceImport,
                 },
             ) if path.first().is_some_and(|segment| segment == "std") => CallTarget::External,
-            (
-                _,
-                SymbolDef::ImportAlias {
-                    path,
-                    origin: ImportAliasOrigin::SourceImport,
-                },
-            ) => self
-                .source_item_for_path(path)
-                .map(|item| {
-                    if matches!(self.hir.items.get(item), Some(HirItem::Agent(_))) {
-                        self.types
-                            .facts
-                            .agent_default_method(item)
-                            .map(|method| CallTarget::Direct(EffectUnit::Item(method.body)))
-                            .unwrap_or(CallTarget::Incomplete)
-                    } else {
-                        CallTarget::Direct(EffectUnit::Item(item))
-                    }
-                })
-                // Metadata-only imports have no source unit. Their checked,
-                // specialized expression summary is consumed by external_call.
-                .unwrap_or(CallTarget::External),
+            // Metadata-only imports have no source unit. Their checked,
+            // specialized expression summary is consumed by external_call.
             (_, SymbolDef::ImportAlias { .. }) => CallTarget::External,
             (SymbolKind::Param, _) | (_, SymbolDef::Param { .. })
                 if self.is_typed_flow_expr(callee) || self.is_typed_flow_symbol(symbol) =>
@@ -663,15 +616,5 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
         state: Self::Domain,
     ) -> Self::Domain {
         self.reject_trace_spec_state(state.owner, site.span, self.call_error_message(site), state)
-    }
-}
-
-fn item_symbol(item: &HirItem) -> Option<etas_hir::SymbolId> {
-    match item {
-        HirItem::Flow(flow) => Some(flow.symbol),
-        HirItem::Tool(tool) => Some(tool.symbol),
-        HirItem::Agent(agent) => Some(agent.symbol),
-        HirItem::TopLevelLet(value) => Some(value.symbol),
-        _ => None,
     }
 }
