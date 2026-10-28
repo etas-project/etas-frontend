@@ -65,6 +65,50 @@ flow main() -> ((UserId) -> Option<UserId> ![]) { return factory<UserId>(); }
 }
 
 #[test]
+fn returned_constructor_specializes_nested_callback_effect_rows() {
+    let output = check(
+        r#"
+module app.main;
+flow factory<effect E>() -> ((() -> unit ![E]) -> Option<() -> unit ![E]> ![]) ![] {
+    return Some;
+}
+flow write() -> unit ![Console.stdout_write] { perform Console.stdout_write("payload"); }
+flow main() -> unit ![Console.stdout_write] {
+    let constructor = factory<![Console.stdout_write]>();
+    let optional = constructor(write);
+    match optional { Some(callback) => { callback(); }, None => { return; }, }
+}
+"#,
+    );
+    assert_checked_constructor(&output);
+    assert_stdout_requested(&output);
+}
+
+#[test]
+fn returned_constructor_does_not_erase_a_callback_effect_row_mismatch() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app.main;
+flow factory<effect E>() -> ((() -> unit ![E]) -> Option<() -> unit ![E]> ![]) ![] {
+    return Some;
+}
+flow write_error() -> unit ![Console.stderr_write] { perform Console.stderr_write("payload"); }
+flow main() -> unit {
+    let constructor = factory<![Console.stdout_write]>();
+    let optional = constructor(write_error);
+}
+"#,
+    )));
+    assert!(output.checked.is_none());
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == etas_core::DiagnosticCode::Type(etas_core::TypeDiagnosticCode::TypeMismatch)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn constructor_alias_keeps_the_wrapped_callback_actions() {
     let output = check(
         r#"

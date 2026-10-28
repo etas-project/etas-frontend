@@ -174,16 +174,23 @@ fn collect_call_inner<E>(
     } else {
         collect_expr(ctx, callee, None)?
     };
-    let expected_inputs = super::callable_instantiation::argument_hints(
+    let signature_hint = super::callable_instantiation::signature_hints(
         ctx,
         callee_ty,
         &generic_params,
         &checked_generic_args,
         span,
     );
-    let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref())?;
+    let arg_tys = collect_call_args(
+        ctx,
+        args,
+        signature_hint.as_ref().map(|flow| flow.input.as_slice()),
+    )?;
+    let hinted_callee = signature_hint
+        .map(|flow| ctx.ctx.interner.intern(Type::Function(flow)))
+        .unwrap_or(callee_ty);
     let inferred = infer_imported_std_call_output_from_args(ctx, callee, &arg_tys)
-        .or_else(|| callable_output_for_expression(ctx, callee_ty));
+        .or_else(|| callable_output_for_expression(ctx, hinted_callee));
     let inferred = expected.filter(|_| !generic_params.is_empty()).or(inferred);
     let output = select_call_output(ctx, inferred, expected, span);
     ctx.validate(crate::ValidationRequest::CallableArity {
