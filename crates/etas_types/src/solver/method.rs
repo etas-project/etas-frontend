@@ -14,10 +14,26 @@ pub(super) struct Input<'a> {
 }
 
 impl Input<'_> {
-    pub fn ready(&self, store: &TypeStore, report: &SolverReport) -> bool {
-        self.args.first().is_none_or(|receiver| {
-            !is_unresolved_type_var(store, resolve_known_substitutions(store, report, *receiver))
+    fn has_receiver(&self) -> bool {
+        !self.candidates.iter().any(|candidate| {
+            matches!(
+                candidate.operation,
+                crate::CallableCandidateOperation::StdIntrinsic {
+                    has_receiver: false,
+                    ..
+                }
+            )
         })
+    }
+
+    pub fn ready(&self, store: &TypeStore, report: &SolverReport) -> bool {
+        !self.has_receiver()
+            || self.args.first().is_none_or(|receiver| {
+                !is_unresolved_type_var(
+                    store,
+                    resolve_known_substitutions(store, report, *receiver),
+                )
+            })
     }
 }
 
@@ -43,7 +59,7 @@ pub(super) fn solve<E>(
         .iter()
         .map(|arg| resolve_known_substitutions(input.store, report, *arg))
         .collect::<Vec<_>>();
-    if let Some(receiver) = actual.first() {
+    if let Some(receiver) = actual.first().filter(|_| invocation.has_receiver()) {
         match agent::resolve_method(
             input.store,
             input.declaration_facts,
@@ -116,6 +132,7 @@ pub(super) fn solve<E>(
         }
     }
     let mut solved = None;
+    let mut single_failure = None;
     for candidate in candidates {
         checkpoint()?;
         if matches!(
@@ -170,6 +187,7 @@ pub(super) fn solve<E>(
             if let crate::CallableCandidateOperation::StdIntrinsic {
                 qualified_path,
                 intrinsic,
+                ..
             } = &candidate.operation
             {
                 candidate_report.std_method_calls.insert(
@@ -202,10 +220,14 @@ pub(super) fn solve<E>(
             }
             solved = Some(candidate_report);
             break;
+        } else if candidates.len() == 1 && !invocation.has_receiver() {
+            single_failure = Some(candidate_report.failures);
         }
     }
     if let Some(candidate_report) = solved {
         report.append(candidate_report);
+    } else if let Some(failures) = single_failure {
+        report.failures.extend(failures);
     } else {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,

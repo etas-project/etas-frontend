@@ -175,5 +175,6 @@ pub enum CallableCandidateOperation {
     StdIntrinsic {
         qualified_path: Vec<String>,
         intrinsic: u32,
+        has_receiver: bool,
     },
 }
