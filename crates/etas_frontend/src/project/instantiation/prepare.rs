@@ -137,7 +137,11 @@ pub(crate) fn prepare(
     let mut plan = NativeInstantiationPlan::default();
     let mut interner = interner.unwrap_or_else(|| TypeInterner::from_store((*types.store).clone()));
     let mut materialized = Vec::new();
-    let mut representations = etas_types::ty::TypeRepresentationMaterializer::default();
+    let mut representations =
+        etas_types::ty::TypeRepresentationMaterializer::with_acyclic_enum_payloads(
+            interner.store(),
+            &types.facts.enum_layouts,
+        )?;
     while let Some(instance) = pending.pop_front() {
         if let Some(control) = control {
             control

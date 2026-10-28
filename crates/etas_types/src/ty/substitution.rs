@@ -15,7 +15,9 @@ pub enum TypeSubstitutionError {
     InvalidApplication(TypeId),
     MissingType(TypeId),
     MissingTypeIdentity(TypeId),
+    MissingEnumLayout(TypeId),
     MissingEffectIdentity(String),
+    UnresolvedParameter(TypeId),
     OpenEffectRow(String),
     CyclicType(TypeId),
     CyclicEffectRow(String),
@@ -41,8 +43,14 @@ impl std::fmt::Display for TypeSubstitutionError {
             Self::MissingTypeIdentity(ty) => {
                 write!(f, "type has no checked relocation identity: {ty:?}")
             }
+            Self::MissingEnumLayout(ty) => {
+                write!(f, "enum has no checked payload layout: {ty:?}")
+            }
             Self::MissingEffectIdentity(name) => {
                 write!(f, "effect has no checked relocation identity: {name}")
+            }
+            Self::UnresolvedParameter(ty) => {
+                write!(f, "unresolved generic value type at {ty:?}")
             }
             Self::OpenEffectRow(name) => write!(
                 f,
@@ -90,6 +98,7 @@ pub struct TypeSubstitutionEngine<'a> {
     named: Option<&'a HashMap<String, TypeId>>,
     variables: Option<&'a Substitution>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
+    closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
     memo: HashMap<TypeId, TypeId>,
     memo_depths: HashMap<TypeId, usize>,
@@ -107,6 +116,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             named: Some(named),
             variables,
             effect_rows: None,
+            closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -120,6 +130,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             named: Some(named),
             variables: None,
             effect_rows: None,
+            closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -145,12 +156,25 @@ impl<'a> TypeSubstitutionEngine<'a> {
         self
     }
 
+    /// Runtime value contracts require closed arguments even when no payload
+    /// element is present. Native named atoms are admitted by checked identity.
+    pub fn require_closed_parameters(
+        mut self,
+        named_types: &'a (dyn Fn(TypeId) -> bool + Sync),
+    ) -> Self {
+        self.closed_named_types = Some(named_types);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
     pub fn relocating(input: TypeRelocationInput<'a>) -> Self {
         Self {
             target: SubstitutionTarget::Relocate(input),
             named: None,
             variables: None,
             effect_rows: None,
+            closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -164,6 +188,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             named: None,
             variables: None,
             effect_rows: None,
+            closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
@@ -498,6 +523,12 @@ impl<'a> TypeSubstitutionEngine<'a> {
                     return Ok(ty);
                 }
             }
+            Type::Var(_) if self.closed_named_types.is_some() => {
+                return Err(TypeSubstitutionError::UnresolvedParameter(ty));
+            }
+            Type::Named(_) if self.closed_named_types.is_some_and(|known| !known(ty)) => {
+                return Err(TypeSubstitutionError::UnresolvedParameter(ty));
+            }
             Type::IntegerLiteral { .. }
             | Type::Var(_)
             | Type::Enum(_)
@@ -514,7 +545,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
 
     fn substitute_argument(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
         self.require_type(ty)?;
-        if self.variables.is_none() {
+        if self.variables.is_none() && self.closed_named_types.is_none() {
             return Ok(ty);
         }
         // Arguments belong to the caller's binder namespace. Only globally
@@ -612,6 +643,9 @@ pub fn substitute_named_params_in_store(
 ) -> Result<TypeId, TypeSubstitutionError> {
     TypeSubstitutionEngine::existing(store, substitutions).substitute(ty)
 }
+
+#[cfg(test)]
+mod closed_tests;
 
 #[cfg(test)]
 mod tests {

@@ -3,6 +3,7 @@ mod handler;
 pub use handler::{HandlerInstantiationProof, complete_handler_instantiations};
 pub mod merge;
 pub mod remap;
+mod runtime_layouts;
 
 pub use effect_rows::{
     EffectRowMaterializationError, ResolvedEffectRowInstantiation,

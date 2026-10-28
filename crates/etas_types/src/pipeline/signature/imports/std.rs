@@ -38,6 +38,15 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             continue;
         };
         let fact = lower_std_symbol(ctx, &registry, binding.symbol, symbol);
+        if let etas_std::StdDecl::Value(value) = &symbol.decl
+            && let Some(role) = value.runtime_role
+            && let SymbolTypeFact::Value { ty } = &fact
+        {
+            ctx.signature_facts
+                .known_std_types
+                .runtime_values
+                .insert(role, *ty);
+        }
         if matches!(
             symbol.decl,
             etas_std::StdDecl::Type(etas_std::TypeDecl {
@@ -75,11 +84,10 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
             && let Some(role) = declaration.runtime_role
             && let Some(ty) = lower_std_type_symbol(ctx, registry, symbol)
         {
-            match role {
-                etas_std::RuntimeTypeRole::CommandResult => {
-                    ctx.signature_facts.known_std_types.command_result = Some(ty);
-                }
-            }
+            ctx.signature_facts
+                .known_std_types
+                .runtime_types
+                .insert(role, ty);
         }
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && !declaration.projected_fields.is_empty()
@@ -121,6 +129,8 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         }
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && declaration.kind == etas_std::TypeDeclKind::Support
+            && declaration.representation.is_none()
+            && declaration.canonical_type.is_none()
             && !declaration.derivable
         {
             let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
