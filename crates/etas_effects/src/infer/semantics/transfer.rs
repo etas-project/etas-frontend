@@ -227,8 +227,6 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     ));
                     state.summary.support =
                         InterpreterSupport::Rejected(FrontendRejectionReason::UnsupportedHandler);
-                } else {
-                    state.resume_count += 1;
                 }
             }
             HirStmt::Finish { span, .. } => {
