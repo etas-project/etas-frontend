@@ -178,14 +178,21 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
             }
         }
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
-            && let Some(element_parameter) = declaration.iterable_element_param
+            && let Some(item) = declaration.iterable_item
             && let Some(constructor) = lower_std_type_symbol(ctx, registry, symbol)
         {
             ctx.signature_facts.known_std_types.iterables.insert(
                 constructor,
                 crate::facts::symbols::StdIterableFact {
                     arity: declaration.params.len(),
-                    element_parameter,
+                    item: match item {
+                        etas_std::StdIterableItem::Element { parameter } => {
+                            crate::facts::symbols::StdIterableItemFact::Element { parameter }
+                        }
+                        etas_std::StdIterableItem::Entry { key, value } => {
+                            crate::facts::symbols::StdIterableItemFact::Entry { key, value }
+                        }
+                    },
                 },
             );
         }

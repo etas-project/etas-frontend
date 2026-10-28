@@ -33,7 +33,10 @@ fn std_iterable_element_types_survive_aliases_generic_calls_and_finalization() {
                 .find(|(ty, _)| etas_types::ty::display_type(&output.store, **ty) == expected)
                 .unwrap();
             assert_eq!(fact.arity, 1);
-            assert_eq!(fact.element_parameter, 0);
+            assert_eq!(
+                fact.item,
+                etas_types::facts::symbols::StdIterableItemFact::Element { parameter: 0 }
+            );
             assert!(output.store.iter().any(|(_, ty)| matches!(ty, Type::Applied { constructor: applied, .. } if TypeId(applied.0) == *constructor)));
         }
     }
@@ -63,5 +66,56 @@ fn std_iterable_checks_item_type_and_does_not_project_unrelated_nominals() {
                 output.diagnostics
             );
         }
+    }
+}
+
+#[test]
+fn std_entry_iterables_bind_declared_key_and_value_parameters() {
+    for (container, parameters) in [("OrderedMap", "K, V"), ("PriorityQueue", "V, K")] {
+        let source = format!(
+            "alias Entries<K, V> = {container}<{parameters}>; \
+             flow visit<K, V>(entries: Entries<K, V>) -> unit {{ \
+                 for (key, value) in entries limit Iterations(8) {{ \
+                     let expected_key: K = key; let expected_value: V = value; \
+                 }} \
+                 for entry in entries limit Iterations(8) {{ let pair: (K, V) = entry; }} \
+             }}"
+        );
+        let output = check(&source);
+        assert!(
+            output.diagnostics.is_empty(),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn std_ordered_set_iterator_preserves_nominal_element_identity() {
+    let output = check(
+        "type Key = i32; flow visit(entries: OrderedSet<Key>) -> unit { \
+             for key in entries limit Iterations(8) { let expected: Key = key; } \
+         }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn std_entry_iterables_reject_wrong_types_arity_and_nominal_wrappers() {
+    for source in [
+        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (key, value) in entries limit Iterations(8) { let wrong: i32 = key; } }",
+        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (key, value) in entries limit Iterations(8) { let wrong: string = value; } }",
+        "flow visit(entries: OrderedMap<string, i32>) -> unit { for (a, b, c) in entries limit Iterations(8) {} }",
+        "flow visit(entries: PriorityQueue<string, i32>) -> unit { for (priority, value) in entries limit Iterations(8) { let wrong: string = priority; } }",
+        "type Wrapped = OrderedMap<i32, i32>; flow visit(entries: Wrapped) -> unit { for pair in entries limit Iterations(8) {} }",
+    ] {
+        let output = check(source);
+        assert!(!output.diagnostics.is_empty(), "{source}");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|d| d.primary.span.source == SourceId(0))
+        );
     }
 }
