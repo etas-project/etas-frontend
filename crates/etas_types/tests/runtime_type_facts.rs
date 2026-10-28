@@ -2,6 +2,35 @@ use etas_std::RuntimeTypeRole as Role;
 use etas_types::{ItemSignature, Type, check_program};
 
 #[test]
+fn standard_value_facts_follow_resolved_aliases_and_checked_type_identity() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(7),
+        None,
+        r#"
+module app.main;
+import std.host.sandbox.{SandboxProfile, DefaultCommandSandbox as Profile};
+flow profile() -> SandboxProfile { return Profile; }
+flow logical() -> std.runtime.trace.TraceLabel { return Logical; }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&etas_hir::lower_program(&parsed.value));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let known = &output.facts.known_std_types;
+    assert_eq!(known.runtime_values.len(), 2);
+    let sandbox = known
+        .runtime_value(etas_std::StdValueRole::DefaultCommandSandbox)
+        .unwrap();
+    let trace = known
+        .runtime_value(etas_std::StdValueRole::LogicalTraceLabel)
+        .unwrap();
+    assert_ne!(sandbox, trace);
+    for ty in [sandbox, trace] {
+        assert!(output.facts.item_signatures.values().any(|signature| matches!(signature, ItemSignature::Flow(signature) if signature.output == ty)));
+    }
+}
+
+#[test]
 fn session_and_limit_abi_facts_are_canonical_and_fully_typed() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(7),

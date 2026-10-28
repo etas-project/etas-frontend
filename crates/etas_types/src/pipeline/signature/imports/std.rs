@@ -38,6 +38,15 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             continue;
         };
         let fact = lower_std_symbol(ctx, &registry, binding.symbol, symbol);
+        if let etas_std::StdDecl::Value(value) = &symbol.decl
+            && let Some(role) = value.runtime_role
+            && let SymbolTypeFact::Value { ty } = &fact
+        {
+            ctx.signature_facts
+                .known_std_types
+                .runtime_values
+                .insert(role, *ty);
+        }
         if matches!(
             symbol.decl,
             etas_std::StdDecl::Type(etas_std::TypeDecl {

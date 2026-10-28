@@ -23,6 +23,7 @@ pub enum ResourceHandleFact {
 pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
     pub runtime_types: std::collections::BTreeMap<etas_std::RuntimeTypeRole, TypeId>,
+    pub runtime_values: std::collections::BTreeMap<etas_std::StdValueRole, TypeId>,
     pub priority_queue: Option<TypeId>,
     pub ordered_map: Option<TypeId>,
     pub ordered_set: Option<TypeId>,
@@ -35,6 +36,9 @@ pub struct KnownStdTypes {
 }
 
 impl KnownStdTypes {
+    pub fn runtime_value(&self, role: etas_std::StdValueRole) -> Option<TypeId> {
+        self.runtime_values.get(&role).copied()
+    }
     pub fn runtime_type(&self, role: etas_std::RuntimeTypeRole) -> Option<TypeId> {
         self.runtime_types.get(&role).copied()
     }
