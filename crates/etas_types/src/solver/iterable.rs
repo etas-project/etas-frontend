@@ -1,4 +1,5 @@
 use super::{SolverFailure, SolverReport, TypeUnifier, assignability, resolve_known_substitutions};
+use crate::facts::symbols::StdIterableItemFact;
 use crate::{ConstraintOrigin, Type, TypeId, TypeStore};
 
 pub(super) fn solve(
@@ -28,10 +29,21 @@ pub(super) fn solve(
                 .contains_key(&TypeId(constructor.0)) =>
         {
             let fact = &known_std_types.iterables[&TypeId(constructor.0)];
-            let Some(element) = args
-                .get(fact.element_parameter)
-                .filter(|_| args.len() == fact.arity)
-            else {
+            let item = if args.len() != fact.arity {
+                None
+            } else {
+                match fact.item {
+                    StdIterableItemFact::Element { parameter } => {
+                        args.get(parameter).map(|ty| Ok(*ty))
+                    }
+                    StdIterableItemFact::Entry { key, value } => {
+                        args.get(key).zip(args.get(value)).map(|(key, value)| {
+                            entry_item(store, &mut unifier, *key, *value, entry_pair, origin)
+                        })
+                    }
+                }
+            };
+            let Some(item) = item else {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
                     span: origin.span,
@@ -40,32 +52,22 @@ pub(super) fn solve(
                 });
                 return;
             };
-            *element
+            match item {
+                Ok(item) => item,
+                Err(failure) => {
+                    report.push(failure);
+                    return;
+                }
+            }
         }
         Some(Type::Map { key, value }) => {
-            let Some(Type::Tuple(fields)) = store.get(entry_pair) else {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span: origin.span,
-                    message: "map iterable constraint is missing its entry pair shape".into(),
-                });
-                return;
-            };
-            let [entry_key, entry_value] = fields.as_slice() else {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span: origin.span,
-                    message: "map iterable entry shape must have exactly two fields".into(),
-                });
-                return;
-            };
-            if unifier.unify(*entry_key, *key).is_err()
-                || unifier.unify(*entry_value, *value).is_err()
-            {
-                report.push(mismatch(origin));
-                return;
+            match entry_item(store, &mut unifier, *key, *value, entry_pair, origin) {
+                Ok(item) => item,
+                Err(failure) => {
+                    report.push(failure);
+                    return;
+                }
             }
-            entry_pair
         }
         _ => {
             report.push(SolverFailure {
@@ -81,6 +83,37 @@ pub(super) fn solve(
     } else if !assignability::is_assignable(store, item_type, item) {
         report.push(mismatch(origin));
     }
+}
+
+fn entry_item(
+    store: &TypeStore,
+    unifier: &mut TypeUnifier<'_>,
+    key: TypeId,
+    value: TypeId,
+    entry_pair: TypeId,
+    origin: &ConstraintOrigin,
+) -> Result<TypeId, SolverFailure> {
+    let Some(Type::Tuple(fields)) = store.get(entry_pair) else {
+        return Err(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+            span: origin.span,
+            message: "entry iterable constraint is missing its entry pair shape".into(),
+        });
+    };
+    let [entry_key, entry_value] = fields.as_slice() else {
+        return Err(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+            span: origin.span,
+            message: "iterable entry shape must have exactly two fields".into(),
+        });
+    };
+    unifier
+        .unify(*entry_key, key)
+        .map_err(|_| mismatch(origin))?;
+    unifier
+        .unify(*entry_value, value)
+        .map_err(|_| mismatch(origin))?;
+    Ok(entry_pair)
 }
 
 fn mismatch(origin: &ConstraintOrigin) -> SolverFailure {

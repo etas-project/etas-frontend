@@ -79,7 +79,15 @@ pub struct KnownCodeTypes {
 )]
 pub struct StdIterableFact {
     pub arity: usize,
-    pub element_parameter: usize,
+    pub item: StdIterableItemFact,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum StdIterableItemFact {
+    Element { parameter: usize },
+    Entry { key: usize, value: usize },
 }
 
 #[derive(
