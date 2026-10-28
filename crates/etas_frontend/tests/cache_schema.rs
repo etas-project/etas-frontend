@@ -46,6 +46,7 @@ fn incompatible_effect_facts_are_rejected_before_body_payload_decoding() {
         (60, FRONTEND_COMPILER_VERSION, "schema version mismatch"),
         (61, FRONTEND_COMPILER_VERSION, "schema version mismatch"),
         (62, FRONTEND_COMPILER_VERSION, "schema version mismatch"),
+        (76, FRONTEND_COMPILER_VERSION, "schema version mismatch"),
         (
             FRONTEND_ARTIFACT_SCHEMA_VERSION,
             "obsolete-compiler",
