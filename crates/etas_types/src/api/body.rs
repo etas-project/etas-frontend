@@ -7,7 +7,7 @@ use crate::ty::{SharedTypeBase, TypeBaseId};
 use crate::{SpecFacts, Type, TypeFacts, TypeOutput, pipeline::symbols::TypeSymbolIndex};
 
 /// Prepared once per signature revision, shared by all body checks.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SignatureEnvironment {
     pub(crate) types: SharedTypeBase,
     pub(crate) facts: Arc<TypeFacts>,
@@ -38,7 +38,7 @@ impl SignatureEnvironment {
 
 /// Only body-owned facts and newly interned types. Type IDs below base_len
 /// refer to the identified immutable signature universe, never an embedded copy.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct BodyTypeOutput {
     pub owner: HirItemId,
     pub base: TypeBaseId,

@@ -1,13 +1,13 @@
 use crate::{Span, ast::expr::Expr, ast::pattern::Pattern, ast::ty::TypeExpr};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
     pub final_expr: Option<Box<Expr>>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Stmt {
     Let(LetStmt),
     Var(VarStmt),
@@ -46,7 +46,7 @@ impl Stmt {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct LetStmt {
     pub pattern: Pattern,
     pub ty: Option<TypeExpr>,
@@ -54,7 +54,7 @@ pub struct LetStmt {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct VarStmt {
     pub pattern: Pattern,
     pub ty: Option<TypeExpr>,
@@ -62,14 +62,14 @@ pub struct VarStmt {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct AssignStmt {
     pub target: Expr,
     pub value: Expr,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct IfStmt {
     pub condition: Expr,
     pub then_branch: Block,
@@ -77,33 +77,33 @@ pub struct IfStmt {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ElseBranch {
     If(Box<IfStmt>),
     Block(Block),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MatchStmt {
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub body: MatchArmBody,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum MatchArmBody {
     Expr(Expr),
     Block(Block),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ForStmt {
     pub pattern: Pattern,
     pub iter: Expr,
@@ -112,7 +112,7 @@ pub struct ForStmt {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct WhileStmt {
     pub condition: Expr,
     pub limits: Vec<Expr>,
@@ -120,32 +120,32 @@ pub struct WhileStmt {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct RetryStmt {
     pub limits: Vec<Expr>,
     pub body: Block,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ResumeStmt {
     pub value: Option<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FinishStmt {
     pub value: Expr,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ReturnStmt {
     pub value: Option<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ExprStmt {
     pub expr: Expr,
     pub span: Span,

@@ -1,28 +1,159 @@
+use crate::body_limits::{BodyParseBudget, BodyParseLimits, BodyResourceError, BodyResourceKind};
 use crate::{
     Applicability, Diagnostic, Keyword, Parse, Punct, SourceFile, Span, Suggestion,
     SyntaxDiagnosticCode, TextEdit, TokenKind, ast::*, cursor::Cursor, lexer::lex_with_diagnostics,
 };
 
 pub fn parse_program(source: SourceFile) -> Parse<Program> {
+    parse_source(&source, |parser| parser.program())
+}
+
+pub fn parse_program_bounded<E>(
+    source: &SourceFile,
+    limits: BodyParseLimits,
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<Parse<Program>, crate::BoundedBodyParseError<E>> {
+    parse_source_bounded(source, limits, checkpoint, |parser| parser.program())
+}
+
+/// Parse statements and an optional tail expression without enclosing braces.
+pub fn parse_body_contents(source: SourceFile) -> Parse<Block> {
+    parse_body_source(&source)
+}
+
+pub(crate) fn parse_body_source(source: &SourceFile) -> Parse<Block> {
+    parse_source(source, |parser| parser.body_contents())
+}
+
+fn parse_source<T>(source: &SourceFile, parse: impl FnOnce(&mut Parser<'_>) -> T) -> Parse<T> {
     let mut diagnostics = Vec::new();
-    let tokens = lex_with_diagnostics(&source, &mut diagnostics);
-    diagnostics.extend(obsolete_fun_diagnostics(&source, &tokens));
+    let tokens = lex_with_diagnostics(source, &mut diagnostics);
+    diagnostics.extend(obsolete_fun_diagnostics(source, &tokens));
     let significant = tokens.significant_tokens().cloned();
     let mut parser = Parser {
-        source: &source,
+        source,
         cursor: Cursor::new(significant),
         diagnostics,
         delimiters: Vec::new(),
         record_expr_enabled: true,
         handler_with_enabled: true,
         suppress_next_handler_with: false,
+        body_budget: None,
     };
-    let value = parser.program();
+    let value = parse(&mut parser);
     Parse {
         value,
         diagnostics: parser.diagnostics,
         tokens,
     }
+}
+
+pub(crate) fn parse_body_source_bounded<E>(
+    source: &SourceFile,
+    limits: BodyParseLimits,
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<Parse<Block>, crate::BoundedBodyParseError<E>> {
+    parse_source_bounded(source, limits, checkpoint, |parser| parser.body_contents())
+}
+
+pub(crate) fn parse_retained_source_bounded<E>(
+    source: &SourceFile,
+    form: crate::RetainedFragmentForm,
+    limits: BodyParseLimits,
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<Parse<crate::retained_fragment::FragmentContents>, crate::BoundedBodyParseError<E>> {
+    parse_source_bounded(source, limits, checkpoint, |parser| {
+        parser.retained_fragment(form)
+    })
+}
+
+fn parse_source_bounded<T, E>(
+    source: &SourceFile,
+    limits: BodyParseLimits,
+    checkpoint: &impl Fn() -> Result<(), E>,
+    parse: impl FnOnce(&mut Parser<'_>) -> T,
+) -> Result<Parse<T>, crate::BoundedBodyParseError<E>> {
+    use crate::BoundedBodyParseError::{Interrupted, Resource};
+    checkpoint().map_err(Interrupted)?;
+    let max_source_bytes = limits.max_source_bytes.min(u32::MAX as usize);
+    if source.text().len() > max_source_bytes {
+        return Err(Resource(BodyResourceError {
+            kind: BodyResourceKind::SourceBytes,
+            limit: max_source_bytes,
+            span: Span::new(
+                source.id,
+                crate::TextRange::new(crate::TextSize::ZERO, crate::TextSize::ZERO),
+            ),
+        }));
+    }
+    let source_span = Span::new(
+        source.id,
+        crate::TextRange::new(
+            crate::TextSize::ZERO,
+            crate::TextSize::new(source.text().len()),
+        ),
+    );
+    if limits.max_recursion > crate::MAX_BODY_PARSE_RECURSION {
+        return Err(Resource(BodyResourceError {
+            kind: BodyResourceKind::Recursion,
+            limit: crate::MAX_BODY_PARSE_RECURSION,
+            span: source_span,
+        }));
+    }
+    let mut diagnostics = Vec::new();
+    let tokens = crate::lexer::lex_with_checkpoint(source, &mut diagnostics, checkpoint)
+        .map_err(Interrupted)?;
+    if tokens.tokens.len() > limits.max_tokens {
+        return Err(Resource(BodyResourceError {
+            kind: BodyResourceKind::Tokens,
+            limit: limits.max_tokens,
+            span: source_span,
+        }));
+    }
+    diagnostics.extend(obsolete_fun_diagnostics(source, &tokens));
+    checkpoint().map_err(Interrupted)?;
+    let interruption = std::cell::RefCell::new(None);
+    // Grammar recovery can unwind at EOF, but its recovery AST is never
+    // returned when the cursor recorded an execution interruption.
+    let poll = || {
+        if interruption.borrow().is_some() {
+            return false;
+        }
+        match checkpoint() {
+            Ok(()) => true,
+            Err(error) => {
+                *interruption.borrow_mut() = Some(error);
+                false
+            }
+        }
+    };
+    let mut parser = Parser {
+        source,
+        cursor: Cursor::with_checkpoint(tokens.significant_tokens().cloned(), &poll),
+        diagnostics,
+        delimiters: Vec::new(),
+        record_expr_enabled: true,
+        handler_with_enabled: true,
+        suppress_next_handler_with: false,
+        body_budget: Some(BodyParseBudget {
+            limits,
+            depth: 0,
+            error: None,
+        }),
+    };
+    let value = parse(&mut parser);
+    if let Some(error) = interruption.borrow_mut().take() {
+        return Err(Interrupted(error));
+    }
+    checkpoint().map_err(Interrupted)?;
+    if let Some(error) = parser.body_budget.and_then(|budget| budget.error) {
+        return Err(Resource(error));
+    }
+    Ok(Parse {
+        value,
+        diagnostics: parser.diagnostics,
+        tokens,
+    })
 }
 
 fn obsolete_fun_diagnostics(source: &SourceFile, tokens: &crate::TokenStream) -> Vec<Diagnostic> {
@@ -62,12 +193,13 @@ fn obsolete_fun_diagnostics(source: &SourceFile, tokens: &crate::TokenStream) ->
 
 pub(crate) struct Parser<'a> {
     pub(crate) source: &'a SourceFile,
-    pub(crate) cursor: Cursor,
+    pub(crate) cursor: Cursor<'a>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) delimiters: Vec<Delimiter>,
     pub(crate) record_expr_enabled: bool,
     pub(crate) handler_with_enabled: bool,
     pub(crate) suppress_next_handler_with: bool,
+    body_budget: Option<BodyParseBudget>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +210,52 @@ pub(crate) struct Delimiter {
 }
 
 impl Parser<'_> {
+    pub(crate) fn with_body_recursion<T>(
+        &mut self,
+        invalid: impl FnOnce(Span) -> T,
+        parse: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        if let Some(budget) = &mut self.body_budget {
+            if budget.error.is_some() || budget.depth >= budget.limits.max_recursion {
+                let span = self.cursor.peek().span;
+                self.exhaust_body_recursion(span);
+                return invalid(span);
+            }
+            budget.depth += 1;
+        }
+        let result = parse(self);
+        if let Some(budget) = &mut self.body_budget {
+            budget.depth -= 1;
+        }
+        result
+    }
+
+    pub(crate) fn body_chain_step(&mut self, length: &mut usize) -> bool {
+        *length += 1;
+        if self
+            .body_budget
+            .as_ref()
+            .is_some_and(|budget| *length > budget.limits.max_recursion)
+        {
+            self.exhaust_body_recursion(self.cursor.peek().span);
+            return false;
+        }
+        true
+    }
+
+    fn exhaust_body_recursion(&mut self, span: Span) {
+        if let Some(budget) = &mut self.body_budget {
+            budget.error.get_or_insert(BodyResourceError {
+                kind: BodyResourceKind::Recursion,
+                limit: budget.limits.max_recursion,
+                span,
+            });
+        }
+        while !self.cursor.at_eof() {
+            self.cursor.bump();
+        }
+    }
+
     pub(crate) fn param_list(&mut self) -> Vec<Param> {
         self.expect_punct(Punct::LParen, "expected parameter list");
         let params = self.comma_list(Punct::RParen, |this| this.param());
@@ -540,5 +718,9 @@ fn punct_text(punct: Punct) -> &'static str {
         Punct::Question => "?",
         Punct::Hash => "#",
         Punct::At => "@",
+        Punct::Caret => "^",
     }
 }
+
+#[cfg(test)]
+mod execution_tests;

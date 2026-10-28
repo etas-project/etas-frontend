@@ -8,37 +8,45 @@ pub mod solver;
 pub mod ty;
 
 pub use api::{
-    BodyTypeOutput, CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest,
-    ExternalActionArgKindInput, ExternalActionBindingInput, ExternalActionGenericParamInput,
-    ExternalActionSignatureInput, ExternalAgentSignatureInput, ExternalCallableGenericParamInput,
-    ExternalCallableGenericParamKindInput, ExternalCallableSpecSatisfactionInput,
-    ExternalEffectArgInput, ExternalEffectRefInput, ExternalEffectRowInput,
-    ExternalFlowSignatureInput, ExternalNamedSignatureInput, ExternalPackageKey,
-    ExternalPublicMetadataInput, ExternalRecordFieldInput, ExternalSignatureInput,
-    ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput, ExternalSpecMethodInput,
-    ExternalSpecSignatureInput, ExternalSymbolBindingInput, ExternalToolSignatureInput,
-    ExternalTraceSpecConformanceInput, ExternalTraceSpecConformanceTargetInput, ExternalTypeInput,
-    ExternalTypeSpecSatisfactionInput, SignatureEnvironment, SignaturePipelineInput,
-    SourceSignatureInput, SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput,
-    TypeOutput, check_body, check_project, check_signatures,
+    AnnotationValidationMode, BodyTypeOutput, CheckBodyRequest, CheckProjectRequest,
+    CheckSignaturesRequest, ExternalActionArgKindInput, ExternalActionBindingInput,
+    ExternalActionGenericParamInput, ExternalActionSignatureInput, ExternalAgentSignatureInput,
+    ExternalCallableGenericParamInput, ExternalCallableGenericParamKindInput,
+    ExternalCallableSpecSatisfactionInput, ExternalEffectArgInput, ExternalEffectRefInput,
+    ExternalEffectRowInput, ExternalFlowSignatureInput, ExternalNamedSignatureInput,
+    ExternalPackageKey, ExternalPublicMetadataInput, ExternalRecordFieldInput,
+    ExternalSignatureInput, ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput,
+    ExternalSpecMethodInput, ExternalSpecSignatureInput, ExternalSymbolBindingInput,
+    ExternalToolSignatureInput, ExternalTraceSpecConformanceInput,
+    ExternalTraceSpecConformanceTargetInput, ExternalTypeInput, ExternalTypeSpecSatisfactionInput,
+    ReflectionSignatureInput, SignatureEnvironment, SignaturePipelineInput, SourceSignatureInput,
+    SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput, TypeOutput, check_body,
+    check_project, check_signatures,
 };
 pub use constraint::{
     AssignabilityReason, CallableCandidate, CallableCandidateOperation, CallableGenericArg,
     ConstraintOrigin, NumericLiteralKind, SpecObligation, TypeConstraint, ValidationRequest,
 };
 pub use facts::{
-    AgentSignature, CallableGenericParam, CallableGenericParamKind, CallableSignature,
-    CallableSpecSatisfactionFact, CheckedIndexKind, CheckedSliceKind, CheckedSpecBound,
-    CheckedSpecRef, CheckedStdSpecImplFact, DeferredEffectRowObligation, EffectActionArgKind,
+    AgentEntrySignature, AgentSignature, CallableGenericParam, CallableGenericParamKind,
+    CallableSignature, CallableSpecSatisfactionFact, CheckedAgentInferenceFact,
+    CheckedHandlerActionFact, CheckedIndexKind, CheckedReflectionFact, CheckedReflectionTarget,
+    CheckedSliceKind, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
+    DeferredEffectRowObligation, DeferredHandlerInstantiation, EffectActionArgKind,
     EffectActionSignature, EnumLayoutFact, EnumVariantLayoutFact,
     ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
     ExternalTraceSpecConformanceTarget, FieldProjectionFact, FlowSignature,
-    GenericInstantiationFact, ItemSignature, KnownStdTypes, ResourceHandleFact, SpecFacts,
-    SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
-    SpecSuperBoundFact, SymbolTypeFact, ToolSignature, TopLevelLetSignature,
+    GenericInstantiationFact, HandlerTypeBinding, ItemSignature, KnownStdTypes, ResourceHandleFact,
+    SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity,
+    SpecSignature, SpecSuperBoundFact, SymbolTypeFact, ToolSignature, TopLevelLetSignature,
     TraceSpecConformanceFact, TraceSpecConformanceTarget, TryExprTypeFact, TypeFacts,
     TypeParamBoundFact, TypeSpecSatisfactionFact,
 };
+pub use pipeline::finalize::{
+    EffectRowMaterializationError, HandlerInstantiationProof, ResolvedEffectRowInstantiation,
+    complete_handler_instantiations, materialize_effect_row_instantiations,
+};
+pub use pipeline::signature::validate::annotations::validate_annotations as validate_item_annotations;
 pub use solver::{
     Assignable, SolverFailure, SolverReport, Substitution, TypeRelation, TypeSolver, TypeUnifier,
     UnifyError,
@@ -73,4 +81,7 @@ pub fn run_signature_pipeline(input: SignaturePipelineInput<'_>) -> TypeOutput {
     pipeline::run_signature_pipeline(input)
 }
 
-pub use pipeline::{check_body_delta, finalize::finalize_body_deltas};
+pub use pipeline::{
+    check_body_delta, check_body_delta_controlled, finalize::finalize_body_deltas,
+    infer_callable_outputs, infer_callable_outputs_controlled,
+};

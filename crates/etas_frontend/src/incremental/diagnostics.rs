@@ -1,6 +1,6 @@
 use etas_core::{Diagnostic, SourceId};
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct DiagnosticSet {
     pub diagnostics: Vec<Diagnostic>,
 }

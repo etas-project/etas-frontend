@@ -93,6 +93,25 @@ pub trait HirAnalysisSemantics {
         state
     }
 
+    fn after_expr_control(
+        &mut self,
+        expr: HirExprId,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        control.map_states(|state| self.after_expr(expr, state))
+    }
+
+    /// Runs only when the return operand completes normally. Nested returns
+    /// have already left that channel and must not be relabeled by an outer one.
+    fn return_value(
+        &mut self,
+        _stmt: HirStmtId,
+        _value: Option<HirExprId>,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        state
+    }
+
     fn begin_handler_arm(&mut self, _arm: HirHandlerArmId, state: Self::Domain) -> Self::Domain {
         state
     }
@@ -129,6 +148,12 @@ pub trait HirAnalysisSemantics {
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain>;
 
+    /// An invocation unit can analyze already captured stage values rather
+    /// than evaluating the expressions that originally constructed them.
+    fn stage_targets_are_captured(&self, _expr: HirExprId, _state: &Self::Domain) -> bool {
+        false
+    }
+
     fn pipeline(
         &mut self,
         expr: HirExprId,
@@ -142,6 +167,29 @@ pub trait HirAnalysisSemantics {
         span: Span,
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain>;
+
+    fn begin_try_operand(&mut self, _expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    fn begin_handle_body(&mut self, _expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    fn try_expr_control(
+        &mut self,
+        expr: HirExprId,
+        span: Span,
+        _entry: Self::Domain,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        control.with_normal_processed(|state| match self.try_expr(expr, span, state) {
+            AnalysisStep::Handled(state) => Control::normal(state),
+            AnalysisStep::Unhandled { state, reason } => {
+                Control::normal(self.unhandled_semantics(reason, state))
+            }
+        })
+    }
 
     fn handle_expr(
         &mut self,

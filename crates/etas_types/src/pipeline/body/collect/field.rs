@@ -2,8 +2,8 @@ use crate::{Type, TypeId, pipeline::context::BodyCollectContext};
 
 // Lower the declared representation before the read-only relation solver runs.
 // This supplies a field type hint, not a nominal-to-record assignability rule.
-pub(super) fn declared_field_hint(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn declared_field_hint<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base: TypeId,
     field: &str,
     span: etas_core::Span,

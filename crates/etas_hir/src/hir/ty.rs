@@ -6,7 +6,7 @@ use crate::{Arena, HirExprId, HirTypeId, ResolvedPath, SymbolId};
 pub type HirTypeArena = Arena<HirTypeId, HirType>;
 pub use ast::PrimitiveType as HirPrimitiveType;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirType {
     Handler {
         handled: HirEffectRow,
@@ -62,7 +62,7 @@ impl HirType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirFieldDecl {
     pub symbol: SymbolId,
     pub ty: HirTypeId,
@@ -70,35 +70,35 @@ pub struct HirFieldDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct HirTypeParamBound {
     pub path: ResolvedPath,
     pub args: Vec<HirTypeId>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirEffectRow {
     pub effects: Vec<HirEffectRef>,
     pub tail: Option<ResolvedPath>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirGenericArg {
     Type(HirTypeId),
     EffectRow(HirEffectRow),
     Wildcard { span: Span },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct HirEffectRef {
     pub path: ResolvedPath,
     pub args: Vec<HirEffectArg>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirEffectArg {
     Type(HirTypeId),
     Path(ResolvedPath),
@@ -107,7 +107,7 @@ pub enum HirEffectArg {
     Int { text: String, span: Span },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirHandlerProducedEffects {
     Infer,
     Explicit(HirEffectRow),

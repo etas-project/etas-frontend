@@ -3,17 +3,19 @@ use etas_core::SourceId;
 
 use crate::{ExternalPackageId, ProjectEnvironmentInput, SourceInput};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, etas_core::RetainedSize,
+)]
 pub struct SourceVersion(pub u64);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct TextEdit {
     pub start: usize,
     pub end: usize,
     pub replacement: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectChangeSet {
     pub revision: ProjectRevision,
     pub source_changes: Vec<SourceChange>,
@@ -22,14 +24,14 @@ pub struct ProjectChangeSet {
     pub option_changes: Vec<CompilerOptionChange>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct DependencyOverlayChange {
     pub package: ExternalPackageId,
     pub import_root: String,
     pub added_sources: Vec<SourceInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum SourceChange {
     Add(SourceInput),
     Remove(SourceId),
@@ -45,17 +47,17 @@ pub enum SourceChange {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum EnvironmentChange {
     Replace(ProjectEnvironmentInput),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct CompilerOptionChange {
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ChangeSummary {
     pub revision: ProjectRevision,
     pub changed_sources: Vec<SourceId>,

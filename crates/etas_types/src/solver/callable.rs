@@ -43,22 +43,6 @@ pub struct CallableSolveInput<'a> {
     pub initial_substitutions: crate::Substitution,
 }
 
-pub fn callable_schematic_param_names(store: &TypeStore, callee: TypeId) -> Vec<String> {
-    let Some(Type::Function(flow)) = store.get(callee) else {
-        return Vec::new();
-    };
-    let mut names = Vec::new();
-    for ty in flow
-        .input
-        .iter()
-        .copied()
-        .chain(std::iter::once(flow.output))
-    {
-        collect_schematic_type_vars(store, ty, &mut names);
-    }
-    names
-}
-
 pub fn solve_callable_with_named_substitutions(
     store: &TypeStore,
     input: CallableSolveInput<'_>,
@@ -78,7 +62,7 @@ pub fn solve_callable_with_named_substitutions(
         ..SolverReport::default()
     };
     if let Some(constructor) = nominal_constructor_signature(store, callee, explicit_generic_args) {
-        return solve_nominal_constructor_call(store, constructor, args, output, origin);
+        return solve_nominal_constructor_call(store, constructor, args, output, origin, report);
     }
     let Some(Type::Function(flow)) = store.get(callee) else {
         report.push(SolverFailure {
@@ -148,14 +132,14 @@ pub fn solve_callable_with_named_substitutions(
         }
     }
     infer_type_substitution(store, flow.output, output, &mut type_substitutions);
-    if contains_unresolved_schematic_type_var(store, flow.output, &type_substitutions)
-        && !unresolved_output_schematics_are_input_bound(
-            store,
-            flow.output,
-            &flow.input,
-            &type_substitutions,
-        )
-        && !inputs_contain_fresh_type_var(store, &flow.input)
+    if generic_param_names.iter().any(|name| {
+        !type_substitutions.contains_key(name) && contains_schematic_name(store, flow.output, name)
+    }) && !unresolved_output_schematics_are_input_bound(
+        store,
+        flow.output,
+        &flow.input,
+        &type_substitutions,
+    ) && !inputs_contain_fresh_type_var(store, &flow.input)
         && (matches!(store.get(output), Some(Type::Var(_))) || output == flow.output)
     {
         report.push(SolverFailure {
@@ -205,10 +189,12 @@ fn unify_schematic_type(
     if let Some(Type::Named(name)) = store.get(schematic)
         && is_type_variable_name(&name.name)
     {
-        return named_substitutions
-            .get(&name.name)
-            .copied()
-            .is_some_and(|bound| unifier.unify(bound, actual).is_ok());
+        return match named_substitutions.get(&name.name) {
+            Some(bound) => unifier.unify(*bound, actual).is_ok(),
+            // A callable value can refer to its enclosing declaration's rigid
+            // type parameter without introducing a new generic instantiation.
+            None => unifier.unify(schematic, actual).is_ok(),
+        };
     }
 
     match (store.get(schematic), store.get(actual)) {
@@ -282,6 +268,36 @@ fn unify_schematic_type(
             .copied()
             .zip(rhs.iter().copied())
             .all(|(lhs, rhs)| unify_schematic_type(store, lhs, rhs, named_substitutions, unifier)),
+        (Some(Type::Record(lhs)), Some(Type::Record(rhs)))
+            if lhs.fields.len() == rhs.fields.len() =>
+        {
+            lhs.fields.iter().all(|field| {
+                rhs.fields
+                    .iter()
+                    .find(|other| other.name == field.name)
+                    .is_some_and(|other| {
+                        unify_schematic_type(
+                            store,
+                            field.ty,
+                            other.ty,
+                            named_substitutions,
+                            unifier,
+                        )
+                    })
+            })
+        }
+        (Some(Type::Function(lhs)), Some(Type::Function(rhs)))
+            if lhs.input.len() == rhs.input.len() =>
+        {
+            lhs.input
+                .iter()
+                .copied()
+                .zip(rhs.input.iter().copied())
+                .all(|(lhs, rhs)| {
+                    unify_schematic_type(store, lhs, rhs, named_substitutions, unifier)
+                })
+                && unify_schematic_type(store, lhs.output, rhs.output, named_substitutions, unifier)
+        }
         (
             Some(Type::Applied {
                 constructor: lhs_constructor,
@@ -507,8 +523,8 @@ fn solve_nominal_constructor_call(
     args: &[TypeId],
     output: TypeId,
     origin: ConstraintOrigin,
+    mut report: SolverReport,
 ) -> SolverReport {
-    let mut report = SolverReport::default();
     if args.len() != 1 {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
@@ -532,7 +548,17 @@ fn solve_nominal_constructor_call(
         });
         return report;
     }
-    let mut output_unifier = TypeUnifier::new(store);
+    let mut argument_unifier = TypeUnifier::with_substitution(store, report.substitutions.clone());
+    if unify_schematic_type(
+        store,
+        constructor.representation,
+        args[0],
+        &substitutions,
+        &mut argument_unifier,
+    ) {
+        merge_substitution_or_report(store, &mut report, argument_unifier.substitution(), origin);
+    }
+    let mut output_unifier = TypeUnifier::with_substitution(store, report.substitutions.clone());
     if output_unifier.unify(constructor.target, output).is_ok() {
         merge_substitution_or_report(store, &mut report, output_unifier.substitution(), origin);
     } else {
@@ -850,6 +876,12 @@ fn is_assignable_to_schematic(
     {
         return is_assignable_to_schematic(store, bound, expected, substitutions, solved);
     }
+    if matches!(
+        store.get(actual),
+        Some(Type::Primitive(crate::PrimitiveType::Never))
+    ) {
+        return true;
+    }
     match store.get(expected) {
         Some(Type::Var(_)) => true,
         Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
@@ -996,6 +1028,26 @@ fn is_assignable_to_schematic(
             }
             _ => false,
         },
+        Some(Type::Record(expected)) => match store.get(actual) {
+            Some(Type::Record(actual)) if expected.fields.len() == actual.fields.len() => {
+                expected.fields.iter().all(|field| {
+                    actual
+                        .fields
+                        .iter()
+                        .find(|other| other.name == field.name)
+                        .is_some_and(|other| {
+                            is_assignable_to_schematic(
+                                store,
+                                other.ty,
+                                field.ty,
+                                substitutions,
+                                solved,
+                            )
+                        })
+                })
+            }
+            _ => false,
+        },
         Some(Type::Tuple(expected_elements)) => match store.get(actual) {
             Some(Type::Tuple(actual_elements))
                 if actual_elements.len() == expected_elements.len() =>
@@ -1008,6 +1060,27 @@ fn is_assignable_to_schematic(
                         is_assignable_to_schematic(store, actual, expected, substitutions, solved)
                     })
             }
+            _ => false,
+        },
+        Some(Type::Function(expected)) => match store.get(actual) {
+            Some(Type::Function(actual)) if expected.input.len() == actual.input.len() => {
+                actual
+                    .input
+                    .iter()
+                    .copied()
+                    .zip(expected.input.iter().copied())
+                    .all(|(actual, expected)| {
+                        is_assignable_to_schematic(store, actual, expected, substitutions, solved)
+                    })
+                    && is_assignable_to_schematic(
+                        store,
+                        actual.output,
+                        expected.output,
+                        substitutions,
+                        solved,
+                    )
+            }
+            Some(Type::Primitive(crate::PrimitiveType::Never)) => true,
             _ => false,
         },
         Some(Type::Applied {
@@ -1315,63 +1388,6 @@ fn constructors_match(
     }
     let mut unifier = TypeUnifier::new(store);
     unifier.unify(TypeId(lhs.0), TypeId(rhs.0)).is_ok()
-}
-
-fn contains_unresolved_schematic_type_var(
-    store: &TypeStore,
-    ty: TypeId,
-    substitutions: &HashMap<String, TypeId>,
-) -> bool {
-    match store.get(ty) {
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
-            !substitutions.contains_key(&name.name)
-        }
-        Some(Type::Array(inner))
-        | Some(Type::List(inner))
-        | Some(Type::Set(inner))
-        | Some(Type::Slice(inner))
-        | Some(Type::Option(inner))
-        | Some(Type::Message(inner))
-        | Some(Type::Schema(inner))
-        | Some(Type::MemorySelection(inner))
-        | Some(Type::MemoryRegion(inner))
-        | Some(Type::Range { index: inner }) => {
-            contains_unresolved_schematic_type_var(store, *inner, substitutions)
-        }
-        Some(Type::Trust { inner, .. }) => {
-            contains_unresolved_schematic_type_var(store, *inner, substitutions)
-        }
-        Some(Type::Map { key, value }) | Some(Type::Store { key, value }) => {
-            contains_unresolved_schematic_type_var(store, *key, substitutions)
-                || contains_unresolved_schematic_type_var(store, *value, substitutions)
-        }
-        Some(Type::Result { ok, err }) => {
-            contains_unresolved_schematic_type_var(store, *ok, substitutions)
-                || contains_unresolved_schematic_type_var(store, *err, substitutions)
-        }
-        Some(Type::Tuple(elements)) => elements
-            .iter()
-            .any(|element| contains_unresolved_schematic_type_var(store, *element, substitutions)),
-        Some(Type::Function(flow)) => {
-            flow.input
-                .iter()
-                .any(|input| contains_unresolved_schematic_type_var(store, *input, substitutions))
-                || contains_unresolved_schematic_type_var(store, flow.output, substitutions)
-        }
-        Some(Type::Applied { args, .. }) => args
-            .iter()
-            .any(|arg| contains_unresolved_schematic_type_var(store, *arg, substitutions)),
-        Some(Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema })) => {
-            contains_unresolved_schematic_type_var(store, *schema, substitutions)
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::ExternalTool { signature })) => {
-            contains_unresolved_schematic_type_var(store, *signature, substitutions)
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::Other { args, .. })) => args
-            .iter()
-            .any(|arg| contains_unresolved_schematic_type_var(store, *arg, substitutions)),
-        _ => false,
-    }
 }
 
 fn is_type_variable_name(name: &str) -> bool {

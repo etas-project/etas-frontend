@@ -10,7 +10,14 @@ pub struct SolverReport {
     pub substitutions: Substitution,
     pub named_substitutions: HashMap<String, TypeId>,
     pub inferred_expr_types: HashMap<HirExprId, TypeId>,
+    pub reflections: HashMap<HirExprId, crate::CheckedReflectionFact>,
+    pub agent_inferences: HashMap<HirExprId, crate::CheckedAgentInferenceFact>,
+    pub agent_method_calls: HashMap<HirExprId, etas_hir::SymbolId>,
+    pub std_method_calls: HashMap<HirExprId, crate::facts::CheckedStdMethodFact>,
     pub generic_instantiations: HashMap<HirExprId, crate::GenericInstantiationFact>,
+    pub deferred_handler_instantiations:
+        HashMap<etas_hir::HirHandlerArmId, crate::DeferredHandlerInstantiation>,
+    pub(crate) invocation_effects: HashMap<HirExprId, crate::EffectRowRef>,
     pub index_facts: HashMap<HirExprId, CheckedIndexKind>,
     pub slice_facts: HashMap<HirExprId, CheckedSliceKind>,
     pub checked_index_errors: HashMap<HirExprId, TypeId>,
@@ -31,6 +38,13 @@ impl SolverReport {
         }
         self.generic_instantiations
             .extend(other.generic_instantiations);
+        self.deferred_handler_instantiations
+            .extend(other.deferred_handler_instantiations);
+        self.invocation_effects.extend(other.invocation_effects);
+        self.reflections.extend(other.reflections);
+        self.agent_inferences.extend(other.agent_inferences);
+        self.agent_method_calls.extend(other.agent_method_calls);
+        self.std_method_calls.extend(other.std_method_calls);
         self.index_facts.extend(other.index_facts);
         self.slice_facts.extend(other.slice_facts);
         self.checked_index_errors.extend(other.checked_index_errors);

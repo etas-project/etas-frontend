@@ -2,6 +2,9 @@ use std::collections::HashMap;
 
 use etas_core::{Diagnostic, TypeDiagnosticCode};
 
+mod behavior_types;
+mod reflection;
+
 use crate::{
     ExternalPackageId, ImportTarget, ModuleId, ModulePath, ProjectContext,
     ProjectExternalActionArgKindInput, ProjectExternalActionSignatureInput,
@@ -10,44 +13,74 @@ use crate::{
     ProjectExternalFlowSignatureInput, ProjectExternalNamedSignatureInput,
     ProjectExternalPublicMetadataInput, ProjectExternalRecordFieldInput,
     ProjectExternalSpecKindInput, ProjectExternalToolSignatureInput, ProjectExternalTypeInput,
-    ResolvedModuleTarget, ResolvedWildcardImport,
+    ResolvedWildcardImport,
 };
 
 pub(super) fn build_signature_pipeline_input<'a>(
     context: &ProjectContext,
     program: &'a etas_hir::HirProgram,
-) -> (etas_types::SignaturePipelineInput<'a>, Vec<Diagnostic>) {
+) -> Result<
+    (etas_types::SignaturePipelineInput<'a>, Vec<Diagnostic>),
+    crate::code::descriptor::ProjectionError,
+> {
     let Some(hir) = context.hir.as_ref().map(|output| &output.hir) else {
-        return (etas_types::SignaturePipelineInput::new(program), Vec::new());
+        return Err(crate::code::descriptor::ProjectionError::MissingIdentity(
+            "signature HIR input".into(),
+        ));
     };
     let mut diagnostics = Vec::new();
     let input = etas_types::SignaturePipelineInput {
         program,
         std_registry: context.std_registry.clone(),
-        source: source_signature_input(context),
+        source: source_signature_input(hir),
         std: std_signature_input(context, hir),
-        external: external_signature_input(context, hir, &mut diagnostics),
+        external: external_signature_input(context, hir, &mut diagnostics)?,
+        reflection: reflection::signature_input(context)?,
+        annotation_validation: etas_types::AnnotationValidationMode::AfterTopLevelClassification,
     };
-    (input, diagnostics)
+    Ok((input, diagnostics))
 }
 
 fn external_signature_input(
     context: &ProjectContext,
     hir: &etas_hir::HirProgram,
     diagnostics: &mut Vec<Diagnostic>,
-) -> etas_types::ExternalSignatureInput {
+) -> Result<etas_types::ExternalSignatureInput, crate::code::descriptor::ProjectionError> {
+    let environment = context
+        .validated_external_environment
+        .as_ref()
+        .ok_or_else(|| {
+            crate::code::descriptor::ProjectionError::Invalid(
+                "type imports require validated external metadata".into(),
+            )
+        })?
+        .environment();
+    let imports = context.resolved_imports.as_ref().ok_or_else(|| {
+        crate::code::descriptor::ProjectionError::Invalid(
+            "type imports require resolved imports".into(),
+        )
+    })?;
+    let anchors = crate::project::ExternalImportAnchorIndex::build(imports, environment);
     let mut input = etas_types::ExternalSignatureInput {
-        metadata: context
-            .validated_external_environment
-            .as_ref()
-            .expect("external environment should be validated before type checking")
-            .environment()
+        package_anchors: environment
+            .external_packages
+            .iter()
+            .filter_map(|package| {
+                anchors
+                    .package_span(package.id)
+                    .map(|span| (external_package_key(package.id), span))
+            })
+            .collect(),
+        metadata: environment
             .external_public_metadata
             .iter()
+            .filter(|metadata| anchors.package_span(metadata.package).is_some())
             .map(convert_external_metadata)
-            .collect(),
+            .collect::<Result<_, _>>()?,
         symbol_bindings: Vec::new(),
         action_bindings: Vec::new(),
+        definition_bindings: Vec::new(),
+        agent_reflections: Vec::new(),
     };
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
@@ -86,15 +119,16 @@ fn external_signature_input(
 
         let wildcard_counts = wildcard_import_name_counts(&resolved_imports.wildcard_imports);
         for wildcard in &resolved_imports.wildcard_imports {
-            let ResolvedModuleTarget::External {
-                package: Some(package),
-                path: module_path,
-                ..
-            } = &wildcard.target_module
-            else {
-                continue;
-            };
-            for name in &wildcard.exported_names {
+            for (name, target) in &wildcard.targets {
+                let ImportTarget::ExternalItem {
+                    package: Some(package),
+                    module_path,
+                    name: target_name,
+                    ..
+                } = target
+                else {
+                    continue;
+                };
                 if wildcard_counts
                     .get(&(wildcard.from, wildcard.from_part, name.clone()))
                     .copied()
@@ -103,9 +137,7 @@ fn external_signature_input(
                 {
                     continue;
                 }
-                let Some(binding_symbol) =
-                    wildcard_alias_symbol(context, wildcard, module_path, name)
-                else {
+                let Some(binding_symbol) = wildcard_alias_symbol(context, wildcard, name) else {
                     continue;
                 };
                 input
@@ -113,17 +145,33 @@ fn external_signature_input(
                     .push(etas_types::ExternalSymbolBindingInput {
                         symbol: binding_symbol,
                         package: external_package_key(*package),
-                        path: external_item_path(module_path, name),
+                        path: external_item_path(module_path, target_name),
                         span: wildcard.span,
                     });
             }
         }
     }
 
+    if let Some(bindings) = &context.hir_item_bindings {
+        let mut members = bindings.external_import_members.iter().collect::<Vec<_>>();
+        members.sort_by_key(|(symbol, _)| **symbol);
+        input
+            .symbol_bindings
+            .extend(members.into_iter().map(|(symbol, member)| {
+                etas_types::ExternalSymbolBindingInput {
+                    symbol: *symbol,
+                    package: external_package_key(member.package),
+                    path: member.path.clone(),
+                    span: member.span,
+                }
+            }));
+    }
+    reflection::apply(context, &mut input, diagnostics);
+    reflection::canonicalize_re_exports(context, &mut input, diagnostics);
     input.action_bindings =
         external_effect_action_bindings(hir, &input.symbol_bindings, diagnostics);
 
-    input
+    Ok(input)
 }
 
 fn external_package_key(package: ExternalPackageId) -> etas_types::ExternalPackageKey {
@@ -232,9 +280,10 @@ fn external_effect_action_path(
 
 fn convert_external_metadata(
     metadata: &ProjectExternalPublicMetadataInput,
-) -> etas_types::ExternalPublicMetadataInput {
-    etas_types::ExternalPublicMetadataInput {
+) -> Result<etas_types::ExternalPublicMetadataInput, crate::code::descriptor::ProjectionError> {
+    Ok(etas_types::ExternalPublicMetadataInput {
         package: external_package_key(metadata.package),
+        behavior_types: behavior_types::collect(metadata)?,
         types: metadata
             .types
             .iter()
@@ -305,7 +354,7 @@ fn convert_external_metadata(
             .iter()
             .map(convert_external_action_signature)
             .collect(),
-    }
+    })
 }
 
 fn convert_external_spec_signature(
@@ -411,6 +460,7 @@ fn convert_external_named_signature(
 ) -> etas_types::ExternalNamedSignatureInput {
     etas_types::ExternalNamedSignatureInput {
         path: signature.path.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         ty: signature.ty.as_ref().map(convert_external_type),
     }
 }
@@ -434,7 +484,7 @@ fn convert_external_agent_signature(
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
         input: signature.input.iter().map(convert_external_type).collect(),
-        output: convert_external_type(&signature.output),
+        output: signature.output.as_ref().map(convert_external_type),
         effects: signature.effects.as_ref().map(convert_external_effect_row),
     }
 }
@@ -564,13 +614,25 @@ pub(super) fn convert_external_effect_arg(
     }
 }
 
-fn convert_external_type(ty: &ProjectExternalTypeInput) -> etas_types::ExternalTypeInput {
+pub(super) fn convert_external_type(
+    ty: &ProjectExternalTypeInput,
+) -> etas_types::ExternalTypeInput {
     match ty {
         ProjectExternalTypeInput::Primitive(name) => {
             etas_types::ExternalTypeInput::Primitive(name.clone())
         }
         ProjectExternalTypeInput::Var(name) => etas_types::ExternalTypeInput::Var(name.clone()),
         ProjectExternalTypeInput::Named(path) => etas_types::ExternalTypeInput::Named(path.clone()),
+        ProjectExternalTypeInput::Enum { path, variants } => etas_types::ExternalTypeInput::Enum {
+            path: path.clone(),
+            variants: variants
+                .iter()
+                .map(|variant| etas_types::ExternalRecordFieldInput {
+                    name: variant.name.clone(),
+                    ty: convert_external_type(&variant.ty),
+                })
+                .collect(),
+        },
         ProjectExternalTypeInput::Applied { path, args } => {
             etas_types::ExternalTypeInput::Applied {
                 path: path.clone(),
@@ -721,10 +783,10 @@ fn std_signature_input(
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
         let wildcard_counts = wildcard_import_name_counts(&resolved_imports.wildcard_imports);
         for wildcard in &resolved_imports.wildcard_imports {
-            let ResolvedModuleTarget::Std { module, path, .. } = &wildcard.target_module else {
-                continue;
-            };
-            for name in &wildcard.exported_names {
+            for (name, target) in &wildcard.targets {
+                let ImportTarget::StdItem { symbol, .. } = target else {
+                    continue;
+                };
                 if wildcard_counts
                     .get(&(wildcard.from, wildcard.from_part, name.clone()))
                     .copied()
@@ -733,14 +795,10 @@ fn std_signature_input(
                 {
                     continue;
                 }
-                let Some((_, std_symbol)) = registry
-                    .module_exports(*module)
-                    .find(|(exported_name, _)| *exported_name == name)
-                else {
+                let Some(std_symbol) = registry.symbol(*symbol) else {
                     continue;
                 };
-                let Some(binding_symbol) = wildcard_alias_symbol(context, wildcard, path, name)
-                else {
+                let Some(binding_symbol) = wildcard_alias_symbol(context, wildcard, name) else {
                     continue;
                 };
                 input
@@ -793,128 +851,17 @@ fn hir_module_for_source_module(
     })
 }
 
-fn source_signature_input(context: &ProjectContext) -> etas_types::SourceSignatureInput {
-    let Some(hir) = context.hir.as_ref().map(|output| &output.hir) else {
-        return etas_types::SourceSignatureInput::default();
-    };
-    let Some(modules) = context.modules.as_ref() else {
-        return etas_types::SourceSignatureInput::default();
-    };
-    let Some(resolved_imports) = context.resolved_imports.as_ref() else {
-        return etas_types::SourceSignatureInput::default();
-    };
-    let Some(bindings) = context.hir_item_bindings.as_ref() else {
-        return etas_types::SourceSignatureInput::default();
-    };
-    let mut input = etas_types::SourceSignatureInput::default();
-    let module_to_hir = modules
-        .modules
+fn source_signature_input(hir: &etas_hir::HirProgram) -> etas_types::SourceSignatureInput {
+    let mut symbol_bindings = hir
+        .source_import_targets
         .iter()
-        .filter_map(|(module_id, module_info)| {
-            let hir_module = hir.modules.iter().find_map(|hir_module| {
-                let hir_module_data = hir.modules_arena.get(*hir_module)?;
-                let path = hir_module_data.name.as_ref()?;
-                (path
-                    .segments
-                    .iter()
-                    .map(|segment| segment.name.as_str())
-                    .eq(module_info.path.segments.iter().map(String::as_str)))
-                .then_some(*hir_module)
-            })?;
-            Some((module_id, hir_module))
+        .map(|(symbol, target)| etas_types::SourceSymbolBindingInput {
+            symbol: *symbol,
+            target: *target,
         })
-        .collect::<HashMap<ModuleId, etas_hir::HirModuleId>>();
-
-    for resolved in &resolved_imports.imports {
-        let ImportTarget::SourceItem { item, .. } = &resolved.target else {
-            continue;
-        };
-        let Some(target_hir_item) = bindings.ast_to_hir.get(item).copied() else {
-            continue;
-        };
-        let Some(target_symbol) = item_symbol(hir, target_hir_item) else {
-            continue;
-        };
-        let Some(hir_module) = module_to_hir.get(&resolved.from).copied() else {
-            continue;
-        };
-        let Some(binding_symbol) = hir.modules_arena.get(hir_module).and_then(|module| {
-            import_binding_symbol_for_import(
-                module,
-                resolved.import.source,
-                resolved.span,
-                &resolved.local_name,
-            )
-        }) else {
-            continue;
-        };
-        input
-            .symbol_bindings
-            .push(etas_types::SourceSymbolBindingInput {
-                symbol: binding_symbol,
-                target: target_symbol,
-            });
-    }
-
-    let wildcard_counts = wildcard_import_name_counts(&resolved_imports.wildcard_imports);
-    for wildcard in &resolved_imports.wildcard_imports {
-        let ResolvedModuleTarget::Source { module, .. } = &wildcard.target_module else {
-            continue;
-        };
-        let Some(target_module) = modules.modules.get(*module) else {
-            continue;
-        };
-        for name in &wildcard.exported_names {
-            if wildcard_counts
-                .get(&(wildcard.from, wildcard.from_part, name.clone()))
-                .copied()
-                .unwrap_or_default()
-                != 1
-            {
-                continue;
-            }
-            let Some(export) = target_module.visibility_exports.items.get(name) else {
-                continue;
-            };
-            let Some(target_hir_item) = bindings.ast_to_hir.get(&export.item).copied() else {
-                continue;
-            };
-            let Some(target_symbol) = item_symbol(hir, target_hir_item) else {
-                continue;
-            };
-            let Some(binding_symbol) =
-                wildcard_alias_symbol(context, wildcard, &target_module.path, name)
-            else {
-                continue;
-            };
-            input
-                .symbol_bindings
-                .push(etas_types::SourceSymbolBindingInput {
-                    symbol: binding_symbol,
-                    target: target_symbol,
-                });
-        }
-    }
-    input
-}
-
-fn item_symbol(
-    hir: &etas_hir::HirProgram,
-    item: etas_hir::HirItemId,
-) -> Option<etas_hir::SymbolId> {
-    match hir.items.get(item)? {
-        etas_hir::HirItem::TypeAlias(item) => Some(item.symbol),
-        etas_hir::HirItem::Type(item) => Some(item.symbol),
-        etas_hir::HirItem::Enum(item) => Some(item.symbol),
-        etas_hir::HirItem::Spec(item) => Some(item.symbol),
-        etas_hir::HirItem::Effect(item) => Some(item.symbol),
-        etas_hir::HirItem::TopLevelLet(item) => Some(item.symbol),
-        etas_hir::HirItem::Tool(item) => Some(item.symbol),
-        etas_hir::HirItem::Agent(item) => Some(item.symbol),
-        etas_hir::HirItem::Protocol(item) => Some(item.symbol),
-        etas_hir::HirItem::Flow(item) => Some(item.symbol),
-        etas_hir::HirItem::Impl(_) | etas_hir::HirItem::Error { .. } => None,
-    }
+        .collect::<Vec<_>>();
+    symbol_bindings.sort_by_key(|binding| binding.symbol);
+    etas_types::SourceSignatureInput { symbol_bindings }
 }
 
 fn import_binding_symbol_for_import(
@@ -933,7 +880,6 @@ fn import_binding_symbol_for_import(
 fn wildcard_alias_symbol(
     context: &ProjectContext,
     wildcard: &ResolvedWildcardImport,
-    target_module_path: &ModulePath,
     name: &str,
 ) -> Option<etas_hir::SymbolId> {
     let hir = context.hir.as_ref().map(|output| &output.hir)?;
@@ -949,8 +895,10 @@ fn wildcard_alias_symbol(
     if *origin != etas_hir::ImportAliasOrigin::SourceImport {
         return None;
     }
-    let mut expected_path = target_module_path.segments.clone();
-    expected_path.push(name.to_owned());
+    let expected_path = wildcard
+        .targets
+        .get(name)?
+        .catalog_path(context.module_catalog.as_ref()?)?;
     (path == &expected_path).then_some(symbol)
 }
 

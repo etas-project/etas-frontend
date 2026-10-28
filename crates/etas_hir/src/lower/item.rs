@@ -51,6 +51,7 @@ impl LowerCtx {
                 }
             }
             if let ast::Item::Effect(effect) = &item.item {
+                let owner = self.top_item_symbols[&item_key(&item.item)];
                 for action in effect.body.actions() {
                     let qualified = format!("{}.{}", effect.name.text, action.name.text);
                     let symbol = self.alloc_symbol_with_def(SymbolData {
@@ -63,6 +64,8 @@ impl LowerCtx {
                         declared_type: None,
                         definition_span: action.name.span,
                     });
+                    self.symbols
+                        .insert_member(owner, action.name.text.clone(), symbol);
                     self.insert_symbol(module_scope, &qualified, symbol, action.name.span);
                     if let Some(prefix) = module_qualified_prefix {
                         self.insert_symbol(
@@ -170,7 +173,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirTypeAliasDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Alias(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -193,7 +196,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirTypeDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Type(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -221,7 +224,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirEnumDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Enum(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -298,6 +301,9 @@ impl LowerCtx {
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
         let target = match &decl.target {
+            ast::ImplTarget::Agent { target, specs, .. } => {
+                return self.lower_agent_impl(decl, target, specs, item_id, parent_scope, scope);
+            }
             ast::ImplTarget::Inherent {
                 target, type_args, ..
             } => HirImplTarget::Inherent {
@@ -343,7 +349,9 @@ impl LowerCtx {
                 }
                 _ => None,
             },
-            HirImplTarget::SpecSatisfaction { .. } | HirImplTarget::Error => None,
+            HirImplTarget::Agent { .. }
+            | HirImplTarget::SpecSatisfaction { .. }
+            | HirImplTarget::Error => None,
         };
         let items = decl
             .items
@@ -381,7 +389,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirSpecDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Spec(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -543,7 +551,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirEffectDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Effect(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -590,7 +598,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirTopLevelLetDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::TopLevelLet(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let type_annotation = decl
             .type_annotation
             .as_ref()
@@ -623,7 +631,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirToolDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Tool(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -639,14 +647,18 @@ impl LowerCtx {
             .iter()
             .map(|conformance| self.lower_declaration_conformance(conformance, scope, item_id))
             .collect::<Vec<_>>();
-        let body = match &decl.body {
-            ToolBody::Source(body) => {
-                HirToolBody::Source(self.lower_flow_body(body, scope, item_id))
+        let body = if let Some(overlay) = self.take_body_overlay(decl.span) {
+            HirToolBody::Source(self.lower_overlay_flow(&overlay, scope, item_id))
+        } else {
+            match &decl.body {
+                ToolBody::Source(body) => {
+                    HirToolBody::Source(self.lower_flow_body(body, scope, item_id))
+                }
+                ToolBody::Decl { semicolon_span } => HirToolBody::Decl {
+                    span: *semicolon_span,
+                },
+                ToolBody::Error(span) => HirToolBody::Error { span: *span },
             }
-            ToolBody::Decl { semicolon_span } => HirToolBody::Decl {
-                span: *semicolon_span,
-            },
-            ToolBody::Error(span) => HirToolBody::Error { span: *span },
         };
         self.set_symbol_item(symbol, item_id);
         self.map_item(item_id, decl.span);
@@ -669,7 +681,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirAgentDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Agent(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -687,17 +699,30 @@ impl LowerCtx {
             .iter()
             .map(|conformance| self.lower_declaration_conformance(conformance, scope, item_id))
             .collect::<Vec<_>>();
-        let body = match &decl.body {
-            ast::AgentBody::Source(block) => HirAgentBody::Source {
-                block: self.lower_block(block, scope, item_id),
-            },
-            ast::AgentBody::Decl { semicolon_span } => HirAgentBody::Decl {
-                span: *semicolon_span,
-            },
-            ast::AgentBody::Error(span) => HirAgentBody::Error { span: *span },
+        let body = if let Some(overlay) = self.take_body_overlay(decl.span) {
+            let flow = self.lower_overlay_flow(&overlay, scope, item_id);
+            HirAgentBody::Source {
+                block: match flow {
+                    HirFlowBody::Block(block) => block,
+                    HirFlowBody::Expr { lowered_block, .. } => lowered_block,
+                },
+            }
+        } else {
+            match &decl.body {
+                ast::AgentBody::Source(block) => HirAgentBody::Source {
+                    block: self.lower_block(block, scope, item_id),
+                },
+                ast::AgentBody::Decl { semicolon_span } => HirAgentBody::Decl {
+                    span: *semicolon_span,
+                },
+                ast::AgentBody::Error(span) => HirAgentBody::Error { span: *span },
+            }
         };
         self.set_symbol_item(symbol, item_id);
         self.map_item(item_id, decl.span);
+        if matches!(body, HirAgentBody::Source { .. }) {
+            self.register_default_agent_method(symbol, item_id, decl.name.span);
+        }
         HirAgentDecl {
             symbol,
             params,
@@ -716,7 +741,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirProtocolDecl {
-        let symbol = self.item_symbol(item_id, &ast::Item::Protocol(decl.clone()));
+        let symbol = self.item_symbol_at(item_id, decl.span);
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -770,8 +795,18 @@ impl LowerCtx {
                 definition_span: decl.name.span,
             })
         } else {
-            self.item_symbol(item_id, &ast::Item::Flow(decl.clone()))
+            self.item_symbol_at(item_id, decl.span)
         };
+        self.lower_flow_with_symbol(decl, item_id, parent_scope, symbol)
+    }
+
+    pub(super) fn lower_flow_with_symbol(
+        &mut self,
+        decl: &ast::FlowDecl,
+        item_id: HirItemId,
+        parent_scope: ScopeId,
+        symbol: SymbolId,
+    ) -> HirFlowDecl {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
@@ -790,11 +825,15 @@ impl LowerCtx {
             .iter()
             .map(|conformance| self.lower_declaration_conformance(conformance, scope, item_id))
             .collect();
-        let body = self.lower_flow_body(&decl.body, scope, item_id);
-        let body = if let Some(handler) = &decl.trailing_handler {
-            self.wrap_flow_body_with_handler(body, handler, scope, item_id)
+        let body = if let Some(overlay) = self.take_body_overlay(decl.span) {
+            self.lower_overlay_flow(&overlay, scope, item_id)
         } else {
-            body
+            let body = self.lower_flow_body(&decl.body, scope, item_id);
+            if let Some(handler) = &decl.trailing_handler {
+                self.wrap_flow_body_with_handler(body, handler, scope, item_id)
+            } else {
+                body
+            }
         };
         self.set_symbol_item(symbol, item_id);
         HirFlowDecl {
@@ -867,20 +906,22 @@ impl LowerCtx {
         }
     }
 
-    fn wrap_flow_body_with_handler(
+    pub(super) fn wrap_flow_body_with_handler(
         &mut self,
         body: HirFlowBody,
         handler: &ast::HandlerArg,
         scope: ScopeId,
         item_id: HirItemId,
     ) -> HirFlowBody {
-        let (body_expr, body_span) = match body {
-            HirFlowBody::Block(block) => {
-                let span = self.hir.blocks[block].span;
-                (self.alloc_expr(HirExpr::Block(block), span), span)
-            }
-            HirFlowBody::Expr { expr, span, .. } => (expr, span),
+        let body_block = match body {
+            HirFlowBody::Block(block)
+            | HirFlowBody::Expr {
+                lowered_block: block,
+                ..
+            } => block,
         };
+        let body_span = self.hir.blocks[body_block].span;
+        let body_expr = self.alloc_expr(HirExpr::Block(body_block), body_span);
         let handler_expr = self.lower_handler_arg(handler, scope, item_id);
         let span = body_span.cover(handler.span());
         let handle_expr = self.alloc_expr(
@@ -998,7 +1039,7 @@ fn item_visibility(item: &ast::Item) -> ast::Visibility {
     }
 }
 
-fn hir_visibility(visibility: ast::Visibility) -> crate::Visibility {
+pub(super) fn hir_visibility(visibility: ast::Visibility) -> crate::Visibility {
     match visibility {
         ast::Visibility::Private => crate::Visibility::Private,
         ast::Visibility::Public => crate::Visibility::Public,

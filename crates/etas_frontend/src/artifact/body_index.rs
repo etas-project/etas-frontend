@@ -10,12 +10,23 @@ use super::{
     fingerprint_text,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct BodyArtifactReuseIndex {
     pub records: Vec<BodyArtifactReuseIndexRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct BodyArtifactReuseIndexRecord {
     pub kind: BodyArtifactReuseKind,
     pub unit: u32,
@@ -25,26 +36,42 @@ pub struct BodyArtifactReuseIndexRecord {
     pub dependencies: Vec<PersistedFrontendArtifactDependency>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum BodyArtifactReuseKind {
     TypeFacts,
     EffectFacts,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct BodyArtifactIdentityRecord {
     pub source: u32,
     pub item_index: usize,
     pub item_kind: AstItemKind,
+    pub impl_member: Option<usize>,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub(crate) struct PersistedBodyArtifactReuseIndex {
     records: Vec<PersistedBodyArtifactReuseIndexRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 struct PersistedBodyArtifactReuseIndexRecord {
     kind: PersistedBodyArtifactReuseKind,
     unit: u32,
@@ -54,33 +81,44 @@ struct PersistedBodyArtifactReuseIndexRecord {
     dependencies: Vec<PersistedFrontendArtifactDependency>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 enum PersistedBodyArtifactReuseKind {
     TypeFacts,
     EffectFacts,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 struct PersistedBodyArtifactIdentityRecord {
     source: u32,
     item_index: usize,
     item_kind: AstItemKind,
+    impl_member: Option<usize>,
     text: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct PersistedFrontendArtifactDependency {
     pub key: PersistedFrontendArtifactKey,
     pub fingerprint: Option<[u8; 32]>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct PersistedFrontendArtifactKey {
     pub kind: FrontendArtifactKind,
     pub unit: PersistedFrontendUnitKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum PersistedFrontendUnitKey {
     Project,
     Source(u32),
@@ -100,7 +138,7 @@ impl BodyArtifactReuseIndex {
     }
 
     pub fn fingerprint(&self) -> ArtifactFingerprint {
-        let mut parts = vec!["body_artifact_reuse_index:v1".to_owned()];
+        let mut parts = vec!["body_artifact_reuse_index:v2".to_owned()];
         for record in &self.records {
             parts.extend(record.fingerprint_parts());
         }
@@ -193,6 +231,7 @@ impl PersistedBodyArtifactIdentityRecord {
             source: identity.source,
             item_index: identity.item_index,
             item_kind: identity.item_kind,
+            impl_member: identity.impl_member,
             text: identity.text.clone(),
         }
     }
@@ -202,6 +241,7 @@ impl PersistedBodyArtifactIdentityRecord {
             source: self.source,
             item_index: self.item_index,
             item_kind: self.item_kind,
+            impl_member: self.impl_member,
             text: self.text,
         }
     }
@@ -244,6 +284,7 @@ impl BodyArtifactReuseIndexRecord {
             format!("identity_source:{}", self.identity.source),
             format!("identity_item_index:{}", self.identity.item_index),
             format!("identity_item_kind:{:?}", self.identity.item_kind),
+            format!("identity_impl_member:{:?}", self.identity.impl_member),
             self.identity.text.clone(),
         ];
         for dependency in &self.dependencies {

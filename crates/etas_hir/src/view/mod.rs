@@ -28,4 +28,6 @@ pub use tree::{
     BlockView, BodyView, ExprView, HandlerArmView, HirTreeView, ItemView, ModuleView, PatternView,
     ScopeView, StmtView,
 };
-pub use visit::{HirVisitor, walk_block, walk_body, walk_expr, walk_item, walk_module};
+pub use visit::{
+    HirVisitor, walk_block, walk_body, walk_expr, walk_expr_tree, walk_item, walk_module,
+};

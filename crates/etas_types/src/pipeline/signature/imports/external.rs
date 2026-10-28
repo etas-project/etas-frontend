@@ -1,5 +1,11 @@
 use std::collections::HashMap;
 
+mod enums;
+mod specs;
+#[cfg(test)]
+mod tests;
+mod types;
+
 use crate::{
     CallableSignature, ExternalCallableSpecSatisfactionFact, ExternalPackageKey,
     ExternalSignatureInput, ExternalTraceSpecConformanceFact, ExternalTraceSpecConformanceTarget,
@@ -17,30 +23,46 @@ pub fn apply_external_signature_input(
     ctx: &mut TypePipelineContext<'_>,
     input: &ExternalSignatureInput,
 ) {
+    if !types::prepare(ctx, input) {
+        return;
+    }
+    specs::prepare(ctx, input);
     let mut symbols = HashMap::<(ExternalPackageKey, Vec<String>), SymbolTypeFact>::new();
     let mut actions =
         HashMap::<(ExternalPackageKey, Vec<String>), crate::EffectActionSignature>::new();
     let mut trace_specs = HashMap::<(ExternalPackageKey, Vec<String>), ()>::new();
     let mut spec_signatures =
         HashMap::<(ExternalPackageKey, Vec<String>), crate::ExternalSpecSignatureInput>::new();
-    let binding_symbols = input
-        .symbol_bindings
-        .iter()
-        .map(|binding| ((binding.package, binding.path.clone()), binding.symbol))
-        .collect::<HashMap<_, _>>();
 
     for metadata in &input.metadata {
         let Some(span) = package_binding_span(input, metadata.package) else {
             continue;
         };
+        for ty in &metadata.behavior_types {
+            lower_external_type(ctx, span, ty);
+        }
         for item in &metadata.types {
-            let ty = lower_external_type_declaration(ctx, span, &item.path, item.ty.as_ref());
+            let ty = lower_external_type_declaration(
+                ctx,
+                span,
+                &item.path,
+                &item.generic_params,
+                item.ty.as_ref(),
+            );
+            let Some(parameters) = lower_external_callable_generic_params(
+                ctx,
+                span,
+                metadata.package,
+                &item.path,
+                &item.generic_params,
+            ) else {
+                continue;
+            };
             let fact = match item.ty.as_ref() {
-                Some(crate::ExternalTypeInput::Alias { .. }) => {
-                    let mut params = Vec::new();
-                    collect_type_vars(ctx, ty, &mut params);
-                    SymbolTypeFact::TypeAlias { target: ty, params }
-                }
+                Some(crate::ExternalTypeInput::Alias { .. }) => SymbolTypeFact::TypeAlias {
+                    target: ty,
+                    params: parameters.clone(),
+                },
                 _ => {
                     let representation = match ctx.interner.store().get(ty) {
                         Some(Type::Nominal(nominal)) => nominal.representation,
@@ -53,6 +75,12 @@ pub fn apply_external_signature_input(
                     }
                 }
             };
+            if !matches!(
+                item.ty.as_ref(),
+                Some(crate::ExternalTypeInput::Alias { .. })
+            ) {
+                ctx.signature_facts.type_generics.insert(ty, parameters);
+            }
             symbols.insert((metadata.package, item.path.clone()), fact);
         }
         for item in &metadata.values {
@@ -68,17 +96,13 @@ pub fn apply_external_signature_input(
             }
         }
         for item in &metadata.enums {
-            let ty = item
-                .ty
-                .as_ref()
-                .map(|ty| lower_external_type(ctx, span, ty))
-                .unwrap_or_else(|| lower_external_type_declaration(ctx, span, &item.path, None));
-            symbols.insert(
-                (metadata.package, item.path.clone()),
-                SymbolTypeFact::Type {
-                    constructor: TypeConstructorId(ty.0),
-                },
-            );
+            if let Some(facts) = enums::lower(ctx, span, metadata.package, item) {
+                symbols.extend(
+                    facts
+                        .into_iter()
+                        .map(|(path, fact)| ((metadata.package, path), fact)),
+                );
+            }
         }
         for item in &metadata.flows {
             let Some(generic_params) = lower_external_callable_generic_params(
@@ -87,7 +111,6 @@ pub fn apply_external_signature_input(
                 metadata.package,
                 &item.path,
                 &item.generic_params,
-                &binding_symbols,
             ) else {
                 continue;
             };
@@ -117,23 +140,54 @@ pub fn apply_external_signature_input(
                 metadata.package,
                 &item.path,
                 &item.generic_params,
-                &binding_symbols,
             ) else {
                 continue;
             };
-            let signature = CallableSignature {
-                generic_params,
-                params: item
-                    .input
-                    .iter()
-                    .map(|ty| lower_external_type(ctx, span, ty))
-                    .collect(),
-                output: lower_external_type(ctx, span, &item.output),
-                effects: item
-                    .effects
-                    .as_ref()
-                    .map(|row| lower_external_effect_row(ctx, span, row)),
-                requested_actions: None,
+            let component = ctx
+                .interner
+                .intern(crate::Type::Nominal(crate::NominalTypeRef {
+                    name: item.path.join("."),
+                    params: Vec::new(),
+                    representation: None,
+                }));
+            ctx.signature_facts
+                .type_generics
+                .insert(component, Vec::new());
+            let default_entry = item.output.as_ref().map(|output| {
+                let signature = CallableSignature {
+                    generic_params,
+                    params: item
+                        .input
+                        .iter()
+                        .map(|ty| lower_external_type(ctx, span, ty))
+                        .collect(),
+                    output: lower_external_type(ctx, span, output),
+                    effects: item
+                        .effects
+                        .as_ref()
+                        .map(|row| lower_external_effect_row(ctx, span, row)),
+                    requested_actions: None,
+                };
+                let callable_type = ctx.interner.intern(crate::Type::Function(crate::FlowType {
+                    input: signature.params.clone(),
+                    output: signature.output,
+                    effects: signature.effects.clone(),
+                }));
+                std::sync::Arc::new(crate::AgentEntrySignature {
+                    method: None,
+                    callable_type,
+                    callable: signature,
+                })
+            });
+            let definition_type = crate::lower::code::agent_definition_type(
+                &mut ctx.interner,
+                &ctx.signature_facts.known_std_types.code,
+                component,
+            );
+            let signature = crate::AgentSignature {
+                component,
+                definition_type,
+                default_entry,
             };
             symbols.insert(
                 (metadata.package, item.path.clone()),
@@ -147,7 +201,6 @@ pub fn apply_external_signature_input(
                 metadata.package,
                 &item.path,
                 &item.generic_params,
-                &binding_symbols,
             ) else {
                 continue;
             };
@@ -185,13 +238,9 @@ pub fn apply_external_signature_input(
             spec_signatures.insert((metadata.package, item.path.clone()), item.clone());
         }
         for action in &metadata.actions {
-            if let Some(signature) = lower_external_action_signature(
-                ctx,
-                span,
-                metadata.package,
-                action,
-                &binding_symbols,
-            ) {
+            if let Some(signature) =
+                lower_external_action_signature(ctx, span, metadata.package, action)
+            {
                 actions.insert((metadata.package, action.path.clone()), signature);
             }
         }
@@ -202,6 +251,12 @@ pub fn apply_external_signature_input(
             .get(&(binding.package, binding.path.clone()))
             .cloned()
         {
+            if matches!(&fact, SymbolTypeFact::Agent { .. }) {
+                ctx.signature_facts.external_agent_reflections.insert(
+                    binding.symbol,
+                    crate::facts::reflection::ExternalAgentReflectionFact::Unavailable,
+                );
+            }
             ctx.signature_facts
                 .symbol_types
                 .insert(binding.symbol, fact);
@@ -220,7 +275,6 @@ pub fn apply_external_signature_input(
                 binding.symbol,
                 binding.span,
                 signature,
-                &binding_symbols,
             ) {
                 ctx.signature_facts
                     .spec_signatures
@@ -245,6 +299,47 @@ pub fn apply_external_signature_input(
             }
         }
     }
+    ctx.signature_facts
+        .external_definition_bindings
+        .extend(input.definition_bindings.iter().cloned());
+    for (symbol, reflection) in &input.agent_reflections {
+        if let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
+            reflection
+            && ctx.signature_facts.external_definition_bindings.get(symbol)
+                != Some(&header.identity)
+        {
+            if let Some(binding) = input
+                .symbol_bindings
+                .iter()
+                .find(|binding| binding.symbol == *symbol)
+            {
+                incomplete_external_type_facts(
+                    ctx,
+                    binding.span,
+                    "external agent reflection disagrees with its canonical import identity".into(),
+                );
+            }
+            continue;
+        }
+        if matches!(
+            ctx.signature_facts.symbol_types.get(symbol),
+            Some(SymbolTypeFact::Agent { .. })
+        ) {
+            ctx.signature_facts
+                .external_agent_reflections
+                .insert(*symbol, reflection.clone());
+        } else if let Some(binding) = input
+            .symbol_bindings
+            .iter()
+            .find(|binding| binding.symbol == *symbol)
+        {
+            incomplete_external_type_facts(
+                ctx,
+                binding.span,
+                "external agent reflection has no checked agent signature".into(),
+            );
+        }
+    }
     for binding in &input.action_bindings {
         if let Some(signature) = actions
             .get(&(binding.package, binding.path.clone()))
@@ -261,14 +356,10 @@ pub fn apply_external_signature_input(
                 .insert(binding.symbol, signature);
         }
     }
-    apply_external_spec_facts(ctx, input, &binding_symbols);
+    apply_external_spec_facts(ctx, input);
 }
 
-fn apply_external_spec_facts(
-    ctx: &mut TypePipelineContext<'_>,
-    input: &ExternalSignatureInput,
-    binding_symbols: &HashMap<(ExternalPackageKey, Vec<String>), etas_hir::SymbolId>,
-) {
+fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatureInput) {
     for metadata in &input.metadata {
         let Some(package_span) = package_binding_span(input, metadata.package) else {
             continue;
@@ -279,7 +370,6 @@ fn apply_external_spec_facts(
                 metadata.package,
                 &implementation.spec,
                 implementation.args.len(),
-                binding_symbols,
             ) {
                 Ok(spec) => spec,
                 Err(reason) => {
@@ -308,6 +398,16 @@ fn apply_external_spec_facts(
                     record_std_spec_evidence(ctx, self_type, path, args);
                     continue;
                 }
+                crate::CheckedSpecRef::External(spec) => {
+                    ctx.signature_facts.external_specs.impls.push(
+                        crate::facts::specs::ExternalSpecImplFact {
+                            self_type,
+                            spec,
+                            args,
+                        },
+                    );
+                    continue;
+                }
             };
             ctx.signature_facts.spec_impls.push(SpecImplFact {
                 self_type,
@@ -320,26 +420,21 @@ fn apply_external_spec_facts(
         }
         for fact in &metadata.type_spec_satisfactions {
             let span = binding_span(input, metadata.package, &fact.spec).unwrap_or(package_span);
-            let spec = match resolve_external_spec(
-                ctx,
-                metadata.package,
-                &fact.spec,
-                fact.args.len(),
-                binding_symbols,
-            ) {
-                Ok(spec) => spec,
-                Err(reason) => {
-                    incomplete_external_type_facts(
-                        ctx,
-                        package_span,
-                        format!(
-                            "external type satisfaction references `{}`: {reason}",
-                            fact.spec.join(".")
-                        ),
-                    );
-                    continue;
-                }
-            };
+            let spec =
+                match resolve_external_spec(ctx, metadata.package, &fact.spec, fact.args.len()) {
+                    Ok(spec) => spec,
+                    Err(reason) => {
+                        incomplete_external_type_facts(
+                            ctx,
+                            package_span,
+                            format!(
+                                "external type satisfaction references `{}`: {reason}",
+                                fact.spec.join(".")
+                            ),
+                        );
+                        continue;
+                    }
+                };
             let self_type = lower_external_type(ctx, span, &fact.self_type);
             let args = fact
                 .args
@@ -350,6 +445,16 @@ fn apply_external_spec_facts(
                 crate::CheckedSpecRef::Source(symbol) => symbol,
                 crate::CheckedSpecRef::Std(path) => {
                     record_std_spec_evidence(ctx, self_type, path, args);
+                    continue;
+                }
+                crate::CheckedSpecRef::External(spec) => {
+                    ctx.signature_facts.external_specs.impls.push(
+                        crate::facts::specs::ExternalSpecImplFact {
+                            self_type,
+                            spec,
+                            args,
+                        },
+                    );
                     continue;
                 }
             };
@@ -429,6 +534,13 @@ fn package_binding_span(
     input: &ExternalSignatureInput,
     package: ExternalPackageKey,
 ) -> Option<etas_core::Span> {
+    if let Some((_, span)) = input
+        .package_anchors
+        .iter()
+        .find(|(key, _)| *key == package)
+    {
+        return Some(*span);
+    }
     input
         .symbol_bindings
         .iter()
@@ -466,7 +578,6 @@ fn lower_external_spec_signature(
     symbol: etas_hir::SymbolId,
     span: etas_core::Span,
     signature: &crate::ExternalSpecSignatureInput,
-    binding_symbols: &HashMap<(ExternalPackageKey, Vec<String>), etas_hir::SymbolId>,
 ) -> Option<SpecSignature> {
     let Some(name) = signature.path.last().cloned() else {
         incomplete_external_type_facts(
@@ -487,7 +598,6 @@ fn lower_external_spec_signature(
                     package,
                     &signature.path,
                     &signature.generic_params,
-                    binding_symbols,
                 )?;
                 Some(CallableSignature {
                     generic_params,
@@ -516,22 +626,16 @@ fn lower_external_spec_signature(
         .collect();
     let mut super_specs = Vec::with_capacity(signature.super_specs.len());
     for bound in &signature.super_specs {
-        let Some(super_spec_symbol) = binding_symbols.get(&(package, bound.spec.clone())).copied()
-        else {
-            incomplete_external_type_facts(
-                ctx,
-                span,
-                format!(
-                    "external spec `{}` references super spec `{}` without an imported binding",
-                    signature.path.join("."),
-                    bound.spec.join(".")
-                ),
-            );
-            return None;
+        let super_spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len()) {
+            Ok(spec) => spec,
+            Err(reason) => {
+                incomplete_external_type_facts(ctx, span, reason);
+                return None;
+            }
         };
         super_specs.push(SpecSuperBoundFact {
             spec_symbol: symbol,
-            super_spec_symbol,
+            super_spec,
             args: bound
                 .args
                 .iter()
@@ -556,7 +660,6 @@ fn lower_external_spec_signature(
                 package,
                 &callable.path,
                 &callable.generic_params,
-                binding_symbols,
             )?;
             Some(CallableSignature {
                 generic_params,
@@ -620,72 +723,5 @@ fn nominal_params(ctx: &TypePipelineContext<'_>, ty: crate::TypeId) -> Vec<Strin
     match ctx.interner.store().get(ty) {
         Some(crate::Type::Nominal(nominal)) => nominal.params.clone(),
         _ => Vec::new(),
-    }
-}
-
-fn collect_type_vars(ctx: &TypePipelineContext<'_>, ty: TypeId, out: &mut Vec<String>) {
-    match ctx.interner.store().get(ty) {
-        Some(Type::Named(named)) => {
-            if !out.contains(&named.name) {
-                out.push(named.name.clone());
-            }
-        }
-        Some(Type::Array(inner))
-        | Some(Type::List(inner))
-        | Some(Type::Set(inner))
-        | Some(Type::Slice(inner))
-        | Some(Type::Option(inner))
-        | Some(Type::Message(inner))
-        | Some(Type::Schema(inner))
-        | Some(Type::MemorySelection(inner))
-        | Some(Type::MemoryRegion(inner))
-        | Some(Type::Range { index: inner })
-        | Some(Type::Trust { inner, .. }) => collect_type_vars(ctx, *inner, out),
-        Some(Type::Map { key, value }) | Some(Type::Store { key, value }) => {
-            collect_type_vars(ctx, *key, out);
-            collect_type_vars(ctx, *value, out);
-        }
-        Some(Type::Result { ok, err }) => {
-            collect_type_vars(ctx, *ok, out);
-            collect_type_vars(ctx, *err, out);
-        }
-        Some(Type::Tuple(elements)) => {
-            for element in elements {
-                collect_type_vars(ctx, *element, out);
-            }
-        }
-        Some(Type::Record(record)) => {
-            for field in &record.fields {
-                collect_type_vars(ctx, field.ty, out);
-            }
-        }
-        Some(Type::Function(flow)) => {
-            for input in &flow.input {
-                collect_type_vars(ctx, *input, out);
-            }
-            collect_type_vars(ctx, flow.output, out);
-        }
-        Some(Type::Handler(handler)) => {
-            if let Some(result) = handler.result {
-                collect_type_vars(ctx, result, out);
-            }
-        }
-        Some(Type::Applied { args, .. }) => {
-            for arg in args {
-                collect_type_vars(ctx, *arg, out);
-            }
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema })) => {
-            collect_type_vars(ctx, *schema, out);
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::ExternalTool { signature })) => {
-            collect_type_vars(ctx, *signature, out);
-        }
-        Some(Type::ResourceHandle(crate::ResourceHandleType::Other { args, .. })) => {
-            for arg in args {
-                collect_type_vars(ctx, *arg, out);
-            }
-        }
-        _ => {}
     }
 }

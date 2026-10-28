@@ -1,6 +1,6 @@
 use crate::{Span, ast::expr::Expr, ast::name::Path};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum TypeExpr {
     Handler(HandlerType),
     Arrow {
@@ -46,7 +46,7 @@ impl TypeExpr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum GenericArg {
     Type(TypeExpr),
     EffectRow(EffectRow),
@@ -63,7 +63,7 @@ impl GenericArg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct HandlerType {
     pub handled: EffectRow,
     pub produced: HandlerProducedEffects,
@@ -71,13 +71,15 @@ pub struct HandlerType {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum HandlerProducedEffects {
     Infer,
     Explicit(EffectRow),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum PrimitiveType {
     Bool,
     I8,
@@ -129,13 +131,13 @@ impl PrimitiveType {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct RecordType {
     pub fields: Vec<FieldDecl>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FieldDecl {
     pub visibility: Option<Visibility>,
     pub name: crate::ast::Name,
@@ -143,26 +145,28 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum Visibility {
     Private,
     Public,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EffectRow {
     pub effects: Vec<EffectRef>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EffectRef {
     pub path: Path,
     pub args: Vec<EffectArg>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum EffectArg {
     Type(TypeExpr),
     Path(Path),

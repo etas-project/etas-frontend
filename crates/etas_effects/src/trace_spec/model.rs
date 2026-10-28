@@ -10,8 +10,12 @@ use crate::{
 
 pub type TraceSpecClauseAlternative = Vec<TraceSpecClause>;
 pub type TraceSpecClauseAlternatives = Vec<TraceSpecClauseAlternative>;
+/// Every attached constraint must hold; alternatives within one constraint are OR.
+pub type TraceSpecConformances = Vec<TraceSpecClauseAlternatives>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum TraceSpecClause {
     Allow {
         pattern: TraceSpecPattern,
@@ -52,14 +56,34 @@ impl TraceSpecClause {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct TraceSpecPattern {
     pub row: EffectRow,
     pub label: String,
     pub arg_bounds: Vec<TraceSpecArgBound>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct TraceSpecArgBound {
     pub target: TraceSpecArgBoundTarget,
     pub arg_index: usize,
@@ -68,7 +92,17 @@ pub struct TraceSpecArgBound {
     pub spec_args: Vec<etas_types::TypeId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub enum TraceSpecArgBoundTarget {
     Action(ActionRef),
     EffectTag(EffectTagId),
@@ -109,6 +143,9 @@ impl TraceSpecPattern {
             return self.arg_bounds.is_empty();
         };
         let spec_facts = etas_types::SpecFacts {
+            external_signatures: types.facts.external_specs.signatures.clone(),
+            external_impls: types.facts.external_specs.impls.clone(),
+            external_aliases: types.facts.external_specs.aliases.clone(),
             signatures: types.facts.spec_signatures.clone(),
             impls: types.facts.spec_impls.clone(),
             type_satisfactions: types.facts.type_spec_satisfactions.clone(),
@@ -166,10 +203,10 @@ fn bound_target_and_args<'a>(
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct TraceSpecModelStore {
     pub clauses_by_item: BTreeMap<HirItemId, TraceSpecClauseAlternatives>,
-    pub referenced_by_item: BTreeMap<HirItemId, TraceSpecClauseAlternatives>,
-    pub external_referenced_by_item: BTreeMap<Vec<String>, TraceSpecClauseAlternatives>,
+    pub referenced_by_item: BTreeMap<HirItemId, TraceSpecConformances>,
+    pub external_referenced_by_item: BTreeMap<Vec<String>, TraceSpecConformances>,
     pub trace_spec_names: BTreeMap<HirItemId, String>,
 }

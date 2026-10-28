@@ -29,6 +29,40 @@ pub enum AssignabilityReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeConstraint {
+    HandlerInstantiation {
+        parameters: Vec<(String, TypeId, TypeId)>,
+        requests: Vec<etas_hir::HirExprId>,
+        deferred: Option<(etas_hir::HirHandlerArmId, etas_hir::HirExprId)>,
+        origin: ConstraintOrigin,
+    },
+    Constructible {
+        target: TypeId,
+        origin: ConstraintOrigin,
+    },
+    ReturnType {
+        output: TypeId,
+        candidates: Vec<(TypeId, ConstraintOrigin)>,
+        empty: TypeId,
+        origin: ConstraintOrigin,
+    },
+    AgentInference {
+        expr: etas_hir::HirExprId,
+        owner: etas_hir::HirItemId,
+        prompt: etas_hir::HirExprId,
+        prompt_type: TypeId,
+        output: TypeId,
+        schema: TypeId,
+        action_symbol: etas_hir::SymbolId,
+        origin: ConstraintOrigin,
+    },
+    Reflection {
+        expr: etas_hir::HirExprId,
+        access_module: Option<etas_hir::HirModuleId>,
+        binding: super::reflection::ReflectionBinding,
+        members: Vec<String>,
+        output: TypeId,
+        origin: ConstraintOrigin,
+    },
     NumericLiteral {
         expr: Option<etas_hir::HirExprId>,
         text: String,
@@ -57,11 +91,21 @@ pub enum TypeConstraint {
         output: TypeId,
         origin: ConstraintOrigin,
     },
+    CallableReference {
+        expr: etas_hir::HirExprId,
+        signature: TypeId,
+        generic_params: Vec<CallableGenericParam>,
+        expected: Option<TypeId>,
+        lexical_effect_params: Vec<String>,
+        origin: ConstraintOrigin,
+    },
     MethodCall {
         expr: etas_hir::HirExprId,
         method: String,
+        access_module: Option<etas_hir::HirModuleId>,
         candidates: Vec<CallableCandidate>,
         generic_args: Vec<CallableGenericArg>,
+        arg_exprs: Vec<Option<etas_hir::HirExprId>>,
         args: Vec<TypeId>,
         output: TypeId,
         origin: ConstraintOrigin,
@@ -102,6 +146,7 @@ pub enum TypeConstraint {
         origin: ConstraintOrigin,
     },
     TryOperand {
+        source: etas_hir::HirExprId,
         operand: TypeId,
         output: TypeId,
         error: TypeId,
@@ -120,7 +165,15 @@ pub struct CallableCandidate {
 pub enum CallableCandidateOperation {
     #[default]
     Call,
+    AgentMethod {
+        symbol: etas_hir::SymbolId,
+        callable: TypeId,
+    },
     CheckedIndex {
         error: Option<TypeId>,
+    },
+    StdIntrinsic {
+        qualified_path: Vec<String>,
+        intrinsic: u32,
     },
 }

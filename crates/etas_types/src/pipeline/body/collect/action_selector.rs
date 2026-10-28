@@ -8,8 +8,8 @@ use crate::{
     TypeId, pipeline::context::BodyCollectContext,
 };
 
-pub fn validate_action_selector_arity_and_kinds(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn validate_action_selector_arity_and_kinds<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     signature: &EffectActionSignature,
     generic_args: &[HirGenericArg],
     span: etas_core::Span,
@@ -43,11 +43,12 @@ pub fn validate_action_selector_arity_and_kinds(
     }
 }
 
-pub fn specialize_action_signature(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn specialize_action_signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     signature: EffectActionSignature,
     args: &[HirEffectArg],
-) -> EffectActionSignature {
+    span: etas_core::Span,
+) -> Option<EffectActionSignature> {
     let mut selector_defaults = signature.selector_defaults.clone();
     if selector_defaults.len() < signature.effect_args.len() {
         selector_defaults.resize(signature.effect_args.len(), None);
@@ -58,39 +59,17 @@ pub fn specialize_action_signature(
         }
     }
     let substitutions = effect_arg_selector_substitutions(ctx, &signature, args);
-    if substitutions.is_empty() {
-        return EffectActionSignature {
-            generic_params: signature.generic_params,
-            params: signature.params,
-            output: signature.output,
-            effect_args: signature.effect_args,
-            selector_param_names: signature.selector_param_names,
-            selector_defaults,
-            returns_never: signature.returns_never,
-        };
-    }
-    EffectActionSignature {
-        generic_params: signature.generic_params,
-        params: signature
-            .params
-            .into_iter()
-            .map(|ty| substitute_schematic_type(ctx, ty, &substitutions))
-            .collect(),
-        output: substitute_schematic_type(ctx, signature.output, &substitutions),
-        effect_args: signature.effect_args,
-        selector_param_names: signature.selector_param_names,
-        selector_defaults,
-        returns_never: signature.returns_never,
-    }
+    apply_substitutions(ctx, signature, selector_defaults, &substitutions, span)
 }
 
-pub fn specialize_action_signature_from_generic_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn specialize_action_signature_from_generic_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     signature: EffectActionSignature,
     generic_args: &[HirGenericArg],
-) -> EffectActionSignature {
+    span: etas_core::Span,
+) -> Option<EffectActionSignature> {
     if generic_args.is_empty() {
-        return signature;
+        return Some(signature);
     }
     let mut selector_defaults = signature.selector_defaults.clone();
     if selector_defaults.len() < signature.effect_args.len() {
@@ -106,34 +85,71 @@ pub fn specialize_action_signature_from_generic_args(
         }
     }
     let substitutions = generic_arg_selector_substitutions(ctx, &signature, generic_args);
-    if substitutions.is_empty() {
-        return EffectActionSignature {
-            generic_params: signature.generic_params,
-            params: signature.params,
-            output: signature.output,
-            effect_args: signature.effect_args,
-            selector_param_names: signature.selector_param_names,
-            selector_defaults,
-            returns_never: signature.returns_never,
-        };
+    apply_substitutions(ctx, signature, selector_defaults, &substitutions, span)
+}
+
+pub fn checked_selector_arguments(
+    signature: &EffectActionSignature,
+    explicit_count: usize,
+) -> Option<Vec<EffectArgRef>> {
+    if explicit_count != 0 && explicit_count != signature.effect_args.len() {
+        return None;
     }
-    EffectActionSignature {
-        generic_params: signature.generic_params,
-        params: signature
+    signature
+        .effect_args
+        .iter()
+        .enumerate()
+        .map(
+            |(index, _)| match signature.selector_defaults.get(index)?.as_ref() {
+                Some(arg) => Some(arg.clone()),
+                None if explicit_count == 0 => Some(EffectArgRef::Wildcard),
+                None => None,
+            },
+        )
+        .collect()
+}
+
+pub(super) fn apply_substitutions<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    mut signature: EffectActionSignature,
+    selector_defaults: Vec<Option<EffectArgRef>>,
+    substitutions: &std::collections::HashMap<String, TypeId>,
+    span: etas_core::Span,
+) -> Option<EffectActionSignature> {
+    let result = (|| {
+        let mut engine = crate::TypeSubstitutionEngine::materializing(
+            &mut ctx.ctx.interner,
+            substitutions,
+            None,
+        );
+        signature.params = signature
             .params
             .into_iter()
-            .map(|ty| substitute_schematic_type(ctx, ty, &substitutions))
-            .collect(),
-        output: substitute_schematic_type(ctx, signature.output, &substitutions),
-        effect_args: signature.effect_args,
-        selector_param_names: signature.selector_param_names,
-        selector_defaults,
-        returns_never: signature.returns_never,
+            .map(|ty| engine.substitute(ty))
+            .collect::<Result<_, _>>()?;
+        signature.output = engine.substitute(signature.output)?;
+        signature.default_handler_effects = signature
+            .default_handler_effects
+            .map(|row| engine.substitute_effect_row(row))
+            .transpose()?;
+        signature.selector_defaults = selector_defaults;
+        Ok::<_, crate::TypeSubstitutionError>(signature)
+    })();
+    match result {
+        Ok(signature) => Some(signature),
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("cannot specialize the checked action signature: {error}"),
+            });
+            None
+        }
     }
 }
 
-fn effect_arg_selector_substitutions(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn effect_arg_selector_substitutions<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     signature: &EffectActionSignature,
     args: &[HirEffectArg],
 ) -> std::collections::HashMap<String, TypeId> {
@@ -155,8 +171,8 @@ fn effect_arg_selector_substitutions(
     substitutions
 }
 
-fn generic_arg_selector_substitutions(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn generic_arg_selector_substitutions<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     signature: &EffectActionSignature,
     args: &[HirGenericArg],
 ) -> std::collections::HashMap<String, TypeId> {
@@ -178,8 +194,8 @@ fn generic_arg_selector_substitutions(
     substitutions
 }
 
-fn selector_arg_matches_kind(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn selector_arg_matches_kind<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     kind: &EffectActionArgKind,
     arg: &HirGenericArg,
 ) -> bool {
@@ -207,8 +223,8 @@ fn selector_arg_matches_kind(
     }
 }
 
-fn generic_arg_default(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn generic_arg_default<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     arg: &HirGenericArg,
     kind: &EffectActionArgKind,
 ) -> Option<EffectArgRef> {
@@ -228,15 +244,18 @@ fn generic_arg_default(
     }
 }
 
-fn generic_arg_type(ctx: &mut BodyCollectContext<'_, '_>, arg: &HirGenericArg) -> Option<TypeId> {
+fn generic_arg_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    arg: &HirGenericArg,
+) -> Option<TypeId> {
     match arg {
         HirGenericArg::Type(ty) => static_type_selector(ctx, *ty),
         HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
     }
 }
 
-fn generic_arg_span(
-    ctx: &BodyCollectContext<'_, '_>,
+fn generic_arg_span<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     arg: &HirGenericArg,
 ) -> Option<etas_core::Span> {
     match arg {
@@ -246,17 +265,24 @@ fn generic_arg_span(
     }
 }
 
-fn static_type_selector(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn static_type_selector<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
 ) -> Option<TypeId> {
     match ctx.ctx.hir.types.get(ty)?.clone() {
-        HirType::Path { path, .. } => type_arg_from_path(ctx, &path),
+        HirType::Path { path, args, .. } => {
+            let declaration = type_arg_from_path(ctx, &path)?;
+            if args.is_empty() {
+                Some(declaration)
+            } else {
+                crate::lower::type_ref::lower_type_ref(ctx.ctx, ty)
+            }
+        }
         _ => crate::lower::type_ref::lower_type_ref(ctx.ctx, ty),
     }
 }
 
-fn static_path_selector(ctx: &BodyCollectContext<'_, '_>, ty: etas_hir::HirTypeId) -> bool {
+fn static_path_selector<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: etas_hir::HirTypeId) -> bool {
     let Some(HirType::Path { path, .. }) = ctx.ctx.hir.types.get(ty) else {
         return false;
     };
@@ -266,8 +292,8 @@ fn static_path_selector(ctx: &BodyCollectContext<'_, '_>, ty: etas_hir::HirTypeI
     .is_some()
 }
 
-fn static_path_arg_from_type(
-    ctx: &BodyCollectContext<'_, '_>,
+fn static_path_arg_from_type<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
 ) -> Option<EffectArgRef> {
     let Some(HirType::Path { path, .. }) = ctx.ctx.hir.types.get(ty) else {
@@ -279,8 +305,8 @@ fn static_path_arg_from_type(
     .map(EffectArgRef::Path)
 }
 
-fn static_memory_place_selector(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn static_memory_place_selector<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
 ) -> bool {
     let Some(type_id) = crate::lower::type_ref::lower_type_ref(ctx.ctx, ty) else {
@@ -292,8 +318,8 @@ fn static_memory_place_selector(
     )
 }
 
-fn memory_place_arg_from_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn memory_place_arg_from_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
 ) -> Option<EffectArgRef> {
     if let Some(type_id) = crate::lower::type_ref::lower_type_ref(ctx.ctx, ty)
@@ -304,16 +330,16 @@ fn memory_place_arg_from_type(
     static_path_arg_from_type(ctx, ty)
 }
 
-fn effect_arg_default(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn effect_arg_default<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     arg: &HirEffectArg,
     kind: &EffectActionArgKind,
 ) -> Option<EffectArgRef> {
     lower_selector_effect_arg(ctx, arg, kind)
 }
 
-fn lower_selector_effect_arg(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn lower_selector_effect_arg<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     arg: &HirEffectArg,
     kind: &EffectActionArgKind,
 ) -> Option<EffectArgRef> {
@@ -339,7 +365,10 @@ fn lower_selector_effect_arg(
     }
 }
 
-fn effect_arg_type(ctx: &mut BodyCollectContext<'_, '_>, arg: &HirEffectArg) -> Option<TypeId> {
+fn effect_arg_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    arg: &HirEffectArg,
+) -> Option<TypeId> {
     match arg {
         HirEffectArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty),
         HirEffectArg::Path(path) => type_arg_from_path(ctx, path),
@@ -347,8 +376,8 @@ fn effect_arg_type(ctx: &mut BodyCollectContext<'_, '_>, arg: &HirEffectArg) -> 
     }
 }
 
-fn static_resource_path_arg(
-    ctx: &BodyCollectContext<'_, '_>,
+fn static_resource_path_arg<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<EffectArgRef> {
     static_selector_path_segments(ctx.ctx.hir, path, |symbol| {
@@ -357,8 +386,8 @@ fn static_resource_path_arg(
     .map(EffectArgRef::Path)
 }
 
-fn type_arg_from_path(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn type_arg_from_path<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<TypeId> {
     let symbol = resolved_static_type_selector_symbol(path, |symbol| {
@@ -368,6 +397,7 @@ fn type_arg_from_path(
         && let SymbolDef::TypeParam { .. } = symbol_data.def
     {
         return Some(ctx.ctx.interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(symbol),
             name: symbol_data.name.clone(),
         })));
     }
@@ -392,69 +422,4 @@ fn type_from_symbol_fact(fact: &SymbolTypeFact) -> Option<TypeId> {
         }
         _ => None,
     }
-}
-
-fn substitute_schematic_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    ty: TypeId,
-    substitutions: &std::collections::HashMap<String, TypeId>,
-) -> TypeId {
-    let Some(ty_data) = ctx.ctx.interner.store().get(ty).cloned() else {
-        return ty;
-    };
-    match ty_data {
-        Type::Named(name) if is_schematic_type_variable(&name.name) => {
-            substitutions.get(&name.name).copied().unwrap_or(ty)
-        }
-        Type::Array(inner) => {
-            let inner = substitute_schematic_type(ctx, inner, substitutions);
-            ctx.ctx.interner.intern(Type::Array(inner))
-        }
-        Type::List(inner) => {
-            let inner = substitute_schematic_type(ctx, inner, substitutions);
-            ctx.ctx.interner.intern(Type::List(inner))
-        }
-        Type::Set(inner) => {
-            let inner = substitute_schematic_type(ctx, inner, substitutions);
-            ctx.ctx.interner.intern(Type::Set(inner))
-        }
-        Type::Slice(inner) => {
-            let inner = substitute_schematic_type(ctx, inner, substitutions);
-            ctx.ctx.interner.intern(Type::Slice(inner))
-        }
-        Type::Option(inner) => {
-            let inner = substitute_schematic_type(ctx, inner, substitutions);
-            ctx.ctx.interner.intern(Type::Option(inner))
-        }
-        Type::Result { ok, err } => {
-            let ok = substitute_schematic_type(ctx, ok, substitutions);
-            let err = substitute_schematic_type(ctx, err, substitutions);
-            ctx.ctx.interner.intern(Type::Result { ok, err })
-        }
-        Type::Function(mut flow) => {
-            flow.input = flow
-                .input
-                .into_iter()
-                .map(|ty| substitute_schematic_type(ctx, ty, substitutions))
-                .collect();
-            flow.output = substitute_schematic_type(ctx, flow.output, substitutions);
-            ctx.ctx.interner.intern(Type::Function(flow))
-        }
-        Type::MemoryRegion(inner) => {
-            let inner = substitute_schematic_type(ctx, inner, substitutions);
-            ctx.ctx.interner.intern(Type::MemoryRegion(inner))
-        }
-        Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema }) => {
-            let schema = substitute_schematic_type(ctx, schema, substitutions);
-            ctx.ctx.interner.intern(Type::ResourceHandle(
-                crate::ResourceHandleType::MemoryRegion { schema },
-            ))
-        }
-        _ => ty,
-    }
-}
-
-fn is_schematic_type_variable(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some(ch) if ch.is_ascii_uppercase()) && chars.next().is_none()
 }

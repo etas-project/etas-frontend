@@ -50,8 +50,7 @@ fn unit_span(hir: &HirProgram, unit: EffectUnit) -> Option<Span> {
     match unit {
         EffectUnit::Item(item) => hir.items.get(item).map(etas_hir::HirItem::span),
         EffectUnit::HandlerArm { arm, .. } => hir.handler_arms.get(arm).map(|arm| arm.span),
-        EffectUnit::AnonymousFlow { value, .. }
-        | EffectUnit::FirstClassFlowCall { call: value, .. } => {
+        EffectUnit::AnonymousFlow { value, .. } => {
             hir.exprs.get(value).map(|expr| expr.span(&hir.blocks))
         }
     }

@@ -20,6 +20,36 @@ pub fn collect_nominal_types(
         match item {
             HirItem::Type(decl) => collect_type_decl(ctx, state, id, decl),
             HirItem::Enum(decl) => collect_enum_decl(ctx, state, decl),
+            HirItem::Agent(decl) => {
+                let Some(name) = canonical_source_type_name(ctx, decl.symbol) else {
+                    ctx.diagnostics.push(etas_core::Diagnostic::type_check(
+                        etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        decl.span,
+                        "agent component has no canonical declaration identity",
+                    ));
+                    continue;
+                };
+                let component = ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                    name,
+                    params: Vec::new(),
+                    representation: None,
+                }));
+                let definition_type = crate::lower::code::agent_definition_type(
+                    &mut ctx.interner,
+                    &ctx.signature_facts.known_std_types.code,
+                    component,
+                );
+                state.symbol_types.insert(
+                    decl.symbol,
+                    SymbolTypeFact::Agent {
+                        signature: crate::AgentSignature {
+                            component,
+                            definition_type,
+                            default_entry: None,
+                        },
+                    },
+                );
+            }
             _ => {}
         }
     }
@@ -87,6 +117,8 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
     for item in items {
         match item {
             HirItem::Type(decl) => {
+                let generics =
+                    super::callables::callable_generic_params(ctx, state, &decl.type_params);
                 let representation = match decl.body {
                     HirTypeDeclBody::Bodyless => None,
                     HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
@@ -99,6 +131,9 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 {
                     ctx.interner
                         .define_nominal(crate::TypeId(constructor.0), representation);
+                    ctx.signature_facts
+                        .type_generics
+                        .insert(crate::TypeId(constructor.0), generics);
                     *slot = representation;
                 }
             }
@@ -109,6 +144,9 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 let base = crate::TypeId(constructor.0);
                 let generic_params =
                     super::callables::callable_generic_params(ctx, state, &decl.type_params);
+                ctx.signature_facts
+                    .type_generics
+                    .insert(base, generic_params.clone());
                 let output = if generic_params.is_empty() {
                     base
                 } else {

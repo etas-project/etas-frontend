@@ -4,7 +4,7 @@ use crate::HirProgram;
 
 use super::{HirTreeIndex, HirTreeIndexError, HirTreeView};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirRevision {
     program: Arc<HirProgram>,
     index: Arc<HirTreeIndex>,

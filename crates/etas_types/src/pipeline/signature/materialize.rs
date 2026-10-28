@@ -5,6 +5,9 @@ pub fn materialize_signature_facts(
     mut state: SignaturePipelineState,
 ) {
     ctx.signature_facts
+        .agent_methods
+        .extend(state.agent_methods.drain());
+    ctx.signature_facts
         .enum_layouts
         .extend(state.enum_layouts.drain());
     ctx.signature_facts
@@ -38,4 +41,13 @@ pub fn materialize_signature_facts(
     ctx.signature_facts
         .type_param_bounds
         .extend(state.type_param_bounds.drain());
+    for (symbol, fact) in &ctx.signature_facts.symbol_types {
+        if let crate::SymbolTypeFact::Agent { signature } = fact {
+            ctx.signature_facts
+                .agent_components
+                .entry(signature.component)
+                .and_modify(|previous| *previous = (*previous).min(*symbol))
+                .or_insert(*symbol);
+        }
+    }
 }

@@ -63,6 +63,20 @@ impl<S> FrontendProjectState<S>
 where
     S: FrontendArtifactStore,
 {
+    pub(super) fn memory_usage(&self) -> super::ProjectMemoryUsage {
+        super::ProjectMemoryUsage {
+            cache: self.store.memory_usage(),
+            retained_revision: self
+                .last_good_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.revision),
+            retained_revision_estimated_bytes: etas_core::memory::MemoryFootprint::of(
+                &self.last_good_snapshot,
+            )
+            .estimated_bytes(),
+        }
+    }
+
     pub(super) fn new(
         input: ProjectInput,
         store: S,
@@ -108,6 +122,7 @@ where
         run_pipeline: impl FnOnce(FrontendPipelineRequest) -> FrontendPipelineRun,
     ) -> Result<CheckResponse, FrontendSessionError> {
         let memory_before = memory_probe.map(|probe| probe.sample());
+        let cache_before = self.store.memory_usage();
         let index_builds_before = etas_hir::HirTreeIndex::thread_build_count();
         let incremental = request.incremental_enabled();
         let disk_artifact_access = request.disk_artifact_access;
@@ -165,7 +180,8 @@ where
             .then(|| ProjectSemanticSnapshot::from_output(self.revision, &output))
             .flatten();
 
-        self.manifest = FrontendArtifactManifest::from_output(self.revision, &output);
+        self.manifest = FrontendArtifactManifest::from_output(self.revision, &output)
+            .map_err(FrontendSessionError::Pipeline)?;
         let mut cache = if retain {
             self.store_project_artifacts(
                 &output,
@@ -191,6 +207,7 @@ where
             .then_some(snapshot)
             .flatten();
 
+        let usage = self.memory_usage();
         Ok(CheckResponse {
             revision: self.revision,
             diagnostics,
@@ -205,7 +222,10 @@ where
                 passes: pipeline_run.memory_samples,
                 hir_index_builds: etas_hir::HirTreeIndex::thread_build_count()
                     - index_builds_before,
-                retained_revision: self.last_good_snapshot.as_ref().map(|s| s.revision),
+                retained_revision: usage.retained_revision,
+                retained_revision_estimated_bytes: usage.retained_revision_estimated_bytes,
+                cache_before,
+                cache_after: usage.cache,
             },
         })
     }
@@ -318,6 +338,7 @@ where
                 source: SourceId(record.identity.source),
                 item_index: record.identity.item_index,
                 item_kind: record.identity.item_kind,
+                impl_member: record.identity.impl_member,
                 text: record.identity.text.clone(),
             };
             let unit = etas_frontend_unit_id(u64::from(record.unit));
@@ -685,7 +706,7 @@ where
         Ok(cache)
     }
 
-    fn put_artifact<T: Clone + 'static>(
+    fn put_artifact<T: Clone + etas_core::memory::RetainedSize + 'static>(
         &mut self,
         key: FrontendArtifactKey,
         value: T,
@@ -725,7 +746,8 @@ where
             cache.record_reused(cache_key);
             return Ok(());
         }
-        self.store
+        let status = self
+            .store
             .put_with_disk_access(
                 CachedArtifact {
                     key: cache_key.clone(),
@@ -735,7 +757,7 @@ where
                 disk_artifact_access,
             )
             .map_err(cache_error)?;
-        cache.record_stored(cache_key);
+        cache.record_put(cache_key, status);
         Ok(())
     }
 
@@ -836,7 +858,7 @@ where
         Ok(())
     }
 
-    fn put_metadata_summary<T: Clone + 'static>(
+    fn put_metadata_summary<T: Clone + etas_core::memory::RetainedSize + 'static>(
         &mut self,
         artifact: MetadataSummaryArtifact<T>,
         reuse_enabled: bool,
@@ -857,7 +879,8 @@ where
             cache.record_reused(cache_key);
             return Ok(());
         }
-        self.store
+        let status = self
+            .store
             .put_with_disk_access(
                 CachedArtifact {
                     key: cache_key.clone(),
@@ -867,7 +890,7 @@ where
                 disk_artifact_access,
             )
             .map_err(cache_error)?;
-        cache.record_stored(cache_key);
+        cache.record_put(cache_key, status);
         Ok(())
     }
 
@@ -953,7 +976,8 @@ where
             cache.record_reused(key);
             return Ok(());
         }
-        self.store
+        let status = self
+            .store
             .put_with_disk_access(
                 CachedArtifact {
                     key: key.clone(),
@@ -963,7 +987,7 @@ where
                 disk_artifact_access,
             )
             .map_err(cache_error)?;
-        cache.record_stored(key);
+        cache.record_put(key, status);
         Ok(())
     }
 
@@ -989,7 +1013,8 @@ where
             cache.record_reused(key);
             return Ok(());
         }
-        self.store
+        let status = self
+            .store
             .put_with_disk_access(
                 CachedArtifact {
                     key: key.clone(),
@@ -999,7 +1024,7 @@ where
                 disk_artifact_access,
             )
             .map_err(cache_error)?;
-        cache.record_stored(key);
+        cache.record_put(key, status);
         Ok(())
     }
 
@@ -1133,6 +1158,7 @@ where
                         source: identity.source.0,
                         item_index: identity.item_index,
                         item_kind: identity.item_kind,
+                        impl_member: identity.impl_member,
                         text: identity.text,
                     },
                     dependencies: record
@@ -1236,6 +1262,9 @@ mod tests {
                         )),
                         records: Vec::new(),
                         memory_samples: Vec::new(),
+                        candidate_contract: None,
+                        candidate_emission: None,
+                        candidate_descriptors: None,
                     }
                 },
             )

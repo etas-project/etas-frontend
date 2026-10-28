@@ -12,10 +12,15 @@ mod source;
 
 pub use analysis::{
     AnalyzeLoopProgressPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
-    PrepareBodyTypeEnvironmentPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass,
-    TypeCheckBodyPass, ValidateExternalEnvironmentPass, ValidateTopLevelLetPass,
+    InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
+    PrepareInvocationTypesPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass,
+    RunEffectPipelinePass, TypeCheckBodyPass, ValidateExternalEnvironmentPass,
+    ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
-pub use dependency::ComputeEntryReachabilityPass;
+pub use dependency::{
+    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
+    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+};
 pub use execution::VerifyInterpreterSupportPass;
 pub use graph::{
     BuildImportGraphPass, ComputeAffectedModulesPass, ComputeModuleTopoOrderPass,
@@ -28,7 +33,8 @@ pub use hir::{
 pub use module::{BuildModuleCatalogPass, BuildModuleIndexPass, BuildUnitTreePass};
 pub use output::{BuildCheckedProjectPass, ResolveEntryItemPass, ValidateEntryContractPass};
 pub use resolution::{
-    ApplyResolvedImportsToHirPass, CatalogModuleProvider, ModuleResolution, ProjectModuleResolver,
-    ProviderExport, ProviderExportTarget, ResolveImportTargetsPass, ResolvePathsPass,
+    ApplyResolvedImportsToHirPass, BindValidatedExternalImportTargetsPass, CatalogModuleProvider,
+    ModuleResolution, ProjectModuleResolver, ProviderExport, ProviderExportTarget,
+    ResolveImportTargetsPass, ResolvePathsPass,
 };
 pub use source::{BuildSourceSetPass, ParseSourceFilePass};

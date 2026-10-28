@@ -9,7 +9,11 @@ use crate::{
     },
 };
 
-pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStmtId) -> TypeId {
+pub fn collect_stmt<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    stmt: etas_hir::HirStmtId,
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let unit = ctx.primitive(PrimitiveType::Unit);
     let ty = match ctx.ctx.hir.stmts[stmt].clone() {
         HirStmt::Let {
@@ -25,7 +29,7 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             span,
         } => {
             let expected = type_annotation.and_then(|ty| lower_type_ref(ctx.ctx, ty));
-            let actual = collect_expr(ctx, value, expected);
+            let actual = collect_expr(ctx, value, expected)?;
             let binding_ty = expected.unwrap_or(actual);
             if let Some(expected) = expected {
                 ctx.emit(TypeConstraint::Assignable {
@@ -35,7 +39,7 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
                     reason: AssignabilityReason::Annotation,
                 });
             }
-            collect_pattern(ctx, pat, binding_ty);
+            collect_pattern(ctx, pat, binding_ty)?;
             unit
         }
         HirStmt::Return { value, span } => {
@@ -47,9 +51,20 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
                 });
             }
             let actual = value
-                .map(|value| collect_expr(ctx, value, ctx.state.expected_return))
+                .map(|value| {
+                    let expected = ctx
+                        .state
+                        .inferred_returns
+                        .is_none()
+                        .then_some(ctx.state.expected_return)
+                        .flatten();
+                    collect_expr(ctx, value, expected)
+                })
+                .transpose()?
                 .unwrap_or(unit);
-            if let Some(expected) = ctx.state.expected_return {
+            if let Some(candidates) = &mut ctx.state.inferred_returns {
+                candidates.push((actual, ConstraintOrigin { span }));
+            } else if let Some(expected) = ctx.state.expected_return {
                 ctx.emit(TypeConstraint::Assignable {
                     from: actual,
                     to: expected,
@@ -59,7 +74,7 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             }
             ctx.primitive(PrimitiveType::Never)
         }
-        HirStmt::Expr { expr, .. } => collect_expr(ctx, expr, None),
+        HirStmt::Expr { expr, .. } => collect_expr(ctx, expr, None)?,
         HirStmt::If(expr) => {
             match ctx.ctx.hir.exprs[expr].clone() {
                 etas_hir::HirExpr::If {
@@ -73,9 +88,9 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
                     then_block,
                     else_branch,
                     span,
-                ),
+                )?,
                 _ => {
-                    collect_expr(ctx, expr, None);
+                    collect_expr(ctx, expr, None)?;
                 }
             }
             unit
@@ -86,9 +101,9 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
                     scrutinee, arms, ..
                 } => crate::pipeline::body::collect::expr::collect_match_statement(
                     ctx, scrutinee, arms,
-                ),
+                )?,
                 _ => {
-                    collect_expr(ctx, expr, None);
+                    collect_expr(ctx, expr, None)?;
                 }
             }
             unit
@@ -98,8 +113,9 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             value,
             span,
         } => {
-            let target_ty = collect_expr(ctx, target, None);
-            let value_ty = collect_expr(ctx, value, Some(target_ty));
+            let target_ty = collect_expr(ctx, target, None)?;
+            ctx.validate(crate::ValidationRequest::WritablePlace { target, span });
+            let value_ty = collect_expr(ctx, value, Some(target_ty))?;
             ctx.emit(TypeConstraint::Assignable {
                 from: value_ty,
                 to: target_ty,
@@ -116,10 +132,10 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             span,
         } => {
             for limit in limits {
-                collect_expr(ctx, limit, None);
+                collect_expr(ctx, limit, None)?;
             }
             let elem = ctx.fresh_type_var();
-            let iter_ty = collect_expr(ctx, iter, None);
+            let iter_ty = collect_expr(ctx, iter, None)?;
             let key = ctx.fresh_type_var();
             let value = ctx.fresh_type_var();
             let entry_pair = ctx
@@ -132,8 +148,8 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
                 entry_pair,
                 origin: ConstraintOrigin { span },
             });
-            collect_pattern(ctx, pat, elem);
-            collect_block(ctx, body, Some(unit));
+            collect_pattern(ctx, pat, elem)?;
+            collect_block(ctx, body, Some(unit))?;
             unit
         }
         HirStmt::While {
@@ -143,30 +159,31 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             span,
         } => {
             for limit in limits {
-                collect_expr(ctx, limit, None);
+                collect_expr(ctx, limit, None)?;
             }
             let bool_ty = ctx.primitive(PrimitiveType::Bool);
-            let cond_ty = collect_expr(ctx, cond, Some(bool_ty));
+            let cond_ty = collect_expr(ctx, cond, Some(bool_ty))?;
             ctx.emit(TypeConstraint::Assignable {
                 from: cond_ty,
                 to: bool_ty,
                 origin: ConstraintOrigin { span },
                 reason: AssignabilityReason::Other,
             });
-            collect_block(ctx, body, Some(unit));
+            collect_block(ctx, body, Some(unit))?;
             unit
         }
         HirStmt::Retry { limits, body, .. } => {
             for limit in limits {
-                collect_expr(ctx, limit, None);
+                collect_expr(ctx, limit, None)?;
             }
-            collect_block(ctx, body, Some(unit));
+            collect_block(ctx, body, Some(unit))?;
             unit
         }
         HirStmt::Resume { value, span } => {
             let expected = ctx.state.handler_resume_stack.last().copied();
             let actual = value
                 .map(|value| collect_expr(ctx, value, expected))
+                .transpose()?
                 .unwrap_or(unit);
             if let Some(expected) = expected {
                 if matches!(
@@ -191,7 +208,7 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
         }
         HirStmt::Finish { value, span } => {
             let expected = ctx.state.handler_finish_stack.last().copied();
-            let actual = collect_expr(ctx, value, expected);
+            let actual = collect_expr(ctx, value, expected)?;
             if ctx.state.handler_depth == 0 {
                 ctx.validate(crate::ValidationRequest::Diagnostic {
                     code: etas_core::TypeDiagnosticCode::FinishOutsideHandler,
@@ -218,5 +235,5 @@ pub fn collect_stmt(ctx: &mut BodyCollectContext<'_, '_>, stmt: etas_hir::HirStm
             unit
         }
     };
-    ctx.record_stmt_type(stmt, ty)
+    Ok(ctx.record_stmt_type(stmt, ty))
 }

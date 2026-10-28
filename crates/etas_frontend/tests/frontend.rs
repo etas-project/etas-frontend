@@ -99,6 +99,7 @@ fn external_environment() -> ProjectEnvironmentInput {
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
             package: ExternalPackageId(0),
             types: vec![ProjectExternalNamedSignatureInput {
+                generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "math".to_owned(), "Number".to_owned()],
                 visibility: "public".to_owned(),
                 ty: Some(ProjectExternalTypeInput::Record {
@@ -134,6 +135,9 @@ fn external_environment() -> ProjectEnvironmentInput {
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                handler_requests: None,
+                returned_callables: None,
+                default_handler_effects: None,
                 item: vec!["dep".to_owned(), "math".to_owned(), "add".to_owned()],
                 public_effects: ProjectExternalEffectRowInput::default(),
                 requested_actions: ProjectExternalEffectRowInput::default(),
@@ -4475,6 +4479,9 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                handler_requests: None,
+                returned_callables: None,
+                default_handler_effects: None,
                 item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
                 public_effects: ProjectExternalEffectRowInput::default(),
                 requested_actions: ProjectExternalEffectRowInput::default(),
@@ -5083,6 +5090,9 @@ fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
 
 fn empty_external_summary(path: &[&str]) -> ProjectExternalEffectSummaryInput {
     ProjectExternalEffectSummaryInput {
+        handler_requests: None,
+        returned_callables: None,
+        default_handler_effects: None,
         item: path.iter().map(|segment| (*segment).to_owned()).collect(),
         public_effects: ProjectExternalEffectRowInput::default(),
         requested_actions: ProjectExternalEffectRowInput::default(),
@@ -5286,6 +5296,7 @@ fn frontend_check_records_agent_pipeline_stage_readiness() {
         source_root: Some(std::path::PathBuf::from("src")),
         options: ProjectCompileOptions {
             entry_policy: EntryPolicy::Runnable,
+            ..ProjectCompileOptions::default()
         },
         environment: ProjectEnvironmentInput::default(),
         sources: vec![SourceInput {
@@ -5296,7 +5307,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Reviewer(input: Prompt) -> string ![] {
-  return input;
+  return perform infer<string>(input);
 }
 
 flow run_stage(input: Prompt) -> string {
@@ -5339,6 +5350,7 @@ fn frontend_check_records_agent_run_method_call_readiness() {
         source_root: Some(std::path::PathBuf::from("src")),
         options: ProjectCompileOptions {
             entry_policy: EntryPolicy::Runnable,
+            ..ProjectCompileOptions::default()
         },
         environment: ProjectEnvironmentInput::default(),
         sources: vec![SourceInput {
@@ -5349,7 +5361,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Reviewer(input: Prompt) -> string ![] {
-  return input;
+  return perform infer<string>(input);
 }
 
 flow run_agent(input: Prompt) -> string {
@@ -5392,6 +5404,7 @@ fn frontend_check_classifies_top_level_memory_region_handle() {
         source_root: src_source_root(),
         options: ProjectCompileOptions {
             entry_policy: EntryPolicy::Runnable,
+            ..ProjectCompileOptions::default()
         },
         environment: ProjectEnvironmentInput::default(),
         sources: vec![SourceInput {
@@ -5820,6 +5833,7 @@ fn frontend_check_accepts_prompt_builder_methods_before_readiness_classification
         source_root: None,
         options: ProjectCompileOptions {
             entry_policy: EntryPolicy::Runnable,
+            ..ProjectCompileOptions::default()
         },
         environment: ProjectEnvironmentInput::default(),
         sources: vec![SourceInput {
@@ -5830,7 +5844,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Reviewer(input: Prompt) -> string {
-  return input;
+  return perform infer<string>(input);
 }
 
 flow run_prompt(input: Prompt) -> string {
@@ -5928,6 +5942,7 @@ fn frontend_check_project_accepts_std_prelude_prompt_without_explicit_import() {
         source_root: None,
         options: ProjectCompileOptions {
             entry_policy: EntryPolicy::Runnable,
+            ..ProjectCompileOptions::default()
         },
         environment: ProjectEnvironmentInput::default(),
         sources: vec![SourceInput {
@@ -5941,7 +5956,7 @@ flow BuildPrompt(input: string) -> Prompt {
 }
 
 agent Reviewer(input: string) -> string ![] {
-  return BuildPrompt(input);
+  return perform infer<string>(BuildPrompt(input));
 }
 
 flow run_prompt() -> string {
@@ -6849,7 +6864,7 @@ import app.tools.{Search};
 
 @tools([Search])
 agent Reviewer(input: Prompt) -> string {
-  return input;
+  return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -6983,7 +6998,7 @@ public flow helper(q: string) -> string ![Network] {
 }
 
 #[test]
-fn frontend_check_project_records_partial_import_member_path_fact() {
+fn frontend_check_project_resolves_public_module_alias_member_identity() {
     let frontend = Frontend;
     let output = frontend.check_project(ProjectInput {
         project_root: std::path::PathBuf::from("/workspace/demo"),
@@ -7013,18 +7028,30 @@ fn frontend_check_project_records_partial_import_member_path_fact() {
         },
     });
 
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let hir = &output.hir.as_ref().expect("checked HIR").hir;
     let resolved_paths = output.resolved_paths.as_ref().expect("resolved paths");
-    assert!(resolved_paths.expr_paths.iter().any(|fact| matches!(
-        &fact.result,
-        HirPathResolution::PartialImport {
-            target: ImportTarget::Module(target),
-            resolved_segments,
-            remaining,
-            reason: etas_hir::PartialResolutionReason::ModuleMemberMissing,
-        } if matches!(target, etas_frontend::ResolvedModuleTarget::Source { .. })
-            && *resolved_segments == 1
-            && remaining == &vec!["helper".to_owned()]
-    )));
+    let fact = resolved_paths
+        .expr_paths
+        .iter()
+        .find(|fact| {
+            fact.path
+                .segments
+                .iter()
+                .map(|segment| segment.name.as_str())
+                .eq(["b", "helper"])
+        })
+        .expect("qualified module member path");
+    let HirPathResolution::DirectSymbol(symbol) = fact.result else {
+        panic!(
+            "expected canonical module export identity: {:?}",
+            fact.result
+        )
+    };
+    let symbol = hir.symbols.get(symbol).expect("resolved export symbol");
+    assert_eq!(symbol.name, "helper");
+    assert_eq!(symbol.kind, etas_hir::SymbolKind::Flow);
+    assert_eq!(symbol.definition_span.source, etas_core::SourceId(211));
 }
 
 #[test]
@@ -7226,7 +7253,7 @@ flow main() -> unit {
     let resolved_paths = output.resolved_paths.as_ref().expect("resolved paths");
     assert!(resolved_paths.expr_paths.iter().any(|fact| matches!(
         &fact.result,
-        HirPathResolution::WildcardImport { target }
+        HirPathResolution::WildcardImport { target, .. }
             if matches!(target, etas_frontend::ResolvedModuleTarget::Source { .. })
     )));
 }
@@ -7543,6 +7570,7 @@ fn frontend_check_project_uses_external_trace_spec_metadata_for_conformance() {
     };
     environment.external_public_metadata[0].trace_specs =
         vec![ProjectExternalNamedSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "guard".to_owned(), "Safe".to_owned()],
             visibility: "public".to_owned(),
             ty: None,
@@ -7635,6 +7663,7 @@ fn frontend_check_project_applies_external_trace_spec_metadata_monitor() {
     };
     environment.external_public_metadata[0].trace_specs =
         vec![ProjectExternalNamedSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "guard".to_owned(), "Safe".to_owned()],
             visibility: "public".to_owned(),
             ty: None,
@@ -7802,6 +7831,9 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
             public_effects: ProjectExternalEffectRowInput::default(),
             requested_actions: ProjectExternalEffectRowInput::default(),
@@ -7941,6 +7973,9 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
             public_effects: ProjectExternalEffectRowInput::default(),
             requested_actions: external_effect_row(vec![external_effect(
@@ -7952,13 +7987,41 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             action_trace: Default::default(),
         }];
 
-    let output = Frontend.check_project(ProjectInput {
-        project_root: std::path::PathBuf::from("/workspace/external-trace-conformance-deny"),
-        source_root: None,
-        options: Default::default(),
-        environment,
-        sources: vec![SourceInput::anonymous(
-            r#"
+    for add_permissive_conformance in [false, true] {
+        let mut environment = environment.clone();
+        if add_permissive_conformance {
+            environment.external_modules[0]
+                .exports
+                .push(ProjectExternalExportInput {
+                    symbol: ExternalSymbolId(2),
+                    name: "Permitted".into(),
+                    visibility: etas_hir::Visibility::Public,
+                });
+            let metadata = &mut environment.external_public_metadata[0];
+            let mut signature = metadata.spec_signatures[0].clone();
+            signature.path[2] = "Permitted".into();
+            metadata.spec_signatures.push(signature);
+            let mut summary = metadata.trace_spec_summaries[0].clone();
+            summary.trace_spec[2] = "Permitted".into();
+            summary.clauses[0].kind = ProjectExternalTraceSpecClauseKindInput::Allow;
+            metadata.trace_spec_summaries.push(summary);
+            metadata
+                .trace_spec_conformances
+                .push(ProjectExternalTraceSpecConformanceInput {
+                    item: vec!["dep".into(), "api".into(), "call".into()],
+                    target: ProjectExternalTraceSpecConformanceTargetInput::Named {
+                        spec: vec!["dep".into(), "api".into(), "Permitted".into()],
+                        args: Vec::new(),
+                    },
+                });
+        }
+        let output = Frontend.check_project(ProjectInput {
+            project_root: std::path::PathBuf::from("/workspace/external-trace-conformance-deny"),
+            source_root: None,
+            options: Default::default(),
+            environment,
+            sources: vec![SourceInput::anonymous(
+                r#"
 module app.main;
 import dep.api.call;
 
@@ -7967,21 +8030,22 @@ flow main() -> unit {
     return;
 }
 "#,
-        )],
-        entry: ProjectEntry {
-            module: Some(ModulePath {
-                segments: vec!["app".to_owned(), "main".to_owned()],
-            }),
-            flow: "main".to_owned(),
-        },
-    });
+            )],
+            entry: ProjectEntry {
+                module: Some(ModulePath {
+                    segments: vec!["app".to_owned(), "main".to_owned()],
+                }),
+                flow: "main".to_owned(),
+            },
+        });
 
-    assert!(
-        output.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecDenied)),
-        "external trace conformance should validate external solved summary metadata: {:#?}",
-        output.diagnostics
-    );
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecDenied)),
+            "external trace conformance should validate external solved summary metadata: {:#?}",
+            output.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -8138,6 +8202,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .effects
         .push(ProjectExternalNamedSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "Transport".to_owned()],
             visibility: "public".to_owned(),
             ty: None,
@@ -8183,6 +8248,9 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "math".to_owned(), "request".to_owned()],
             public_effects: ProjectExternalEffectRowInput::default(),
             requested_actions: external_effect_row(vec![external_effect(
@@ -8294,6 +8362,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .effects
         .push(ProjectExternalNamedSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "Storage".to_owned()],
             visibility: "public".to_owned(),
             ty: None,
@@ -8342,6 +8411,9 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -8473,6 +8545,9 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "math".to_owned(), "twice".to_owned()],
             public_effects: ProjectExternalEffectRowInput {
                 effects: Vec::new(),
@@ -8615,6 +8690,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .effects
         .push(ProjectExternalNamedSignatureInput {
+            generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "Transport".to_owned()],
             visibility: "public".to_owned(),
             ty: None,
@@ -8669,6 +8745,9 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -8770,7 +8849,7 @@ flow main() -> unit {
 }
 
 #[test]
-fn frontend_check_project_propagates_external_function_parameter_effects() {
+fn frontend_check_project_does_not_realize_an_unused_external_function_argument() {
     let frontend = Frontend;
     let mut environment = external_environment();
     environment.external_modules[0]
@@ -8798,6 +8877,9 @@ fn frontend_check_project_propagates_external_function_parameter_effects() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "math".to_owned(), "run".to_owned()],
             public_effects: ProjectExternalEffectRowInput::default(),
             requested_actions: ProjectExternalEffectRowInput::default(),
@@ -8870,11 +8952,11 @@ flow main() -> unit ![Network] {
         .get(&main_id)
         .expect("main effect summary");
     assert!(
-        summary
+        !summary
             .escaping_effects
             .effects
             .contains(&etas_effects::Effect::Tag(etas_effects::NETWORK_TAG)),
-        "external function parameter row must propagate into call summary: {summary:?}"
+        "an unused function argument must not become a performed callback: {summary:?}"
     );
 }
 
@@ -8911,6 +8993,9 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -8920,7 +9005,9 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
-            action_trace: Default::default(),
+            action_trace: ProjectExternalActionTraceInput::ParameterCall {
+                parameter: "callback".to_owned(),
+            },
         });
 
     let output = frontend.check_project(ProjectInput {
@@ -9023,6 +9110,9 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "math".to_owned(), "run_latent".to_owned()],
             public_effects: ProjectExternalEffectRowInput::default(),
             requested_actions: ProjectExternalEffectRowInput::default(),
@@ -9127,6 +9217,7 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
         },
     ];
     environment.external_public_metadata[0].types = vec![ProjectExternalNamedSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "HttpError".to_owned()],
         visibility: "public".to_owned(),
         ty: Some(ProjectExternalTypeInput::Record {
@@ -9151,6 +9242,9 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
             public_effects: external_effect_row(vec![external_effect(
                 &["Error"],
@@ -9257,6 +9351,7 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
         },
     ];
     environment.external_public_metadata[0].types = vec![ProjectExternalNamedSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "HttpError".to_owned()],
         visibility: "public".to_owned(),
         ty: Some(ProjectExternalTypeInput::Record {
@@ -9281,6 +9376,9 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
             public_effects: external_effect_row(vec![external_effect(
                 &["Error"],
@@ -9390,6 +9488,7 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
         },
     ];
     environment.external_public_metadata[0].types = vec![ProjectExternalNamedSignatureInput {
+        generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "HttpError".to_owned()],
         visibility: "public".to_owned(),
         ty: None,
@@ -9409,6 +9508,9 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            handler_requests: None,
+            returned_callables: None,
+            default_handler_effects: None,
             item: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
             public_effects: external_effect_row(vec![external_effect(
                 &["Error"],
@@ -9516,6 +9618,7 @@ flow main() -> unit {
     );
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "generic-storage".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -9652,6 +9755,7 @@ flow main() -> unit {
     let checked = output.checked.as_ref().expect("checked project");
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "edk-http".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -9803,6 +9907,7 @@ flow main() -> unit {
     let checked = output.checked.as_ref().expect("checked project");
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "edk-http".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -9926,6 +10031,7 @@ flow main() -> unit {
     );
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "annotated-agent".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -10096,6 +10202,7 @@ public flow main() -> unit ~ Safe {
 
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "trace-spec-package".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -10206,6 +10313,7 @@ public flow main() -> unit ~ Pure<unit, unit> {
 
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "callable-spec-package".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -10299,6 +10407,7 @@ flow main() -> unit {
     );
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "edk-search".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -10390,6 +10499,7 @@ flow main() -> unit {
     );
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
+            definition_origin: None,
             package_id: "identity-types".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -10810,6 +10920,7 @@ fn frontend_check_project_validates_complete_external_environment_at_import_boun
             let mut environment = external_environment();
             environment.external_public_metadata[0].types.push(
                 ProjectExternalNamedSignatureInput {
+                    generic_params: Vec::new(),
                     path: vec!["dep".to_owned(), "math".to_owned(), "Ghost".to_owned()],
                     visibility: "public".to_owned(),
                     ty: Some(ProjectExternalTypeInput::Primitive("i32".to_owned())),
@@ -11119,6 +11230,7 @@ fn frontend_external_selector_names_are_kind_checked() {
         environment.external_public_metadata[0]
             .effects
             .push(ProjectExternalNamedSignatureInput {
+                generic_params: Vec::new(),
                 path: vec!["dep".into(), "math".into(), "Transport".into()],
                 visibility: "public".into(),
                 ty: None,

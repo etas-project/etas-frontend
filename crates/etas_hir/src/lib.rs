@@ -15,7 +15,10 @@ pub use diagnostic::HirDiagnostics;
 pub use dump::{HirDumpOptions, dump_hir};
 pub use hir::*;
 pub use ids::*;
-pub use lower::{HirProjectLowering, HirProjectModule, lower_program, lower_project, lower_source};
+pub use lower::{
+    HirProjectLowering, HirProjectModule, HirProjectNamespace, lower_program, lower_project,
+    lower_source,
+};
 pub use resolve::*;
 pub use scope::*;
 pub use source_map::*;

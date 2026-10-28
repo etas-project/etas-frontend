@@ -1,5 +1,14 @@
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct EffectRowRef {
     pub effects: Vec<EffectRef>,
@@ -7,7 +16,16 @@ pub struct EffectRowRef {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct EffectRef {
     pub name: String,
@@ -15,7 +33,16 @@ pub struct EffectRef {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum EffectArgRef {
     Type(super::TypeId),

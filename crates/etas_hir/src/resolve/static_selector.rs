@@ -50,20 +50,7 @@ where
     if !is_static_selector_symbol(&symbol.def) {
         return None;
     }
-    let mut segments = hir
-        .modules_arena
-        .get(symbol.defining_module)?
-        .name
-        .as_ref()
-        .map(|module_name| {
-            module_name
-                .segments
-                .iter()
-                .map(|segment| segment.name.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    segments.push(symbol.name.clone());
+    let mut segments = hir.declaration_path(symbol.id)?;
     segments.extend(remaining);
     Some(segments)
 }

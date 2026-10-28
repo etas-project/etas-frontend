@@ -4,6 +4,10 @@ use crate::parser::Parser;
 
 impl Parser<'_> {
     pub(crate) fn type_expr(&mut self) -> TypeExpr {
+        self.with_body_recursion(TypeExpr::Error, Self::type_expr_inner)
+    }
+
+    fn type_expr_inner(&mut self) -> TypeExpr {
         if self.cursor.at_punct(Punct::Bang) {
             return self.handler_type();
         }

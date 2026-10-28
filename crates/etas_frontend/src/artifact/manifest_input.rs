@@ -99,11 +99,31 @@ mod tests {
     use crate::{FrontendArtifactManifest, ProjectContext, ProjectInput, SourceInput};
 
     #[test]
+    fn missing_checked_signature_types_reject_the_manifest_instead_of_hashing_a_placeholder() {
+        let mut output = crate::Frontend.check_project(ProjectInput::single_source(
+            SourceInput::anonymous("module main; flow main() -> i32 { return 7; }"),
+        ));
+        assert!(output.checked.is_some());
+        let signature =
+            std::sync::Arc::make_mut(&mut output.signature_types.as_mut().unwrap().facts)
+                .item_signatures
+                .values_mut()
+                .find_map(|signature| match signature {
+                    etas_types::ItemSignature::Flow(signature) => Some(signature),
+                    _ => None,
+                })
+                .unwrap();
+        signature.output = etas_types::TypeId(u32::MAX);
+        let error = FrontendArtifactManifest::from_output(ProjectRevision(0), &output).unwrap_err();
+        assert!(error.contains("missing type 4294967295"), "{error}");
+    }
+
+    #[test]
     fn live_context_and_finished_output_share_manifest_inputs_and_fingerprints() {
         let mut context = ProjectContext::new(ProjectInput::single_source(SourceInput::anonymous(
             "module main; public flow helper(x: i32) -> i32 { return x + 1; } flow main() -> i32 { return helper(2); }",
         )));
-        let empty = context.current_artifact_manifest();
+        let empty = context.current_artifact_manifest().unwrap();
         assert!(
             empty
                 .records
@@ -132,9 +152,9 @@ mod tests {
             input.effect_body_outputs,
             &context.effect_body_outputs
         ));
-        let during = context.current_artifact_manifest();
+        let during = context.current_artifact_manifest().unwrap();
         let output = context.into_project_output();
-        let after = FrontendArtifactManifest::from_output(ProjectRevision(0), &output);
+        let after = FrontendArtifactManifest::from_output(ProjectRevision(0), &output).unwrap();
         assert_eq!(during, after);
         assert_eq!(during.fingerprint(), after.fingerprint());
     }

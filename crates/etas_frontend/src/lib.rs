@@ -1,4 +1,5 @@
 mod artifact;
+pub mod code;
 mod incremental;
 mod output;
 mod package_metadata;
@@ -6,6 +7,7 @@ mod passes;
 mod pipeline;
 mod project;
 mod session;
+mod static_annotation;
 
 pub use artifact::{
     ArtifactDependencySummary, ArtifactReuseStatsSummary, DiskCacheAccess,
@@ -29,18 +31,22 @@ pub use output::{
     ITEM_UNIT_KIND, MODULE_PART_UNIT_KIND, MODULE_UNIT_KIND, ModuleId, ModulePartId, ModulePath,
     PROJECT_UNIT_KIND, ProjectCompileOptions, ProjectEntry, ProjectEntryFact,
     ProjectEntryResolution, ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
-    ProjectExternalActionGenericParamInput, ProjectExternalActionSignatureInput,
-    ProjectExternalActionSummaryInput, ProjectExternalActionTraceEventSourceInput,
-    ProjectExternalActionTraceInput, ProjectExternalAgentSignatureInput,
-    ProjectExternalCallableGenericParamInput, ProjectExternalCallableGenericParamKindInput,
-    ProjectExternalCallableSpecSatisfactionInput, ProjectExternalEffectArgInput,
+    ProjectExternalActionGenericParamInput, ProjectExternalActionRequestInput,
+    ProjectExternalActionSignatureInput, ProjectExternalActionSummaryInput,
+    ProjectExternalActionTraceEventSourceInput, ProjectExternalActionTraceInput,
+    ProjectExternalAgentSignatureInput, ProjectExternalCallableGenericParamInput,
+    ProjectExternalCallableGenericParamKindInput, ProjectExternalCallableSpecSatisfactionInput,
+    ProjectExternalDefaultHandlerContributionInput, ProjectExternalDefaultHandlerEffectsInput,
+    ProjectExternalDefinitionOriginsInput, ProjectExternalEffectArgInput,
     ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
     ProjectExternalEffectSummaryInput, ProjectExternalExportInput,
     ProjectExternalFlowSignatureInput, ProjectExternalLatentFlowSummaryInput,
-    ProjectExternalModuleInput, ProjectExternalNamedSignatureInput, ProjectExternalPackageInput,
-    ProjectExternalPublicMetadataInput, ProjectExternalReExportInput,
-    ProjectExternalRecordFieldInput, ProjectExternalSpecBoundInput, ProjectExternalSpecImplInput,
-    ProjectExternalSpecKindInput, ProjectExternalSpecMethodInput,
+    ProjectExternalModuleInput, ProjectExternalNamedSignatureInput,
+    ProjectExternalPackageDependencyInput, ProjectExternalPackageInput,
+    ProjectExternalParameterRequestInput, ProjectExternalPublicMetadataInput,
+    ProjectExternalReExportInput, ProjectExternalRecordFieldInput,
+    ProjectExternalRequestInstantiationInput, ProjectExternalSpecBoundInput,
+    ProjectExternalSpecImplInput, ProjectExternalSpecKindInput, ProjectExternalSpecMethodInput,
     ProjectExternalSpecSignatureInput, ProjectExternalToolSchemaInput,
     ProjectExternalToolSignatureInput, ProjectExternalTraceSpecClauseInput,
     ProjectExternalTraceSpecClauseKindInput, ProjectExternalTraceSpecConformanceInput,
@@ -58,22 +64,24 @@ pub use package_metadata::{
 pub(crate) use project::ProjectContext;
 pub use project::{
     AffectedModuleSet, AstBodyRef, AstImportRef, AstItemKind, AstItemRef, CatalogModuleOrigin,
-    CatalogModuleOriginKind, ExportTable, ExportedItem, FsSourceLoader, HirBodyBindings,
-    HirExprPathResolution, HirItemBindings, HirOutput, HirPathResolution, ImportEdge, ImportGraph,
-    ImportTarget, LoadedProjectInput, ModuleCatalog, ModuleExport, ModuleExportTable,
-    ModuleExportTarget, ModuleIndex, ModuleInfo, ModuleKey, ModuleNamespaceNode,
-    ModuleNamespaceTree, ModuleOrigin, ModulePart, ModuleRecord, ModuleTopoOrder, ParseOutput,
-    ParsedSource, ProjectSourceLoadOptions, ProjectSourceLoadScope, ProjectSourceLoader, ReExport,
-    ReachabilityFacts, ResolvedImport, ResolvedImports, ResolvedModulePath, ResolvedModuleTarget,
-    ResolvedPaths, ResolvedWildcardImport, RuntimeSourceReason, RuntimeSourceReasonKind,
-    RuntimeSourceRequirement, RuntimeSourceRequirements, SourceBundle, SourceFile, SourceInput,
-    SourceKind, SourceLoader, SourceSet, UnitKind, UnitNode, UnitTarget, UnitTree,
+    CatalogModuleOriginKind, CheckedCallableRoot, CheckedReachabilityError, ExportTable,
+    ExportedItem, FsSourceLoader, HirBodyBindings, HirExprPathResolution, HirItemBindings,
+    HirOutput, HirPathResolution, ImportEdge, ImportGraph, ImportTarget, LoadedProjectInput,
+    ModuleCatalog, ModuleExport, ModuleExportTable, ModuleExportTarget, ModuleIndex, ModuleInfo,
+    ModuleKey, ModuleNamespaceNode, ModuleNamespaceTree, ModuleOrigin, ModulePart, ModuleRecord,
+    ModuleTopoOrder, ParseOutput, ParsedSource, ProjectSourceLoadOptions, ProjectSourceLoadScope,
+    ProjectSourceLoader, ReExport, ReachabilityFacts, ResolvedImport, ResolvedImports,
+    ResolvedModulePath, ResolvedModuleTarget, ResolvedPaths, ResolvedWildcardImport,
+    RuntimeSourceReason, RuntimeSourceReasonKind, RuntimeSourceRequirement,
+    RuntimeSourceRequirements, SourceBundle, SourceFile, SourceInput, SourceKind, SourceLoader,
+    SourceSet, UnitKind, UnitNode, UnitTarget, UnitTree,
 };
 pub use session::{
     AllocationSnapshot, CheckMemoryReport, DefinitionTarget, DiagnosticDelta,
     FrontendArtifactStore, FrontendCacheConfig, FrontendMemoryProbe, FrontendSession,
     FrontendSessionError, FrontendSessionOptions, FrontendSessionStore, PassMemorySample,
-    ProjectSemanticDelta, ProjectSemanticSnapshot, ProjectSessionId, SnapshotDefinitionTargets,
+    ProjectMemoryUsage, ProjectSemanticDelta, ProjectSemanticSnapshot, ProjectSessionId,
+    SnapshotDefinitionTargets,
 };
 
 use etas_core::{Diagnostic, SourceFile as CoreSourceFile};

@@ -9,17 +9,19 @@ use serde::{Deserialize, Serialize, ser::SerializeSeq};
 use super::{PrimitiveType, Type, TypeId};
 
 /// A frozen, indexed type universe. Body stores append after this shared prefix.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SharedTypeBase(Arc<FrozenTypes>);
 
-#[derive(Debug)]
+#[derive(Debug, etas_core::RetainedSize)]
 struct FrozenTypes {
     types: Vec<Type>,
     ids: HashMap<Type, TypeId>,
     identity: TypeBaseId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct TypeBaseId(pub [u8; 32]);
 
 struct TypeHash(blake3::Hasher);
@@ -74,10 +76,55 @@ impl SharedTypeBase {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct TypeStore {
     base: Option<SharedTypeBase>,
     types: Vec<Type>,
+}
+
+/// Program-local lookup only. Hash collisions are resolved by full Type equality.
+/// The index borrows no mutable interner and does not copy aggregate type nodes.
+pub struct TypeLookupIndex {
+    first: HashMap<u64, TypeId>,
+    collisions: HashMap<u64, Vec<TypeId>>,
+}
+
+impl TypeLookupIndex {
+    pub fn new(store: &TypeStore) -> Self {
+        let mut first = HashMap::with_capacity(store.len());
+        let mut collisions = HashMap::<u64, Vec<TypeId>>::new();
+        for (id, ty) in store.iter() {
+            let key = type_hash(ty);
+            match first.entry(key) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(id);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    collisions.entry(key).or_default().push(id);
+                }
+            }
+        }
+        Self { first, collisions }
+    }
+
+    pub fn get(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {
+        let key = type_hash(ty);
+        let first = *self.first.get(&key)?;
+        if store.get(first) == Some(ty) {
+            return Some(first);
+        }
+        self.collisions
+            .get(&key)?
+            .iter()
+            .copied()
+            .find(|id| store.get(*id) == Some(ty))
+    }
+}
+
+fn type_hash(ty: &Type) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    ty.hash(&mut hash);
+    hash.finish()
 }
 
 impl TypeStore {
@@ -182,7 +229,7 @@ impl<'de> Deserialize<'de> for TypeStore {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct TypeInterner {
     store: TypeStore,
     types: HashMap<Type, TypeId>,

@@ -1,7 +1,9 @@
 use super::EffectTagId;
 use crate::RuntimeRequirementReason;
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct EffectTag {
     pub id: EffectTagId,
     pub name: String,
@@ -11,7 +13,17 @@ pub struct EffectTag {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum CoreEffect {
     Agentic,

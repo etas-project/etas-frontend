@@ -2,7 +2,7 @@ use etas_cache::{ArtifactFingerprint, ArtifactKey};
 
 use super::key::FrontendArtifactKey;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct FrontendArtifactDependency {
     pub key: FrontendArtifactKey,
     pub fingerprint: Option<ArtifactFingerprint>,

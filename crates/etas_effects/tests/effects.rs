@@ -16,6 +16,21 @@ use etas_hir::{
 };
 use etas_utils::JoinSemiLattice;
 
+#[path = "effects/callback_completion.rs"]
+mod callback_completion;
+#[path = "effects/callback_identity.rs"]
+mod callback_identity;
+#[path = "effects/completion.rs"]
+mod completion;
+#[path = "effects/parameter_inference.rs"]
+mod parameter_inference;
+#[path = "effects/returned_anonymous.rs"]
+mod returned_anonymous;
+#[path = "effects/returned_callable.rs"]
+mod returned_callable;
+#[path = "effects/trace_conformance.rs"]
+mod trace_conformance;
+
 fn test_std_registry() -> &'static etas_std::StdRegistry {
     static REGISTRY: std::sync::OnceLock<etas_std::StdRegistry> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(etas_std::standard_registry)
@@ -28,6 +43,7 @@ fn check_program(
     // Corruption fixtures edit raw HIR; analysis consumes a frozen revision.
     let hir = etas_hir::HirRevision::try_new(hir.clone()).unwrap();
     RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &hir,
         types,
         std_registry: test_std_registry(),
@@ -502,7 +518,7 @@ fn check_program_records_precise_agentic_infer_action_without_escaping() {
 module app.main;
 
 @limits([Tokens(128)])
-agent Writer(input: string) -> string {}
+agent Writer(input: string) -> string { return perform infer<string>(Prompt.new()); }
 
 flow main(input: string) -> string ![] {
   return Writer.run(input);
@@ -542,7 +558,8 @@ flow main(input: string) -> string ![] {
                     etas_types::EffectArgRef::Path(vec![
                         "app".to_owned(),
                         "main".to_owned(),
-                        "Writer".to_owned()
+                        "Writer".to_owned(),
+                        "run".to_owned()
                     ]),
                     etas_types::EffectArgRef::Type(
                         types
@@ -552,7 +569,7 @@ flow main(input: string) -> string ![] {
                             .find_map(|(symbol, fact)| match fact {
                                 etas_types::SymbolTypeFact::Agent { signature }
                                     if hir.symbols.get(*symbol).unwrap().name == "Writer" =>
-                                    Some(signature.output),
+                                    signature.callable().map(|entry| entry.output),
                                 _ => None,
                             })
                             .unwrap()
@@ -574,7 +591,8 @@ flow main(input: string) -> string ![] {
                     etas_types::EffectArgRef::Path(vec![
                         "app".to_owned(),
                         "main".to_owned(),
-                        "Writer".to_owned()
+                        "Writer".to_owned(),
+                        "run".to_owned()
                     ]),
                     etas_types::EffectArgRef::Type(
                         types
@@ -584,7 +602,7 @@ flow main(input: string) -> string ![] {
                             .find_map(|(symbol, fact)| match fact {
                                 etas_types::SymbolTypeFact::Agent { signature }
                                     if hir.symbols.get(*symbol).unwrap().name == "Writer" =>
-                                    Some(signature.output),
+                                    signature.callable().map(|entry| entry.output),
                                 _ => None,
                             })
                             .unwrap()
@@ -598,7 +616,7 @@ flow main(input: string) -> string ![] {
         "{summary:?}"
     );
     assert!(
-        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::AgentCall),
+        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::Perform),
         "agent invocation trace should be compiler-generated call metadata, not a declared row: {summary:?}"
     );
     assert!(
@@ -696,12 +714,12 @@ flow main() -> string ![Error<IOError>] {
         "agent call summary must include checked default action actions from the agent prompt body: {summary:?}"
     );
     assert!(
-        has_agentic_infer(&summary.requested_actions),
-        "agent invocation should still record internal Agentic.infer requested action: {summary:?}"
+        !has_agentic_infer(&summary.requested_actions),
+        "an ordinary agent body must not acquire an implicit inference action: {summary:?}"
     );
     assert!(
-        has_agentic_infer(&summary.default_actions),
-        "agent invocation should still record default Agentic.infer action: {summary:?}"
+        !has_agentic_infer(&summary.default_actions),
+        "an ordinary agent body must not acquire an implicit inference handler: {summary:?}"
     );
     assert!(
         !has_agentic_escape(&summary.escaping_effects),
@@ -1422,7 +1440,7 @@ flow main() -> unit ![Network] {
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
                 && diagnostic.message.contains(
-                    "first-class flow call specialization requires checked parameter type facts",
+                    "callback effect specialization requires a matching checked callable parameter interface",
                 )
         }),
         "{:?}",
@@ -1477,7 +1495,7 @@ flow unsolved(callback: unit -> unit) -> unit {
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
                 && diagnostic.message.contains(
-                    "first-class flow call requires a checked latent effect fact or an explicit function effect row",
+                    "first-class flow call requires a checked latent effect fact; an escaping row does not describe requested actions",
                 )
         }),
         "{:?}",
@@ -2109,7 +2127,7 @@ fn check_program_generates_public_agent_effect_contract_metadata() {
 module app.main;
 
 public agent Reviewer(input: Prompt) -> string {
-  return input;
+  return perform infer<string>(input);
 }
 "#,
     ));
@@ -2132,8 +2150,8 @@ public agent Reviewer(input: Prompt) -> string {
     ));
     assert!(contract.declared.is_none());
     assert!(
-        !has_agentic_infer(&contract.requested_actions),
-        "agent declaration public metadata should not publish call-only Agentic.infer requested actions"
+        has_agentic_infer(&contract.requested_actions),
+        "agent metadata must preserve the inference explicitly performed by its body"
     );
     assert!(
         !contract.public_row.effects.iter().any(|effect| matches!(
@@ -2258,6 +2276,7 @@ tool search(q: string) -> string ![Network];
         action_row: Vec::new(),
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -3738,7 +3757,7 @@ flow main() -> unit ![Memory.read<ProjectMemory>]
 }
 
 #[test]
-fn effect_unit_collector_records_items_nested_handlers_and_first_class_calls() {
+fn effect_unit_collector_records_definitions_and_keeps_calls_in_the_owning_body() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
@@ -3773,6 +3792,7 @@ flow main() -> unit ![] {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let units = RunEffectPipeline::artifacts(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -3802,12 +3822,13 @@ flow main() -> unit ![] {
         )),
         "handler arm bodies must be explicit effect units: {units:?}"
     );
-    assert!(
-        units.iter().any(|unit| matches!(
-            unit,
-            EffectUnit::FirstClassFlowCall { owner, .. } if *owner == apply
-        )),
-        "first-class flow-value call sites must be explicit effect units: {units:?}"
+    assert_eq!(
+        units
+            .iter()
+            .filter(|unit| unit.owner() == Some(apply))
+            .count(),
+        1,
+        "invoking a parameter must not create a duplicate definition unit: {units:?}"
     );
 }
 
@@ -3834,6 +3855,7 @@ flow helper() -> unit {
 
     let main = flow_item(&hir, "main");
     let plan = RunEffectPipeline::plan(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -3848,6 +3870,7 @@ flow helper() -> unit {
 
     assert!(plan.registry.tag_extends(CONSOLE_TAG, FILE_IO_TAG));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -3923,6 +3946,7 @@ flow main() -> unit ![Network] {
     let helper = flow_item(&hir, "helper");
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4046,6 +4070,7 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4147,6 +4172,7 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4284,6 +4310,7 @@ flow main() -> unit {
         }],
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4349,6 +4376,7 @@ flow main() -> unit {
         },
     ];
     let missing_anchor_error = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4365,6 +4393,7 @@ flow main() -> unit {
         etas_effects::EffectPipelineError::MissingDiagnosticAnchor { .. }
     ));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4846,6 +4875,7 @@ flow main(path: string) -> string ![Workspace.read<_>]
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let pipeline = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
         std_registry: test_std_registry(),
@@ -4928,7 +4958,7 @@ flow main() -> unit ![Error<IOError>]
 
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(matches!(
-        output.facts.interpreter_support.entry,
+        output.facts.interpreter_support.items.get(&flow_item(&hir, "main")),
         Some(InterpreterSupport::RequiresHost(requirements))
             if requirements.kinds.contains(&HostRequirementKind::Console)
     ));
@@ -5009,6 +5039,7 @@ flow main() -> unit ![Error<IOError>] ~ Safe
 {
     println("x");
 }
+
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -5684,6 +5715,121 @@ flow main() -> unit ![Console.stdout_write] {
 }
 
 #[test]
+fn closed_row_callback_forwarding_preserves_handled_requests_and_trace_multiplicity() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.io.println;
+flow twice(f: () -> unit ![]) -> unit { f(); f(); }
+flow relay(g: () -> unit ![]) -> unit { twice(g); }
+flow main() -> unit {
+    relay(() => { println("handled")?; return; });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.escaping_effects.is_empty(), "{summary:?}");
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "{summary:?}"
+    );
+    assert!(
+        summary.default_actions.effects.contains(&stdout),
+        "{summary:?}"
+    );
+    let mut events = 0;
+    let mut pending = vec![&summary.action_trace];
+    while let Some(trace) = pending.pop() {
+        match trace {
+            ActionTraceDomain::Event(event) => events += usize::from(event.action == stdout),
+            ActionTraceDomain::Seq(children) | ActionTraceDomain::Choice(children) => {
+                pending.extend(children)
+            }
+            ActionTraceDomain::Repeat(child) => pending.push(child),
+            ActionTraceDomain::Empty => {}
+            other => panic!("closed callback call must have a concrete trace: {other:?}"),
+        }
+    }
+    assert_eq!(events, 2, "{summary:?}");
+}
+
+#[test]
+fn callback_rebinding_preserves_parameter_origin_instead_of_the_initializer() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.io.println;
+flow relay(f: () -> unit ![]) -> unit {
+    var selected: () -> unit ![] = () => { return; };
+    selected = f;
+    selected();
+}
+flow main() -> unit { relay(() => { println("rebound")?; return; }); }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.escaping_effects.is_empty(), "{summary:?}");
+    assert!(
+        summary.requested_actions.effects.contains(&stdout),
+        "{summary:?}"
+    );
+    assert!(
+        summary.default_actions.effects.contains(&stdout),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn unknown_rebound_callback_is_not_hidden_by_a_known_branch() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow invoke(condition: bool, unknown: { action: () -> unit ![] }) -> unit {
+    var selected: () -> unit ![] = () => { return; };
+    if condition { selected = unknown.action; }
+    selected();
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn row_polymorphic_call_solves_multiple_equivalent_latent_sources() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -6153,12 +6299,16 @@ flow main() -> Result<string, IOError> {
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let hir = lower_program(&parsed.value);
     let types = etas_types::check_program(&hir);
-    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
-    let output = check_program(&hir, &types);
-
-    assert!(output.diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::InvalidTryCapture)
-    }));
+    assert!(
+        types.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Type(etas_core::TypeDiagnosticCode::TypeMismatch)
+                && diagnostic
+                    .message
+                    .contains("captured Error type does not match Result error type")
+        }),
+        "{:?}",
+        types.diagnostics
+    );
 }
 
 #[test]
@@ -6345,7 +6495,7 @@ fn check_program_agent_declaration_summary_does_not_record_inference_action() {
         etas_core::SourceId(0),
         None,
         r#"
-agent Reviewer(input: Prompt) -> string {
+agent Reviewer(input: string) -> string {
     return input;
 }
 "#,
@@ -6383,7 +6533,7 @@ fn check_program_rejects_agent_public_agentic_infer_row() {
         None,
         r#"
 agent Reviewer(input: Prompt) -> string ![Agentic.infer<Reviewer, string>] {
-    return input;
+    return perform infer<string>(input);
 }
 "#,
     ));
@@ -6764,7 +6914,7 @@ fn check_program_classifies_agent_pipeline_stage_as_inference() {
         None,
         r#"
 agent Reviewer(input: Prompt) -> string {
-    return input;
+    return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -6804,7 +6954,7 @@ flow main(input: Prompt) -> string {
         "{summary:?}"
     );
     assert!(
-        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::AgentCall),
+        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::Perform),
         "agent pipeline trace should be compiler-generated call metadata, not a declared row: {summary:?}"
     );
     assert!(
@@ -6825,7 +6975,7 @@ fn check_program_classifies_agent_run_method_call_as_inference() {
         None,
         r#"
 agent Reviewer(input: Prompt) -> string {
-    return input;
+    return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -6865,7 +7015,7 @@ flow main(input: Prompt) -> string {
         "{summary:?}"
     );
     assert!(
-        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::AgentCall),
+        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::Perform),
         "agent run trace should be compiler-generated call metadata, not a declared row: {summary:?}"
     );
     assert!(
@@ -6879,6 +7029,31 @@ flow main(input: Prompt) -> string {
     ));
 }
 
+fn canonical_agent_run_callee(hir: &etas_hir::HirProgram) -> etas_hir::HirExprId {
+    hir.exprs
+        .iter()
+        .find_map(|(_, expr)| {
+            let HirExpr::Call { callee, .. } = expr else {
+                return None;
+            };
+            let HirExpr::Path(path) = &hir.exprs[*callee] else {
+                return None;
+            };
+            let ResolveResult::Resolved(symbol) = path.resolution else {
+                return None;
+            };
+            hir.agent_methods
+                .get(&symbol)
+                .filter(|method| {
+                    hir.symbols
+                        .get(method.symbol)
+                        .is_some_and(|symbol| symbol.name == "run")
+                })
+                .map(|_| *callee)
+        })
+        .expect("canonical agent run callee")
+}
+
 #[test]
 fn check_program_classifies_source_import_agent_run_method_call_as_inference() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
@@ -6888,7 +7063,7 @@ fn check_program_classifies_source_import_agent_run_method_call_as_inference() {
 module app.main;
 
 agent Reviewer(input: Prompt) -> string {
-    return input;
+    return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -6897,18 +7072,15 @@ flow main(input: Prompt) -> string {
 "#,
     ));
     let mut hir = lower_program(&parsed.value);
-    let types = etas_types::check_program(&hir);
+    let mut types = etas_types::check_program(&hir);
     let reviewer = agent_item(&hir, "Reviewer");
-    let receiver = hir
-        .exprs
-        .iter()
-        .find_map(|(_, expr)| match expr {
-            HirExpr::MethodCall {
-                receiver, method, ..
-            } if method == "run" => Some(*receiver),
-            _ => None,
-        })
-        .expect("agent run receiver should lower");
+    let receiver = canonical_agent_run_callee(&hir);
+    let checked_method = hir
+        .agent_methods
+        .values()
+        .find(|method| method.body == reviewer)
+        .unwrap()
+        .symbol;
     let reviewer_symbol = match hir.items.get(reviewer) {
         Some(HirItem::Agent(agent)) => agent.symbol,
         _ => unreachable!("reviewer id came from agent item"),
@@ -6925,12 +7097,21 @@ flow main(input: Prompt) -> string {
         defining_module,
         defining_item: None,
         def: SymbolDef::ImportAlias {
-            path: vec!["app".to_owned(), "main".to_owned(), "Reviewer".to_owned()],
+            path: vec![
+                "app".to_owned(),
+                "main".to_owned(),
+                "Reviewer".to_owned(),
+                "run".to_owned(),
+            ],
             origin: ImportAliasOrigin::SourceImport,
         },
         declared_type: None,
         definition_span,
     });
+    let alias_fact = types.facts.symbol_types[&checked_method].clone();
+    std::sync::Arc::make_mut(&mut types.facts)
+        .symbol_types
+        .insert(alias, alias_fact);
     let HirExpr::Path(path) = hir
         .exprs
         .get_mut(receiver)
@@ -6959,7 +7140,7 @@ flow main(input: Prompt) -> string {
         "{summary:?}"
     );
     assert!(
-        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::AgentCall),
+        trace_has_agentic_infer_source(&summary.action_trace, ActionEventSource::Perform),
         "source-import agent run trace should be compiler-generated call metadata, not a declared row: {summary:?}"
     );
     assert!(
@@ -6975,7 +7156,7 @@ fn check_program_rejects_unresolved_agent_run_receiver() {
         None,
         r#"
 agent Reviewer(input: Prompt) -> string {
-    return input;
+    return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -6985,16 +7166,7 @@ flow main(input: Prompt) -> string {
     ));
     let mut hir = lower_program(&parsed.value);
     let types = etas_types::check_program(&hir);
-    let receiver = hir
-        .exprs
-        .iter()
-        .find_map(|(_, expr)| match expr {
-            HirExpr::MethodCall {
-                receiver, method, ..
-            } if method == "run" => Some(*receiver),
-            _ => None,
-        })
-        .expect("agent run receiver should lower");
+    let receiver = canonical_agent_run_callee(&hir);
     let HirExpr::Path(path) = hir
         .exprs
         .get_mut(receiver)
@@ -7011,7 +7183,7 @@ flow main(input: Prompt) -> string {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
                 && diagnostic
                     .message
-                    .contains("agent run effect propagation requires a resolved agent receiver")
+                    .contains("call target requires checked effect facts")
         }),
         "{:?}",
         output.diagnostics
@@ -7035,7 +7207,7 @@ fn check_program_rejects_missing_source_import_agent_run_receiver() {
 module app.main;
 
 agent Reviewer(input: Prompt) -> string {
-    return input;
+    return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -7045,16 +7217,7 @@ flow main(input: Prompt) -> string {
     ));
     let mut hir = lower_program(&parsed.value);
     let types = etas_types::check_program(&hir);
-    let receiver = hir
-        .exprs
-        .iter()
-        .find_map(|(_, expr)| match expr {
-            HirExpr::MethodCall {
-                receiver, method, ..
-            } if method == "run" => Some(*receiver),
-            _ => None,
-        })
-        .expect("agent run receiver should lower");
+    let receiver = canonical_agent_run_callee(&hir);
     let alias = hir.symbols.alloc(SymbolData {
         name: "Reviewer".to_owned(),
         kind: SymbolKind::Import,
@@ -7150,10 +7313,10 @@ fn check_program_records_local_flow_effects() {
         output.facts.interpreter_support.items.get(&flow_id),
         Some(InterpreterSupport::LocalOnly)
     ));
-    assert!(matches!(
-        output.facts.interpreter_support.entry,
-        Some(InterpreterSupport::LocalOnly)
-    ));
+    assert!(
+        output.facts.interpreter_support.entry.is_none(),
+        "entry selection belongs to the project, not a declaration named main"
+    );
 }
 
 #[test]
@@ -7255,7 +7418,7 @@ fn check_program_agent_declaration_public_row_does_not_record_inference_action()
         etas_core::SourceId(0),
         None,
         r#"
-agent Reviewer(input: Prompt) -> string ![Network] {
+agent Reviewer(input: string) -> string ![Network] {
     return input;
 }
 "#,
@@ -7293,7 +7456,7 @@ fn check_program_records_pipeline_agent_inference_without_flow_row_escape() {
         None,
         r#"
 agent Reviewer(input: Prompt) -> string {
-    return input;
+    return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string ![Network]

@@ -1,6 +1,6 @@
 use etas_utils::UnitKey;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct AffectedModuleSet {
     pub modules: Vec<UnitKey>,
     pub module_parts: Vec<UnitKey>,

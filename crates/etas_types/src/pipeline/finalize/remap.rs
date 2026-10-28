@@ -33,7 +33,8 @@ pub(crate) fn remap_body_delta(
 }
 
 struct TypeIdRemapper<'a, 'b> {
-    source: &'a TypeStore,
+    source: Option<&'a TypeStore>,
+    substitutions: Option<&'a crate::Substitution>,
     target: &'b mut TypeInterner,
     ids: HashMap<TypeId, TypeId>,
     base_len: usize,
@@ -43,7 +44,8 @@ struct TypeIdRemapper<'a, 'b> {
 impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     fn new(source: &'a TypeStore, target: &'b mut TypeInterner) -> Self {
         Self {
-            source,
+            source: Some(source),
+            substitutions: None,
             target,
             ids: HashMap::new(),
             base_len: 0,
@@ -58,7 +60,24 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
         if let Some(mapped) = self.ids.get(&ty).copied() {
             return mapped;
         }
-        let Some(source_ty) = self.source.get(ty).cloned() else {
+        if let Some(substitutions) = self.substitutions {
+            return match crate::substitute_type_params(
+                self.target,
+                ty,
+                &HashMap::new(),
+                substitutions,
+            ) {
+                Ok(mapped) => {
+                    self.ids.insert(ty, mapped);
+                    mapped
+                }
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    ty
+                }
+            };
+        }
+        let Some(source_ty) = self.source.and_then(|source| source.get(ty)).cloned() else {
             self.error = Some(format!("body type delta references missing type {}", ty.0));
             return ty;
         };
@@ -205,9 +224,10 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
 
     fn item_signature(&mut self, signature: &mut ItemSignature) {
         match signature {
-            ItemSignature::Flow(signature)
-            | ItemSignature::Agent(signature)
-            | ItemSignature::Tool(signature) => self.callable(signature),
+            ItemSignature::Flow(signature) | ItemSignature::Tool(signature) => {
+                self.callable(signature)
+            }
+            ItemSignature::Agent(signature) => self.agent(signature),
             ItemSignature::TopLevelLet(signature) => signature.ty = self.ty(signature.ty),
         }
     }
@@ -218,11 +238,22 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
             | SymbolTypeFact::Local { ty, .. }
             | SymbolTypeFact::Field { ty }
             | SymbolTypeFact::Value { ty }
-            | SymbolTypeFact::TopLevelLet { ty, .. }
-            | SymbolTypeFact::TypeAlias { target: ty, .. } => *ty = self.ty(*ty),
-            SymbolTypeFact::Flow { signature }
-            | SymbolTypeFact::Agent { signature }
-            | SymbolTypeFact::Tool { signature } => self.callable(signature),
+            | SymbolTypeFact::TopLevelLet { ty, .. } => *ty = self.ty(*ty),
+            SymbolTypeFact::TypeAlias { target, params } => {
+                *target = self.ty(*target);
+                for param in params {
+                    param.subject = self.ty(param.subject);
+                    for bound in &mut param.bounds {
+                        for arg in &mut bound.args {
+                            *arg = self.ty(*arg);
+                        }
+                    }
+                }
+            }
+            SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => {
+                self.callable(signature)
+            }
+            SymbolTypeFact::Agent { signature } => self.agent(signature),
             SymbolTypeFact::Type { constructor } => *constructor = self.constructor(*constructor),
             SymbolTypeFact::NominalType {
                 constructor,
@@ -238,6 +269,16 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
         }
     }
 
+    fn agent(&mut self, signature: &mut crate::AgentSignature) {
+        signature.component = self.ty(signature.component);
+        signature.definition_type = signature.definition_type.map(|ty| self.ty(ty));
+        if let Some(entry) = &mut signature.default_entry {
+            let entry = std::sync::Arc::make_mut(entry);
+            entry.callable_type = self.ty(entry.callable_type);
+            self.callable(&mut entry.callable);
+        }
+    }
+
     fn resource_handle_fact(&mut self, fact: &mut ResourceHandleFact) {
         match fact {
             ResourceHandleFact::MemoryRegion { schema, .. } => {
@@ -247,6 +288,10 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     }
 
     fn action_signature(&mut self, signature: &mut crate::EffectActionSignature) {
+        signature.default_handler_effects = signature
+            .default_handler_effects
+            .take()
+            .map(|row| self.effect_row(row));
         for generic in &mut signature.generic_params {
             generic.subject = self.ty(generic.subject);
             for bound in &mut generic.bounds {
@@ -292,6 +337,7 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     }
 
     fn callable_spec_satisfaction(&mut self, fact: &mut CallableSpecSatisfactionFact) {
+        fact.effect_bound = fact.effect_bound.take().map(|row| self.effect_row(row));
         for arg in &mut fact.args {
             *arg = self.ty(*arg);
         }
@@ -402,7 +448,108 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     }
 }
 
+pub(crate) fn substitute_facts(
+    facts: &mut crate::TypeFacts,
+    target: &mut TypeInterner,
+    substitutions: &crate::Substitution,
+) -> Result<(), String> {
+    let mut remapper = TypeIdRemapper {
+        source: None,
+        substitutions: Some(substitutions),
+        target,
+        ids: HashMap::new(),
+        base_len: 0,
+        error: None,
+    };
+    remap_facts(facts, &mut remapper);
+    match remapper.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+pub(crate) fn project_signature_facts(
+    facts: &mut crate::TypeFacts,
+    source: &TypeStore,
+    target: &mut TypeInterner,
+    base_len: usize,
+) -> Result<(), String> {
+    let mut remapper = TypeIdRemapper::new(source, target);
+    remapper.base_len = base_len;
+    remap_facts(facts, &mut remapper);
+    match remapper.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '_>) {
+    facts.type_generics = std::mem::take(&mut facts.type_generics)
+        .into_iter()
+        .map(|(ty, mut parameters)| {
+            for parameter in &mut parameters {
+                parameter.subject = remapper.ty(parameter.subject);
+                for bound in &mut parameter.bounds {
+                    for argument in &mut bound.args {
+                        *argument = remapper.ty(*argument);
+                    }
+                }
+            }
+            (remapper.ty(ty), parameters)
+        })
+        .collect();
+    facts.reflection_type_identities = std::mem::take(&mut facts.reflection_type_identities)
+        .into_iter()
+        .map(|(ty, identity)| (remapper.ty(ty), identity))
+        .collect();
+    for method in facts.std_method_calls.values_mut() {
+        method.signature = remapper.ty(method.signature);
+    }
+    for method in facts.agent_methods.values_mut() {
+        method.component = remapper.ty(method.component);
+        method.callable_type = remapper.ty(method.callable_type);
+        remapper.callable(&mut method.callable);
+    }
+    for fact in facts.handler_actions.values_mut() {
+        fact.output = remapper.ty(fact.output);
+        for ty in &mut fact.params {
+            *ty = remapper.ty(*ty);
+        }
+        for arg in &mut fact.selectors {
+            *arg = remapper.effect_arg(arg.clone());
+        }
+    }
+    for fact in facts.deferred_handler_instantiations.values_mut() {
+        for parameter in &mut fact.parameters {
+            parameter.candidate = remapper.ty(parameter.candidate);
+            parameter.rigid = remapper.ty(parameter.rigid);
+        }
+    }
+    for fact in facts.agent_inferences.values_mut() {
+        fact.output = remapper.ty(fact.output);
+        fact.schema = remapper.ty(fact.schema);
+    }
+    for fact in facts.reflections.values_mut() {
+        fact.descriptor_type = remapper.ty(fact.descriptor_type);
+        if let Some(spec) = &mut fact.selected_spec {
+            for arg in &mut spec.args {
+                *arg = remapper.ty(*arg);
+            }
+        }
+        match &mut fact.target {
+            crate::CheckedReflectionTarget::Agent { component, .. }
+            | crate::CheckedReflectionTarget::AgentDefaultEntry { component, .. }
+            | crate::CheckedReflectionTarget::AgentValue { component, .. } => {
+                *component = remapper.ty(*component)
+            }
+            crate::CheckedReflectionTarget::Callable { .. }
+            | crate::CheckedReflectionTarget::ExternalCallable { .. } => {}
+        }
+    }
+    facts.agent_components = std::mem::take(&mut facts.agent_components)
+        .into_iter()
+        .map(|(ty, symbol)| (remapper.ty(ty), symbol))
+        .collect();
     for ty in facts.expr_types.values_mut() {
         *ty = remapper.ty(*ty);
     }
@@ -436,6 +583,53 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.intrinsic_only_constructors =
+        std::mem::take(&mut facts.known_std_types.intrinsic_only_constructors)
+            .into_iter()
+            .map(|ty| remapper.ty(ty))
+            .collect();
+    facts.known_std_types.projected_fields =
+        std::mem::take(&mut facts.known_std_types.projected_fields)
+            .into_iter()
+            .map(|(ty, fields)| {
+                (
+                    remapper.ty(ty),
+                    fields
+                        .into_iter()
+                        .map(|field| FieldType {
+                            name: field.name,
+                            ty: remapper.ty(field.ty),
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+    facts.known_std_types.opaque_values = std::mem::take(&mut facts.known_std_types.opaque_values)
+        .into_iter()
+        .map(|ty| remapper.ty(ty))
+        .collect();
+    let code = &mut facts.known_std_types.code;
+    code.agent_definition = code.agent_definition.map(|ty| remapper.ty(ty));
+    code.callable_definition = code.callable_definition.map(|ty| remapper.ty(ty));
+    code.syntax_block = code.syntax_block.map(|ty| remapper.ty(ty));
+    for ty in [
+        &mut code.agent_id,
+        &mut code.type_info,
+        &mut code.generic_owner_info,
+        &mut code.tool_ref,
+        &mut code.static_value_info,
+        &mut code.trace_constraint_info,
+        &mut code.definition_id,
+        &mut code.callable_id,
+        &mut code.effect_row_info,
+        &mut code.action_summary,
+        &mut code.trace_summary,
+        &mut code.determinism,
+        &mut code.descriptor_detail,
+        &mut code.trace_witness,
+    ] {
+        *ty = ty.map(|ty| remapper.ty(ty));
+    }
     facts.known_std_types.iterables = std::mem::take(&mut facts.known_std_types.iterables)
         .into_iter()
         .map(|(constructor, fact)| (remapper.ty(constructor), fact))
@@ -467,6 +661,19 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for signature in facts.spec_signatures.values_mut() {
         remapper.spec_signature(signature);
+    }
+    for signature in facts.external_specs.signatures.values_mut() {
+        for bound in &mut signature.super_specs {
+            for ty in &mut bound.args {
+                *ty = remapper.ty(*ty);
+            }
+        }
+    }
+    for implementation in &mut facts.external_specs.impls {
+        implementation.self_type = remapper.ty(implementation.self_type);
+        for ty in &mut implementation.args {
+            *ty = remapper.ty(*ty);
+        }
     }
     for implementation in &mut facts.spec_impls {
         remapper.spec_impl(implementation);

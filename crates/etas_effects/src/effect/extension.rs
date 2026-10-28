@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::EffectTagId;
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExtensionGraph {
     parents: BTreeMap<EffectTagId, BTreeSet<EffectTagId>>,
 }

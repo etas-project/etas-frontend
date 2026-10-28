@@ -4,7 +4,7 @@ use etas_utils::JoinSemiLattice;
 
 use super::AnalysisUnit;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct SummaryStore<U, S>
 where
     U: AnalysisUnit,

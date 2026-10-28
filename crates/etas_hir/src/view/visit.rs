@@ -1,6 +1,6 @@
 use crate::{HirBlockId, HirExprId, HirItemId, HirModuleId};
 
-use super::model::{HirBodyRef, HirTreeChild};
+use super::model::{HirBodyRef, HirOwner, HirTreeChild};
 use super::tree::{
     BlockView, BodyView, ExprView, HandlerArmView, HirTreeView, ItemView, ModuleView, PatternView,
     StmtView,
@@ -66,6 +66,30 @@ where
     walk_from(view, WalkFrame::EnterExpr(expr), visitor);
 }
 
+/// Walks the entire expression subtree, including separately indexed lambda,
+/// match-arm, handler-arm and stage-limit bodies. Intraprocedural visitors can
+/// continue using `walk_expr` to keep those semantic units separate.
+pub fn walk_expr_tree<'view, 'hir, V>(
+    view: &'view HirTreeView<'hir>,
+    expr: HirExprId,
+    visitor: &mut V,
+) where
+    V: HirVisitor<'view, 'hir>,
+{
+    walk_with_mode(
+        view,
+        WalkFrame::EnterExpr(expr),
+        visitor,
+        BodyTraversal::Owned,
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BodyTraversal {
+    Direct,
+    Owned,
+}
+
 #[derive(Clone, Copy)]
 enum WalkFrame {
     EnterModule(HirModuleId),
@@ -88,6 +112,17 @@ enum WalkFrame {
 
 fn walk_from<'view, 'hir, V>(view: &'view HirTreeView<'hir>, root: WalkFrame, visitor: &mut V)
 where
+    V: HirVisitor<'view, 'hir>,
+{
+    walk_with_mode(view, root, visitor, BodyTraversal::Direct);
+}
+
+fn walk_with_mode<'view, 'hir, V>(
+    view: &'view HirTreeView<'hir>,
+    root: WalkFrame,
+    visitor: &mut V,
+    bodies: BodyTraversal,
+) where
     V: HirVisitor<'view, 'hir>,
 {
     let mut stack = vec![root];
@@ -193,6 +228,17 @@ where
                 stack.push(WalkFrame::ExitExpr(expr_id));
                 let start = stack.len();
                 expr.for_each_child(|child| stack.push(child_frame(child)));
+                if bodies == BodyTraversal::Owned {
+                    stack.extend(
+                        view.index()
+                            .owned_bodies
+                            .get(&HirOwner::Expr(expr_id))
+                            .into_iter()
+                            .flatten()
+                            .copied()
+                            .map(WalkFrame::EnterBody),
+                    );
+                }
                 stack[start..].reverse();
             }
             WalkFrame::ExitExpr(expr_id) => {
@@ -207,6 +253,18 @@ where
                     .expect("handler arm id should exist in HIR tree");
                 visitor.enter_handler_arm(arm);
                 stack.push(WalkFrame::ExitHandlerArm(arm_id));
+                if bodies == BodyTraversal::Owned {
+                    push_reversed(
+                        &mut stack,
+                        view.index()
+                            .owned_bodies
+                            .get(&HirOwner::HandlerArm(arm_id))
+                            .into_iter()
+                            .flatten()
+                            .copied()
+                            .map(WalkFrame::EnterBody),
+                    );
+                }
             }
             WalkFrame::ExitHandlerArm(arm_id) => {
                 let arm = view

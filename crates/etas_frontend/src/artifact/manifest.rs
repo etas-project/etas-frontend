@@ -6,7 +6,7 @@ use super::{
     dependency::FrontendArtifactDependency, fingerprint_text, key::FrontendArtifactKey,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct FrontendArtifactRecord {
     pub key: FrontendArtifactKey,
     pub revision: ProjectRevision,
@@ -15,7 +15,7 @@ pub struct FrontendArtifactRecord {
     pub diagnostics: Vec<SourceId>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct FrontendArtifactManifest {
     pub records: Vec<FrontendArtifactRecord>,
 }
@@ -99,12 +99,23 @@ impl FrontendArtifactRecord {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub(crate) struct PersistedFrontendArtifactManifest {
     pub records: Vec<PersistedFrontendArtifactRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub(crate) struct PersistedFrontendArtifactRecord {
     pub key: PersistedFrontendArtifactKey,
     pub revision: u64,

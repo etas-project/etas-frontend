@@ -1,5 +1,14 @@
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct LimitRequirement {
     pub kind: LimitKind,
@@ -8,7 +17,16 @@ pub struct LimitRequirement {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum LimitValue {
     Count(u64),
@@ -17,7 +35,17 @@ pub enum LimitValue {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum LimitKind {
     Iterations,
@@ -29,7 +57,17 @@ pub enum LimitKind {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum LimitBudgetKind {
     Count,

@@ -1,27 +1,30 @@
 use etas_hir::HirBlockId;
 
-use crate::intraprocedural::{Control, HirAbstractInterpreter, HirAnalysisSemantics};
+use super::Traversal;
+use crate::intraprocedural::{Control, HirAnalysisSemantics};
 
-impl<S> HirAbstractInterpreter<S>
+impl<S, F, E> Traversal<'_, S, F>
 where
     S: HirAnalysisSemantics,
+    F: Fn() -> Result<(), E>,
 {
-    pub fn block(&mut self, block: HirBlockId, state: S::Domain) -> S::Domain {
-        self.block_control(block, state).into_joined_domain()
-    }
-
-    pub fn block_control(&mut self, block: HirBlockId, state: S::Domain) -> Control<S::Domain> {
+    pub(super) fn block_control(
+        &mut self,
+        block: HirBlockId,
+        state: S::Domain,
+    ) -> Result<Control<S::Domain>, E> {
+        (self.checkpoint)()?;
         let block = self.context().program().blocks[block].clone();
         let mut control = Control::normal(state);
         for stmt in block.stmts {
-            control = control.with_normal_processed(|state| self.stmt_control(stmt, state));
+            control = control.try_with_normal_processed(|state| self.stmt_control(stmt, state))?;
             if !control.has_normal() {
                 break;
             }
         }
         if let Some(expr) = block.final_expr {
-            control = control.with_normal_processed(|state| self.expr_control(expr, state));
+            control = control.try_with_normal_processed(|state| self.expr_control(expr, state))?;
         }
-        control
+        Ok(control)
     }
 }

@@ -1,7 +1,7 @@
 use etas_hir::{HirArg, HirGenericArg};
 
 use crate::{
-    CallableGenericArg, ConstraintOrigin, TypeConstraint, TypeId,
+    ConstraintOrigin, TypeConstraint, TypeId,
     pipeline::{
         body::collect::{
             call::{
@@ -18,28 +18,39 @@ use crate::{
     },
 };
 
-pub fn collect_method_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_method_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     receiver: etas_hir::HirExprId,
     method: &str,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    if let Some(ty) = super::agent_method::collect_agent_method_call(
+        ctx,
+        expr,
+        receiver,
+        method,
+        generic_args,
+        args,
+        expected,
+    )? {
+        return Ok(ty);
+    }
     let span = ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks);
-    if generic_args.iter().any(|arg| {
-        matches!(
-            arg,
-            HirGenericArg::EffectRow(_) | HirGenericArg::Wildcard { .. }
-        )
-    }) {
+    if generic_args
+        .iter()
+        .any(|arg| matches!(arg, HirGenericArg::Wildcard { .. }))
+    {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span,
-            message: "only type generic arguments are valid for method calls".to_owned(),
+            message: "method generic arguments cannot be wildcard selectors".to_owned(),
         });
     }
+    let checked_generic_args = super::call::lower_callable_generic_args(ctx, generic_args);
     let type_generic_args = generic_args
         .iter()
         .filter_map(|arg| match arg {
@@ -48,7 +59,7 @@ pub fn collect_method_call(
         })
         .collect::<Vec<_>>();
     if method == "run" {
-        collect_expr(ctx, receiver, None);
+        collect_expr(ctx, receiver, None)?;
     }
     let (std_member, generic_params) =
         if let Some(signature) = std_member_callable_signature(ctx, receiver, method) {
@@ -91,7 +102,7 @@ pub fn collect_method_call(
                         .and_then(|inputs| inputs.get(index).copied()),
                 ),
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, E>>()?;
         let output = expected.unwrap_or_else(|| {
             specialized_callable_output_for_args(ctx, callee_ty, &type_generic_args, &arg_tys, span)
                 .or_else(|| callable_output_for_expression(ctx, callee_ty))
@@ -103,13 +114,10 @@ pub fn collect_method_call(
             span,
         });
         ctx.emit(TypeConstraint::Callable {
-            call: None,
+            call: Some(expr),
             callee: callee_ty,
             generic_params,
-            generic_args: type_generic_args
-                .into_iter()
-                .map(CallableGenericArg::Type)
-                .collect(),
+            generic_args: checked_generic_args,
             arg_exprs: args
                 .iter()
                 .map(|arg| {
@@ -123,31 +131,42 @@ pub fn collect_method_call(
             output,
             origin: ConstraintOrigin { span },
         });
-        return output;
+        return Ok(output);
     }
 
-    let candidates = if type_generic_args.is_empty() {
+    let mut candidates = if type_generic_args.is_empty() {
         std_method_candidates(ctx, method)
     } else {
         raw_std_method_candidates(ctx, method)
     };
-    if !candidates.is_empty() {
+    candidates.extend(super::agent_method::deferred_candidates(
+        ctx,
+        method,
+        &checked_generic_args,
+        span,
+    ));
+    if !candidates.is_empty() || super::agent_method::has_method_name(ctx, method) {
         let expected_inputs = common_candidate_inputs(ctx, &candidates);
         let receiver_expected = expected_inputs
             .as_ref()
             .and_then(|inputs| inputs.first().copied());
-        let receiver_ty = collect_expr(ctx, receiver, receiver_expected);
+        let receiver_ty = collect_expr(ctx, receiver, receiver_expected)?;
         let mut arg_tys = Vec::with_capacity(args.len() + 1);
         arg_tys.push(receiver_ty);
-        arg_tys.extend(args.iter().enumerate().map(|(index, arg)| {
-            let expected = expected_inputs
-                .as_ref()
-                .and_then(|inputs| inputs.get(index + 1).copied());
-            match arg {
-                HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
-                HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
-            }
-        }));
+        let arguments = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                let expected = expected_inputs
+                    .as_ref()
+                    .and_then(|inputs| inputs.get(index + 1).copied());
+                match arg {
+                    HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
+                    HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
+                }
+            })
+            .collect::<Result<Vec<_>, E>>()?;
+        arg_tys.extend(arguments);
         let output = expected.unwrap_or_else(|| {
             specialized_method_output_for_args(ctx, &candidates, &type_generic_args, &arg_tys, span)
                 .unwrap_or_else(|| ctx.fresh_type_var())
@@ -155,19 +174,25 @@ pub fn collect_method_call(
         ctx.emit(TypeConstraint::MethodCall {
             expr,
             method: method.to_owned(),
+            access_module: ctx.ctx.hir.item_module(ctx.state.item),
             candidates,
-            generic_args: type_generic_args
-                .into_iter()
-                .map(CallableGenericArg::Type)
+            generic_args: checked_generic_args,
+            arg_exprs: std::iter::once(Some(receiver))
+                .chain(args.iter().map(|arg| {
+                    Some(match arg {
+                        HirArg::Positional(expr) => *expr,
+                        HirArg::Named { value, .. } => *value,
+                    })
+                }))
                 .collect(),
             args: arg_tys,
             output,
             origin: ConstraintOrigin { span },
         });
-        return output;
+        return Ok(output);
     }
 
-    let receiver_ty = collect_expr(ctx, receiver, None);
+    let receiver_ty = collect_expr(ctx, receiver, None)?;
     let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
     ctx.emit(TypeConstraint::FieldAccess {
         base: receiver_ty,
@@ -175,11 +200,11 @@ pub fn collect_method_call(
         output,
         origin: ConstraintOrigin { span },
     });
-    output
+    Ok(output)
 }
 
-fn common_candidate_inputs(
-    ctx: &BodyCollectContext<'_, '_>,
+fn common_candidate_inputs<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     candidates: &[crate::CallableCandidate],
 ) -> Option<Vec<TypeId>> {
     let mut expected: Option<Vec<TypeId>> = None;

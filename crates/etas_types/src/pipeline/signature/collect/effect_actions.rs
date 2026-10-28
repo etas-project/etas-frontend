@@ -70,6 +70,7 @@ fn collect_action(
     let (effect_args, selector_param_names, selector_defaults) =
         action_effect_selector_signature(ctx, action);
     let signature = EffectActionSignature {
+        default_handler_effects: None,
         generic_params: action
             .type_params
             .iter()
@@ -88,9 +89,10 @@ fn collect_action(
                     .collect();
                 Some(CallableGenericParam {
                     kind: CallableGenericParamKind::Type,
-                    subject: ctx
-                        .interner
-                        .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+                    subject: ctx.interner.intern(Type::Named(NamedTypeRef {
+                        source_parameter: Some(*param),
+                        name: name.clone(),
+                    })),
                     name,
                     bounds,
                 })

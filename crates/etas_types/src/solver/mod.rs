@@ -1,12 +1,23 @@
+mod agent;
 pub mod assignability;
 pub mod callable;
+mod callable_reference;
+pub mod callable_spec;
+mod construction;
 pub mod effect_row;
+#[cfg(test)]
+mod execution_tests;
 pub mod field;
+mod handler;
 pub mod index;
 mod iterable;
+mod method;
 mod numeric_literal;
+mod reflection;
 pub mod report;
+mod return_type;
 pub mod spec_solver;
+mod try_capture;
 pub mod unification;
 
 pub use assignability::{Assignable, TypeRelation};
@@ -22,8 +33,10 @@ use crate::{
 };
 
 pub struct TypeSolveInput<'a> {
+    pub rigid_type_parameters: &'a [crate::CallableGenericParam],
     pub store: &'a TypeStore,
     pub known_std_types: &'a crate::KnownStdTypes,
+    pub declaration_facts: &'a crate::TypeFacts,
     pub spec_facts: &'a SpecFacts,
     pub constraints: &'a [TypeConstraint],
     pub spec_obligations: &'a [SpecObligation],
@@ -33,13 +46,115 @@ pub struct TypeSolver;
 
 impl TypeSolver {
     pub fn solve(input: TypeSolveInput<'_>) -> SolverReport {
+        Self::solve_with_checkpoint(input, &|| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {})
+    }
+
+    pub fn solve_controlled(
+        input: TypeSolveInput<'_>,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<SolverReport, etas_utils::PipelineInterruption> {
+        Self::solve_with_checkpoint(input, &|| control.checkpoint())
+    }
+
+    pub(crate) fn solve_with_checkpoint<E>(
+        input: TypeSolveInput<'_>,
+        checkpoint: &impl Fn() -> Result<(), E>,
+    ) -> Result<SolverReport, E> {
+        checkpoint()?;
         let mut report = SolverReport::default();
         let mut pending_access_constraints = Vec::new();
+        let mut pending_method_constraints = Vec::new();
         let mut checked_method_constraints = Vec::new();
         let mut pending_unary_constraints = Vec::new();
         let mut numeric_literals = Vec::new();
+        let mut inferences = Vec::new();
+        let mut returns = Vec::new();
+        let mut captures = Vec::new();
+        let mut callable_references = Vec::new();
+        let mut handler_parameters = Vec::new();
         for constraint in input.constraints {
+            checkpoint()?;
             match constraint {
+                TypeConstraint::HandlerInstantiation {
+                    parameters,
+                    requests,
+                    deferred,
+                    origin,
+                } => {
+                    if let Some((arm, body)) = deferred {
+                        report.deferred_handler_instantiations.insert(
+                            *arm,
+                            crate::DeferredHandlerInstantiation {
+                                body: *body,
+                                parameters: parameters
+                                    .iter()
+                                    .map(|(parameter, candidate, rigid)| {
+                                        crate::HandlerTypeBinding {
+                                            parameter: parameter.clone(),
+                                            candidate: *candidate,
+                                            rigid: *rigid,
+                                            parametric: false,
+                                        }
+                                    })
+                                    .collect(),
+                                span: origin.span,
+                            },
+                        );
+                    } else {
+                        handler::instantiate(
+                            input.store,
+                            &mut report,
+                            parameters,
+                            requests,
+                            *origin,
+                            &mut handler_parameters,
+                        );
+                    }
+                }
+                TypeConstraint::Constructible { target, origin } => {
+                    let target = resolve_known_substitutions(input.store, &report, *target);
+                    if let Some(failure) =
+                        construction::validate(input.store, input.known_std_types, target, *origin)
+                    {
+                        report.push(failure);
+                    }
+                }
+                TypeConstraint::ReturnType { .. } => returns.push(constraint),
+                TypeConstraint::AgentInference { .. } => inferences.push(constraint),
+                TypeConstraint::CallableReference { .. } => callable_references.push(constraint),
+                TypeConstraint::Reflection {
+                    expr,
+                    access_module,
+                    binding,
+                    members,
+                    output,
+                    origin,
+                } => {
+                    match reflection::solve(reflection::ReflectionSolveInput {
+                        store: input.store,
+                        facts: input.declaration_facts,
+                        binding,
+                        members,
+                        origin: *origin,
+                        solved: &report,
+                        access_module: *access_module,
+                    }) {
+                        Ok(fact) => {
+                            let mut unifier = TypeUnifier::with_known_substitution(
+                                input.store,
+                                &report.substitutions,
+                            );
+                            if unifier.unify(*output, fact.descriptor_type).is_err() {
+                                report.push(SolverFailure { code: etas_core::TypeDiagnosticCode::TypeMismatch, span: origin.span, message: "reflection descriptor type does not match the required type".into() });
+                            } else {
+                                report.substitutions.extend(&unifier.into_substitution());
+                                report.reflections.insert(*expr, fact);
+                            }
+                        }
+                        Err(failure) => report.push(failure),
+                    }
+                }
                 TypeConstraint::NumericLiteral { .. } => numeric_literals.push(constraint),
                 TypeConstraint::Equal { lhs, rhs, origin } => {
                     let lhs = resolve_known_substitutions(input.store, &report, *lhs);
@@ -96,16 +211,39 @@ impl TypeSolver {
                     origin,
                 } => {
                     let callee = resolve_known_substitutions(input.store, &report, *callee);
+                    if let Some(failure) =
+                        construction::validate(input.store, input.known_std_types, callee, *origin)
+                    {
+                        report.push(failure);
+                        continue;
+                    }
+                    let agent =
+                        match agent::resolve(input.store, input.declaration_facts, callee, *origin)
+                        {
+                            Ok(agent) => agent,
+                            Err(failure) => {
+                                report.push(failure);
+                                continue;
+                            }
+                        };
+                    let (callee, generic_params) =
+                        agent.map_or((callee, generic_params.as_slice()), |entry| {
+                            (
+                                entry.callable_type,
+                                entry.callable.generic_params.as_slice(),
+                            )
+                        });
                     let output = resolve_known_substitutions(input.store, &report, *output);
                     let args = args
                         .iter()
                         .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
                         .collect::<Vec<_>>();
                     let known_substitutions = report.substitutions.clone();
-                    report.append(solve_callable_constraint(
+                    let solved = solve_callable_constraint(
                         input.store,
                         input.spec_facts,
                         CallableConstraintSolveInput {
+                            rigid_type_parameters: input.rigid_type_parameters,
                             call: *call,
                             callee,
                             generic_params,
@@ -116,98 +254,52 @@ impl TypeSolver {
                             origin: *origin,
                             known_substitutions,
                         },
-                    ));
+                    );
+                    if solved.failures.is_empty()
+                        && let Some((call, method)) = call.zip(agent.and_then(|entry| entry.method))
+                    {
+                        report.agent_method_calls.insert(call, method);
+                    }
+                    report.append(solved);
                 }
                 TypeConstraint::MethodCall {
                     expr,
                     method,
+                    access_module,
                     candidates,
                     generic_args,
+                    arg_exprs,
                     args,
                     output,
                     origin,
                 } => {
-                    let mut solved = None;
-                    for candidate in candidates {
-                        let output = resolve_known_substitutions(input.store, &report, *output);
-                        let args = args
-                            .iter()
-                            .map(|arg| resolve_known_substitutions(input.store, &report, *arg))
-                            .collect::<Vec<_>>();
-                        if method == "cast"
-                            && candidates.iter().any(|candidate| {
-                                is_checked_message_cast_candidate(input.store, candidate.ty)
-                            })
-                        {
-                            solved = Some(solve_checked_message_cast(
-                                input.store,
-                                generic_args,
-                                &args,
-                                output,
-                                *origin,
-                            ));
-                            break;
-                        }
-                        if method == "data"
-                            && args
-                                .iter()
-                                .any(|arg| contains_secret_wrapper(input.store, *arg))
-                        {
-                            continue;
-                        }
-                        let mut candidate_report = solve_callable_constraint(
-                            input.store,
-                            input.spec_facts,
-                            CallableConstraintSolveInput {
-                                call: None,
-                                callee: candidate.ty,
-                                generic_params: &candidate.generic_params,
-                                explicit_generic_args: generic_args,
-                                arg_exprs: &[],
-                                args: &args,
-                                output,
-                                origin: *origin,
-                                known_substitutions: report.substitutions.clone(),
-                            },
-                        );
-                        if candidate_report.failures.is_empty() {
-                            if let crate::CallableCandidateOperation::CheckedIndex { error } =
-                                &candidate.operation
-                            {
-                                if let ([base, index], Some(error)) = (args.as_slice(), error) {
-                                    checked_method_constraints.push(TypeConstraint::IndexAccess {
-                                        expr: *expr,
-                                        base: *base,
-                                        index: *index,
-                                        output,
-                                        index_error: Some(*error),
-                                        origin: *origin,
-                                    });
-                                } else {
-                                    candidate_report.push(SolverFailure {
-                                        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                                        span: origin.span,
-                                        message: "checked index method requires receiver/index arguments and the canonical IndexError fact".to_owned(),
-                                    });
-                                }
-                            }
-                            solved = Some(candidate_report);
-                            break;
-                        }
-                    }
-                    if let Some(candidate_report) = solved {
-                        report.append(candidate_report);
+                    let invocation = method::Input {
+                        expr,
+                        method,
+                        access_module,
+                        candidates,
+                        generic_args,
+                        arg_exprs,
+                        args,
+                        output,
+                        origin,
+                    };
+                    if invocation.ready(input.store, &report) {
+                        method::solve(
+                            &input,
+                            invocation,
+                            &mut report,
+                            &mut checked_method_constraints,
+                            checkpoint,
+                        )?;
                     } else {
-                        report.push(SolverFailure {
-                            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                            span: origin.span,
-                            message: method_call_failure_message(method, input.store, args),
-                        });
+                        pending_method_constraints.push(invocation);
                     }
                 }
                 TypeConstraint::FieldAccess { .. } => {
                     solve_or_defer_access_constraint(
                         input.store,
+                        input.known_std_types,
                         input.spec_facts,
                         &mut report,
                         constraint,
@@ -217,6 +309,7 @@ impl TypeSolver {
                 TypeConstraint::IndexAccess { .. } | TypeConstraint::SliceAccess { .. } => {
                     solve_or_defer_access_constraint(
                         input.store,
+                        input.known_std_types,
                         input.spec_facts,
                         &mut report,
                         constraint,
@@ -238,46 +331,36 @@ impl TypeSolver {
                     origin,
                 ),
                 TypeConstraint::Unary { .. } => pending_unary_constraints.push(constraint),
-                TypeConstraint::TryOperand {
-                    operand,
-                    output,
-                    error: _,
-                    origin,
-                } => {
-                    let operand = resolve_known_substitutions(input.store, &report, *operand);
-                    let output = resolve_known_substitutions(input.store, &report, *output);
-                    if !is_assignable_for_reason(
-                        input.store,
-                        operand,
-                        output,
-                        &crate::AssignabilityReason::Other,
-                    ) {
-                        report.push(SolverFailure {
-                            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                            span: origin.span,
-                            message: "try operand value does not match Result ok type".to_owned(),
-                        });
-                    } else {
-                        let mut unifier = TypeUnifier::with_known_substitution(
-                            input.store,
-                            &report.substitutions,
-                        );
-                        if unifier.unify(operand, output).is_ok() {
-                            report.substitutions.extend(&unifier.into_substitution());
-                        }
-                    }
-                }
+                TypeConstraint::TryOperand { .. } => captures.push(constraint),
             }
         }
-        solve_numeric_literals(input.store, &mut report, numeric_literals);
-        solve_unary_constraints(input.store, &mut report, pending_unary_constraints);
+        return_type::solve(input.store, &mut report, &returns, checkpoint)?;
+        try_capture::solve(input.store, &mut report, &captures, checkpoint)?;
+        solve_numeric_literals(input.store, &mut report, numeric_literals, checkpoint)?;
+        solve_unary_constraints(
+            input.store,
+            &mut report,
+            pending_unary_constraints,
+            checkpoint,
+        )?;
         pending_access_constraints.extend(checked_method_constraints);
+        method::solve_pending(
+            &input,
+            &mut report,
+            pending_method_constraints,
+            &mut pending_access_constraints,
+            checkpoint,
+        )?;
         solve_pending_access_constraints(
             input.store,
+            input.known_std_types,
             input.spec_facts,
             &mut report,
             pending_access_constraints,
-        );
+            checkpoint,
+        )?;
+        callable_reference::solve(input.store, &mut report, &callable_references, checkpoint)?;
+        handler::finalize_parameters(input.store, &mut report, handler_parameters);
         let deferred_obligations = std::mem::take(&mut report.pending_spec_obligations);
         let obligations = input
             .spec_obligations
@@ -294,17 +377,89 @@ impl TypeSolver {
                 span: obligation.span,
             })
             .collect::<Vec<_>>();
-        report.append(spec_solver::solve_spec_obligations(
-            input.store,
-            input.spec_facts,
-            &obligations,
-            &report.named_substitutions,
-        ));
-        report
+        for obligation in &obligations {
+            checkpoint()?;
+            report.append(spec_solver::solve_spec_obligations(
+                input.store,
+                input.spec_facts,
+                std::slice::from_ref(obligation),
+                &report.named_substitutions,
+            ));
+        }
+        for constraint in inferences {
+            checkpoint()?;
+            let TypeConstraint::AgentInference {
+                expr,
+                owner,
+                prompt,
+                prompt_type,
+                output,
+                schema,
+                action_symbol,
+                origin,
+            } = constraint
+            else {
+                continue;
+            };
+            let method = input
+                .declaration_facts
+                .agent_methods
+                .values()
+                .find(|method| method.body == *owner);
+            let prompt_type = resolve_known_substitutions(input.store, &report, *prompt_type);
+            let output = resolve_known_substitutions(input.store, &report, *output);
+            let failure = if method.is_none() {
+                Some((
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    "perform infer is available only inside an agent method",
+                ))
+            } else if !matches!(
+                input.store.get(prompt_type),
+                Some(Type::Prompt | Type::Primitive(crate::PrimitiveType::Never))
+            ) {
+                Some((
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    "perform infer requires a Prompt, not an agent's input or output value",
+                ))
+            } else if matches!(input.store.get(output), None | Some(Type::Var(_)))
+                || (matches!(input.store.get(output), Some(Type::Named(_)))
+                    && !input.known_std_types.opaque_values.contains(&output))
+            {
+                Some((
+                    etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    "perform infer requires an output type argument or an expected result type",
+                ))
+            } else {
+                None
+            };
+            if let Some((code, message)) = failure {
+                report.push(SolverFailure {
+                    code,
+                    span: origin.span,
+                    message: message.into(),
+                });
+            } else if let Some(method) = method {
+                report.agent_inferences.insert(
+                    *expr,
+                    crate::CheckedAgentInferenceFact {
+                        owner: *owner,
+                        agent: method.agent,
+                        method: method.symbol,
+                        prompt: *prompt,
+                        output,
+                        schema: *schema,
+                        action_symbol: *action_symbol,
+                    },
+                );
+            }
+        }
+        checkpoint()?;
+        Ok(report)
     }
 }
 
 struct CallableConstraintSolveInput<'a> {
+    rigid_type_parameters: &'a [crate::CallableGenericParam],
     call: Option<etas_hir::HirExprId>,
     callee: TypeId,
     generic_params: &'a [crate::CallableGenericParam],
@@ -321,20 +476,15 @@ fn solve_callable_constraint(
     spec_facts: &SpecFacts,
     input: CallableConstraintSolveInput<'_>,
 ) -> SolverReport {
-    let inferred_names;
-    let declared_names;
-    let generic_param_names = if input.generic_params.is_empty() {
-        inferred_names = callable::callable_schematic_param_names(store, input.callee);
-        inferred_names.as_slice()
-    } else {
-        declared_names = input
-            .generic_params
-            .iter()
-            .filter(|param| param.kind == crate::CallableGenericParamKind::Type)
-            .map(|param| param.name.clone())
-            .collect::<Vec<_>>();
-        declared_names.as_slice()
-    };
+    // A callback can mention its enclosing declaration's rigid parameters.
+    // Only the callee's own checked generic parameters are instantiable here.
+    let declared_names = input
+        .generic_params
+        .iter()
+        .filter(|param| param.kind == crate::CallableGenericParamKind::Type)
+        .map(|param| param.name.clone())
+        .collect::<Vec<_>>();
+    let generic_param_names = declared_names.as_slice();
     let effect_param_names = input
         .generic_params
         .iter()
@@ -389,6 +539,25 @@ fn solve_callable_constraint(
         });
         return report;
     }
+    let mut initial_substitutions = input.known_substitutions;
+    let mut explicit_binders = TypeUnifier::with_substitution(store, initial_substitutions.clone());
+    for (param, arg) in input.generic_params.iter().zip(input.explicit_generic_args) {
+        if let crate::CallableGenericArg::Type(ty) = arg
+            && matches!(store.get(param.subject), Some(Type::Var(_)))
+            && let Err(error) = explicit_binders.unify(param.subject, *ty)
+        {
+            let mut report = SolverReport::default();
+            report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                span: input.origin.span,
+                message: format!(
+                    "explicit generic argument conflicts with its checked binder: {error:?}"
+                ),
+            });
+            return report;
+        }
+    }
+    initial_substitutions.extend(explicit_binders.substitution());
     let mut report = callable::solve_callable_with_named_substitutions(
         store,
         callable::CallableSolveInput {
@@ -398,8 +567,16 @@ fn solve_callable_constraint(
             args: input.args,
             output: input.output,
             origin: input.origin,
-            initial_named_substitutions: HashMap::new(),
-            initial_substitutions: input.known_substitutions,
+            initial_named_substitutions: input
+                .rigid_type_parameters
+                .iter()
+                .filter(|param| {
+                    param.kind == crate::CallableGenericParamKind::Type
+                        && !generic_param_names.contains(&param.name)
+                })
+                .map(|param| (param.name.clone(), param.subject))
+                .collect(),
+            initial_substitutions,
         },
     );
     if report.failures.is_empty() {
@@ -533,6 +710,21 @@ fn solve_callable_constraint(
     if report.failures.is_empty()
         && let Some(call) = input.call
     {
+        if let Some(Type::Function(flow)) = store.get(input.callee)
+            && let Some(row) = &flow.effects
+        {
+            report.invocation_effects.insert(call, row.clone());
+        }
+        if let Some(Type::Function(flow)) = store.get(input.callee)
+            && matches!(
+                store.get(flow.output),
+                Some(Type::Primitive(crate::PrimitiveType::Never))
+            )
+        {
+            // Assignability to an expected value type does not turn a
+            // non-returning call into an expression that completes normally.
+            report.inferred_expr_types.insert(call, flow.output);
+        }
         let type_bindings = generic_param_names
             .iter()
             .filter_map(|name| {
@@ -594,12 +786,14 @@ fn solve_callable_constraint(
     report
 }
 
-fn solve_unary_constraints(
+fn solve_unary_constraints<E>(
     store: &TypeStore,
     report: &mut SolverReport,
     constraints: Vec<&TypeConstraint>,
-) {
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<(), E> {
     for constraint in constraints {
+        checkpoint()?;
         let TypeConstraint::Unary {
             op,
             operand,
@@ -638,16 +832,19 @@ fn solve_unary_constraints(
             });
         }
     }
+    Ok(())
 }
 
-fn solve_numeric_literals(
+fn solve_numeric_literals<E>(
     store: &TypeStore,
     report: &mut SolverReport,
     literals: Vec<&TypeConstraint>,
-) {
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<(), E> {
     let default_integer = primitive_type_id(store, PrimitiveType::I32);
     let default_float = primitive_type_id(store, PrimitiveType::F64);
     for literal in literals {
+        checkpoint()?;
         let TypeConstraint::NumericLiteral {
             expr,
             text,
@@ -702,6 +899,7 @@ fn solve_numeric_literals(
             report.inferred_expr_types.insert(*expr, resolved);
         }
     }
+    Ok(())
 }
 
 fn primitive_type_id(store: &TypeStore, primitive: PrimitiveType) -> Option<TypeId> {
@@ -712,28 +910,50 @@ fn primitive_type_id(store: &TypeStore, primitive: PrimitiveType) -> Option<Type
 
 fn solve_or_defer_access_constraint(
     store: &TypeStore,
+    known: &crate::KnownStdTypes,
     spec_facts: &SpecFacts,
     report: &mut SolverReport,
     constraint: &TypeConstraint,
     pending: &mut Vec<TypeConstraint>,
 ) {
-    match solve_access_constraint(store, spec_facts, report, constraint) {
+    match solve_access_constraint(store, known, spec_facts, report, constraint) {
         AccessConstraintOutcome::Solved(solved) => report.append(*solved),
         AccessConstraintOutcome::Pending => pending.push(constraint.clone()),
     }
 }
 
-fn solve_pending_access_constraints(
+fn solve_pending_access_constraints<E>(
     store: &TypeStore,
+    known: &crate::KnownStdTypes,
     spec_facts: &SpecFacts,
     report: &mut SolverReport,
     mut pending: Vec<TypeConstraint>,
-) {
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<(), E> {
+    solve_ready_access_constraints(store, known, spec_facts, report, &mut pending, checkpoint)?;
+    for constraint in pending {
+        checkpoint()?;
+        report.push(unresolved_access_failure(store, report, &constraint));
+    }
+    Ok(())
+}
+
+fn solve_ready_access_constraints<E>(
+    store: &TypeStore,
+    known: &crate::KnownStdTypes,
+    spec_facts: &SpecFacts,
+    report: &mut SolverReport,
+    pending: &mut Vec<TypeConstraint>,
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<bool, E> {
+    let mut progress = false;
     while !pending.is_empty() {
+        checkpoint()?;
         let mut next = Vec::new();
         let mut solved_any = false;
-        for constraint in pending {
-            match solve_access_constraint(store, spec_facts, report, &constraint) {
+        for constraint in std::mem::take(pending) {
+            checkpoint()?;
+            match solve_access_constraint(store, known, spec_facts, report, &constraint) {
                 AccessConstraintOutcome::Solved(solved) => {
                     solved_any = true;
                     report.append(*solved);
@@ -741,14 +961,13 @@ fn solve_pending_access_constraints(
                 AccessConstraintOutcome::Pending => next.push(constraint),
             }
         }
+        *pending = next;
         if !solved_any {
-            for constraint in next {
-                report.push(unresolved_access_failure(store, report, &constraint));
-            }
             break;
         }
-        pending = next;
+        progress = true;
     }
+    Ok(progress)
 }
 
 enum AccessConstraintOutcome {
@@ -758,6 +977,7 @@ enum AccessConstraintOutcome {
 
 fn solve_access_constraint(
     store: &TypeStore,
+    known: &crate::KnownStdTypes,
     spec_facts: &SpecFacts,
     report: &SolverReport,
     constraint: &TypeConstraint,
@@ -775,7 +995,7 @@ fn solve_access_constraint(
             }
             let output = resolve_known_substitutions(store, report, *output);
             AccessConstraintOutcome::Solved(Box::new(field::solve_field_access(
-                store, base, field, output, *origin,
+                store, known, base, field, output, *origin,
             )))
         }
         TypeConstraint::IndexAccess {

@@ -3,7 +3,16 @@ use etas_types::{EffectArgRef, TypeId};
 use super::{EffectActionId, EffectTagId};
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct ActionRef {
     pub tag: EffectTagId,
@@ -11,15 +20,28 @@ pub struct ActionRef {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct ActionInstanceRef {
     pub action: ActionRef,
     pub args: Vec<EffectArgRef>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct EffectActionSig {
+    #[serde(default)]
+    pub has_default_handler: bool,
     pub id: EffectActionId,
     pub owner: EffectTagId,
     pub name: String,
@@ -35,7 +57,9 @@ pub struct EffectActionSig {
     pub high_impact_ack: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum EffectActionArgKind {
     Type,
     MemoryPlace,

@@ -43,41 +43,68 @@ impl EffectSemantics<'_> {
         &self,
         state: &EffectState,
         expr: HirExprId,
-    ) -> Option<Vec<EffectUnit>> {
+    ) -> Option<Vec<LatentSource>> {
+        if self.inputs.std_callable_values.contains_key(&expr) {
+            return Some(vec![LatentSource::StdReference {
+                value: expr,
+                environment: None,
+            }]);
+        }
+        // These are previous-round origins for this lexical call site, not a
+        // substitute for checking the invoked callable's complete behavior.
+        let known_call_result = (self.context.view().index().expr_item.get(&expr).copied()
+            == state.owner)
+            .then(|| self.call_results.value_sources(expr))
+            .flatten();
         if let Some(sources) = state.local_latent_values.value_sources(expr) {
-            if !sources.is_empty() {
-                return Some(sources.iter().copied().collect());
+            if sources.iter().all(|source| matches!(source, LatentSource::Unavailable { expr: missing } if *missing == expr))
+                && let Some(known) = known_call_result {
+                return Some(known.iter().copied().collect());
             }
+            return Some(sources.iter().copied().collect());
+        }
+        if let Some(known) = known_call_result {
+            return Some(known.iter().copied().collect());
         }
         match self.hir.exprs.get(expr)? {
+            HirExpr::Lambda { .. } => {
+                let owner = *self.context.view().index().expr_item.get(&expr)?;
+                self.anonymous_flow_unit_for_expr(owner, expr)
+                    .map(|unit| vec![LatentSource::Unit(unit)])
+            }
             HirExpr::Path(path) => {
                 let symbol = match &path.resolution {
                     ResolveResult::Resolved(symbol) => *symbol,
                     ResolveResult::PartiallyResolved(partial) => partial.resolved_prefix?,
                     ResolveResult::Unresolved | ResolveResult::Ambiguous(_) => return None,
                 };
-                if let Some(sources) = state.local_latent_values.symbol_sources(symbol) {
-                    if !sources.is_empty() {
-                        return Some(sources.iter().copied().collect());
+                if self.checked_empty_constructor_value(expr, symbol) {
+                    return Some(Vec::new());
+                }
+                let mut sources = self.latent_sources_for_symbol(state, symbol)?;
+                if self.types.facts.generic_instantiations.contains_key(&expr) {
+                    for source in &mut sources {
+                        if let LatentSource::Unit(unit) = *source {
+                            *source = LatentSource::Reference {
+                                unit,
+                                value: expr,
+                                environment: None,
+                            };
+                        }
                     }
                 }
-                let symbol_data = self.hir.symbols.get(symbol)?;
-                match symbol_data.def {
-                    SymbolDef::Item { item } => match self.hir.items.get(item) {
-                        Some(
-                            etas_hir::HirItem::Flow(_)
-                            | etas_hir::HirItem::Agent(_)
-                            | etas_hir::HirItem::Tool(_),
-                        ) => Some(vec![EffectUnit::Item(item)]),
-                        _ => self
-                            .top_level_anonymous_flow_unit(item)
-                            .map(|unit| vec![unit]),
-                    },
-                    SymbolDef::TopLevelLet { item, .. } => self
-                        .top_level_anonymous_flow_unit(item)
-                        .map(|unit| vec![unit]),
-                    _ => None,
-                }
+                Some(sources)
+            }
+            HirExpr::EmptySequence { .. } | HirExpr::EmptyRecordOrMap { .. } => {
+                self.expr_type_contains_flow(expr).then(Vec::new)
+            }
+            HirExpr::Array { elems, .. }
+            | HirExpr::List { elems, .. }
+            | HirExpr::Tuple { elems, .. }
+            | HirExpr::Set { elems, .. }
+                if elems.is_empty() =>
+            {
+                self.expr_type_contains_flow(expr).then(Vec::new)
             }
             HirExpr::Array { elems, .. }
             | HirExpr::List { elems, .. }
@@ -85,33 +112,36 @@ impl EffectSemantics<'_> {
             | HirExpr::Set { elems, .. } => self.union_latent_sources(
                 elems
                     .iter()
-                    .filter_map(|elem| self.latent_sources_for_expr(state, *elem)),
+                    .filter_map(|elem| self.latent_payload_sources(state, *elem)),
             ),
+            HirExpr::Map { entries, .. } if entries.is_empty() => {
+                self.expr_type_contains_flow(expr).then(Vec::new)
+            }
             HirExpr::Map { entries, .. } => self.union_latent_sources(
                 entries
                     .iter()
-                    .filter_map(|entry| self.latent_sources_for_expr(state, entry.value)),
+                    .filter_map(|entry| self.latent_payload_sources(state, entry.value)),
             ),
             HirExpr::Record(record) => {
                 self.union_latent_sources(record.fields.iter().filter_map(|field| match field {
                     etas_hir::HirFieldInit::Named { value, .. } => {
-                        self.latent_sources_for_expr(state, *value)
+                        self.latent_payload_sources(state, *value)
                     }
                     etas_hir::HirFieldInit::Shorthand { resolution, .. } => {
                         let ResolveResult::Resolved(symbol) = resolution else {
                             return None;
                         };
-                        state
-                            .local_latent_values
-                            .symbol_sources(*symbol)
-                            .map(|sources| sources.iter().copied().collect())
+                        self.latent_sources_for_symbol(state, *symbol).or_else(|| {
+                            self.symbol_type_contains_flow(*symbol)
+                                .then(|| vec![LatentSource::Unavailable { expr }])
+                        })
                     }
                 }))
             }
             HirExpr::Index { base, .. } | HirExpr::Field { base, .. } => {
                 self.latent_sources_for_expr(state, *base)
             }
-            HirExpr::Call { callee, args, .. } if self.is_wrapper_or_unwrap_call(*callee) => args
+            HirExpr::Call { callee, args, .. } if self.is_latent_transparent_call(*callee) => args
                 .first()
                 .and_then(arg_expr)
                 .and_then(|arg| self.latent_sources_for_expr(state, arg)),
@@ -119,7 +149,7 @@ impl EffectSemantics<'_> {
                 .union_latent_sources(
                     args.iter()
                         .filter_map(arg_expr)
-                        .filter_map(|arg| self.latent_sources_for_expr(state, arg)),
+                        .filter_map(|arg| self.latent_payload_sources(state, arg)),
                 ),
             HirExpr::StageCompose { .. } => state
                 .local_latent_values
@@ -131,22 +161,47 @@ impl EffectSemantics<'_> {
 
     pub(crate) fn union_latent_sources(
         &self,
-        sources: impl IntoIterator<Item = Vec<EffectUnit>>,
-    ) -> Option<Vec<EffectUnit>> {
+        sources: impl IntoIterator<Item = Vec<LatentSource>>,
+    ) -> Option<Vec<LatentSource>> {
         let mut merged = std::collections::BTreeSet::new();
+        let mut known = false;
         for sources in sources {
+            known = true;
             merged.extend(sources);
         }
-        (!merged.is_empty()).then(|| merged.into_iter().collect())
+        known.then(|| merged.into_iter().collect())
     }
 
-    pub(crate) fn is_wrapper_or_unwrap_call(&self, callee: HirExprId) -> bool {
+    fn latent_payload_sources(
+        &self,
+        state: &EffectState,
+        expr: HirExprId,
+    ) -> Option<Vec<LatentSource>> {
+        self.latent_sources_for_expr(state, expr).or_else(|| {
+            self.expr_type_contains_flow(expr)
+                .then(|| vec![LatentSource::Unavailable { expr }])
+        })
+    }
+
+    pub(crate) fn is_latent_transparent_call(&self, callee: HirExprId) -> bool {
         let Some(HirExpr::Path(path)) = self.hir.exprs.get(callee) else {
             return false;
         };
-        path.segments
-            .last()
-            .is_some_and(|segment| matches!(segment.name.as_str(), "Some" | "Ok" | "unwrap"))
+        let ResolveResult::Resolved(symbol) = path.resolution else {
+            return false;
+        };
+        let Some(symbol) = self.hir.symbols.get(symbol) else {
+            return false;
+        };
+        let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+            return false;
+        };
+        self.std_registry
+            .lookup_qualified(path)
+            .and_then(|symbol| symbol.intrinsic.as_ref())
+            .is_some_and(|descriptor| {
+                descriptor.latent_effect == etas_std::IntrinsicLatentEffect::TransparentFirstArg
+            })
     }
 
     pub(crate) fn is_value_constructor_call(&self, callee: HirExprId) -> bool {
@@ -170,7 +225,7 @@ impl EffectSemantics<'_> {
         &self,
         state: &mut EffectState,
         pat: HirPatId,
-        sources: Vec<EffectUnit>,
+        sources: Vec<LatentSource>,
     ) {
         let Some(pat_data) = self.hir.pats.get(pat) else {
             return;
@@ -329,7 +384,7 @@ impl EffectSemantics<'_> {
             HirExpr::Index { base, .. } | HirExpr::Field { base, .. } => {
                 self.anonymous_flow_unit_for_expr(owner, *base)
             }
-            HirExpr::Call { callee, args, .. } if self.is_wrapper_or_unwrap_call(*callee) => args
+            HirExpr::Call { callee, args, .. } if self.is_latent_transparent_call(*callee) => args
                 .first()
                 .and_then(arg_expr)
                 .and_then(|arg| self.anonymous_flow_unit_for_expr(owner, arg)),
@@ -390,7 +445,13 @@ impl EffectSemantics<'_> {
                         return false;
                     };
                     self.symbol_type_contains_flow(*symbol)
-                        && state.local_latent_values.symbol_sources(*symbol).is_none()
+                        && self
+                            .latent_sources_for_symbol(state, *symbol)
+                            .is_none_or(|sources| {
+                                sources.iter().any(|source| {
+                                    matches!(source, LatentSource::Unavailable { .. })
+                                })
+                            })
                 }
             }),
             HirExpr::Call { callee, args, .. } if self.is_value_constructor_call(*callee) => args
@@ -409,7 +470,12 @@ impl EffectSemantics<'_> {
         if !self.expr_type_contains_flow(expr) {
             return false;
         }
-        self.latent_sources_for_expr(state, expr).is_none()
+        self.latent_sources_for_expr(state, expr)
+            .is_none_or(|sources| {
+                sources
+                    .iter()
+                    .any(|source| matches!(source, LatentSource::Unavailable { .. }))
+            })
     }
 
     pub(crate) fn expr_type_contains_flow(&self, expr: HirExprId) -> bool {
@@ -426,48 +492,90 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn type_contains_flow(&self, ty: etas_types::TypeId) -> bool {
-        match self.types.store.get(ty) {
-            Some(Type::Function(_)) => true,
-            Some(Type::Array(inner))
-            | Some(Type::List(inner))
-            | Some(Type::Set(inner))
-            | Some(Type::Slice(inner))
-            | Some(Type::Option(inner))
-            | Some(Type::Schema(inner))
-            | Some(Type::Message(inner))
-            | Some(Type::MemorySelection(inner))
-            | Some(Type::MemoryRegion(inner))
-            | Some(Type::Refined { base: inner, .. })
-            | Some(Type::Trust { inner, .. }) => self.type_contains_flow(*inner),
-            Some(Type::Map { value, .. }) => self.type_contains_flow(*value),
-            Some(Type::Result { ok, err }) => {
-                self.type_contains_flow(*ok) || self.type_contains_flow(*err)
-            }
-            Some(Type::Record(record)) => record
-                .fields
-                .iter()
-                .any(|field| self.type_contains_flow(field.ty)),
-            Some(Type::Tuple(types)) => types.iter().any(|ty| self.type_contains_flow(*ty)),
-            Some(Type::Store { key, value }) => {
-                self.type_contains_flow(*key) || self.type_contains_flow(*value)
-            }
-            Some(Type::Applied { args, .. }) => args.iter().any(|ty| self.type_contains_flow(*ty)),
-            Some(
-                Type::Primitive(_)
-                | Type::IntegerLiteral { .. }
-                | Type::Var(_)
-                | Type::Range { .. }
-                | Type::Enum(_)
-                | Type::Handler(_)
-                | Type::Named(_)
-                | Type::Nominal(_)
-                | Type::Prompt
-                | Type::PromptPart
-                | Type::MemoryPlace(_)
-                | Type::ResourceHandle(_),
-            )
-            | None => false,
+        if let Some(found) = self.flow_type_presence.borrow().get(&ty) {
+            return *found;
         }
+        let root = ty;
+        let mut pending = vec![ty];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !visited.insert(ty) {
+                continue;
+            }
+            if let Some(found) = self.flow_type_presence.borrow().get(&ty).copied() {
+                if found {
+                    return true;
+                }
+                continue;
+            }
+            match self.types.store.get(ty) {
+                Some(Type::Function(_)) => {
+                    self.flow_type_presence.borrow_mut().insert(root, true);
+                    return true;
+                }
+                Some(
+                    Type::Array(inner)
+                    | Type::List(inner)
+                    | Type::Set(inner)
+                    | Type::Slice(inner)
+                    | Type::Option(inner)
+                    | Type::Schema(inner)
+                    | Type::Message(inner)
+                    | Type::MemorySelection(inner)
+                    | Type::MemoryRegion(inner)
+                    | Type::Refined { base: inner, .. }
+                    | Type::Trust { inner, .. },
+                ) => pending.push(*inner),
+                Some(
+                    Type::Map { key, value }
+                    | Type::Store { key, value }
+                    | Type::Result {
+                        ok: key,
+                        err: value,
+                    },
+                ) => pending.extend([*key, *value]),
+                Some(Type::Record(record)) => {
+                    pending.extend(record.fields.iter().map(|field| field.ty))
+                }
+                Some(Type::Tuple(types)) => pending.extend(types),
+                Some(Type::Nominal(nominal)) => pending.extend(nominal.representation),
+                Some(Type::Applied { constructor, args }) => {
+                    // Traverse the finite declaration graph and concrete arguments,
+                    // never repeatedly instantiate recursive nominal applications.
+                    pending.push(etas_types::TypeId(constructor.0));
+                    pending.extend(args);
+                }
+                Some(Type::Enum(_)) => match self.types.facts.enum_layouts.get(&ty) {
+                    Some(layout) => pending.extend(
+                        layout
+                            .variants
+                            .iter()
+                            .flat_map(|variant| variant.fields.iter())
+                            .copied(),
+                    ),
+                    // Incomplete layout facts cannot prove the absence of callables.
+                    None => return true,
+                },
+                Some(
+                    Type::Primitive(_)
+                    | Type::IntegerLiteral { .. }
+                    | Type::Var(_)
+                    | Type::Range { .. }
+                    | Type::Handler(_)
+                    | Type::Named(_)
+                    | Type::Prompt
+                    | Type::PromptPart
+                    | Type::MemoryPlace(_)
+                    | Type::ResourceHandle(_),
+                ) => {}
+                None => return true,
+            }
+        }
+        let mut cache = self.flow_type_presence.borrow_mut();
+        for ty in visited {
+            cache.insert(ty, false);
+        }
+        false
     }
 
     pub(crate) fn is_deferred_first_class_param(&self, expr: HirExprId) -> bool {
@@ -489,245 +597,11 @@ impl EffectSemantics<'_> {
             .is_some_and(|flow| flow.effects.is_none())
     }
 
-    pub(crate) fn open_effect_parameter_call(&self, expr: HirExprId) -> Option<String> {
-        let HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
-            return None;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return None;
-        };
-        let symbol = self.hir.symbols.get(symbol)?;
-        if !matches!(symbol.kind, etas_hir::SymbolKind::Param)
-            && !matches!(symbol.def, SymbolDef::Param { .. })
-        {
-            return None;
-        }
-        self.flow_type_for_expr(expr)?
-            .effects
-            .as_ref()?
-            .tail
-            .as_ref()?;
-        Some(symbol.name.clone())
-    }
-
     pub(crate) fn is_projected_flow_value(&self, expr: HirExprId) -> bool {
         matches!(
             self.hir.exprs.get(expr),
             Some(HirExpr::Index { .. } | HirExpr::Field { .. } | HirExpr::Call { .. })
         )
-    }
-
-    pub(crate) fn apply_deferred_first_class_call_sites(
-        &mut self,
-        context: UnitContext<EffectUnit>,
-        site: CallSite<EffectUnit>,
-        callee: EffectUnit,
-        mut state: EffectState,
-    ) -> EffectState {
-        let EffectUnit::Item(item) = callee else {
-            return state;
-        };
-        let deferred = self
-            .inputs
-            .deferred_first_class_calls
-            .get(&callee)
-            .cloned()
-            .unwrap_or_default();
-        let returned_flow = self.returned_anonymous_flow_unit(item);
-        let returned_deferred = returned_flow.and_then(|unit| {
-            self.inputs
-                .deferred_first_class_calls
-                .get(&unit)
-                .cloned()
-                .map(|calls| (unit, calls))
-        });
-        if let Some(returned_unit) = returned_flow
-            && returned_deferred.is_none()
-        {
-            state
-                .local_latent_values
-                .record_value(site.call, returned_unit);
-        }
-        if deferred.is_empty() && returned_deferred.is_none() {
-            if returned_flow.is_none()
-                && self
-                    .flow_type_for_expr(site.call)
-                    .is_some_and(|flow| flow.effects.is_none())
-            {
-                self.diagnostics.push(Diagnostic::effect_check(
-                    EffectDiagnosticCode::IncompleteEffectFacts,
-                    site.span,
-                    "returned first-class flow propagation requires a checked latent return source",
-                ));
-                state.mark_incomplete();
-                state.summary.support =
-                    InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
-                return state;
-            }
-            return state;
-        }
-        let call_args =
-            match self.hir.exprs.get(site.call) {
-                Some(HirExpr::Call { args, .. }) => args.clone(),
-                _ => return self.incomplete_at(
-                    site.span,
-                    "first-class flow call specialization requires a materialized call expression",
-                    state,
-                ),
-            };
-        let mut specialized = EffectSummary::local();
-        let mut solved_any = false;
-        for deferred_call in &deferred {
-            match self.specialized_summary_for_deferred_call(
-                item,
-                *deferred_call,
-                &call_args,
-                &state,
-                site.span,
-            ) {
-                DeferredSpecialization::Solved(summary) => {
-                    let call_unit = EffectUnit::FirstClassFlowCall {
-                        owner: item,
-                        call: *deferred_call,
-                    };
-                    self.inputs
-                        .unit_effects
-                        .insert(call_unit, (*summary).clone());
-                    self.inputs.solved_deferred_units.insert(call_unit);
-                    specialized.seq_assign(&summary);
-                    solved_any = true;
-                }
-                DeferredSpecialization::Rejected { message } => {
-                    state = self.incomplete_at(site.span, message, state);
-                    self.reject_deferred_unit(callee);
-                }
-            }
-        }
-        if solved_any {
-            state.summary.seq_assign(&specialized);
-            self.inputs.solved_deferred_units.insert(callee);
-        }
-
-        if let Some((returned_unit, returned_calls)) = returned_deferred {
-            let mut returned_summary = EffectSummary::local();
-            let mut returned_solved = false;
-            for deferred_call in returned_calls {
-                match self.specialized_summary_for_deferred_call(
-                    item,
-                    deferred_call,
-                    &call_args,
-                    &state,
-                    site.span,
-                ) {
-                    DeferredSpecialization::Solved(summary) => {
-                        let deferred_call_unit = EffectUnit::FirstClassFlowCall {
-                            owner: item,
-                            call: deferred_call,
-                        };
-                        self.inputs
-                            .unit_effects
-                            .insert(deferred_call_unit, (*summary).clone());
-                        self.inputs.solved_deferred_units.insert(deferred_call_unit);
-                        returned_summary.seq_assign(&summary);
-                        returned_solved = true;
-                    }
-                    DeferredSpecialization::Rejected { .. } => {
-                        state = self.incomplete_at(
-                            site.span,
-                            "returned first-class flow propagation requires a checked latent return source",
-                            state,
-                        );
-                        self.reject_deferred_unit(returned_unit);
-                    }
-                }
-            }
-            if returned_solved {
-                let owner = context.unit.owner().unwrap_or(item);
-                let call_unit = EffectUnit::FirstClassFlowCall {
-                    owner,
-                    call: site.call,
-                };
-                self.inputs.unit_effects.insert(call_unit, returned_summary);
-                self.inputs.solved_deferred_units.insert(returned_unit);
-                state.local_latent_values.record_value(site.call, call_unit);
-            }
-        }
-
-        state
-    }
-
-    pub(crate) fn specialized_summary_for_deferred_call(
-        &mut self,
-        callee_item: HirItemId,
-        deferred_call: HirExprId,
-        call_args: &[HirArg],
-        state: &EffectState,
-        span: Span,
-    ) -> DeferredSpecialization {
-        let Some(param_symbol) = self.deferred_call_param_symbol(deferred_call) else {
-            return DeferredSpecialization::Rejected {
-                message: "first-class flow call specialization requires a checked parameter target",
-            };
-        };
-        let Some(param_ty) = self.symbol_value_type(param_symbol) else {
-            return DeferredSpecialization::Rejected {
-                message: "first-class flow call specialization requires checked parameter type facts",
-            };
-        };
-        let Some(Type::Function(flow)) = self.types.store.get(param_ty) else {
-            return DeferredSpecialization::Rejected {
-                message: "first-class flow call specialization requires a checked function parameter type",
-            };
-        };
-        if let Some(row) = &flow.effects
-            && row.tail.is_none()
-        {
-            return DeferredSpecialization::Solved(Box::new(
-                self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span),
-            ));
-        }
-        let Some(index) = self.param_index(callee_item, param_symbol) else {
-            return DeferredSpecialization::Rejected {
-                message: "first-class flow call specialization requires checked parameter type facts",
-            };
-        };
-        let Some(arg) = call_args.get(index).and_then(arg_expr) else {
-            return DeferredSpecialization::Rejected {
-                message: "first-class flow call specialization requires a matching call-site argument",
-            };
-        };
-        if let Some(sources) = self.latent_sources_for_expr(state, arg) {
-            let mut summary = EffectSummary::local();
-            for source in sources {
-                let Some(source_summary) = self.inputs.unit_effects.get(&source).cloned() else {
-                    return DeferredSpecialization::Rejected {
-                        message: "first-class flow call requires a checked latent effect fact",
-                    };
-                };
-                summary.seq_assign(&source_summary);
-                self.record_latent_realization(source, deferred_call);
-            }
-            return DeferredSpecialization::Solved(Box::new(summary));
-        }
-        if let Some(arg_summary) = self.summary_for_flow_expr_type(arg, span) {
-            return DeferredSpecialization::Solved(Box::new(arg_summary));
-        }
-        DeferredSpecialization::Rejected {
-            message: "first-class flow call requires a checked latent effect fact or an explicit function effect row",
-        }
-    }
-
-    pub(crate) fn deferred_call_param_symbol(&self, call: HirExprId) -> Option<etas_hir::SymbolId> {
-        let HirExpr::Call { callee, .. } = self.hir.exprs.get(call)? else {
-            return None;
-        };
-        let HirExpr::Path(path) = self.hir.exprs.get(*callee)? else {
-            return None;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return None;
-        };
-        Some(symbol)
     }
 
     pub(crate) fn symbol_value_type(
@@ -781,17 +655,6 @@ impl EffectSemantics<'_> {
         )
     }
 
-    pub(crate) fn param_index(&self, item: HirItemId, symbol: etas_hir::SymbolId) -> Option<usize> {
-        match self.hir.items.get(item)? {
-            etas_hir::HirItem::Flow(flow) => flow.params.iter().position(|param| *param == symbol),
-            etas_hir::HirItem::Agent(agent) => {
-                agent.params.iter().position(|param| *param == symbol)
-            }
-            etas_hir::HirItem::Tool(tool) => tool.params.iter().position(|param| *param == symbol),
-            _ => None,
-        }
-    }
-
     pub(crate) fn source_type_item_for_path(&self, path: &[String]) -> Option<HirItemId> {
         let (name, module_path) = path.split_last()?;
         for (item, hir_item) in self.hir.items.iter() {
@@ -825,33 +688,9 @@ impl EffectSemantics<'_> {
         None
     }
 
-    pub(crate) fn returned_anonymous_flow_unit(&self, item: HirItemId) -> Option<EffectUnit> {
-        let block = self.owner_primary_block(item)?;
-        let block = self.hir.blocks.get(block)?;
-        for stmt in &block.stmts {
-            let Some(HirStmt::Return {
-                value: Some(value), ..
-            }) = self.hir.stmts.get(*stmt)
-            else {
-                continue;
-            };
-            if let Some(unit) = self.anonymous_flow_unit_for_expr(item, *value) {
-                return Some(unit);
-            }
-        }
-        block
-            .final_expr
-            .and_then(|expr| self.anonymous_flow_unit_for_expr(item, expr))
-    }
-
     pub(crate) fn owner_primary_block(&self, item: HirItemId) -> Option<etas_hir::HirBlockId> {
         let body = self.context.item_primary_body(item)?;
         self.context.body_block(body)
-    }
-
-    pub(crate) fn reject_deferred_unit(&mut self, unit: EffectUnit) {
-        let summary = self.inputs.unit_effects.entry(unit).or_default();
-        summary.support = InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
     }
 
     pub(crate) fn record_latent_realization(&mut self, source: EffectUnit, call: HirExprId) {

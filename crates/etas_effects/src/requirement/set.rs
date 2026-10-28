@@ -3,14 +3,32 @@ use std::collections::BTreeSet;
 use super::LimitRequirement;
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum RequirementFact {
     Limit(LimitRequirement),
     TraceSpec(crate::TraceSpecClauseFact),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct RequirementSet {
     facts: BTreeSet<RequirementFact>,
 }

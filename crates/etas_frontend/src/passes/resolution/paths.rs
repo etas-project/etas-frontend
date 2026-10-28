@@ -8,8 +8,9 @@ use etas_utils::{
 };
 
 use crate::{
-    HirExprPathResolution, HirPathResolution, ModulePartId, ModulePath, ProjectContext,
-    ResolvedImport, ResolvedImports, ResolvedModulePath, ResolvedModuleTarget, ResolvedPaths,
+    HirExprPathResolution, HirPathResolution, ImportTarget, ModulePartId, ModulePath,
+    ProjectContext, ResolvedImport, ResolvedImports, ResolvedModulePath, ResolvedModuleTarget,
+    ResolvedPaths,
 };
 
 use super::super::artifacts::{
@@ -55,19 +56,33 @@ impl Pass<ProjectContext> for ResolvePathsPass {
             }
             import_targets.extend(module.imports.iter().map(|import| import.target.clone()));
         }
-        let source_to_module = modules
+        let mut source_to_module = modules
             .by_source
             .iter()
             .map(|(source, module)| (*source, *module))
             .collect::<HashMap<SourceId, crate::ModuleId>>();
-        let source_to_part = modules
+        let mut source_to_part = modules
             .parts
             .iter()
             .map(|(_, part)| (part.source, part.id))
             .collect::<HashMap<SourceId, ModulePartId>>();
+        for (generated, definition) in &hir.hir.source_map.lexical_sources {
+            let (Some(module), Some(part)) = (
+                source_to_module.get(definition).copied(),
+                source_to_part.get(definition).copied(),
+            ) else {
+                return PassResult::failed(
+                    "generated body source has no frozen module-part import environment",
+                );
+            };
+            source_to_module.insert(*generated, module);
+            source_to_part.insert(*generated, part);
+        }
         for (expr_id, expr) in hir.hir.exprs.iter() {
-            let etas_hir::HirExpr::Path(path) = expr else {
-                continue;
+            let path = match expr {
+                etas_hir::HirExpr::Path(path) => path,
+                etas_hir::HirExpr::Reflect(reflection) => reflection.target.root_path(),
+                _ => continue,
             };
             let result = match &path.resolution {
                 etas_hir::ResolveResult::Resolved(symbol) => resolved_symbol_expr_path_fact(
@@ -142,10 +157,12 @@ fn resolved_symbol_expr_path_fact(
                 target: import.target.clone(),
             };
         }
-        if let [target] = wildcard_sources_for_name(resolved_imports, module, part, name).as_slice()
+        if let [(target, item)] =
+            wildcard_sources_for_name(resolved_imports, module, part, name).as_slice()
         {
             return HirPathResolution::WildcardImport {
                 target: target.clone(),
+                item: item.clone(),
             };
         }
     }
@@ -179,8 +196,9 @@ fn unresolved_expr_path_fact(
     let wildcard_sources = wildcard_sources_for_name(resolved_imports, module, part, name);
     match wildcard_sources.as_slice() {
         [] => HirPathResolution::Unresolved,
-        [target] => HirPathResolution::WildcardImport {
+        [(target, item)] => HirPathResolution::WildcardImport {
             target: target.clone(),
+            item: item.clone(),
         },
         _ => {
             diagnostics.push(project_diagnostic(
@@ -188,7 +206,10 @@ fn unresolved_expr_path_fact(
                 &format!("wildcard import ambiguity for `{name}`"),
             ));
             HirPathResolution::AmbiguousWildcard {
-                targets: wildcard_sources,
+                targets: wildcard_sources
+                    .into_iter()
+                    .map(|(module, _)| module)
+                    .collect(),
             }
         }
     }
@@ -259,17 +280,27 @@ fn wildcard_sources_for_name(
     module: crate::ModuleId,
     part: ModulePartId,
     name: &str,
-) -> Vec<ResolvedModuleTarget> {
+) -> Vec<(ResolvedModuleTarget, ImportTarget)> {
     let mut sources = imports
         .wildcard_imports
         .iter()
         .filter(|import| import.from == module && import.from_part == part)
-        .filter(|import| import.exported_names.iter().any(|export| export == name))
-        .map(|import| import.target_module.clone())
+        .flat_map(|import| {
+            import
+                .targets
+                .iter()
+                .filter(move |(export, _)| export.as_str() == name)
+                .map(|(_, target)| (import.target_module.clone(), target.clone()))
+        })
         .collect::<Vec<_>>();
-    sources.sort_by_key(resolved_module_target_sort_key);
-    sources.dedup();
-    sources
+    sources.sort_by_key(|(module, _)| resolved_module_target_sort_key(module));
+    let mut unique = Vec::new();
+    for source in sources {
+        if !unique.iter().any(|(_, item)| item == &source.1) {
+            unique.push(source);
+        }
+    }
+    unique
 }
 
 fn resolved_module_target_sort_key(target: &ResolvedModuleTarget) -> String {

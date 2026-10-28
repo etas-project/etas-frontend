@@ -301,22 +301,15 @@ impl Coverage<'_, '_> {
             _ => ty,
         };
         match &symbol.def {
-            SymbolDef::EnumVariant {
-                enum_item,
-                variant_index,
-            } => {
-                let etas_hir::HirItem::Enum(decl) = self.ctx.hir.items.get(*enum_item)? else {
-                    return None;
-                };
-                let crate::SymbolTypeFact::Type { constructor } =
-                    self.ctx.symbol_type(decl.symbol)?
-                else {
-                    return None;
-                };
-                (owner == TypeId(constructor.0)).then_some(Tag::Variant {
-                    owner,
-                    index: *variant_index as usize,
-                })
+            SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. } => {
+                let (result, index) = crate::facts::enums::constructor_identity(
+                    self.ctx.interner.store(),
+                    symbol,
+                    self.ctx.symbol_type(symbol.id)?,
+                )?;
+                let layout = self.ctx.enum_layout(result)?;
+                (owner == result && layout.variants.get(index)?.name == symbol.name)
+                    .then_some(Tag::Variant { owner, index })
             }
             SymbolDef::ImportAlias { path, .. } => {
                 let std = self.ctx.std_registry.lookup_qualified(path)?;

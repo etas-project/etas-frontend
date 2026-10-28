@@ -69,9 +69,10 @@ fn named_enum_constructors_enforce_inferred_and_explicit_spec_bounds() {
             "Box.Named { value = 42 }",
             "Box.Named<i32> { value = 42 }",
             "Box.Positional(42)",
+            "Box.Empty",
         ] {
             let output = check(&format!(
-                "spec Allowed; {implementation} enum Box<T ~ Allowed> {{ Named {{ value: T }}, Positional(T) }} flow main() -> Box<i32> {{ return {expression}; }}"
+                "spec Allowed; {implementation} enum Box<T ~ Allowed> {{ Empty, Named {{ value: T }}, Positional(T) }} flow main() -> Box<i32> {{ return {expression}; }}"
             ));
             if implementation.is_empty() {
                 assert!(

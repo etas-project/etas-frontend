@@ -1,6 +1,6 @@
 use crate::Span;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Literal {
     Bool { value: bool, span: Span },
     Int { text: String, span: Span },

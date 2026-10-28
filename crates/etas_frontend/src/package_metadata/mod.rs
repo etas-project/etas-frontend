@@ -7,12 +7,18 @@ use etas_package_metadata::{
 
 use crate::{CheckedProject, ProjectOutput};
 
+mod callable_graph;
+mod descriptors;
 mod error;
 mod input;
+mod origins;
 mod projection;
-mod type_graph;
 
 use projection::ProjectMetadataProjection;
+
+pub(crate) use callable_graph::{
+    CallableGraphOrigin, CheckedCallableGraph, checked_callable_graph, checked_request_template,
+};
 
 pub use error::PackageMetadataError;
 pub use input::{

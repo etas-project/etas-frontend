@@ -7,7 +7,7 @@ use etas_syntax::{Parse, ast};
 use super::module_index::{AstImportRef, AstItemRef};
 use crate::{ExternalPackageId, ModulePath};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SourceInput {
     pub id: SourceId,
     pub path: Option<PathBuf>,
@@ -26,13 +26,13 @@ impl SourceInput {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ParseOutput {
     pub source: CoreSourceFile,
     pub parsed: Arc<Parse<ast::Program>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirOutput {
     pub hir: HirRevision,
 }
@@ -43,12 +43,12 @@ impl HirOutput {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SourceBundle {
     pub sources: Vec<CoreSourceFile>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SourceSet {
     pub project_root: PathBuf,
     pub source_root: PathBuf,
@@ -76,7 +76,7 @@ pub(crate) fn source_root_for_project_input(input: &crate::ProjectInput) -> Path
         .unwrap_or_else(|| input.project_root.clone())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SourceFile {
     pub id: SourceId,
     pub path: Option<PathBuf>,
@@ -98,11 +98,16 @@ impl SourceFile {
     }
 
     pub fn to_core_source_file(&self) -> CoreSourceFile {
-        CoreSourceFile::new(self.id, self.path.clone(), self.text.as_ref().to_owned())
+        CoreSourceFile {
+            id: self.id,
+            path: self.path.clone(),
+            text: self.text.clone(),
+            line_index: self.line_index.clone(),
+        }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum SourceKind {
     SourceProjectFile,
     DependencySourceOverlay {
@@ -124,10 +129,10 @@ impl SourceKind {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ParsedSource {
     pub source: SourceId,
-    pub source_file: CoreSourceFile,
+    pub source_file: Arc<CoreSourceFile>,
     pub parse: Arc<Parse<ast::Program>>,
     pub declared_module: Option<ModulePath>,
     pub imports: Vec<AstImportRef>,

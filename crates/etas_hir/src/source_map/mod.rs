@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use etas_core::Span;
+use etas_core::{SourceId, Span};
 
 use crate::{
     HirBlockId, HirExprId, HirHandlerArmId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId,
@@ -8,8 +8,9 @@ use crate::{
 
 etas_core::id_type!(SyntaxNodeId);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct SourceMap {
+    pub lexical_sources: HashMap<SourceId, SourceId>,
     pub item_sources: HashMap<HirItemId, HirOrigin>,
     pub expr_sources: HashMap<HirExprId, HirOrigin>,
     pub handler_arm_sources: HashMap<HirHandlerArmId, HirOrigin>,
@@ -22,7 +23,15 @@ pub struct SourceMap {
     pub syntax_to_hir: HashMap<SyntaxNodeId, Vec<HirNodeRef>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl SourceMap {
+    /// Generated body locations retain their own diagnostic source while name
+    /// lookup uses the definition's original module-part environment.
+    pub fn lexical_source(&self, source: SourceId) -> SourceId {
+        self.lexical_sources.get(&source).copied().unwrap_or(source)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct SyntaxNodeRef {
     pub id: SyntaxNodeId,
     pub span: Span,
@@ -31,7 +40,7 @@ pub struct SyntaxNodeRef {
     pub child_index: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum SyntaxNodeKind {
     Item,
     Expr,
@@ -43,7 +52,7 @@ pub enum SyntaxNodeKind {
     Symbol,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirOrigin {
     Direct(SyntaxNodeRef),
     Desugared {
@@ -78,18 +87,18 @@ impl HirOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum DesugaringKind {
     MatchStatementExpr,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum SyntheticOriginReason {
     LoweringGenerated,
     Recovery,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirNodeRef {
     Item(HirItemId),
     Expr(HirExprId),
@@ -101,13 +110,36 @@ pub enum HirNodeRef {
     Symbol(SymbolId),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct SourceMapBuilder {
     source_map: SourceMap,
     syntax_node_ids: HashMap<SyntaxNodeKey, SyntaxNodeId>,
 }
 
 impl SourceMapBuilder {
+    pub fn bind_lexical_source(&mut self, generated: SourceId, definition: SourceId) -> bool {
+        if generated == definition {
+            return true;
+        }
+        if self.source_map.lexical_sources.contains_key(&definition)
+            || self
+                .source_map
+                .lexical_sources
+                .values()
+                .any(|origin| *origin == generated)
+            || self
+                .source_map
+                .lexical_sources
+                .get(&generated)
+                .is_some_and(|existing| *existing != definition)
+        {
+            return false;
+        }
+        self.source_map
+            .lexical_sources
+            .insert(generated, definition);
+        true
+    }
     pub fn finish(self) -> SourceMap {
         self.source_map
     }
@@ -198,8 +230,11 @@ impl SourceMapBuilder {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 struct SyntaxNodeKey {
     kind: SyntaxNodeKind,
     span: Span,
 }
+
+#[cfg(test)]
+mod tests;

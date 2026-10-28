@@ -104,7 +104,10 @@ where
         state
     }
 
-    fn after_expr(&mut self, _expr: HirExprId, state: Self::Domain) -> Self::Domain {
+    fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        for dependency in self.semantics.expression_dependencies(self.context, expr) {
+            self.graph.add_call(self.context.unit, dependency);
+        }
         state
     }
 
@@ -145,10 +148,18 @@ where
 
     fn method_call(
         &mut self,
-        _expr: HirExprId,
+        expr: HirExprId,
         _span: Span,
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
+        if let Some(target) = <S as InterproceduralSemantics>::method_call_target(
+            self.semantics,
+            self.context,
+            expr,
+            &state,
+        ) {
+            self.graph.add_call(self.context.unit, target);
+        }
         AnalysisStep::handled(state)
     }
 
@@ -275,8 +286,29 @@ where
         <S as HirAnalysisSemantics>::before_expr(self.semantics, expr, state)
     }
 
+    fn stage_targets_are_captured(&self, expr: HirExprId, state: &Self::Domain) -> bool {
+        <S as HirAnalysisSemantics>::stage_targets_are_captured(self.semantics, expr, state)
+    }
+
     fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         <S as HirAnalysisSemantics>::after_expr(self.semantics, expr, state)
+    }
+
+    fn after_expr_control(
+        &mut self,
+        expr: HirExprId,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        <S as HirAnalysisSemantics>::after_expr_control(self.semantics, expr, control)
+    }
+
+    fn return_value(
+        &mut self,
+        stmt: HirStmtId,
+        value: Option<HirExprId>,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        <S as HirAnalysisSemantics>::return_value(self.semantics, stmt, value, state)
     }
 
     fn begin_handler_arm(&mut self, arm: HirHandlerArmId, state: Self::Domain) -> Self::Domain {
@@ -381,6 +413,42 @@ where
         span: Span,
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
+        if let Some(target) = <S as InterproceduralSemantics>::method_call_target(
+            self.semantics,
+            self.context,
+            expr,
+            &state,
+        ) {
+            let site =
+                CallSite::unresolved(expr, expr, span).with_callee(ResolvedCallee::Direct(target));
+            return match self.summaries.get(target) {
+                Some(summary) => {
+                    AnalysisStep::handled(<S as InterproceduralSemantics>::direct_call(
+                        self.semantics,
+                        self.context,
+                        site,
+                        target,
+                        summary,
+                        state,
+                    ))
+                }
+                None => {
+                    push_unique(
+                        self.diagnostics,
+                        InterproceduralDiagnostic::MissingSummary {
+                            call: expr,
+                            callee: target,
+                        },
+                    );
+                    AnalysisStep::handled(<S as InterproceduralSemantics>::incomplete_call(
+                        self.semantics,
+                        self.context,
+                        site,
+                        state,
+                    ))
+                }
+            };
+        }
         <S as HirAnalysisSemantics>::method_call(self.semantics, expr, span, state)
     }
 
@@ -409,6 +477,20 @@ where
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
         <S as HirAnalysisSemantics>::try_expr(self.semantics, expr, span, state)
+    }
+
+    fn try_expr_control(
+        &mut self,
+        expr: HirExprId,
+        span: Span,
+        entry: Self::Domain,
+        control: Control<Self::Domain>,
+    ) -> Control<Self::Domain> {
+        <S as HirAnalysisSemantics>::try_expr_control(self.semantics, expr, span, entry, control)
+    }
+
+    fn begin_try_operand(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::begin_try_operand(self.semantics, expr, state)
     }
 
     fn handle_expr(

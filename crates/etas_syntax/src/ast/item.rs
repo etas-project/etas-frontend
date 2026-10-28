@@ -3,7 +3,7 @@ use crate::Span;
 use super::ty::Visibility;
 use super::{Block, EffectRef, EffectRow, Expr, Name, Path, Pattern, TypeExpr};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct Program {
     pub module: Option<ModuleDecl>,
     pub imports: Vec<ImportDecl>,
@@ -11,20 +11,20 @@ pub struct Program {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ModuleDecl {
     pub path: Path,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ImportDecl {
     pub visibility: Visibility,
     pub tree: ImportTree,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ImportTree {
     Single {
         path: Path,
@@ -57,14 +57,14 @@ impl ImportTree {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ImportItem {
     pub name: Name,
     pub alias: Option<Name>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct AnnotatedItem {
     pub annotations: Vec<Annotation>,
     pub item: Item,
@@ -77,14 +77,14 @@ impl AnnotatedItem {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct Annotation {
     pub path: Path,
     pub args: Vec<AnnotationArg>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum AnnotationArg {
     Positional(Expr),
     Named { name: Name, value: Expr, span: Span },
@@ -99,7 +99,7 @@ impl AnnotationArg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Item {
     Alias(TypeAliasDecl),
     Type(TypeDecl),
@@ -134,12 +134,12 @@ impl Item {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ErrorItem {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct TypeAliasDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -148,7 +148,7 @@ pub struct TypeAliasDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct TypeDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -157,13 +157,13 @@ pub struct TypeDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum TypeDeclBody {
     Bodyless,
     Representation(TypeExpr),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct TypeParam {
     pub name: Name,
     pub kind: TypeParamKind,
@@ -171,20 +171,22 @@ pub struct TypeParam {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct TypeParamBound {
     pub path: Path,
     pub args: Vec<TypeExpr>,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum TypeParamKind {
     Type,
     Effect,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EnumDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -193,7 +195,7 @@ pub struct EnumDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EnumVariant {
     pub name: Name,
     pub fields: Vec<TypeExpr>,
@@ -201,14 +203,16 @@ pub struct EnumVariant {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum SpecKind {
     TypeSpec,
     CallableSpec,
     TraceSpec,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct SpecDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -221,7 +225,7 @@ pub struct SpecDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct SpecCallableSignature {
     pub input: TypeExpr,
     pub output: TypeExpr,
@@ -229,7 +233,7 @@ pub struct SpecCallableSignature {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum SpecExpr {
     Atom(EffectRef),
     Allow {
@@ -276,13 +280,13 @@ impl SpecExpr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum SpecItem {
     FlowSignature(Box<FlowSignature>),
     Error(Span),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FlowSignature {
     pub name: Name,
     pub type_params: Vec<TypeParam>,
@@ -292,14 +296,14 @@ pub struct FlowSignature {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ImplDecl {
     pub target: ImplTarget,
     pub items: Vec<ImplItem>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct SpecRef {
     pub spec_path: Path,
     pub spec_args: Vec<TypeExpr>,
@@ -308,8 +312,13 @@ pub struct SpecRef {
 
 pub type ImplSpecRef = SpecRef;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ImplTarget {
+    Agent {
+        target: Path,
+        specs: Vec<ImplSpecRef>,
+        span: Span,
+    },
     Inherent {
         target: Path,
         type_args: Vec<TypeExpr>,
@@ -328,7 +337,8 @@ pub enum ImplTarget {
 impl ImplTarget {
     pub fn span(&self) -> Span {
         match self {
-            Self::Inherent { span, .. }
+            Self::Agent { span, .. }
+            | Self::Inherent { span, .. }
             | Self::SpecSatisfaction { span, .. }
             | Self::Error { span } => *span,
         }
@@ -336,6 +346,7 @@ impl ImplTarget {
 
     pub fn owner_path(&self) -> Option<&Path> {
         match self {
+            Self::Agent { target, .. } => Some(target),
             Self::Inherent { target, .. } => Some(target),
             Self::SpecSatisfaction { specs, .. } => specs.first().map(|spec| &spec.spec_path),
             Self::Error { .. } => None,
@@ -343,14 +354,14 @@ impl ImplTarget {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ImplItem {
     Flow(Box<FlowDecl>),
     Action(Box<EffectActionDecl>),
     Error(Span),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EffectDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -360,7 +371,7 @@ pub struct EffectDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum EffectBody {
     Empty {
         span: Span,
@@ -386,7 +397,7 @@ impl EffectBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EffectActionDecl {
     pub name: Name,
     pub selector_params: Vec<ActionSelectorParam>,
@@ -396,12 +407,12 @@ pub struct EffectActionDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ActionSelectorParam {
     Type(TypeParam),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FlowDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -415,7 +426,7 @@ pub struct FlowDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum FlowBody {
     Block(Block),
     Expr { expr: Expr, span: Span },
@@ -446,20 +457,20 @@ impl std::ops::Deref for FlowBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct DeclarationConformance {
     pub target: DeclarationConformanceTarget,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum DeclarationConformanceTarget {
     Path(SpecRef),
     InlineTraceSpec(SpecExpr),
     Error(Span),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ToolDecl {
     pub visibility: Visibility,
     pub path: Path,
@@ -472,7 +483,7 @@ pub struct ToolDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ToolBody {
     Source(FlowBody),
     Decl { semicolon_span: Span },
@@ -488,7 +499,7 @@ impl ToolBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct AgentDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -500,7 +511,7 @@ pub struct AgentDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum AgentBody {
     Source(Block),
     Decl { semicolon_span: Span },
@@ -516,7 +527,7 @@ impl AgentBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct TopLevelLetDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -525,20 +536,22 @@ pub struct TopLevelLetDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum MemoryAccessKind {
     Read,
     Write,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MemoryAccess {
     pub kind: MemoryAccessKind,
     pub path: Path,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ProtocolDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -546,7 +559,7 @@ pub struct ProtocolDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ProtocolMsg {
     pub from: Path,
     pub to: Path,
@@ -554,19 +567,19 @@ pub struct ProtocolMsg {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct Param {
     pub name: Name,
     pub ty: TypeExpr,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ProtocolMsgEndpoint {
     pub path: Path,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct PatternList {
     pub patterns: Vec<Pattern>,
 }

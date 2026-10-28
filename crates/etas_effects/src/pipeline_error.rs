@@ -7,6 +7,7 @@ pub enum EffectStage {
     CollectUnits,
     AnalyzeMemoryProvenance,
     SolveSummaries,
+    BindFrozenCalls,
     MaterializeFacts,
     ValidateContracts,
     MaterializeTraceSpecs,
@@ -17,6 +18,21 @@ pub enum EffectStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectPipelineError {
+    InvalidCallableFacts {
+        reason: String,
+    },
+    AnalysisLimitExceeded {
+        resource: &'static str,
+        limit: usize,
+    },
+    AnalysisDidNotConverge {
+        stage: EffectStage,
+        iterations: usize,
+    },
+    Interrupted(etas_utils::PipelineInterruption),
+    InvalidFrozenSummary {
+        reason: String,
+    },
     MissingStageArtifact {
         stage: EffectStage,
         artifact: &'static str,
@@ -44,6 +60,25 @@ pub enum EffectPipelineError {
 impl std::fmt::Display for EffectPipelineError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidCallableFacts { reason } => {
+                write!(formatter, "invalid checked callable facts: {reason}")
+            }
+            Self::AnalysisLimitExceeded { resource, limit } => write!(
+                formatter,
+                "effect analysis exceeds {resource} limit {limit}"
+            ),
+            Self::AnalysisDidNotConverge { stage, iterations } => write!(
+                formatter,
+                "effect stage {stage:?} did not converge after {iterations} iterations"
+            ),
+            Self::Interrupted(interruption) => write!(
+                formatter,
+                "effect analysis interrupted: {}",
+                interruption.reason
+            ),
+            Self::InvalidFrozenSummary { reason } => {
+                write!(formatter, "invalid frozen callable summary: {reason}")
+            }
             Self::MissingStageArtifact { stage, artifact } => {
                 write!(
                     formatter,

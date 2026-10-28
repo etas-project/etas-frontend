@@ -3,6 +3,9 @@ use etas_core::{Diagnostic, Span, TypeDiagnosticCode};
 mod spec_ref;
 pub(crate) use spec_ref::resolve_external_spec;
 
+mod package_type;
+pub use package_type::{package_effect_arg_input, package_effect_row_input, package_type_input};
+
 use crate::{
     EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FieldType,
     FlowType, HandlerProducedEffects, HandlerType, NamedTypeRef, NominalTypeRef, PrimitiveType,
@@ -15,10 +18,6 @@ pub fn lower_external_action_signature(
     span: Span,
     package: crate::ExternalPackageKey,
     action: &crate::ExternalActionSignatureInput,
-    binding_symbols: &std::collections::HashMap<
-        (crate::ExternalPackageKey, Vec<String>),
-        etas_hir::SymbolId,
-    >,
 ) -> Option<EffectActionSignature> {
     validate_external_action_selector_metadata(ctx, span, action);
     let effect_args = action
@@ -39,7 +38,6 @@ pub fn lower_external_action_signature(
         package,
         &action.path,
         &action.generic_params,
-        binding_symbols,
     )?;
     Some(EffectActionSignature {
         generic_params,
@@ -60,6 +58,7 @@ pub fn lower_external_action_signature(
             })
             .collect(),
         returns_never: action.returns_never,
+        default_handler_effects: None,
     })
 }
 
@@ -69,10 +68,6 @@ pub fn lower_external_callable_generic_params(
     package: crate::ExternalPackageKey,
     callable_path: &[String],
     params: &[crate::ExternalCallableGenericParamInput],
-    binding_symbols: &std::collections::HashMap<
-        (crate::ExternalPackageKey, Vec<String>),
-        etas_hir::SymbolId,
-    >,
 ) -> Option<Vec<crate::CallableGenericParam>> {
     let unique_names = params
         .iter()
@@ -93,13 +88,7 @@ pub fn lower_external_callable_generic_params(
     for param in params {
         let mut bounds = Vec::with_capacity(param.bounds.len());
         for bound in &param.bounds {
-            let spec = match resolve_external_spec(
-                ctx,
-                package,
-                &bound.spec,
-                bound.args.len(),
-                binding_symbols,
-            ) {
+            let spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len()) {
                 Ok(spec) => spec,
                 Err(reason) => {
                     invalid_external_metadata(
@@ -135,6 +124,7 @@ pub fn lower_external_callable_generic_params(
             },
             name: param.name.clone(),
             subject: ctx.interner.intern(Type::Named(NamedTypeRef {
+                source_parameter: None,
                 name: param.name.clone(),
             })),
             bounds,
@@ -258,9 +248,17 @@ pub fn lower_external_type(
 ) -> TypeId {
     match ty {
         crate::ExternalTypeInput::Primitive(name) => primitive_from_name(ctx, span, name),
-        crate::ExternalTypeInput::Var(name) => ctx
-            .interner
-            .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+        crate::ExternalTypeInput::Var(name) => ctx.interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: name.clone(),
+        })),
+        crate::ExternalTypeInput::Enum { path, .. } => {
+            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
+                name: path.join("."),
+            }));
+            ctx.external_type_paths.insert(path.clone(), ty);
+            ty
+        }
         crate::ExternalTypeInput::Named(path) => {
             let Some(ty) = checked_external_or_std_type(ctx, path) else {
                 invalid_external_metadata(
@@ -301,14 +299,15 @@ pub fn lower_external_type(
             path,
             representation,
         } => {
+            if let Some(identity) = checked_external_or_std_type(ctx, path) {
+                return identity;
+            }
+            let identity = lower_external_type_declaration(ctx, span, path, &[], None);
             let representation = representation
                 .as_ref()
                 .map(|representation| lower_external_type(ctx, span, representation));
-            ctx.interner.intern(Type::Nominal(NominalTypeRef {
-                name: path.join("."),
-                params: Vec::new(),
-                representation,
-            }))
+            ctx.interner.define_nominal(identity, representation);
+            identity
         }
         crate::ExternalTypeInput::Array(inner) => {
             let inner = lower_external_type(ctx, span, inner);
@@ -461,14 +460,26 @@ pub fn lower_external_type_declaration(
     ctx: &mut TypePipelineContext<'_>,
     span: Span,
     path: &[String],
+    params: &[crate::ExternalCallableGenericParamInput],
     ty: Option<&crate::ExternalTypeInput>,
 ) -> TypeId {
     match ty {
+        Some(
+            ty @ crate::ExternalTypeInput::Enum {
+                path: enum_path, ..
+            },
+        ) => {
+            validate_decl_path(ctx, span, "enum", path, enum_path);
+            lower_external_type(ctx, span, ty)
+        }
         Some(crate::ExternalTypeInput::Alias {
             path: alias_path,
             target,
         }) => {
             validate_decl_path(ctx, span, "alias", path, alias_path);
+            if let Some(ty) = ctx.external_type_paths.get(path).copied() {
+                return ty;
+            }
             let ty = lower_external_type(ctx, span, target);
             ctx.external_type_paths.insert(path.to_vec(), ty);
             ty
@@ -481,33 +492,43 @@ pub fn lower_external_type_declaration(
             let representation = representation
                 .as_ref()
                 .map(|representation| lower_external_type(ctx, span, representation));
-            let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
-                name: path.join("."),
-                params: Vec::new(),
-                representation,
-            }));
+            let ty = complete_external_nominal(ctx, path, params, representation);
             ctx.external_type_paths.insert(path.to_vec(), ty);
             ty
         }
         Some(representation) => {
             let representation = lower_external_type(ctx, span, representation);
-            let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
-                name: path.join("."),
-                params: Vec::new(),
-                representation: Some(representation),
-            }));
+            let ty = complete_external_nominal(ctx, path, params, Some(representation));
             ctx.external_type_paths.insert(path.to_vec(), ty);
             ty
         }
         None => {
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 name: path.join("."),
-                params: Vec::new(),
+                params: params.iter().map(|param| param.name.clone()).collect(),
                 representation: None,
             }));
             ctx.external_type_paths.insert(path.to_vec(), ty);
             ty
         }
+    }
+}
+
+fn complete_external_nominal(
+    ctx: &mut TypePipelineContext<'_>,
+    path: &[String],
+    params: &[crate::ExternalCallableGenericParamInput],
+    representation: Option<TypeId>,
+) -> TypeId {
+    if let Some(id) = ctx.external_type_paths.get(path).copied() {
+        ctx.interner.define_nominal(id, representation);
+        id
+    } else {
+        ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            name: path.join("."),
+            params: params.iter().map(|param| param.name.clone()).collect(),
+            representation,
+        }))
     }
 }
 
@@ -554,224 +575,36 @@ pub struct ExternalMetadataLoweringError {
     pub message: String,
 }
 
+pub use checked_output::CheckedExternalTypeResolver;
+mod checked_output;
+
 pub fn lower_external_effect_row_from_output(
     types: &TypeOutput,
     row: &crate::ExternalEffectRowInput,
 ) -> Result<EffectRowRef, ExternalMetadataLoweringError> {
-    Ok(EffectRowRef {
-        effects: row
-            .effects
-            .iter()
-            .map(|effect| {
-                Ok(EffectRef {
-                    name: effect.path.join("."),
-                    args: effect
-                        .args
-                        .iter()
-                        .map(|arg| lower_external_effect_arg_from_output(types, arg))
-                        .collect::<Result<Vec<_>, _>>()?,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        tail: row.tail.clone(),
-    })
+    CheckedExternalTypeResolver::new(types).effect_row(row)
 }
 
 pub fn lower_external_effect_arg_from_output(
     types: &TypeOutput,
     arg: &crate::ExternalEffectArgInput,
 ) -> Result<EffectArgRef, ExternalMetadataLoweringError> {
-    match arg {
-        crate::ExternalEffectArgInput::Type(ty) => {
-            Ok(EffectArgRef::Type(external_type_id_from_output(types, ty)?))
-        }
-        crate::ExternalEffectArgInput::Path(path) => Ok(EffectArgRef::Path(path.clone())),
-        crate::ExternalEffectArgInput::String(value) => Ok(EffectArgRef::String(value.clone())),
-        crate::ExternalEffectArgInput::Int(value) => Ok(EffectArgRef::Int(value.clone())),
-        crate::ExternalEffectArgInput::Wildcard => Ok(EffectArgRef::Wildcard),
-    }
+    CheckedExternalTypeResolver::new(types).effect_arg(arg)
 }
 
 pub fn external_type_id_from_output(
     types: &TypeOutput,
     ty: &crate::ExternalTypeInput,
 ) -> Result<TypeId, ExternalMetadataLoweringError> {
-    match ty {
-        crate::ExternalTypeInput::Alias { target, .. } => {
-            external_type_id_from_output(types, target)
-        }
-        crate::ExternalTypeInput::Named(path)
-        | crate::ExternalTypeInput::Nominal { path, .. }
-        | crate::ExternalTypeInput::Applied { path, .. } => {
-            let Some(id) = external_type_by_path(&types.store, path) else {
-                return Err(ExternalMetadataLoweringError {
-                    message: format!(
-                        "external effect metadata references missing checked type `{}`",
-                        path.join(".")
-                    ),
-                });
-            };
-            if let crate::ExternalTypeInput::Applied { args, .. } = ty {
-                let args = args
-                    .iter()
-                    .map(|arg| external_type_id_from_output(types, arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                return find_type(
-                    &types.store,
-                    &Type::Applied {
-                        constructor: TypeConstructorId(id.0),
-                        args,
-                    },
-                );
-            }
-            Ok(id)
-        }
-        _ => {
-            let structural = external_type_structural_from_output(types, ty)?;
-            find_type(&types.store, &structural)
-        }
-    }
+    CheckedExternalTypeResolver::new(types).type_id(ty)
 }
 
+#[cfg(test)]
 fn external_type_structural_from_output(
     types: &TypeOutput,
     ty: &crate::ExternalTypeInput,
 ) -> Result<Type, ExternalMetadataLoweringError> {
-    match ty {
-        crate::ExternalTypeInput::Primitive(name) => Ok(Type::Primitive(
-            primitive_from_external_name(name).ok_or_else(|| ExternalMetadataLoweringError {
-                message: format!(
-                    "external effect metadata references unknown primitive type `{name}`"
-                ),
-            })?,
-        )),
-        crate::ExternalTypeInput::Var(name) => Ok(Type::Named(NamedTypeRef { name: name.clone() })),
-        crate::ExternalTypeInput::Alias { target, .. } => {
-            external_type_structural_from_output(types, target)
-        }
-        crate::ExternalTypeInput::Named(_)
-        | crate::ExternalTypeInput::Nominal { .. }
-        | crate::ExternalTypeInput::Applied { .. } => {
-            let id = external_type_id_from_output(types, ty)?;
-            types
-                .store
-                .get(id)
-                .cloned()
-                .ok_or_else(|| ExternalMetadataLoweringError {
-                    message: "external effect metadata resolved to missing checked type id"
-                        .to_owned(),
-                })
-        }
-        crate::ExternalTypeInput::Array(inner) => {
-            Ok(Type::Array(external_type_id_from_output(types, inner)?))
-        }
-        crate::ExternalTypeInput::List(inner) => {
-            Ok(Type::List(external_type_id_from_output(types, inner)?))
-        }
-        crate::ExternalTypeInput::Map { key, value } => Ok(Type::Map {
-            key: external_type_id_from_output(types, key)?,
-            value: external_type_id_from_output(types, value)?,
-        }),
-        crate::ExternalTypeInput::Set(inner) => {
-            Ok(Type::Set(external_type_id_from_output(types, inner)?))
-        }
-        crate::ExternalTypeInput::Range(inner) => Ok(Type::Range {
-            index: external_type_id_from_output(types, inner)?,
-        }),
-        crate::ExternalTypeInput::Slice(inner) => {
-            Ok(Type::Slice(external_type_id_from_output(types, inner)?))
-        }
-        crate::ExternalTypeInput::Option(inner) => {
-            Ok(Type::Option(external_type_id_from_output(types, inner)?))
-        }
-        crate::ExternalTypeInput::Result { ok, err } => Ok(Type::Result {
-            ok: external_type_id_from_output(types, ok)?,
-            err: external_type_id_from_output(types, err)?,
-        }),
-        crate::ExternalTypeInput::Record { fields } => Ok(Type::Record(RecordType {
-            fields: fields
-                .iter()
-                .map(|field| {
-                    Ok(FieldType {
-                        name: field.name.clone(),
-                        ty: external_type_id_from_output(types, &field.ty)?,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        })),
-        crate::ExternalTypeInput::Tuple(elements) => Ok(Type::Tuple(
-            elements
-                .iter()
-                .map(|element| external_type_id_from_output(types, element))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        crate::ExternalTypeInput::Function {
-            input,
-            output,
-            effects,
-        } => Ok(Type::Function(FlowType {
-            input: input
-                .iter()
-                .map(|input| external_type_id_from_output(types, input))
-                .collect::<Result<Vec<_>, _>>()?,
-            output: external_type_id_from_output(types, output)?,
-            effects: effects
-                .as_ref()
-                .map(|row| lower_external_effect_row_from_output(types, row))
-                .transpose()?,
-        })),
-        crate::ExternalTypeInput::Handler {
-            handled,
-            produced,
-            result,
-        } => Ok(Type::Handler(HandlerType {
-            handled: lower_external_effect_row_from_output(types, handled)?,
-            produced: produced
-                .as_ref()
-                .map(|row| lower_external_effect_row_from_output(types, row))
-                .transpose()?
-                .map(HandlerProducedEffects::Explicit)
-                .unwrap_or(HandlerProducedEffects::Infer),
-            result: result
-                .as_ref()
-                .map(|result| external_type_id_from_output(types, result))
-                .transpose()?,
-        })),
-        crate::ExternalTypeInput::Trust { wrapper, inner } => Ok(Type::Trust {
-            wrapper: external_trust_wrapper(wrapper).ok_or_else(|| {
-                ExternalMetadataLoweringError {
-                    message: format!(
-                        "external metadata contains unknown trust wrapper `{wrapper}`"
-                    ),
-                }
-            })?,
-            inner: external_type_id_from_output(types, inner)?,
-        }),
-        crate::ExternalTypeInput::Prompt => Ok(Type::Prompt),
-        crate::ExternalTypeInput::PromptPart => Ok(Type::PromptPart),
-        crate::ExternalTypeInput::Message(inner) => {
-            Ok(Type::Message(external_type_id_from_output(types, inner)?))
-        }
-        crate::ExternalTypeInput::MemorySelection(inner) => Ok(Type::MemorySelection(
-            external_type_id_from_output(types, inner)?,
-        )),
-        crate::ExternalTypeInput::Store { key, value } => Ok(Type::Store {
-            key: external_type_id_from_output(types, key)?,
-            value: external_type_id_from_output(types, value)?,
-        }),
-        crate::ExternalTypeInput::MemoryRegion(inner) => Ok(Type::MemoryRegion(
-            external_type_id_from_output(types, inner)?,
-        )),
-        crate::ExternalTypeInput::ResourceHandle { name, args } => {
-            Ok(Type::ResourceHandle(ResourceHandleType::Other {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| external_type_id_from_output(types, arg))
-                    .collect::<Result<Vec<_>, _>>()?,
-            }))
-        }
-    }
+    CheckedExternalTypeResolver::new(types).type_structure(ty)
 }
 
 fn find_type(store: &TypeStore, needle: &Type) -> Result<TypeId, ExternalMetadataLoweringError> {
@@ -789,6 +622,7 @@ fn external_type_by_path(store: &TypeStore, path: &[String]) -> Option<TypeId> {
     let name = path.join(".");
     store.iter().find_map(|(id, ty)| match ty {
         Type::Nominal(nominal) if nominal.name == name => Some(id),
+        Type::Enum(declaration) if declaration.name == name => Some(id),
         Type::Named(named) if named.name == name => Some(id),
         _ => None,
     })

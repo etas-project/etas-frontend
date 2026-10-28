@@ -4,7 +4,16 @@ use etas_hir::{HirItemId, SymbolId};
 
 use crate::RequirementSet;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct RequirementFacts {
     pub items: HashMap<HirItemId, RequirementSet>,
     pub symbols: HashMap<SymbolId, RequirementSet>,

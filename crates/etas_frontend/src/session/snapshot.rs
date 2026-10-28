@@ -1,5 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
+mod generic_signature;
+mod type_environment;
+mod type_fingerprint;
+use type_fingerprint::{effect_row_part, type_part as type_fingerprint_part};
+
 use etas_cache::{ArtifactFingerprint, ProjectRevision};
 use etas_core::{SourceFile as CoreSourceFile, SourceId, Span};
 use etas_hir::{
@@ -7,7 +12,7 @@ use etas_hir::{
     HirPat, HirPatId, HirProgram, HirStmt, HirType, HirTypeId, ResolveResult, SymbolDef, SymbolId,
     SymbolTable, SyntaxNodeId, SyntaxNodeRef,
 };
-use etas_types::{EffectArgRef, ItemSignature, Type, TypeId, TypeStore};
+use etas_types::{ItemSignature, TypeId, TypeStore};
 
 use crate::artifact::{
     ArtifactManifestInput, FrontendArtifactDependency, FrontendArtifactKey, FrontendArtifactKind,
@@ -26,10 +31,10 @@ struct BodyFactDependencyInputs<'a> {
     item_signatures: &'a [FrontendArtifactKey],
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectSemanticSnapshot(Arc<ProjectSemanticSnapshotData>);
 
-#[derive(Debug)]
+#[derive(Debug, etas_core::RetainedSize)]
 pub struct ProjectSemanticSnapshotData {
     pub revision: ProjectRevision,
     pub sources: Arc<SourceSet>,
@@ -59,13 +64,13 @@ impl std::ops::Deref for ProjectSemanticSnapshotData {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct SnapshotDefinitionTargets {
     pub symbols: HashMap<SymbolId, DefinitionTarget>,
     pub exprs: HashMap<HirExprId, DefinitionTarget>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum DefinitionTarget {
     SourceSymbol {
         symbol: SymbolId,
@@ -173,9 +178,9 @@ fn definition_target_for_path_resolution(
         HirPathResolution::PartialImport { target, .. } => {
             Some(DefinitionTarget::Import(target.clone()))
         }
-        HirPathResolution::WildcardImport { target } => Some(DefinitionTarget::Import(
-            ImportTarget::Module(target.clone()),
-        )),
+        HirPathResolution::WildcardImport { item, .. } => {
+            Some(DefinitionTarget::Import(item.clone()))
+        }
         HirPathResolution::PartialSymbol { prefix, .. } => symbols.get(prefix).cloned(),
         HirPathResolution::AmbiguousWildcard { .. }
         | HirPathResolution::PartiallyResolved { .. }
@@ -184,14 +189,17 @@ fn definition_target_for_path_resolution(
 }
 
 impl FrontendArtifactManifest {
-    pub(crate) fn from_output(revision: ProjectRevision, output: &ProjectOutput) -> Self {
+    pub(crate) fn from_output(
+        revision: ProjectRevision,
+        output: &ProjectOutput,
+    ) -> Result<Self, String> {
         Self::from_input(revision, &ArtifactManifestInput::from(output))
     }
 
     pub(crate) fn from_input(
         revision: ProjectRevision,
         output: &ArtifactManifestInput<'_>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let mut manifest = Self::new();
         for parsed in output.parsed_sources {
             let key =
@@ -242,6 +250,8 @@ impl FrontendArtifactManifest {
         let resolved_imports = FrontendArtifactKey::project(FrontendArtifactKind::ResolvedImports);
         let resolved_paths = FrontendArtifactKey::project(FrontendArtifactKind::ResolvedPaths);
         let signature_facts = FrontendArtifactKey::project(FrontendArtifactKind::SignatureFacts);
+        let type_environment =
+            FrontendArtifactKey::project(FrontendArtifactKind::TypeConstraintEnvironment);
         let top_level_lets = FrontendArtifactKey::project(FrontendArtifactKind::TopLevelLetFacts);
         let type_facts = FrontendArtifactKey::project(FrontendArtifactKind::TypeFacts);
         let effect_facts = FrontendArtifactKey::project(FrontendArtifactKind::EffectFacts);
@@ -311,7 +321,33 @@ impl FrontendArtifactManifest {
             vec![resolved_paths.clone(), hir_program.clone()],
         );
         let item_signature_facts =
-            manifest.record_item_signature_facts(revision, output, signature_facts.clone());
+            manifest.record_item_signature_facts(revision, output, signature_facts.clone())?;
+        if let Some(signatures) = output.signature_types {
+            let dependencies = manifest
+                .dependency_edge(signature_facts.clone())
+                .into_iter()
+                .collect::<Vec<_>>();
+            let fingerprint = manifest.fingerprint_for_with_parts(
+                FrontendArtifactKind::TypeConstraintEnvironment,
+                &dependencies,
+                vec![
+                    type_environment::fingerprint(&signatures.facts)?.to_string(),
+                    output
+                        .sources
+                        .as_ref()
+                        .ok_or("checked type environment has no source environment")?
+                        .environment_fingerprint
+                        .clone(),
+                ],
+            );
+            manifest.record(FrontendArtifactRecord {
+                key: type_environment.clone(),
+                revision,
+                fingerprint,
+                dependencies,
+                diagnostics: Vec::new(),
+            });
+        }
         manifest.record_project_if_present(
             revision,
             FrontendArtifactKind::TopLevelLetFacts,
@@ -328,12 +364,12 @@ impl FrontendArtifactManifest {
             FrontendArtifactKind::TypeFacts,
             output.type_body_outputs.keys().copied().collect(),
             BodyFactDependencyInputs {
-                common: &[],
+                common: &[type_environment],
                 body_hir: &body_hir,
                 item_signatures: &item_signature_facts,
             },
             output,
-        );
+        )?;
         manifest.record_project_if_present(
             revision,
             FrontendArtifactKind::TypeFacts,
@@ -435,7 +471,7 @@ impl FrontendArtifactManifest {
             );
         }
 
-        manifest
+        Ok(manifest)
     }
 
     fn record_project_if_present(
@@ -507,9 +543,16 @@ impl FrontendArtifactManifest {
         mut units: Vec<UnitId>,
         dependency_inputs: BodyFactDependencyInputs<'_>,
         output: &ArtifactManifestInput<'_>,
-    ) -> Vec<FrontendArtifactKey> {
+    ) -> Result<Vec<FrontendArtifactKey>, String> {
+        if units.is_empty() {
+            return Ok(Vec::new());
+        }
+        output
+            .signature_types
+            .as_ref()
+            .ok_or("body facts require checked signature input")?;
         units.sort_by_key(|unit| unit.0);
-        units
+        Ok(units
             .into_iter()
             .map(|unit| {
                 let key = FrontendArtifactKey::unit(
@@ -541,7 +584,7 @@ impl FrontendArtifactManifest {
                 });
                 key
             })
-            .collect()
+            .collect())
     }
 
     fn record_item_signature_facts(
@@ -549,12 +592,12 @@ impl FrontendArtifactManifest {
         revision: ProjectRevision,
         output: &ArtifactManifestInput<'_>,
         project_signature_key: FrontendArtifactKey,
-    ) -> Vec<FrontendArtifactKey> {
+    ) -> Result<Vec<FrontendArtifactKey>, String> {
         let Some(signature_types) = output.signature_types.as_ref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let Some(hir) = output.hir.as_ref().map(|hir| &hir.hir) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut items = hir.items.iter().map(|(item, _)| item).collect::<Vec<_>>();
         items.sort_by_key(|item| item.0);
@@ -568,15 +611,18 @@ impl FrontendArtifactManifest {
                     .collect::<Vec<_>>();
                 let parts =
                     if let Some(signature) = signature_types.facts.item_signatures.get(&item) {
-                        item_signature_fingerprint_parts(item, signature, &signature_types.store)
+                        item_signature_fingerprint_parts(item, signature, &signature_types.store)?
                     } else {
                         hir_item_signature_fingerprint_parts(
                             item,
-                            hir.items
-                                .get(item)
-                                .expect("HIR item key came from HIR item arena"),
+                            hir.items.get(item).ok_or_else(|| {
+                                format!(
+                                    "signature fingerprint references missing HIR item {}",
+                                    item.0
+                                )
+                            })?,
                             hir,
-                        )
+                        )?
                     };
                 self.record(FrontendArtifactRecord {
                     fingerprint: self.fingerprint_for_with_parts(
@@ -589,7 +635,7 @@ impl FrontendArtifactManifest {
                     dependencies,
                     diagnostics: Vec::new(),
                 });
-                key
+                Ok(key)
             })
             .collect()
     }
@@ -747,14 +793,11 @@ fn body_fingerprint_parts(output: &ArtifactManifestInput<'_>, unit: UnitId) -> V
         .fingerprint_parts(unit);
     // Cached facts contain revision-local HIR IDs. Unchanged source text alone
     // cannot establish reuse when an earlier body's edit relocates those IDs.
-    if let (Some(hir), Some(bindings), Some(items)) = (
-        &output.hir,
-        &output.hir_body_bindings,
-        &output.hir_item_bindings,
-    ) && let Some(node) = units.nodes.get(unit)
+    if let (Some(hir), Some(bindings)) = (&output.hir, &output.hir_body_bindings)
+        && let Some(node) = units.nodes.get(unit)
         && let crate::UnitTarget::AstBody(body) = &node.target
     {
-        if let Some(item) = items.ast_to_hir.get(&body.item) {
+        if let Some(item) = bindings.body_items.get(body) {
             parts.push(format!("hir-item:{item:?}:{:?}", hir.hir.items.get(*item)));
         }
         for block in bindings.body_blocks.get(body).into_iter().flatten() {
@@ -946,6 +989,17 @@ impl BodySignatureReferenceCollector<'_> {
             return;
         };
         match expr {
+            HirExpr::Reflect(reflection) => {
+                for path in reflection.target.paths() {
+                    self.push_path_source_item(path);
+                }
+                if let etas_hir::HirReflectTarget::SpecMethod { spec_args, .. } = &reflection.target
+                {
+                    for arg in spec_args {
+                        self.visit_type(*arg);
+                    }
+                }
+            }
             HirExpr::Record(record) => {
                 if let Some(path) = &record.path {
                     self.push_path_source_item(path);
@@ -967,6 +1021,11 @@ impl BodySignatureReferenceCollector<'_> {
                 }
             }
             HirExpr::Perform {
+                action,
+                generic_args,
+                ..
+            }
+            | HirExpr::Infer {
                 action,
                 generic_args,
                 ..
@@ -1154,10 +1213,6 @@ fn source_item_for_expr_path(
     item_bindings: &crate::HirItemBindings,
 ) -> Option<HirItemId> {
     match &path.result {
-        HirPathResolution::WildcardImport { target } => {
-            let name = single_segment_path_name(&path.path)?;
-            source_item_for_module_target_export(target, name, output, item_bindings)
-        }
         HirPathResolution::PartialImport {
             target: ImportTarget::Module(module),
             remaining,
@@ -1178,11 +1233,11 @@ fn source_item_for_resolution(
         HirPathResolution::DirectSymbol(symbol) => symbol_source_item(*symbol, hir),
         HirPathResolution::PartialSymbol { prefix, .. } => symbol_source_item(*prefix, hir),
         HirPathResolution::ExplicitImport { target }
-        | HirPathResolution::PartialImport { target, .. } => {
+        | HirPathResolution::PartialImport { target, .. }
+        | HirPathResolution::WildcardImport { item: target, .. } => {
             import_target_source_item(target, item_bindings)
         }
-        HirPathResolution::WildcardImport { .. }
-        | HirPathResolution::AmbiguousWildcard { .. }
+        HirPathResolution::AmbiguousWildcard { .. }
         | HirPathResolution::PartiallyResolved { .. }
         | HirPathResolution::Unresolved => None,
     }
@@ -1311,6 +1366,7 @@ fn explicit_import_target_for_name<'a>(
 fn symbol_source_item(symbol: etas_hir::SymbolId, hir: &HirProgram) -> Option<HirItemId> {
     match &hir.symbols.get(symbol)?.def {
         SymbolDef::Item { item } | SymbolDef::TopLevelLet { item, .. } => Some(*item),
+        SymbolDef::EnumVariant { enum_item, .. } => Some(*enum_item),
         _ => None,
     }
 }
@@ -1339,53 +1395,73 @@ fn item_signature_fingerprint_parts(
     item: HirItemId,
     signature: &ItemSignature,
     store: &TypeStore,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut parts = vec![format!("item:{}", item.0)];
     match signature {
         ItemSignature::Flow(signature) => {
             parts.push("kind:flow".to_owned());
-            parts.extend(type_list_parts("param", &signature.params, store));
+            parts.extend(type_list_parts("param", &signature.params, store)?);
             parts.push(format!(
                 "output:{}",
-                type_fingerprint_part(signature.output, store)
+                type_fingerprint_part(signature.output, store)?
             ));
-            parts.push(effect_row_part(&signature.effects, store));
+            parts.push(effect_row_part(&signature.effects, store)?);
         }
         ItemSignature::Agent(signature) => {
             parts.push("kind:agent".to_owned());
-            parts.extend(type_list_parts("input", &signature.params, store));
+            parts.push(format!(
+                "component:{}",
+                type_fingerprint_part(signature.component, store)?
+            ));
+            let Some(signature) = signature.callable() else {
+                parts.push("default-entry:none".into());
+                return Ok(parts);
+            };
+            parts.push("default-entry:some".into());
+            parts.extend(type_list_parts("input", &signature.params, store)?);
             parts.push(format!(
                 "output:{}",
-                type_fingerprint_part(signature.output, store)
+                type_fingerprint_part(signature.output, store)?
             ));
-            parts.push(effect_row_part(&signature.effects, store));
+            parts.push(effect_row_part(&signature.effects, store)?);
         }
         ItemSignature::Tool(signature) => {
             parts.push("kind:tool".to_owned());
-            parts.extend(type_list_parts("input", &signature.params, store));
+            parts.extend(type_list_parts("input", &signature.params, store)?);
             parts.push(format!(
                 "output:{}",
-                type_fingerprint_part(signature.output, store)
+                type_fingerprint_part(signature.output, store)?
             ));
-            parts.push(effect_row_part(&signature.effects, store));
+            parts.push(effect_row_part(&signature.effects, store)?);
         }
         ItemSignature::TopLevelLet(signature) => {
             parts.push("kind:top_level_let".to_owned());
             parts.push(format!(
                 "type:{}",
-                type_fingerprint_part(signature.ty, store)
+                type_fingerprint_part(signature.ty, store)?
             ));
         }
     }
-    parts
+    Ok(parts)
 }
 
 fn hir_item_signature_fingerprint_parts(
     item: HirItemId,
     hir_item: &HirItem,
     hir: &HirProgram,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let mut parts = vec![format!("item:{}", item.0)];
+    let parameters = match hir_item {
+        HirItem::TypeAlias(item) => item.type_params.as_slice(),
+        HirItem::Type(item) => item.type_params.as_slice(),
+        HirItem::Enum(item) => item.type_params.as_slice(),
+        HirItem::Spec(item) => item.type_params.as_slice(),
+        HirItem::Effect(item) => item.type_params.as_slice(),
+        HirItem::Flow(item) => item.type_params.as_slice(),
+        HirItem::Tool(item) => item.type_params.as_slice(),
+        _ => &[],
+    };
+    parts.extend(generic_signature::parts(parameters, hir)?);
     match hir_item {
         HirItem::TypeAlias(item) => {
             parts.push("kind:type_alias".to_owned());
@@ -1414,6 +1490,7 @@ fn hir_item_signature_fingerprint_parts(
             parts.push("kind:enum".to_owned());
             parts.push(format!("symbol:{}", symbol_name(hir, item.symbol)));
             for (index, variant) in item.variants.iter().enumerate() {
+                parts.push(format!("variant_fields:{index}:{:?}", variant.field_names));
                 parts.push(format!(
                     "variant:{index}:{}({})",
                     symbol_name(hir, variant.symbol),
@@ -1433,6 +1510,15 @@ fn hir_item_signature_fingerprint_parts(
                 parts.push(format!("extends:{}", path_signature_part(&extends.path)));
             }
             for (index, action) in item.body.actions().iter().enumerate() {
+                parts.extend(
+                    generic_signature::parts(&action.type_params, hir)?
+                        .into_iter()
+                        .map(|part| format!("action:{index}:{part}")),
+                );
+                parts.push(format!(
+                    "action:{index}:selectors:{:?}",
+                    action.selector_params
+                ));
                 parts.push(format!(
                     "action:{index}:{}({})->{}",
                     symbol_name(hir, action.symbol),
@@ -1488,6 +1574,11 @@ fn hir_item_signature_fingerprint_parts(
             for (index, item) in item.items.iter().enumerate() {
                 match item {
                     etas_hir::HirSpecItem::FlowSignature(signature) => {
+                        parts.extend(
+                            generic_signature::parts(&signature.type_params, hir)?
+                                .into_iter()
+                                .map(|part| format!("method:{index}:{part}")),
+                        );
                         parts.push(format!(
                             "flow_signature:{index}:{}({})->{}",
                             symbol_name(hir, signature.symbol),
@@ -1511,7 +1602,45 @@ fn hir_item_signature_fingerprint_parts(
         }
         HirItem::Impl(item) => {
             parts.push("kind:impl".to_owned());
+            for member in &item.items {
+                if let etas_hir::HirImplItem::Callable { item: method } = member {
+                    parts.extend(hir_item_signature_fingerprint_parts(
+                        *method,
+                        &hir.items[*method],
+                        hir,
+                    )?);
+                    if let HirItem::Flow(flow) = &hir.items[*method] {
+                        parts.extend(
+                            flow.params
+                                .iter()
+                                .map(|param| symbol_declared_type_part(hir, *param)),
+                        );
+                        if let Some(output) = flow.return_type {
+                            parts.push(hir_type_signature_part(output, hir));
+                        }
+                        if let Some(row) = &flow.effects {
+                            parts.push(hir_effect_row_signature_part(row, hir));
+                        }
+                        parts.extend(
+                            flow.type_params
+                                .iter()
+                                .map(|param| format!("method-param:{:?}", hir.symbols.get(*param))),
+                        );
+                    }
+                }
+            }
             match &item.target {
+                etas_hir::HirImplTarget::Agent { target, specs } => {
+                    parts.push(format!("agent:{}", path_signature_part(target)));
+                    for spec in specs {
+                        parts.push(format!("spec:{}", path_signature_part(&spec.spec_path)));
+                        parts.extend(
+                            spec.spec_args
+                                .iter()
+                                .map(|ty| hir_type_signature_part(*ty, hir)),
+                        );
+                    }
+                }
                 etas_hir::HirImplTarget::Inherent { target, type_args } => {
                     parts.push(format!("target:{}", path_signature_part(target)));
                     parts.extend(type_args.iter().enumerate().map(|(index, ty)| {
@@ -1572,7 +1701,7 @@ fn hir_item_signature_fingerprint_parts(
             parts.push(format!("kind:{:?}", std::mem::discriminant(hir_item)));
         }
     }
-    parts
+    Ok(parts)
 }
 
 fn push_declaration_conformance_signature_parts(
@@ -1780,189 +1909,21 @@ fn path_signature_part(path: &etas_hir::ResolvedPath) -> String {
         .join(".")
 }
 
-fn type_list_parts(prefix: &str, types: &[TypeId], store: &TypeStore) -> Vec<String> {
+fn type_list_parts(
+    prefix: &str,
+    types: &[TypeId],
+    store: &TypeStore,
+) -> Result<Vec<String>, String> {
     types
         .iter()
         .enumerate()
-        .map(|(index, ty)| format!("{prefix}:{index}:{}", type_fingerprint_part(*ty, store)))
-        .collect()
-}
-
-fn effect_row_part(row: &Option<etas_types::EffectRowRef>, store: &TypeStore) -> String {
-    let Some(row) = row else {
-        return "effects:none".to_owned();
-    };
-    let mut effects = row
-        .effects
-        .iter()
-        .map(|effect| {
-            let args = effect
-                .args
-                .iter()
-                .map(|arg| effect_arg_fingerprint_part(arg, store))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{}({})", effect.name, args)
+        .map(|(index, ty)| {
+            Ok(format!(
+                "{prefix}:{index}:{}",
+                type_fingerprint_part(*ty, store)?
+            ))
         })
-        .collect::<Vec<_>>();
-    effects.sort();
-    format!("effects:{}", effects.join("|"))
-}
-
-fn required_effect_row_part(row: &etas_types::EffectRowRef, store: &TypeStore) -> String {
-    effect_row_part(&Some(row.clone()), store)
-}
-
-fn effect_arg_fingerprint_part(arg: &EffectArgRef, store: &TypeStore) -> String {
-    match arg {
-        EffectArgRef::Type(ty) => format!("type:{}", type_fingerprint_part(*ty, store)),
-        EffectArgRef::Wildcard => "wildcard:_".to_owned(),
-        EffectArgRef::String(value) => format!("string:{value:?}"),
-        EffectArgRef::Int(text) => format!("int:{text}"),
-        EffectArgRef::Path(segments) => format!("path:{}", segments.join(".")),
-    }
-}
-
-fn type_fingerprint_part(ty: TypeId, store: &TypeStore) -> String {
-    match store.get(ty).expect("signature type id should resolve") {
-        Type::Primitive(primitive) => format!("primitive:{primitive:?}"),
-        Type::IntegerLiteral { text } => format!("integer_literal:{text}"),
-        Type::Var(var) => format!("var:{}", var.0),
-        Type::Array(inner) => format!("array<{}>", type_fingerprint_part(*inner, store)),
-        Type::List(inner) => format!("list<{}>", type_fingerprint_part(*inner, store)),
-        Type::Map { key, value } => format!(
-            "map<{},{}>",
-            type_fingerprint_part(*key, store),
-            type_fingerprint_part(*value, store)
-        ),
-        Type::Set(inner) => format!("set<{}>", type_fingerprint_part(*inner, store)),
-        Type::Range { index } => format!("range<{}>", type_fingerprint_part(*index, store)),
-        Type::Slice(inner) => format!("slice<{}>", type_fingerprint_part(*inner, store)),
-        Type::Option(inner) => format!("option<{}>", type_fingerprint_part(*inner, store)),
-        Type::Result { ok, err } => format!(
-            "result<{},{}>",
-            type_fingerprint_part(*ok, store),
-            type_fingerprint_part(*err, store)
-        ),
-        Type::Record(record) => {
-            let mut fields = record
-                .fields
-                .iter()
-                .map(|field| format!("{}:{}", field.name, type_fingerprint_part(field.ty, store)))
-                .collect::<Vec<_>>();
-            fields.sort();
-            format!("record{{{}}}", fields.join(","))
-        }
-        Type::Tuple(items) => format!(
-            "tuple({})",
-            items
-                .iter()
-                .map(|item| type_fingerprint_part(*item, store))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        Type::Enum(reference) => format!("enum:{}", reference.name),
-        Type::Function(flow) => format!(
-            "function({})->{}:{}",
-            flow.input
-                .iter()
-                .map(|input| type_fingerprint_part(*input, store))
-                .collect::<Vec<_>>()
-                .join(","),
-            type_fingerprint_part(flow.output, store),
-            effect_row_part(&flow.effects, store)
-        ),
-        Type::Handler(handler) => {
-            let produced = match &handler.produced {
-                etas_types::HandlerProducedEffects::Infer => "produced:infer".to_owned(),
-                etas_types::HandlerProducedEffects::Explicit(row) => {
-                    format!("produced:{}", required_effect_row_part(row, store))
-                }
-            };
-            let result = handler
-                .result
-                .map(|result| type_fingerprint_part(result, store))
-                .unwrap_or_else(|| "result:none".to_owned());
-            format!(
-                "handler({})->{}:{}",
-                required_effect_row_part(&handler.handled, store),
-                produced,
-                result
-            )
-        }
-        Type::Named(reference) => format!("named:{}", reference.name),
-        Type::Nominal(reference) => format!(
-            "nominal:{}:{}",
-            reference.name,
-            reference
-                .representation
-                .map(|representation| type_fingerprint_part(representation, store))
-                .unwrap_or_else(|| "bodyless".to_owned())
-        ),
-        Type::Applied { constructor, args } => format!(
-            "applied:{}<{}>",
-            constructor.0,
-            args.iter()
-                .map(|arg| type_fingerprint_part(*arg, store))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        Type::Refined { base, predicate } => {
-            format!(
-                "refined<{},{}>",
-                type_fingerprint_part(*base, store),
-                predicate.0
-            )
-        }
-        Type::Trust { wrapper, inner } => {
-            format!(
-                "trust:{wrapper:?}<{}>",
-                type_fingerprint_part(*inner, store)
-            )
-        }
-        Type::Schema(inner) => format!("schema<{}>", type_fingerprint_part(*inner, store)),
-        Type::Prompt => "prompt".to_owned(),
-        Type::PromptPart => "prompt_part".to_owned(),
-        Type::Message(inner) => format!("message<{}>", type_fingerprint_part(*inner, store)),
-        Type::MemorySelection(inner) => {
-            format!("memory_selection<{}>", type_fingerprint_part(*inner, store))
-        }
-        Type::Store { key, value } => format!(
-            "store<{},{}>",
-            type_fingerprint_part(*key, store),
-            type_fingerprint_part(*value, store)
-        ),
-        Type::MemoryPlace(place) => format!("memory_place:{}", place.segments.join(".")),
-        Type::MemoryRegion(schema) => {
-            format!("memory_region<{}>", type_fingerprint_part(*schema, store))
-        }
-        Type::ResourceHandle(handle) => resource_handle_part(handle, store),
-    }
-}
-
-fn resource_handle_part(handle: &etas_types::ResourceHandleType, store: &TypeStore) -> String {
-    match handle {
-        etas_types::ResourceHandleType::MemoryRegion { schema } => {
-            format!(
-                "resource:memory_region<{}>",
-                type_fingerprint_part(*schema, store)
-            )
-        }
-        etas_types::ResourceHandleType::ExternalTool { signature } => {
-            format!(
-                "resource:external_tool<{}>",
-                type_fingerprint_part(*signature, store)
-            )
-        }
-        etas_types::ResourceHandleType::Other { name, args } => format!(
-            "resource:other:{}<{}>",
-            name,
-            args.iter()
-                .map(|arg| type_fingerprint_part(*arg, store))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    }
+        .collect()
 }
 
 fn source_fingerprint(source: &CoreSourceFile) -> ArtifactFingerprint {

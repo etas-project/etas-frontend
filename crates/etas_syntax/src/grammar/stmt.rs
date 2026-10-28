@@ -10,9 +10,34 @@ impl Parser<'_> {
     }
 
     pub(crate) fn block_after_lbrace(&mut self, start: Span) -> Block {
+        self.with_body_recursion(
+            |span| Block {
+                stmts: Vec::new(),
+                final_expr: None,
+                span,
+            },
+            |parser| parser.block_after_lbrace_inner(start),
+        )
+    }
+
+    fn block_after_lbrace_inner(&mut self, start: Span) -> Block {
+        let (stmts, final_expr) = self.block_elements(Some(Punct::RBrace));
+        let end = self.expect_punct(Punct::RBrace, "expected `}` after block");
+        Block {
+            stmts,
+            final_expr,
+            span: start.cover(end),
+        }
+    }
+
+    pub(crate) fn block_elements(
+        &mut self,
+        terminator: Option<Punct>,
+    ) -> (Vec<Stmt>, Option<Box<Expr>>) {
         let mut stmts = Vec::new();
         let mut final_expr = None;
-        while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
+        while !self.cursor.at_eof() && !terminator.is_some_and(|punct| self.cursor.at_punct(punct))
+        {
             let before = self.cursor.position();
             if self.starts_stmt_keyword() {
                 stmts.push(self.stmt());
@@ -37,12 +62,7 @@ impl Parser<'_> {
             }
             self.ensure_progress(before, "expected statement or final expression");
         }
-        let end = self.expect_punct(Punct::RBrace, "expected `}` after block");
-        Block {
-            stmts,
-            final_expr,
-            span: start.cover(end),
-        }
+        (stmts, final_expr)
     }
 
     pub(crate) fn stmt(&mut self) -> Stmt {
@@ -150,7 +170,11 @@ impl Parser<'_> {
 
     pub(crate) fn assign_target_expr(&mut self) -> Expr {
         let mut target = Expr::Path(self.path());
+        let mut chain = 0;
         loop {
+            if !self.body_chain_step(&mut chain) {
+                break;
+            }
             if self.eat_open_punct(Punct::LBracket).is_some() {
                 let index = self.expr();
                 let end = self.expect_punct(Punct::RBracket, "expected `]` after index");
@@ -206,6 +230,22 @@ impl Parser<'_> {
     }
 
     pub(crate) fn if_stmt(&mut self) -> IfStmt {
+        self.with_body_recursion(
+            |span| IfStmt {
+                condition: Expr::Error(span),
+                then_branch: Block {
+                    stmts: Vec::new(),
+                    final_expr: None,
+                    span,
+                },
+                else_branch: None,
+                span,
+            },
+            Self::if_stmt_inner,
+        )
+    }
+
+    fn if_stmt_inner(&mut self) -> IfStmt {
         let start = self.expect_keyword(Keyword::If, "expected `if`");
         let condition = self.expr_before_block();
         let then_branch = self.block();
@@ -321,9 +361,13 @@ impl Parser<'_> {
     }
 
     pub(crate) fn limit_list(&mut self) -> Vec<Expr> {
+        self.limit_list_using(Self::expr)
+    }
+
+    pub(crate) fn limit_list_using(&mut self, parse: fn(&mut Self) -> Expr) -> Vec<Expr> {
         let mut limits = Vec::new();
         loop {
-            limits.push(self.expr());
+            limits.push(parse(self));
             if self.cursor.eat_punct(Punct::Comma).is_none() {
                 break;
             }
@@ -391,6 +435,10 @@ impl Parser<'_> {
     }
 
     pub(crate) fn pattern(&mut self) -> Pattern {
+        self.with_body_recursion(Pattern::Error, Self::pattern_inner)
+    }
+
+    fn pattern_inner(&mut self) -> Pattern {
         if let Some(token) = self.eat_open_punct(Punct::LParen) {
             let elems = self.comma_list(Punct::RParen, |this| this.pattern());
             let end = self.expect_punct(Punct::RParen, "expected `)` after tuple pattern");

@@ -450,6 +450,7 @@ impl<'a> Dump<'a> {
             }
             HirItem::Impl(item) => {
                 let target = match &item.target {
+                    HirImplTarget::Agent { target, .. } => format!("agent={}", path_ref(target)),
                     HirImplTarget::Inherent { target, .. } => {
                         format!("target={}", path_ref(target))
                     }
@@ -771,6 +772,27 @@ impl<'a> Dump<'a> {
         match expr {
             HirExpr::Literal(lit) => self.line(&format!("Literal {:?}", lit), None),
             HirExpr::Path(path) => self.line(&format!("Path {}", path_ref(path)), Some(path.span)),
+            HirExpr::Reflect(reflection) => {
+                self.line(
+                    &format!("Reflect {}", path_ref(reflection.target.root_path())),
+                    Some(reflection.span),
+                );
+                if let crate::HirReflectTarget::SpecMethod {
+                    spec,
+                    spec_args,
+                    method,
+                    ..
+                } = &reflection.target
+                {
+                    self.line(
+                        &format!("SelectedSpec {} method={method}", path_ref(spec)),
+                        Some(spec.span),
+                    );
+                    for arg in spec_args {
+                        self.type_id("SpecArgument", *arg);
+                    }
+                }
+            }
             HirExpr::Record(record) => {
                 if let Some(path) = &record.path {
                     self.line(
@@ -868,6 +890,12 @@ impl<'a> Dump<'a> {
                 }
             }
             HirExpr::Perform {
+                action,
+                generic_args,
+                args,
+                ..
+            }
+            | HirExpr::Infer {
                 action,
                 generic_args,
                 args,
@@ -1359,6 +1387,7 @@ fn expr_span(expr: &HirExpr, program: &HirProgram) -> Span {
     match expr {
         HirExpr::Literal(lit) => lit.span(),
         HirExpr::Path(path) => path.span,
+        HirExpr::Reflect(reflection) => reflection.span,
         HirExpr::Record(record) => record.span,
         HirExpr::Tuple { span, .. }
         | HirExpr::Array { span, .. }
@@ -1373,6 +1402,7 @@ fn expr_span(expr: &HirExpr, program: &HirProgram) -> Span {
         | HirExpr::MethodCall { span, .. }
         | HirExpr::SpecMethodCall { span, .. }
         | HirExpr::Perform { span, .. }
+        | HirExpr::Infer { span, .. }
         | HirExpr::Handler { span, .. }
         | HirExpr::Handle { span, .. }
         | HirExpr::StageCompose { span, .. }

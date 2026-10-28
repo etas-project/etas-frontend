@@ -112,23 +112,25 @@ pub(super) fn resolve_import_tree(
             else {
                 return Vec::new();
             };
-            let exported_names = resolver
+            let targets = resolver
                 .exports(&module)
                 .expect("resolved wildcard module should expose exports")
                 .items
-                .values()
+                .into_values()
                 .filter(|item| {
                     item.visibility == etas_hir::Visibility::Public
                         || matches!(module, ResolvedModuleTarget::Source { module: source, .. } if source == from)
                 })
-                .map(|item| item.name.clone())
-                .collect();
+                .map(|item| (item.name.clone(), import_target_for_export(&item.name.clone(), item)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let exported_names = targets.keys().cloned().collect();
             vec![ImportResolution::Wildcard(ResolvedWildcardImport {
                 from,
                 from_part,
                 import: import_ref.clone(),
                 target_module: module,
                 exported_names,
+                targets,
                 visibility: hir_visibility(import.visibility),
                 span: *span,
             })]
@@ -336,7 +338,7 @@ fn resolve_exported_item(
     Some(export.clone())
 }
 
-fn import_target_for_export(name: &str, export: ProviderExport) -> ImportTarget {
+pub(super) fn import_target_for_export(name: &str, export: ProviderExport) -> ImportTarget {
     match export.target {
         ProviderExportTarget::Source {
             module_key,

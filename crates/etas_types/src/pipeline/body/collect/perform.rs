@@ -15,15 +15,16 @@ use crate::{
     },
 };
 
-pub fn collect_perform(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_perform<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     action: &ResolvedActionRef,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let Some(signature) = action_signature(ctx, action) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::UnknownType,
@@ -39,11 +40,17 @@ pub fn collect_perform(
             });
         }
         for arg in args {
-            collect_arg(ctx, arg, None);
+            collect_arg(ctx, arg, None)?;
         }
-        return expected.unwrap_or_else(|| ctx.primitive(PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(PrimitiveType::Never)));
     };
-    let signature = specialize_action_signature(ctx, signature, &action.effect.args);
+    let Some(signature) = specialize_action_signature(ctx, signature, &action.effect.args, span)
+    else {
+        for arg in args {
+            collect_arg(ctx, arg, None)?;
+        }
+        return Ok(ctx.primitive(PrimitiveType::Never));
+    };
     validate_action_selector_arity_and_kinds(
         ctx,
         &signature,
@@ -51,7 +58,14 @@ pub fn collect_perform(
         span,
         "performed action",
     );
-    let signature = specialize_action_signature_from_generic_args(ctx, signature, generic_args);
+    let Some(signature) =
+        specialize_action_signature_from_generic_args(ctx, signature, generic_args, span)
+    else {
+        for arg in args {
+            collect_arg(ctx, arg, None)?;
+        }
+        return Ok(ctx.primitive(PrimitiveType::Never));
+    };
 
     if signature.params.len() != args.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -68,15 +82,21 @@ pub fn collect_perform(
     let mut arg_types = Vec::with_capacity(args.len());
     for (index, arg) in args.iter().enumerate() {
         let expected_arg = signature.params.get(index).copied();
-        let actual = collect_arg(ctx, arg, expected_arg);
+        let actual = collect_arg(ctx, arg, expected_arg)?;
         arg_types.push(actual);
     }
 
-    let output = expected.unwrap_or(signature.output);
+    let output = expected.unwrap_or_else(|| {
+        if signature.generic_params.is_empty() {
+            signature.output
+        } else {
+            ctx.fresh_type_var()
+        }
+    });
     let callee = ctx.ctx.interner.intern(Type::Function(FlowType {
         input: signature.params.clone(),
         output: signature.output,
-        effects: None,
+        effects: signature.default_handler_effects.clone(),
     }));
     let explicit_generic_args = generic_args
         .iter()
@@ -105,11 +125,15 @@ pub fn collect_perform(
         output,
         origin: ConstraintOrigin { span },
     });
-    output
+    if let ResolveResult::Resolved(symbol) = action.action_symbol {
+        let action = super::handler_request::action_identity(ctx, symbol);
+        super::handler_request::record_request(ctx, action, expr);
+    }
+    Ok(output)
 }
 
-fn action_signature(
-    ctx: &BodyCollectContext<'_, '_>,
+fn action_signature<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     action: &ResolvedActionRef,
 ) -> Option<EffectActionSignature> {
     let ResolveResult::Resolved(symbol) = action.action_symbol else {
@@ -131,11 +155,12 @@ fn action_signature(
         })
 }
 
-fn collect_arg(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_arg<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     arg: &HirArg,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     match arg {
         HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
         HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),

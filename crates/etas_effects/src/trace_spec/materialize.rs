@@ -1,8 +1,5 @@
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
-use etas_hir::{
-    HirDeclarationConformanceTarget, HirEffectRef, HirItem, HirItemId, HirProgram, HirSpecExpr,
-    HirSpecKind, ResolveResult, SymbolId,
-};
+use etas_hir::{HirEffectRef, HirItem, HirItemId, HirProgram, HirSpecExpr, HirSpecKind, SymbolId};
 
 use crate::{
     Effect, EffectOutput, EffectPipelineError, EffectRegistry, EffectRow,
@@ -11,7 +8,9 @@ use crate::{
     trace_spec::model::{TraceSpecClause, TraceSpecClauseAlternatives, TraceSpecPattern},
 };
 
+mod conformance;
 mod external;
+mod instantiate;
 mod selector;
 
 pub fn materialize_trace_spec_models(
@@ -80,78 +79,7 @@ impl TraceSpecMaterializer<'_> {
             store.clauses_by_item.insert(item, alternatives);
         }
 
-        for (item, hir_item) in self.hir.items.iter() {
-            let Some((symbol, conformances)) = callable_symbol_and_conformances(hir_item) else {
-                continue;
-            };
-            for conformance in conformances {
-                match &conformance.target {
-                    HirDeclarationConformanceTarget::Path(spec_ref) => {
-                        if !self.is_checked_trace_spec_path_conformance(item, spec_ref) {
-                            continue;
-                        }
-                        let Some((name, alternatives)) =
-                            self.trace_spec_clauses_for_ref(spec_ref, &store)
-                        else {
-                            continue;
-                        };
-                        let reference = TraceSpecClauseFact::TraceSpecReference { name };
-                        let mut facts = Vec::with_capacity(1);
-                        facts.push(reference.clone());
-                        facts.extend(facts_from_alternatives(&alternatives));
-                        self.effects
-                            .facts
-                            .trace_specs
-                            .items
-                            .entry(item)
-                            .or_default()
-                            .extend(facts.clone());
-                        self.effects
-                            .facts
-                            .trace_specs
-                            .symbols
-                            .entry(symbol)
-                            .or_default()
-                            .extend(facts);
-                        self.record_trace_spec_requirement(item, symbol, reference);
-                        store
-                            .referenced_by_item
-                            .entry(item)
-                            .or_default()
-                            .extend(alternatives);
-                    }
-                    HirDeclarationConformanceTarget::InlineTraceSpec(expr) => {
-                        if !self.is_checked_inline_trace_spec_conformance(item, expr.span()) {
-                            continue;
-                        }
-                        let Some(alternatives) = self.alternatives_from_expr(expr)? else {
-                            continue;
-                        };
-                        let facts = facts_from_alternatives(&alternatives);
-                        self.effects
-                            .facts
-                            .trace_specs
-                            .items
-                            .entry(item)
-                            .or_default()
-                            .extend(facts.clone());
-                        self.effects
-                            .facts
-                            .trace_specs
-                            .symbols
-                            .entry(symbol)
-                            .or_default()
-                            .extend(facts);
-                        store
-                            .referenced_by_item
-                            .entry(item)
-                            .or_default()
-                            .extend(alternatives);
-                    }
-                    HirDeclarationConformanceTarget::Error { .. } => {}
-                }
-            }
-        }
+        self.materialize_checked_conformances(&mut store)?;
         for conformance in &self.types.facts.external_trace_spec_conformances {
             match &conformance.target {
                 etas_types::ExternalTraceSpecConformanceTarget::Named { spec, .. } => {
@@ -178,7 +106,7 @@ impl TraceSpecMaterializer<'_> {
                         .external_referenced_by_item
                         .entry(conformance.item.clone())
                         .or_default()
-                        .extend(alternatives);
+                        .push(alternatives);
                 }
                 etas_types::ExternalTraceSpecConformanceTarget::Inline => {
                     self.diagnostic(
@@ -189,53 +117,6 @@ impl TraceSpecMaterializer<'_> {
             }
         }
         Ok(store)
-    }
-
-    fn is_checked_trace_spec_path_conformance(
-        &mut self,
-        item: HirItemId,
-        spec_ref: &etas_hir::HirSpecRef,
-    ) -> bool {
-        let ResolveResult::Resolved(spec_symbol) = spec_ref.spec_path.resolution else {
-            return false;
-        };
-        let Some(signature) = self.types.facts.spec_signatures.get(&spec_symbol) else {
-            return false;
-        };
-        if !matches!(signature.kind, etas_types::SpecKind::TraceSpec) {
-            return false;
-        }
-        let found = self.types.facts.trace_spec_conformances.iter().any(|fact| {
-            fact.item == item
-                && matches!(
-                    &fact.target,
-                    etas_types::TraceSpecConformanceTarget::Named {
-                        spec_symbol: checked_symbol,
-                        ..
-                    } if *checked_symbol == spec_symbol
-                )
-        });
-        if !found {
-            self.diagnostic(
-                spec_ref.span,
-                "trace spec conformance requires checked type facts",
-            );
-        }
-        found
-    }
-
-    fn is_checked_inline_trace_spec_conformance(&mut self, item: HirItemId, span: Span) -> bool {
-        let found = self.types.facts.trace_spec_conformances.iter().any(|fact| {
-            fact.item == item
-                && matches!(fact.target, etas_types::TraceSpecConformanceTarget::Inline)
-        });
-        if !found {
-            self.diagnostic(
-                span,
-                "inline trace spec conformance requires checked type facts",
-            );
-        }
-        found
     }
 
     fn record_trace_spec_requirement(

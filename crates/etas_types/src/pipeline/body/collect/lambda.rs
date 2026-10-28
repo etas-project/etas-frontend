@@ -9,13 +9,14 @@ use crate::{
     },
 };
 
-pub fn collect_lambda(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_lambda<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     params: Vec<etas_hir::SymbolId>,
     body: HirLambdaBody,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let expected_flow = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
         Some(Type::Function(flow)) => Some(flow.clone()),
         _ => None,
@@ -23,6 +24,7 @@ pub fn collect_lambda(
 
     let mut input = Vec::with_capacity(params.len());
     for (index, param) in params.iter().copied().enumerate() {
+        ctx.checkpoint()?;
         let ty = parameter_type(ctx, param)
             .or_else(|| {
                 expected_flow
@@ -54,11 +56,20 @@ pub fn collect_lambda(
         .map(|flow| flow.output)
         .unwrap_or_else(|| ctx.fresh_type_var());
     let previous_return = ctx.state.expected_return.replace(output);
+    let previous_candidates = ctx.state.inferred_returns.take();
+    // Constructing a callable does not issue the requests in its latent body.
+    // Nested handles still collect their own local request instances.
+    let previous_request_depth = std::mem::replace(&mut ctx.state.request_scope_depth, 0);
+    let previous_requests = ctx.state.action_requests.len();
     let body_ty = match body {
         HirLambdaBody::Expr(expr) => collect_expr(ctx, expr, Some(output)),
         HirLambdaBody::Block(block) => collect_block(ctx, block, Some(output)),
     };
     ctx.state.expected_return = previous_return;
+    ctx.state.inferred_returns = previous_candidates;
+    ctx.state.request_scope_depth = previous_request_depth;
+    ctx.state.action_requests.truncate(previous_requests);
+    let body_ty = body_ty?;
     ctx.emit(crate::TypeConstraint::Assignable {
         from: body_ty,
         to: output,
@@ -66,15 +77,15 @@ pub fn collect_lambda(
         reason: crate::AssignabilityReason::Return,
     });
 
-    ctx.ctx.interner.intern(Type::Function(FlowType {
+    Ok(ctx.ctx.interner.intern(Type::Function(FlowType {
         input,
         output,
         effects: expected_flow.and_then(|flow| flow.effects),
-    }))
+    })))
 }
 
-fn parameter_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn parameter_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     symbol: etas_hir::SymbolId,
 ) -> Option<TypeId> {
     match &ctx.ctx.hir.symbols.get(symbol)?.def {

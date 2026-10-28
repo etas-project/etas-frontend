@@ -143,7 +143,7 @@ fn classify_top_level_let(
     expr: etas_hir::HirExprId,
 ) -> Option<TopLevelLetClassification> {
     match &hir.exprs[expr] {
-        HirExpr::Literal(_) => Some(TopLevelLetClassification::Const),
+        HirExpr::Literal(_) | HirExpr::Lambda { .. } => Some(TopLevelLetClassification::Const),
         HirExpr::Tuple { elems, .. }
         | HirExpr::Array { elems, .. }
         | HirExpr::List { elems, .. }
@@ -194,7 +194,7 @@ fn classify_top_level_let(
                 }
                 HirFieldInit::Shorthand { resolution, .. } => match resolution {
                     etas_hir::ResolveResult::Resolved(symbol) => {
-                        classify_symbol_reference(facts, *symbol)
+                        classify_symbol_reference(types, facts, *symbol)
                     }
                     _ => Some(TopLevelLetClassification::Invalid),
                 },
@@ -202,7 +202,9 @@ fn classify_top_level_let(
             .collect::<Option<Vec<_>>>()
             .map(|_| TopLevelLetClassification::Const),
         HirExpr::Path(path) => match path.resolution {
-            etas_hir::ResolveResult::Resolved(symbol) => classify_symbol_reference(facts, symbol),
+            etas_hir::ResolveResult::Resolved(symbol) => {
+                classify_symbol_reference(types, facts, symbol)
+            }
             _ => Some(TopLevelLetClassification::Invalid),
         },
         HirExpr::Handler { .. } => Some(TopLevelLetClassification::Handler),
@@ -266,9 +268,20 @@ fn classify_top_level_let(
 }
 
 fn classify_symbol_reference(
+    types: &etas_types::TypeFacts,
     facts: &TopLevelLetFacts,
     symbol: SymbolId,
 ) -> Option<TopLevelLetClassification> {
+    if matches!(
+        types.symbol_types.get(&symbol),
+        Some(
+            etas_types::SymbolTypeFact::Agent { .. }
+                | etas_types::SymbolTypeFact::Flow { .. }
+                | etas_types::SymbolTypeFact::Tool { .. }
+        )
+    ) {
+        return Some(TopLevelLetClassification::Const);
+    }
     match facts.symbols.get(&symbol)?.classification {
         TopLevelLetClassification::Const => Some(TopLevelLetClassification::Const),
         TopLevelLetClassification::Handler => Some(TopLevelLetClassification::Handler),

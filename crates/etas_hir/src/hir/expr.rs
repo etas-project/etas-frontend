@@ -10,10 +10,11 @@ pub type HirExprArena = Arena<HirExprId, HirExpr>;
 pub type HirHandlerArmArena = Arena<HirHandlerArmId, HirHandlerArm>;
 pub use ast::{BinaryOp as HirBinaryOp, UnaryOp as HirUnaryOp};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirExpr {
     Literal(HirLiteral),
     Path(ResolvedPath),
+    Reflect(Box<crate::HirReflectExpr>),
     Record(HirRecordExpr),
     EmptyRecordOrMap {
         span: Span,
@@ -74,6 +75,12 @@ pub enum HirExpr {
         span: Span,
     },
     Perform {
+        action: ResolvedActionRef,
+        generic_args: Vec<HirGenericArg>,
+        args: Vec<HirArg>,
+        span: Span,
+    },
+    Infer {
         action: ResolvedActionRef,
         generic_args: Vec<HirGenericArg>,
         args: Vec<HirArg>,
@@ -157,6 +164,7 @@ impl HirExpr {
         match self {
             Self::Literal(lit) => lit.span(),
             Self::Path(path) => path.span,
+            Self::Reflect(reflection) => reflection.span,
             Self::Record(record) => record.span,
             Self::Tuple { span, .. }
             | Self::Array { span, .. }
@@ -171,6 +179,7 @@ impl HirExpr {
             | Self::MethodCall { span, .. }
             | Self::SpecMethodCall { span, .. }
             | Self::Perform { span, .. }
+            | Self::Infer { span, .. }
             | Self::Handler { span, .. }
             | Self::Handle { span, .. }
             | Self::StageCompose { span, .. }
@@ -190,7 +199,7 @@ impl HirExpr {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirLiteral {
     Bool { value: bool, span: Span },
     Int { text: String, span: Span },
@@ -211,7 +220,7 @@ impl HirLiteral {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirRecordExpr {
     pub path: Option<ResolvedPath>,
     pub generic_args: Vec<HirGenericArg>,
@@ -219,20 +228,20 @@ pub struct HirRecordExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirMapEntry {
     pub key: HirExprId,
     pub value: HirExprId,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirRangeBounds {
     ClosedOpen,
     OpenClosed,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirFieldInit {
     Shorthand {
         name: String,
@@ -246,7 +255,7 @@ pub enum HirFieldInit {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirArg {
     Positional(HirExprId),
     Named {
@@ -256,7 +265,7 @@ pub enum HirArg {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirHandlerArm {
     pub action: ResolvedActionRef,
     pub generic_args: Vec<HirGenericArg>,
@@ -266,20 +275,20 @@ pub struct HirHandlerArm {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirStage {
     pub expr: HirExprId,
     pub limits: Vec<HirExprId>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirElseBranch {
     If(HirExprId),
     Block(HirBlockId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirMatchArm {
     pub pat: HirPatId,
     pub body: HirMatchArmBody,
@@ -287,13 +296,13 @@ pub struct HirMatchArm {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirMatchArmBody {
     Expr(HirExprId),
     Block(HirBlockId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirLambdaBody {
     Expr(HirExprId),
     Block(HirBlockId),

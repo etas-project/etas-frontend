@@ -27,24 +27,36 @@ pub use facts::{
     HandlerCompletionSummary, HandlerValueFact, HandlerValueRef, InterpreterSupportFacts,
     LatentEffectBodyRef, LatentEffectContract, LatentEffectFact, PerformedActionFact,
     PublicEffectContract, PublicEffectContractSource, PublicEffectValue, QualifiedName,
-    RequirementFacts, RequirementFactsForContract, ResumeSummary, TraceSpecClauseFact,
-    TraceSpecFacts, TryCaptureFact,
+    RequirementFacts, RequirementFactsForContract, ResumeSummary, StdCallableEffectFact,
+    TraceSpecClauseFact, TraceSpecFacts, TryCaptureFact,
 };
 pub use infer::{
-    ActionEvent, ActionEventSource, ActionTraceDomain, Determinism, EffectSummary, EffectUnit,
-    FrontendRejectionReason, HostRequirementKind, HostRequirementSet, InterpreterFeatureKind,
-    InterpreterOrchestrationRequirementSet, InterpreterSupport, ResidualCheckSet,
+    ActionEvent, ActionEventSource, ActionRequestInstance, ActionTraceDomain, CallableExitSummary,
+    CallableOutcome, CallableReferenceTarget, CallableReturnReference, CallableReturnSource,
+    DefaultHandlerContribution, DefaultHandlerEffects, Determinism, EffectSummary, EffectUnit,
+    ExitTraceFact, FrontendRejectionReason, FrozenSourceLocation, HostRequirementKind,
+    HostRequirementSet, InterpreterFeatureKind, InterpreterOrchestrationRequirementSet,
+    InterpreterSupport, MetadataCallableSource, OutcomeAnalysisGap, ParameterCallTarget,
+    ParameterRequest, RequestInstantiationSummary, ResidualCheckSet, ReturnObservation,
     RuntimeRequirementReason,
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
-    EffectPipelineOutput, ExternalActionTraceMetadata, ExternalArtifactAnchor,
+    EffectPipelineOutput, ExternalActionRequestMetadata, ExternalActionTraceMetadata,
+    ExternalArtifactAnchor, ExternalCallableValueMetadata,
+    ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
     ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
-    ExternalLatentFlowSummaryMetadata, ExternalTraceSpecClauseKind,
+    ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,
+    ExternalRequestInstantiationMetadata, ExternalTraceSpecClauseKind,
     ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
     ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, RunEffectPipeline,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{
     LimitBudgetKind, LimitKind, LimitRequirement, LimitValue, RequirementFact, RequirementSet,
+};
+mod frozen;
+pub use frozen::{
+    FrozenCallableEnvironment, FrozenCallableGraph, FrozenCallableGraphIdentity,
+    FrozenCallableSummary, FrozenCallableSummaryProvider,
 };

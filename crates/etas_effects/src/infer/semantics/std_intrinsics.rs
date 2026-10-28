@@ -37,7 +37,21 @@ impl EffectSemantics<'_> {
             state.summary.seq_assign(&summary);
             return state;
         }
-        if let Some(symbol) = self.callee_symbol(site.callee_expr)
+        let agent_symbol = self
+            .types
+            .facts
+            .expr_types
+            .get(&site.callee_expr)
+            .filter(|component| {
+                self.types
+                    .facts
+                    .agent_signature(**component)
+                    .and_then(|signature| signature.default_entry.as_ref())
+                    .is_some_and(|entry| entry.method.is_none())
+            })
+            .and_then(|component| self.types.facts.agent_components.get(component))
+            .copied();
+        if let Some(symbol) = agent_symbol.or_else(|| self.callee_symbol(site.callee_expr))
             && let Some(symbol_data) = self.hir.symbols.get(symbol)
             && let SymbolDef::ImportAlias {
                 path,
@@ -65,7 +79,7 @@ impl EffectSemantics<'_> {
                     );
                 }
             }
-            match self.external_call_summary_for_path(path, &site, &state) {
+            match self.external_call_summary_for_path(path, &site, &mut state) {
                 Ok(Some(summary)) => {
                     state.summary.seq_assign(&summary);
                     return state;
@@ -176,6 +190,54 @@ impl EffectSemantics<'_> {
         span: Span,
         mut state: EffectState,
     ) -> EffectState {
+        if let Some(fact) = self.types.facts.std_method_calls.get(&expr) {
+            if self.method_receiver_type_missing(expr) {
+                return self.reject_effect_state(
+                    span,
+                    "method effect propagation requires a checked receiver type fact",
+                    state,
+                );
+            }
+            let arguments_checked = match self.hir.exprs.get(expr) {
+                Some(HirExpr::MethodCall { args, .. }) => args.iter().all(|arg| {
+                    let (HirArg::Positional(arg) | HirArg::Named { value: arg, .. }) = arg;
+                    self.types
+                        .facts
+                        .expr_types
+                        .get(arg)
+                        .and_then(|ty| self.types.store.get(*ty))
+                        .is_some()
+                }),
+                _ => false,
+            };
+            if !arguments_checked
+                || self
+                    .types
+                    .facts
+                    .expr_types
+                    .get(&expr)
+                    .and_then(|ty| self.types.store.get(*ty))
+                    .is_none()
+            {
+                return self.reject_effect_state(
+                    span,
+                    "checked intrinsic method requires checked argument and result type facts",
+                    state,
+                );
+            }
+            let valid = self.std_registry.lookup_qualified(&fact.qualified_path).is_some_and(|symbol| {
+                matches!(&symbol.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty() && flow.source_method.as_ref().is_some_and(|method| method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic))
+                    && symbol.intrinsic.as_ref().is_some_and(|descriptor| descriptor.id.0 == fact.intrinsic && descriptor.purity == etas_std::IntrinsicPurity::Pure)
+            });
+            if valid {
+                return state;
+            }
+            return self.reject_effect_state(
+                span,
+                "checked intrinsic method has no matching pure registry contract",
+                state,
+            );
+        }
         if let Some(state) = self.std_conversation_method_call(expr, span, state.clone()) {
             return state;
         }
@@ -724,7 +786,7 @@ impl EffectSemantics<'_> {
             })
     }
 
-    fn std_flow_summary(
+    pub(crate) fn std_flow_summary(
         &mut self,
         call: HirExprId,
         callee: HirExprId,
@@ -741,7 +803,57 @@ impl EffectSemantics<'_> {
         let StdDecl::Flow(flow) = &decl.decl else {
             return None;
         };
-        let mut summary = self.summary_from_std_flow(call, symbol, flow, span);
+        let mut summary = match decl
+            .intrinsic
+            .as_ref()
+            .map(|descriptor| &descriptor.lowering)
+        {
+            Some(etas_std::LoweringHint::ForwardAction { stable_id }) => {
+                self.summary_from_std_action_forwarder(call, symbol, flow, *stable_id, span)
+            }
+            Some(etas_std::LoweringHint::DefaultAction { stable_id, .. }) => {
+                let mut summary =
+                    self.summary_from_std_action_forwarder(call, symbol, flow, *stable_id, span);
+                if let Err(reason) = self.record_std_action_call(
+                    call,
+                    decl.intrinsic.as_ref().map(|intrinsic| intrinsic.id.0),
+                    &summary,
+                ) {
+                    self.diagnostics.push(Diagnostic::effect_check(
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        span,
+                        reason,
+                    ));
+                    summary.support = crate::InterpreterSupport::Rejected(
+                        crate::FrontendRejectionReason::UnresolvedEffect,
+                    );
+                }
+                summary
+            }
+            Some(etas_std::LoweringHint::ActionReducer { .. }) => {
+                // The reducer can fail independently of the default read handler
+                // (limit/deadline). Its public row must survive action handling.
+                let mut summary = self
+                    .summary_from_std_flow(call, symbol, flow, span)
+                    .repeated();
+                if let Err(reason) = self.record_std_action_call(
+                    call,
+                    decl.intrinsic.as_ref().map(|intrinsic| intrinsic.id.0),
+                    &summary,
+                ) {
+                    self.diagnostics.push(Diagnostic::effect_check(
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        span,
+                        reason,
+                    ));
+                    summary.support = crate::InterpreterSupport::Rejected(
+                        crate::FrontendRejectionReason::UnresolvedEffect,
+                    );
+                }
+                summary
+            }
+            _ => self.summary_from_std_flow(call, symbol, flow, span),
+        };
         if let Some(intrinsic) = &decl.intrinsic {
             match intrinsic.runtime_requirement {
                 IntrinsicRuntimeRequirement::None => {}
@@ -807,6 +919,145 @@ impl EffectSemantics<'_> {
                 span,
                 crate::ActionEventSource::StdIntrinsic,
             );
+        }
+        summary
+    }
+
+    fn summary_from_std_action_forwarder(
+        &mut self,
+        call: HirExprId,
+        symbol: etas_hir::SymbolId,
+        flow: &etas_std::FlowDecl,
+        action_id: u32,
+        span: Span,
+    ) -> crate::EffectSummary {
+        let mut summary = crate::EffectSummary {
+            support: crate::InterpreterSupport::Rejected(
+                crate::FrontendRejectionReason::UnresolvedEffect,
+            ),
+            ..crate::EffectSummary::local()
+        };
+        let Some(action) = self
+            .registry
+            .standard_action(crate::EffectActionId(action_id))
+            .filter(|action| action.has_default_handler)
+        else {
+            self.diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                "standard forwarder requires a checked default action descriptor",
+            ));
+            return summary;
+        };
+        let target = crate::ActionRef {
+            tag: action.owner,
+            action: action.id,
+        };
+        let Some(SymbolTypeFact::Flow { signature }) =
+            self.type_symbols
+                .symbol_fact(self.hir, &self.types.facts, symbol)
+        else {
+            self.diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                "standard action forwarder has no checked callable signature",
+            ));
+            return summary;
+        };
+        let requested = signature
+            .requested_actions
+            .as_ref()
+            .and_then(|row| self.specialize_std_effect_row(call, flow, row, span))
+            .and_then(|row| {
+                (row.tail.is_none() && row.effects.len() == 1)
+                    .then(|| self.effect_from_type_ref(&row.effects[0]))
+                    .flatten()
+            });
+        let effect = match requested {
+            Some(effect)
+                if match &effect {
+                    crate::Effect::Action(action) => *action == target,
+                    crate::Effect::AppliedAction(instance) => instance.action == target,
+                    _ => false,
+                } =>
+            {
+                effect
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::effect_check(
+                    EffectDiagnosticCode::IncompleteEffectFacts,
+                    span,
+                    "standard action forwarder has no matching checked requested-action row",
+                ));
+                return summary;
+            }
+        };
+        let produced = match (&signature.effects, flow.public_effects.is_empty()) {
+            (Some(row), _) => {
+                let Some(row) = self.specialize_std_effect_row(call, flow, row, span) else {
+                    return summary;
+                };
+                let Some(effects) = row
+                    .effects
+                    .iter()
+                    .map(|effect| self.effect_from_type_ref(effect))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    self.diagnostics.push(Diagnostic::effect_check(
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        span,
+                        "standard default handler row contains an unresolved effect",
+                    ));
+                    return summary;
+                };
+                crate::EffectRow {
+                    effects: effects.into_iter().collect(),
+                    open: row.tail.as_deref().map(crate::effect_var_id_from_name),
+                }
+            }
+            (None, true) => crate::EffectRow::empty(),
+            (None, false) => {
+                self.diagnostics.push(Diagnostic::effect_check(
+                    EffectDiagnosticCode::IncompleteEffectFacts,
+                    span,
+                    "standard default handler has no checked produced-effect row",
+                ));
+                return summary;
+            }
+        };
+        summary.support = crate::InterpreterSupport::LocalOnly;
+        self.apply_requested_action_to_summary_with_source(
+            &mut summary,
+            effect.clone(),
+            span,
+            crate::ActionEventSource::StdIntrinsic,
+        );
+        summary.handler_requests = match self.checked_request_instance(
+            call,
+            effect.clone(),
+            &signature.generic_params,
+            &signature.params,
+            signature.output,
+        ) {
+            Ok(request) => request,
+            Err(error) => {
+                self.diagnostics.push(Diagnostic::effect_check(
+                    EffectDiagnosticCode::IncompleteEffectFacts,
+                    span,
+                    error.to_string(),
+                ));
+                summary.support = crate::InterpreterSupport::Rejected(
+                    crate::FrontendRejectionReason::UnresolvedEffect,
+                );
+                crate::RequestInstantiationSummary::Unavailable
+            }
+        };
+        if let Err(reason) = summary.record_default_handler_effects(effect, produced) {
+            self.diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                reason,
+            ));
         }
         summary
     }
@@ -1059,6 +1310,7 @@ mod tests {
 
         let mut interner = TypeInterner::new();
         let param = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
             name: "T".to_owned(),
         }));
         let concrete_arg = interner.primitive(PrimitiveType::I32);

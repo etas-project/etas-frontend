@@ -14,11 +14,14 @@ use crate::infer::unit::EffectUnit;
 use super::engine::EffectSemantics;
 use super::state::EffectState;
 
+mod completion;
+
 impl EffectSemantics<'_> {
     pub(crate) fn handle_parts(
         &mut self,
         expr: HirExprId,
         span: Span,
+        entry: EffectState,
         parts: HandleParts<EffectState>,
     ) -> Control<EffectState> {
         match parts.handler {
@@ -26,12 +29,24 @@ impl EffectSemantics<'_> {
                 expr: handler,
                 control,
             } => {
+                let only_normal = parts.body.normal_state().is_some()
+                    && parts.body.return_state().is_none()
+                    && parts.body.break_state().is_none()
+                    && parts.body.continue_state().is_none()
+                    && parts.body.resume_state().is_none()
+                    && parts.body.finish_state().is_none()
+                    && parts.body.error_state().is_none();
                 let body_state = parts.body.into_joined_domain();
+                if let Some(HirExpr::Handle { body, .. }) = self.hir.exprs.get(expr) {
+                    self.inputs
+                        .handled_body_requests
+                        .insert(*body, body_state.summary.handler_requests.clone());
+                }
                 let mut handler_state = control.into_joined_domain();
                 if let Some(summary) = self.handler_value_item_summary(handler) {
                     handler_state
                         .summary
-                        .merge_possible_handler_footprint_without_trace(&summary);
+                        .merge_request_footprint_without_escaping_or_trace(&summary);
                 }
                 let Some((handled, produced)) = self.handler_rows_for_expr(handler, span) else {
                     return Control::normal(body_state);
@@ -40,19 +55,39 @@ impl EffectSemantics<'_> {
                     registry: self.registry,
                     types: &self.types.store,
                 };
-                let remaining =
-                    coverage.subtract_handled(&body_state.summary.escaping_effects, &handled);
+                let value_completion = only_normal
+                    && !handler_state.incomplete
+                    && self.checked_value_handler_completion(
+                        expr,
+                        handler,
+                        &entry,
+                        &body_state,
+                        (&handled, &produced),
+                    );
                 let mut result = body_state;
-                result.summary.escaping_effects = remaining.clone();
+                result.summary.subtract_handled_effects(&coverage, &handled);
+                let remaining = result.summary.escaping_effects.clone();
+                if !value_completion {
+                    result
+                        .exits
+                        .gaps
+                        .insert(crate::OutcomeAnalysisGap::Handler(expr));
+                }
                 result.summary.default_actions =
                     coverage.subtract_handled(&result.summary.default_actions, &handled);
                 result.summary.record_handled_action_row(handled.clone());
                 self.remove_handled_runtime_support(&mut result.summary, &handled);
                 self.apply_runtime_support_for_row(&mut result.summary, &remaining);
+                let active_defaults = result.summary.default_actions.clone();
+                self.apply_runtime_support_for_row(&mut result.summary, &active_defaults);
                 result
                     .summary
-                    .merge_possible_handler_footprint_without_trace(&handler_state.summary);
-                result.summary.escaping_effects.union_assign(&produced);
+                    .merge_request_footprint_without_escaping_or_trace(&handler_state.summary);
+                result
+                    .summary
+                    .handler_requests
+                    .union_assign(&entry.summary.handler_requests);
+                result.summary.record_escaping_effect_row(produced.clone());
                 self.apply_runtime_support_for_row(&mut result.summary, &produced);
                 result
                     .summary
@@ -107,7 +142,7 @@ impl EffectSemantics<'_> {
                 continue;
             };
             let Some((effect, effect_type_args)) =
-                self.materialize_handler_action_effect(&arm_data.action, arm_data.span)
+                self.materialize_handler_action_effect(*arm, &arm_data.action, arm_data.span)
             else {
                 unsupported = true;
                 continue;
@@ -128,7 +163,7 @@ impl EffectSemantics<'_> {
             };
             state
                 .summary
-                .merge_possible_handler_footprint_without_trace(&arm_summary);
+                .merge_request_footprint_without_escaping_or_trace(&arm_summary);
             inferred_produced.union_assign(&arm_summary.escaping_effects);
             if matches!(
                 arm_summary.support,
@@ -173,6 +208,9 @@ impl EffectSemantics<'_> {
                 1 => crate::FinishSummary::Once,
                 _ => crate::FinishSummary::Multiple,
             };
+            self.inputs
+                .handler_action_effects
+                .insert(*arm, effect.clone());
             arm_facts.push(HandlerArmFact {
                 action: HandlerActionFact {
                     effect_segments: arm_data
@@ -318,9 +356,28 @@ impl EffectSemantics<'_> {
 
     fn materialize_handler_action_effect(
         &mut self,
+        arm: HirHandlerArmId,
         action: &etas_hir::ResolvedActionRef,
         span: Span,
     ) -> Option<(crate::Effect, Vec<TypeId>)> {
+        for arg in &action.effect.args {
+            if self.type_arg_from_hir_effect_arg(arg).is_none() {
+                self.diagnostics.push(Diagnostic::effect_check(
+                    EffectDiagnosticCode::IncompleteEffectFacts,
+                    span,
+                    "handler arm effect solving requires checked handled-action type argument facts",
+                ));
+                return None;
+            }
+        }
+        let Some(checked) = self.types.facts.handler_actions.get(&arm) else {
+            self.diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                "handler action requires checked selector and signature facts",
+            ));
+            return None;
+        };
         let effect = self.effect_from_action_ref(action).or_else(|| {
             self.diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
@@ -329,18 +386,27 @@ impl EffectSemantics<'_> {
             ));
             None
         })?;
-        let mut effect_type_args = Vec::new();
-        for owner_arg in &action.effect.args {
-            let Some(type_arg) = self.type_arg_from_hir_effect_arg(owner_arg) else {
-                self.diagnostics.push(Diagnostic::effect_check(
-                    EffectDiagnosticCode::IncompleteEffectFacts,
-                    span,
-                    "handler arm effect solving requires checked handled-action type argument facts",
-                ));
-                return None;
-            };
-            effect_type_args.push(type_arg);
-        }
+        let effect_type_args = checked
+            .selectors
+            .iter()
+            .filter_map(|arg| match arg {
+                etas_types::EffectArgRef::Type(ty) => Some(*ty),
+                _ => None,
+            })
+            .collect();
+        let effect = match effect {
+            crate::Effect::Action(action) if !checked.selectors.is_empty() => {
+                crate::Effect::AppliedAction(crate::ActionInstanceRef {
+                    action,
+                    args: checked.selectors.clone(),
+                })
+            }
+            crate::Effect::AppliedAction(mut instance) => {
+                instance.args = checked.selectors.clone();
+                crate::Effect::AppliedAction(instance)
+            }
+            effect => effect,
+        };
         Some((effect, effect_type_args))
     }
 
@@ -559,7 +625,7 @@ impl EffectSemantics<'_> {
                     self.scan_handler_controls_in_arg(arg, in_lambda, scan);
                 }
             }
-            HirExpr::Perform { args, .. } => {
+            HirExpr::Perform { args, .. } | HirExpr::Infer { args, .. } => {
                 for arg in args {
                     self.scan_handler_controls_in_arg(arg, in_lambda, scan);
                 }
@@ -642,6 +708,7 @@ impl EffectSemantics<'_> {
             }
             HirExpr::Literal(_)
             | HirExpr::Path(_)
+            | HirExpr::Reflect(_)
             | HirExpr::EmptyRecordOrMap { .. }
             | HirExpr::EmptySequence { .. }
             | HirExpr::Error { .. } => {}

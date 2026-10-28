@@ -150,3 +150,97 @@ fn body_delta_enforces_shared_spec_bounds_and_nominal_assignment() {
         );
     }
 }
+
+struct BodyControl {
+    checks: std::sync::atomic::AtomicUsize,
+    interrupt_at: usize,
+}
+
+impl etas_utils::PipelineExecutionControl for BodyControl {
+    fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+        if self
+            .checks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= self.interrupt_at
+        {
+            return Err(etas_utils::PipelineInterruption {
+                kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                reason: "body control interrupted".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn controlled_body_check_does_not_materialize_a_cancelled_delta() {
+    let source = format!(
+        "flow f() -> i32 {{ {} return 1; }}",
+        "let value: i32 = 1;".repeat(128)
+    );
+    let hir = parse(&source);
+    let signatures = etas_types::build_signature_facts(&hir);
+    let base = SignatureEnvironment::new(&hir, &signatures);
+    let item = hir
+        .items
+        .iter()
+        .find(|(_, node)| matches!(node, HirItem::Flow(_)))
+        .unwrap()
+        .0;
+    let control = BodyControl {
+        checks: Default::default(),
+        interrupt_at: 32,
+    };
+    let registry = Arc::new(etas_std::standard_registry());
+    let error =
+        etas_types::check_body_delta_controlled(&hir, &base, item, registry.clone(), &control)
+            .unwrap_err();
+    assert_eq!(error.kind, etas_utils::PipelineInterruptionKind::Cancelled);
+    assert_eq!(
+        control.checks.load(std::sync::atomic::Ordering::Relaxed),
+        33
+    );
+
+    let control = BodyControl {
+        checks: Default::default(),
+        interrupt_at: usize::MAX,
+    };
+    let completed =
+        etas_types::check_body_delta_controlled(&hir, &base, item, registry.clone(), &control)
+            .unwrap();
+    let ordinary = etas_types::check_body_delta(&hir, &base, item, registry);
+    assert!(
+        completed.diagnostics.is_empty(),
+        "{:?}",
+        completed.diagnostics
+    );
+    assert_eq!(completed.facts.expr_types, ordinary.facts.expr_types);
+    assert_eq!(completed.facts.stmt_types, ordinary.facts.stmt_types);
+    assert_eq!(completed.types, ordinary.types);
+}
+
+#[test]
+fn controlled_inferred_output_solving_propagates_cancellation() {
+    let source = format!(
+        "flow f() {{ {} return 1; }}",
+        "let value: i32 = 1;".repeat(128)
+    );
+    let hir = parse(&source);
+    let signatures = etas_types::build_signature_facts(&hir);
+    let control = BodyControl {
+        checks: Default::default(),
+        interrupt_at: 32,
+    };
+    let error = etas_types::infer_callable_outputs_controlled(
+        &hir,
+        signatures,
+        Arc::new(etas_std::standard_registry()),
+        &control,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, etas_utils::PipelineInterruptionKind::Cancelled);
+    assert_eq!(
+        control.checks.load(std::sync::atomic::Ordering::Relaxed),
+        33
+    );
+}

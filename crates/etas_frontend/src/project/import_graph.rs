@@ -4,13 +4,13 @@ use etas_core::Span;
 
 use crate::{AstImportRef, ModuleId, ModulePartId, ModulePath};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ImportGraph {
     pub edges: Vec<ImportEdge>,
     pub reverse_edges: HashMap<ModuleId, Vec<usize>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ImportEdge {
     pub from: ModuleId,
     pub from_part: ModulePartId,
@@ -20,7 +20,7 @@ pub struct ImportEdge {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ModuleTopoOrder {
     pub modules: Vec<ModuleId>,
     pub cyclic_modules: Vec<ModuleId>,

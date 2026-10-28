@@ -4,6 +4,8 @@ use etas_package_metadata::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageMetadataBuildInput {
+    /// Supplied by the package owner; None denotes a legacy metadata-only producer.
+    pub definition_origin: Option<etas_code::PackageKey>,
     pub package_id: String,
     pub package_version: String,
     pub package_edition: String,

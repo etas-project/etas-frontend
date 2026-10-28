@@ -26,6 +26,17 @@ impl EffectFactProjector {
             .chain(analysis.inputs.unit_effects)
             .collect();
         let mut facts = EffectFacts {
+            handled_body_requests: analysis.inputs.handled_body_requests,
+            frozen_callable_graphs: analysis.inputs.frozen_callable_graphs,
+            callable_references: analysis.inputs.callable_references,
+            metadata_callables: analysis.inputs.metadata_callables,
+            metadata_callable_graphs: analysis.inputs.metadata_callable_graphs,
+            captured_callables: analysis.inputs.captured_callables,
+            native_call_targets: analysis.inputs.native_call_targets,
+            generic_effect_rows: analysis.inputs.generic_effect_rows,
+            callable_environments: analysis.inputs.callable_environments,
+            inferred_parameter_effects: analysis.inputs.inferred_parameter_effects,
+            handler_action_effects: analysis.inputs.handler_action_effects,
             expr_effects: analysis.inputs.expr_effects,
             stmt_effects: analysis.inputs.stmt_effects,
             unit_effects,
@@ -34,6 +45,8 @@ impl EffectFactProjector {
             performed_actions: analysis.inputs.performed_actions,
             try_captures: analysis.inputs.try_captures,
             latent_effects: analysis.inputs.latent_effects,
+            std_callable_values: analysis.inputs.std_callable_values,
+            std_action_calls: analysis.inputs.std_action_calls,
             ..EffectFacts::default()
         };
         let mut diagnostics = analysis.diagnostics;
@@ -54,7 +67,39 @@ impl EffectFactProjector {
             if !requires_materialized_item_summary(hir_item) {
                 continue;
             }
-            let Some(summary) = facts.unit_effects.get(&EffectUnit::Item(item)).cloned() else {
+            let summary_item = if let HirItem::Agent(agent) = hir_item
+                && !matches!(agent.body, etas_hir::HirAgentBody::Source { .. })
+            {
+                let Some(etas_types::ItemSignature::Agent(signature)) =
+                    types.facts.item_signatures.get(&item)
+                else {
+                    diagnostics.push(Diagnostic::effect_check(
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        agent.span,
+                        "agent component is missing checked signature facts",
+                    ));
+                    continue;
+                };
+                if signature.default_entry.is_none() {
+                    continue;
+                }
+                let Some(method) = types.facts.agent_default_method(item) else {
+                    diagnostics.push(Diagnostic::effect_check(
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        agent.span,
+                        "agent default invocation is missing checked method identity",
+                    ));
+                    continue;
+                };
+                method.body
+            } else {
+                item
+            };
+            let Some(summary) = facts
+                .unit_effects
+                .get(&EffectUnit::Item(summary_item))
+                .cloned()
+            else {
                 diagnostics.push(Diagnostic::effect_check(
                     EffectDiagnosticCode::IncompleteEffectFacts,
                     hir_item.span(),
@@ -84,9 +129,6 @@ impl EffectFactProjector {
                 .interpreter_support
                 .items
                 .insert(item, summary.support.clone());
-            if symbol_name(hir, symbol) == Some("main") {
-                facts.interpreter_support.entry = Some(summary.support);
-            }
         }
 
         Ok(EffectOutput { facts, diagnostics })
@@ -235,8 +277,4 @@ fn item_symbol(item: &HirItem) -> Option<SymbolId> {
         HirItem::TopLevelLet(value) => Some(value.symbol),
         _ => None,
     }
-}
-
-fn symbol_name(hir: &etas_hir::HirProgram, symbol: SymbolId) -> Option<&str> {
-    hir.symbols.get(symbol).map(|symbol| symbol.name.as_str())
 }

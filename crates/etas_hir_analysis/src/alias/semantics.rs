@@ -687,6 +687,19 @@ where
             return;
         };
         match expr_data {
+            HirExpr::Reflect(reflection) => {
+                let resolution = &reflection.target.root_path().resolution;
+                let symbol = match resolution {
+                    ResolveResult::Resolved(symbol) => Some(*symbol),
+                    ResolveResult::PartiallyResolved(partial) => partial.resolved_prefix,
+                    _ => None,
+                };
+                if let Some(symbol) = symbol
+                    && !locals.contains(&symbol)
+                {
+                    captured.insert(symbol);
+                }
+            }
             HirExpr::Path(path) => {
                 if let ResolveResult::Resolved(symbol) = path.resolution {
                     if !locals.contains(&symbol) {
@@ -727,7 +740,9 @@ where
                 self.collect_expr_captures(receiver, locals, captured);
                 self.collect_arg_captures(&args, locals, captured);
             }
-            HirExpr::Perform { args, .. } => self.collect_arg_captures(&args, locals, captured),
+            HirExpr::Perform { args, .. } | HirExpr::Infer { args, .. } => {
+                self.collect_arg_captures(&args, locals, captured)
+            }
             HirExpr::StageCompose { stages, .. } => {
                 for stage in stages {
                     self.collect_expr_captures(stage.expr, locals, captured);
@@ -865,6 +880,8 @@ where
     fn finish_expr_alias(&mut self, expr: HirExprId, mut state: AliasDomain) -> AliasDomain {
         let expr_data = self.hir.exprs[expr].clone();
         let alias = match expr_data {
+            // A descriptor does not expose the reflected target's mutable storage.
+            HirExpr::Reflect(_) => AliasValue::bottom(),
             HirExpr::Literal(_)
             | HirExpr::EmptyRecordOrMap { .. }
             | HirExpr::EmptySequence { .. } => AliasValue::bottom(),
@@ -1017,6 +1034,9 @@ where
             | HirExpr::MethodCall { .. }
             | HirExpr::SpecMethodCall { .. }
             | HirExpr::Perform { .. } => state.expr_alias(expr),
+            HirExpr::Infer { .. } => {
+                self.allocation_for_unit(state.unit, expr, AllocationKind::Unknown)
+            }
             HirExpr::Error { .. } => {
                 state.mark_incomplete();
                 AliasValue::unknown()

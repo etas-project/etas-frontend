@@ -27,7 +27,9 @@ impl Pass<ProjectContext> for VerifyInterpreterSupportPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        if context.input.options.entry_policy != crate::EntryPolicy::Runnable {
+        if context.candidate.is_none()
+            && context.input.options.entry_policy != crate::EntryPolicy::Runnable
+        {
             return PassResult::changed(
                 PreservedArtifacts::All,
                 ArtifactSet::one(INTERPRETER_SUPPORT),

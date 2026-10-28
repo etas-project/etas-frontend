@@ -3,7 +3,7 @@ use etas_utils::{JoinSemiLattice, PartialOrder};
 
 use crate::{ActionTraceDomain, EffectRow, EffectUnit};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct TraceSpecSummary {
     pub unit: Option<EffectUnit>,
     pub owner: Option<HirItemId>,

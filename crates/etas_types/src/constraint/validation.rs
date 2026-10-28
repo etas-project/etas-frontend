@@ -4,6 +4,10 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    WritablePlace {
+        target: etas_hir::HirExprId,
+        span: Span,
+    },
     MatchCoverage {
         scrutinee: TypeId,
         arms: Vec<etas_hir::HirPatId>,

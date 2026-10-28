@@ -32,7 +32,16 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let mut index = ModuleIndex::default();
+        let namespaces = match crate::project::DependencyModuleNamespaces::from_environment(
+            &context.input.environment,
+        ) {
+            Ok(namespaces) => namespaces,
+            Err(error) => return PassResult::failed(error),
+        };
+        let mut index = ModuleIndex {
+            dependency_namespaces: std::sync::Arc::new(namespaces),
+            ..ModuleIndex::default()
+        };
         let mut declared_names: HashMap<(crate::ModuleId, String), Span> = HashMap::new();
         let source_files = context
             .sources
@@ -59,7 +68,7 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
                 .get(&parsed.source)
                 .copied()
                 .expect("parsed source should have a source file");
-            let module_path = match parsed.declared_module.clone() {
+            let declared_module_path = match parsed.declared_module.clone() {
                 Some(path) => path,
                 None if source_file.kind == SourceKind::SingleFileInput => {
                     ModulePath::synthetic_single_file()
@@ -73,9 +82,26 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
                     continue;
                 }
             };
+            let module_path = match source_file.kind {
+                SourceKind::DependencySourceOverlay { package, .. } => match index
+                    .dependency_namespaces
+                    .namespace_for_source(package, &declared_module_path)
+                {
+                    Ok(namespace) => namespace,
+                    Err(error) => {
+                        diagnostics.push(project_diagnostic(
+                            parsed.source,
+                            parsed.parse.value.span,
+                            &error,
+                        ));
+                        continue;
+                    }
+                },
+                _ => declared_module_path.clone(),
+            };
 
             if source_file.kind.is_source_project_file() {
-                match source_path_mapping(source_file, source_root, &module_path) {
+                match source_path_mapping(source_file, source_root, &declared_module_path) {
                     Some(SourcePathMapping::ModulePart {
                         canonical_root: Some(canonical_root),
                     }) => {

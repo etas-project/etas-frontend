@@ -18,7 +18,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for AnalyzeTraceSpecMonitorsPass {
         &mut self,
         context: &mut EffectPipelineContext<'a>,
         _pass_context: &PassContext<EffectPipelineContext<'a>>,
-        _manager: &mut PassManager<EffectPipelineContext<'a>>,
+        manager: &mut PassManager<EffectPipelineContext<'a>>,
     ) -> PassResult {
         let Some(registry) = context.registry.as_ref() else {
             return context.fail(missing(EffectStage::AnalyzeTraceSpecs, "effect registry"));
@@ -32,14 +32,25 @@ impl<'a> Pass<EffectPipelineContext<'a>> for AnalyzeTraceSpecMonitorsPass {
         let Some(mut effects) = context.effects.take() else {
             return context.fail(missing(EffectStage::AnalyzeTraceSpecs, "effect facts"));
         };
-        let analysis = crate::trace_spec::analyze_trace_spec_monitors(
-            context.input.hir,
-            context.input.types,
-            registry,
-            &mut effects,
-            models,
-            units,
-        );
+        let analysis = match manager.execution_control() {
+            Some(control) => crate::trace_spec::analyze_trace_spec_monitors_controlled(
+                context.input.hir,
+                context.input.types,
+                registry,
+                &mut effects,
+                models,
+                units,
+                control,
+            ),
+            None => crate::trace_spec::analyze_trace_spec_monitors(
+                context.input.hir,
+                context.input.types,
+                registry,
+                &mut effects,
+                models,
+                units,
+            ),
+        };
         match analysis {
             Ok(analysis) => context.trace_spec_analysis = Some(analysis),
             Err(error) => return context.fail(error),

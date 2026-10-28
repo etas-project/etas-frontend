@@ -4,6 +4,7 @@ use crate::{SolverFailure, ValidationRequest};
 
 use super::state::BodyPipelineState;
 mod coverage;
+mod writable_place;
 
 pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &BodyPipelineState) {
     for failure in &state.solver_report.failures {
@@ -12,6 +13,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &
 
     for validation in &state.validations {
         match validation {
+            ValidationRequest::WritablePlace { target, span } => {
+                writable_place::validate(ctx, state, *target, *span)
+            }
             ValidationRequest::MatchCoverage {
                 scrutinee,
                 arms,

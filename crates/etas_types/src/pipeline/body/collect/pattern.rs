@@ -6,7 +6,12 @@ use crate::{
     pipeline::{body::collect::literal::collect_literal, context::BodyCollectContext},
 };
 
-pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirPatId, ty: TypeId) {
+pub fn collect_pattern<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    pat: etas_hir::HirPatId,
+    ty: TypeId,
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     ctx.record_pat_type(pat, ty);
     match ctx.ctx.hir.pats[pat].clone() {
         HirPat::Binding { symbol, .. } => {
@@ -48,13 +53,13 @@ pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirP
                 reason: AssignabilityReason::Pattern,
             });
             for (elem, elem_ty) in elems.into_iter().zip(elem_tys.into_iter()) {
-                collect_pattern(ctx, elem, elem_ty);
+                collect_pattern(ctx, elem, elem_ty)?;
             }
         }
         HirPat::Record { path, fields, span } => {
             if let Some(path) = &path {
-                if super::enum_variant::collect_pattern(ctx, path, &fields, span, ty) {
-                    return;
+                if super::enum_variant::collect_pattern(ctx, path, &fields, span, ty)? {
+                    return Ok(());
                 }
             }
             let expected_fields = record_fields(ctx, ty, span);
@@ -85,6 +90,7 @@ pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirP
             });
             if let Some(expected_fields) = expected_fields {
                 for field in &fields {
+                    ctx.checkpoint()?;
                     if !expected_fields
                         .fields
                         .iter()
@@ -108,12 +114,12 @@ pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirP
                         .find(|candidate| candidate.name == field.name)
                         .map(|candidate| candidate.ty)
                 {
-                    collect_pattern(ctx, pat, field_ty);
+                    collect_pattern(ctx, pat, field_ty)?;
                 }
             }
         }
         HirPat::Variant { path, args, span } => {
-            collect_variant_pattern(ctx, &path, args, span, ty);
+            collect_variant_pattern(ctx, &path, args, span, ty)?;
         }
         HirPat::Error { span } => {
             ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -123,15 +129,17 @@ pub fn collect_pattern(ctx: &mut BodyCollectContext<'_, '_>, pat: etas_hir::HirP
             });
         }
     }
+    Ok(())
 }
 
-fn collect_variant_pattern(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_variant_pattern<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &ResolvedPath,
     args: Vec<etas_hir::HirPatId>,
     span: etas_core::Span,
     ty: TypeId,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     if let Some(variant) = super::enum_variant::declaration(ctx, path) {
         if variant.field_names.is_some() {
             super::enum_variant::invalid(
@@ -139,10 +147,9 @@ fn collect_variant_pattern(
                 span,
                 "named-field variant requires a named-field pattern",
             );
-            return;
+            return Ok(());
         }
-        collect_constructor_variant(ctx, path, args, span, ty);
-        return;
+        return collect_constructor_variant(ctx, path, args, span, ty);
     }
     match variant_leaf_name(path).as_deref() {
         Some("Ok") => collect_result_variant(ctx, "Ok", args, span, ty, ResultVariant::Ok),
@@ -159,14 +166,15 @@ enum ResultVariant {
     Err,
 }
 
-fn collect_result_variant(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_result_variant<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     name: &str,
     args: Vec<etas_hir::HirPatId>,
     span: etas_core::Span,
     ty: TypeId,
     variant: ResultVariant,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     let (ok, err) = match ctx.ctx.interner.store().get(ty).cloned() {
         Some(Type::Result { ok, err }) => (ok, err),
         _ => (ctx.fresh_type_var(), ctx.fresh_type_var()),
@@ -181,7 +189,7 @@ fn collect_result_variant(
         ResultVariant::Ok => ok,
         ResultVariant::Err => err,
     };
-    collect_variant_args(ctx, name, args, &[payload], span);
+    collect_variant_args(ctx, name, args, &[payload], span)
 }
 
 #[derive(Clone, Copy)]
@@ -190,14 +198,15 @@ enum OptionVariant {
     None,
 }
 
-fn collect_option_variant(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_option_variant<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     name: &str,
     args: Vec<etas_hir::HirPatId>,
     span: etas_core::Span,
     ty: TypeId,
     variant: OptionVariant,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     let inner = match ctx.ctx.interner.store().get(ty).cloned() {
         Some(Type::Option(inner)) => inner,
         _ => ctx.fresh_type_var(),
@@ -214,17 +223,18 @@ fn collect_option_variant(
     }
 }
 
-fn collect_constructor_variant(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_constructor_variant<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &ResolvedPath,
     args: Vec<etas_hir::HirPatId>,
     span: etas_core::Span,
     ty: TypeId,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     let Some(signature) = constructor_signature(ctx, path) else {
         for arg in args {
             let arg_ty = ctx.fresh_type_var();
-            collect_pattern(ctx, arg, arg_ty);
+            collect_pattern(ctx, arg, arg_ty)?;
         }
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::UnknownType,
@@ -234,7 +244,7 @@ fn collect_constructor_variant(
                 variant_leaf_name(path).unwrap_or_else(|| "<unknown>".to_owned())
             ),
         });
-        return;
+        return Ok(());
     };
 
     let constructor_name = variant_leaf_name(path).unwrap_or_else(|| "<constructor>".to_owned());
@@ -250,7 +260,9 @@ fn collect_constructor_variant(
         });
     }
 
-    let signature = super::expr::instantiate_callable_signature(ctx, signature);
+    let Some(signature) = super::expr::instantiate_callable_signature(ctx, signature) else {
+        return Ok(());
+    };
     ctx.emit(TypeConstraint::Equal {
         lhs: signature.output,
         rhs: ty,
@@ -265,10 +277,10 @@ fn collect_constructor_variant(
                 .get(index)
                 .copied()
                 .unwrap_or_else(|| ctx.fresh_type_var());
-            collect_pattern(ctx, arg, arg_ty);
-            arg_ty
+            collect_pattern(ctx, arg, arg_ty)?;
+            Ok(arg_ty)
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, E>>()?;
     let callee = ctx.ctx.interner.intern(Type::Function(FlowType {
         input: signature.params,
         output: signature.output,
@@ -284,10 +296,11 @@ fn collect_constructor_variant(
         output: ty,
         origin: ConstraintOrigin { span },
     });
+    Ok(())
 }
 
-fn constructor_signature(
-    ctx: &BodyCollectContext<'_, '_>,
+fn constructor_signature<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     path: &ResolvedPath,
 ) -> Option<CallableSignature> {
     let ResolveResult::Resolved(symbol) = path.resolution else {
@@ -300,9 +313,9 @@ fn constructor_signature(
         .get(&symbol)
         .or_else(|| ctx.ctx.symbol_fact(symbol))?
     {
-        SymbolTypeFact::Flow { signature }
-        | SymbolTypeFact::Agent { signature }
-        | SymbolTypeFact::Tool { signature } => Some(signature.clone()),
+        SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => {
+            Some(signature.clone())
+        }
         SymbolTypeFact::Value { ty } => Some(CallableSignature {
             generic_params: Vec::new(),
             params: Vec::new(),
@@ -314,13 +327,14 @@ fn constructor_signature(
     }
 }
 
-fn collect_variant_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_variant_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     name: &str,
     args: Vec<etas_hir::HirPatId>,
     expected: &[TypeId],
     span: etas_core::Span,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     if args.len() != expected.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
@@ -335,29 +349,33 @@ fn collect_variant_args(
     }
     for (arg, arg_ty) in args.iter().copied().zip(expected.iter().copied()) {
         let arg_ty = normalize_pattern_binding_type(ctx, arg_ty);
-        collect_pattern(ctx, arg, arg_ty);
+        collect_pattern(ctx, arg, arg_ty)?;
     }
     if args.len() > expected.len() {
         for arg in args.into_iter().skip(expected.len()) {
             let arg_ty = ctx.fresh_type_var();
-            collect_pattern(ctx, arg, arg_ty);
+            collect_pattern(ctx, arg, arg_ty)?;
         }
     }
+    Ok(())
 }
 
 fn variant_leaf_name(path: &ResolvedPath) -> Option<String> {
     path.segments.last().map(|segment| segment.name.clone())
 }
 
-fn normalize_pattern_binding_type(ctx: &mut BodyCollectContext<'_, '_>, ty: TypeId) -> TypeId {
+fn normalize_pattern_binding_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    ty: TypeId,
+) -> TypeId {
     match ctx.ctx.interner.store().get(ty) {
         Some(Type::IntegerLiteral { .. }) => ctx.primitive(crate::PrimitiveType::I32),
         _ => ty,
     }
 }
 
-fn record_fields(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn record_fields<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: TypeId,
     span: etas_core::Span,
 ) -> Option<RecordType> {

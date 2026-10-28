@@ -7,17 +7,23 @@ use etas_utils::{
 };
 
 use crate::{
-    ExternalPackageId, ImportTarget, ProjectContext, ProjectEnvironmentInput,
-    ProjectExternalActionTraceInput, ProjectExternalCallableGenericParamInput,
-    ProjectExternalCallableGenericParamKindInput, ProjectExternalEffectArgInput,
-    ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
-    ProjectExternalPublicMetadataInput, ProjectExternalTypeInput, ResolvedModuleTarget,
-    ValidatedExternalEnvironment,
+    ExternalPackageId, ProjectContext, ProjectEnvironmentInput, ProjectExternalActionTraceInput,
+    ProjectExternalCallableGenericParamInput, ProjectExternalCallableGenericParamKindInput,
+    ProjectExternalEffectArgInput, ProjectExternalEffectRefInput, ProjectExternalEffectRowInput,
+    ProjectExternalPublicMetadataInput, ProjectExternalTypeInput, ValidatedExternalEnvironment,
 };
 
 use crate::passes::artifacts::{
     RESOLVED_IMPORTS, VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
 };
+
+#[cfg(test)]
+mod scope_tests;
+
+mod dependencies;
+mod origins;
+mod requests;
+mod specs;
 
 pub struct ValidateExternalEnvironmentPass;
 
@@ -56,8 +62,9 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
             context.validated_external_environment = None;
             return PassResult::stop();
         }
-        context.validated_external_environment =
-            Some(ValidatedExternalEnvironment::new(environment));
+        context.validated_external_environment = Some(std::sync::Arc::new(
+            ValidatedExternalEnvironment::new(environment),
+        ));
         PassResult::changed(
             PreservedArtifacts::All,
             ArtifactSet::one(VALIDATED_EXTERNAL_ENVIRONMENT),
@@ -120,6 +127,7 @@ fn validate_external_environment(
         }
     }
 
+    dependencies::validate(environment, &packages)?;
     let mut module_ids = BTreeSet::new();
     let mut module_paths = BTreeMap::<Vec<String>, ExternalPackageId>::new();
     let mut exported_paths = BTreeMap::<ExternalPackageId, BTreeSet<Vec<String>>>::new();
@@ -289,6 +297,8 @@ fn validate_external_environment(
         }
     }
 
+    origins::validate(environment, &packages, &module_paths, &exported_paths)?;
+    specs::validate(environment)?;
     validate_dependency_effect_metadata(environment, &packages, &effect_paths, &action_paths)?;
     validate_tool_bindings(environment, &packages, &tool_paths)?;
     Ok(())
@@ -513,32 +523,8 @@ fn external_package_import_span(
     package: ExternalPackageId,
 ) -> Option<etas_core::Span> {
     let resolved = context.resolved_imports.as_ref()?;
-    resolved
-        .imports
-        .iter()
-        .find_map(|import| match &import.target {
-            ImportTarget::ExternalItem {
-                package: Some(target),
-                ..
-            } if *target == package => Some(import.span),
-            ImportTarget::Module(ResolvedModuleTarget::External {
-                package: Some(target),
-                ..
-            }) if *target == package => Some(import.span),
-            _ => None,
-        })
-        .or_else(|| {
-            resolved
-                .wildcard_imports
-                .iter()
-                .find_map(|import| match &import.target_module {
-                    ResolvedModuleTarget::External {
-                        package: Some(target),
-                        ..
-                    } if *target == package => Some(import.span),
-                    _ => None,
-                })
-        })
+    crate::project::ExternalImportAnchorIndex::build(resolved, &context.input.environment)
+        .package_span(package)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -552,6 +538,14 @@ pub(super) fn validate_external_metadata(
 ) -> Result<(), String> {
     let mut callable_scopes = HashMap::<Vec<String>, GenericScope>::new();
     let mut declaration_paths = HashSet::new();
+    for declaration in &metadata.enums {
+        if !matches!(&declaration.ty, Some(ProjectExternalTypeInput::Enum { path, .. }) if *path == declaration.path)
+        {
+            return Err(
+                "external enum declaration requires its own checked constructor layout".into(),
+            );
+        }
+    }
     for item in metadata
         .types
         .iter()
@@ -563,8 +557,15 @@ pub(super) fn validate_external_metadata(
         validate_path(&item.path, "export path")?;
         validate_visibility(&item.visibility)?;
         register_declaration(&mut declaration_paths, &item.path)?;
+        let scope = generic_scope(&item.path, &item.generic_params)?;
+        for param in &item.generic_params {
+            for bound in &param.bounds {
+                validate_path(&bound.spec, "generic bound spec path")?;
+                validate_types(&bound.args, &scope, false)?;
+            }
+        }
         if let Some(ty) = &item.ty {
-            validate_type(ty, &GenericScope::default(), true)?;
+            validate_type(ty, &scope, false)?;
         }
     }
     for flow in &metadata.flows {
@@ -581,12 +582,25 @@ pub(super) fn validate_external_metadata(
     }
     for agent in &metadata.agents {
         validate_visibility(&agent.visibility)?;
+        validate_path(&agent.path, "agent declaration path")?;
         register_declaration(&mut declaration_paths, &agent.path)?;
+        let Some(output) = &agent.output else {
+            if !agent.generic_params.is_empty()
+                || !agent.param_names.is_empty()
+                || !agent.input.is_empty()
+                || agent.effects.is_some()
+            {
+                return Err(
+                    "agent without a default entry contains callable signature fields".into(),
+                );
+            }
+            continue;
+        };
         let scope = validate_callable(
             &agent.path,
             &agent.generic_params,
             &agent.input,
-            &agent.output,
+            output,
             agent.effects.as_ref(),
         )?;
         callable_scopes.insert(agent.path.clone(), scope);
@@ -743,8 +757,15 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
                 signature.path.join(".")
             ));
         }
+        let mut names = HashSet::new();
+        for name in &signature.param_names {
+            validate_name(name, "spec parameter name")?;
+            if !names.insert(name.clone()) {
+                return Err("spec has duplicate generic parameter names".into());
+            }
+        }
         let scope = GenericScope {
-            types: signature.param_names.iter().cloned().collect(),
+            types: names,
             effects: HashSet::new(),
         };
         for bound in &signature.super_specs {
@@ -752,12 +773,13 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
             validate_types(&bound.args, &scope, false)?;
         }
         if let Some(callable) = &signature.callable {
-            validate_callable(
+            validate_callable_in_scope(
                 &callable.path,
                 &callable.generic_params,
                 &callable.params,
                 &callable.output,
                 callable.effects.as_ref(),
+                &scope,
             )?;
         }
         for method in &signature.methods {
@@ -766,12 +788,13 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
                 return Err("spec method name must not be empty".to_owned());
             }
             if let Some(callable) = &method.signature {
-                validate_callable(
+                validate_callable_in_scope(
                     &callable.path,
                     &callable.generic_params,
                     &callable.params,
                     &callable.output,
                     callable.effects.as_ref(),
+                    &scope,
                 )?;
             }
         }
@@ -894,37 +917,102 @@ fn validate_effect_summaries(
         validate_effect_row(&summary.public_effects, scope)?;
         validate_effect_row(&summary.requested_actions, scope)?;
         validate_effect_row(&summary.handled_requested_actions, scope)?;
+        if let Some(defaults) = &summary.default_handler_effects {
+            validate_effect_row(&defaults.direct_effects, scope)?;
+            validate_effect_row(&defaults.default_actions, scope)?;
+            let mut actions = HashSet::new();
+            for handler in &defaults.handlers {
+                validate_effect_ref(&handler.action, scope)?;
+                validate_effect_row(&handler.produced, scope)?;
+                if !actions.insert(&handler.action) {
+                    return Err("duplicate default handler contribution".into());
+                }
+            }
+        }
         for latent in &summary.latent_flows {
             validate_effect_row(&latent.declared_bound, scope)?;
             validate_effect_row(&latent.inferred_effects, scope)?;
         }
-        let parameter_names = metadata
+        let (parameter_names, parameter_count) = metadata
             .flows
             .iter()
             .find(|callable| callable.path == summary.item)
-            .map(|callable| callable.param_names.as_slice())
+            .map(|callable| (callable.param_names.as_slice(), callable.params.len()))
             .or_else(|| {
                 metadata
                     .agents
                     .iter()
                     .find(|callable| callable.path == summary.item)
-                    .map(|callable| callable.param_names.as_slice())
+                    .map(|callable| (callable.param_names.as_slice(), callable.input.len()))
             })
             .or_else(|| {
                 metadata
                     .tools
                     .iter()
                     .find(|callable| callable.path == summary.item)
-                    .map(|callable| callable.param_names.as_slice())
+                    .map(|callable| (callable.param_names.as_slice(), callable.input.len()))
             })
             .unwrap_or_default();
         validate_action_trace(&summary.action_trace, scope, parameter_names)?;
+        if let Some(requests) = &summary.handler_requests {
+            requests::validate(requests, scope, parameter_names)?;
+        }
+        if let Some(graph) = &summary.returned_callables {
+            if parameter_names.len() != parameter_count {
+                return Err(
+                    "returned callable evidence requires an unambiguous named parameter interface"
+                        .into(),
+                );
+            }
+            etas_package_metadata::validate_callable_value_graph(graph)
+                .map_err(|error| error.to_string())?;
+            let generics = metadata
+                .flows
+                .iter()
+                .find(|callable| callable.path == summary.item)
+                .map(|callable| &callable.generic_params)
+                .or_else(|| {
+                    metadata
+                        .agents
+                        .iter()
+                        .find(|callable| callable.path == summary.item)
+                        .map(|callable| &callable.generic_params)
+                })
+                .or_else(|| {
+                    metadata
+                        .tools
+                        .iter()
+                        .find(|callable| callable.path == summary.item)
+                        .map(|callable| &callable.generic_params)
+                });
+            let generic_params = generics
+                .into_iter()
+                .flatten()
+                .map(|generic| match generic.kind {
+                    ProjectExternalCallableGenericParamKindInput::Type => {
+                        etas_package_metadata::GenericParamKind::Type
+                    }
+                    ProjectExternalCallableGenericParamKindInput::Effect => {
+                        etas_package_metadata::GenericParamKind::Effect
+                    }
+                })
+                .collect::<Vec<_>>();
+            graph
+                .validate_references(Some((parameter_count, &generic_params)))
+                .map_err(|error| error.to_string())?;
+        }
     }
     let required = metadata
         .flows
         .iter()
         .map(|callable| &callable.path)
-        .chain(metadata.agents.iter().map(|callable| &callable.path))
+        .chain(
+            metadata
+                .agents
+                .iter()
+                .filter(|agent| agent.output.is_some())
+                .map(|callable| &callable.path),
+        )
         .chain(metadata.tools.iter().map(|callable| &callable.path))
         .chain(metadata.values.iter().filter_map(|value| {
             matches!(
@@ -1013,8 +1101,35 @@ fn validate_callable(
     output: &ProjectExternalTypeInput,
     effects: Option<&ProjectExternalEffectRowInput>,
 ) -> Result<GenericScope, String> {
+    validate_callable_in_scope(
+        path,
+        params,
+        inputs,
+        output,
+        effects,
+        &GenericScope::default(),
+    )
+}
+
+fn validate_callable_in_scope(
+    path: &[String],
+    params: &[ProjectExternalCallableGenericParamInput],
+    inputs: &[ProjectExternalTypeInput],
+    output: &ProjectExternalTypeInput,
+    effects: Option<&ProjectExternalEffectRowInput>,
+    outer: &GenericScope,
+) -> Result<GenericScope, String> {
     validate_path(path, "callable path")?;
-    let scope = generic_scope(path, params)?;
+    let mut scope = generic_scope(path, params)?;
+    if scope.types.iter().any(|name| outer.effects.contains(name))
+        || scope.effects.iter().any(|name| outer.types.contains(name))
+    {
+        return Err(
+            "nested callable generic parameter changes its enclosing parameter kind".into(),
+        );
+    }
+    scope.types.extend(outer.types.iter().cloned());
+    scope.effects.extend(outer.effects.iter().cloned());
     for param in params {
         for bound in &param.bounds {
             validate_path(&bound.spec, "generic bound spec path")?;
@@ -1080,6 +1195,24 @@ fn validate_type_semantics(
             Ok(())
         }
         ProjectExternalTypeInput::Named(path) => validate_path(path, "named type path"),
+        ProjectExternalTypeInput::Enum { path, variants } => {
+            validate_path(path, "enum type path")?;
+            let mut names = BTreeSet::new();
+            for variant in variants {
+                validate_name(&variant.name, "enum variant name")?;
+                if !names.insert(&variant.name) {
+                    return Err("duplicate enum variant".into());
+                }
+                if !matches!(
+                    variant.ty,
+                    ProjectExternalTypeInput::Tuple(_) | ProjectExternalTypeInput::Record { .. }
+                ) {
+                    return Err("enum variant has invalid payload form".into());
+                }
+                validate_type_semantics(&variant.ty, scope, allow_unbound_vars)?;
+            }
+            Ok(())
+        }
         ProjectExternalTypeInput::Applied { path, args } => {
             validate_path(path, "applied type path")?;
             validate_types_semantics(args, scope, allow_unbound_vars)
@@ -1292,7 +1425,10 @@ fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), 
                     stack.push((TypeGraphNode::Type(key), next));
                     stack.push((TypeGraphNode::Type(value), next));
                 }
-                ProjectExternalTypeInput::Record { fields } => {
+                ProjectExternalTypeInput::Record { fields }
+                | ProjectExternalTypeInput::Enum {
+                    variants: fields, ..
+                } => {
                     stack.extend(
                         fields
                             .iter()

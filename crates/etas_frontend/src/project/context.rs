@@ -21,10 +21,13 @@ use crate::{
     UnitNode, UnitTarget, UnitTree, ValidatedExternalEnvironment,
 };
 
-pub const ENTRY_REACHABLE_UNIT_FILTER: UnitFilterKey =
-    UnitFilterKey::new("frontend", "entry_reachable");
+pub const ANALYZED_BODY_UNIT_FILTER: UnitFilterKey =
+    UnitFilterKey::new("frontend", "analyzed_body");
 
 pub struct ProjectContext {
+    pub(crate) reflection_targets: Option<Arc<crate::code::reflection::CheckedReflectionTargets>>,
+    pub(crate) native_instantiations: Option<Arc<super::instantiation::NativeInstantiationPlan>>,
+    pub(crate) candidate: Option<crate::code::pipeline::CandidatePipelineContext>,
     pub input: ProjectInput,
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub incremental: bool,
@@ -44,7 +47,8 @@ pub struct ProjectContext {
     pub module_topo_order: Option<ModuleTopoOrder>,
     pub affected_modules: Option<AffectedModuleSet>,
     pub resolved_imports: Option<std::sync::Arc<ResolvedImports>>,
-    pub(crate) validated_external_environment: Option<ValidatedExternalEnvironment>,
+    pub(crate) validated_external_environment: Option<Arc<ValidatedExternalEnvironment>>,
+    pub(crate) definition_sources: Option<Arc<crate::code::definition::DefinitionSources>>,
     pub resolved_paths: Option<std::sync::Arc<ResolvedPaths>>,
     pub hir_item_bindings: Option<HirItemBindings>,
     pub hir_body_bindings: Option<HirBodyBindings>,
@@ -58,6 +62,7 @@ pub struct ProjectContext {
     pub types: Option<TypeOutput>,
     pub effects: Option<SharedEffectOutput>,
     pub entry: Option<ProjectEntryFact>,
+    pub(crate) analysis_roots: Vec<etas_hir::HirItemId>,
     pub reachability: Option<ReachabilityFacts>,
     pub runtime_source_requirements: Option<RuntimeSourceRequirements>,
     pub checked: Option<CheckedProject>,
@@ -76,6 +81,9 @@ impl ProjectContext {
         std_registry: Arc<etas_std::StdRegistry>,
     ) -> Self {
         Self {
+            reflection_targets: None,
+            native_instantiations: None,
+            candidate: None,
             input,
             std_registry,
             incremental: false,
@@ -96,6 +104,7 @@ impl ProjectContext {
             affected_modules: None,
             resolved_imports: None,
             validated_external_environment: None,
+            definition_sources: None,
             resolved_paths: None,
             hir_item_bindings: None,
             hir_body_bindings: None,
@@ -109,6 +118,7 @@ impl ProjectContext {
             types: None,
             effects: None,
             entry: None,
+            analysis_roots: Vec::new(),
             reachability: None,
             runtime_source_requirements: None,
             checked: None,
@@ -196,7 +206,7 @@ impl ProjectContext {
         }
     }
 
-    pub(crate) fn current_artifact_manifest(&self) -> FrontendArtifactManifest {
+    pub(crate) fn current_artifact_manifest(&self) -> Result<FrontendArtifactManifest, String> {
         FrontendArtifactManifest::from_input(
             ProjectRevision(0),
             &crate::artifact::ArtifactManifestInput::from(self),
@@ -272,7 +282,7 @@ impl ProjectContext {
         units: Vec<UnitKey>,
     ) -> Vec<UnitKey> {
         match filter {
-            Some(filter) if filter == ENTRY_REACHABLE_UNIT_FILTER => {
+            Some(filter) if filter == ANALYZED_BODY_UNIT_FILTER => {
                 if kind != BODY_UNIT_KIND {
                     panic!("entry-reachable unit filter only supports body units, got {kind:?}");
                 }
@@ -287,7 +297,7 @@ impl ProjectContext {
                     .into_iter()
                     .filter(|unit| {
                         reachability
-                            .reachable_bodies
+                            .analysis_bodies
                             .contains(&UnitId(unit.id as u32))
                     })
                     .collect()

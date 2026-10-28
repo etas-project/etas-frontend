@@ -33,16 +33,45 @@ pub trait ModuleProvider {
 
 pub struct CatalogModuleProvider<'a> {
     catalog: &'a ModuleCatalog,
+    package: Option<crate::ExternalPackageId>,
 }
 
 impl<'a> CatalogModuleProvider<'a> {
     pub fn new(catalog: &'a ModuleCatalog) -> Self {
-        Self { catalog }
+        Self {
+            catalog,
+            package: None,
+        }
+    }
+
+    pub fn with_package_scope(mut self, package: Option<crate::ExternalPackageId>) -> Self {
+        self.package = package;
+        self
+    }
+
+    pub(super) fn export(
+        &self,
+        target: &ResolvedModuleTarget,
+        name: &str,
+    ) -> Option<ProviderExport> {
+        let record = self.catalog.modules.get(target.key())?;
+        Some(ProviderExport::from_catalog(
+            record.key,
+            record.exports.items.get(name)?,
+        ))
     }
 }
 
 impl ModuleProvider for CatalogModuleProvider<'_> {
     fn resolve_module(&self, path: &ModulePath) -> ModuleResolution {
+        let path = self
+            .package
+            .and_then(|package| {
+                self.catalog
+                    .dependency_namespaces
+                    .scoped_namespace(package, path)
+            })
+            .unwrap_or(path);
         let Some(keys) = self.catalog.module_keys(path) else {
             return ModuleResolution::Missing;
         };
@@ -120,41 +149,7 @@ impl ModuleProvider for CatalogModuleProvider<'_> {
                 .map(|(name, export)| {
                     (
                         name.clone(),
-                        ProviderExport {
-                            name: export.name.clone(),
-                            visibility: export.visibility,
-                            target: match &export.target {
-                                ModuleExportTarget::Source { module, item } => {
-                                    ProviderExportTarget::Source {
-                                        module_key: record.key,
-                                        module: *module,
-                                        item: item.clone(),
-                                    }
-                                }
-                                ModuleExportTarget::Std {
-                                    module,
-                                    module_path,
-                                    symbol,
-                                } => ProviderExportTarget::Std {
-                                    module_key: record.key,
-                                    module: *module,
-                                    module_path: module_path.clone(),
-                                    symbol: *symbol,
-                                },
-                                ModuleExportTarget::External {
-                                    package,
-                                    module,
-                                    module_path,
-                                    symbol,
-                                } => ProviderExportTarget::External {
-                                    module_key: record.key,
-                                    package: *package,
-                                    module: *module,
-                                    module_path: module_path.clone(),
-                                    symbol: *symbol,
-                                },
-                            },
-                        },
+                        ProviderExport::from_catalog(record.key, export),
                     )
                 })
                 .collect(),
@@ -193,6 +188,44 @@ pub struct ProviderExport {
     pub name: String,
     pub visibility: etas_hir::Visibility,
     pub target: ProviderExportTarget,
+}
+
+impl ProviderExport {
+    fn from_catalog(key: ModuleKey, export: &crate::ModuleExport) -> Self {
+        Self {
+            name: export.name.clone(),
+            visibility: export.visibility,
+            target: match &export.target {
+                ModuleExportTarget::Source { module, item } => ProviderExportTarget::Source {
+                    module_key: key,
+                    module: *module,
+                    item: item.clone(),
+                },
+                ModuleExportTarget::Std {
+                    module,
+                    module_path,
+                    symbol,
+                } => ProviderExportTarget::Std {
+                    module_key: key,
+                    module: *module,
+                    module_path: module_path.clone(),
+                    symbol: *symbol,
+                },
+                ModuleExportTarget::External {
+                    package,
+                    module,
+                    module_path,
+                    symbol,
+                } => ProviderExportTarget::External {
+                    module_key: key,
+                    package: *package,
+                    module: *module,
+                    module_path: module_path.clone(),
+                    symbol: *symbol,
+                },
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

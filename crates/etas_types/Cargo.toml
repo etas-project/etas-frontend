@@ -7,8 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+etas_code.workspace = true
 etas_core.workspace = true
 etas_hir.workspace = true
+etas_package_metadata.workspace = true
 etas_std.workspace = true
 etas_utils.workspace = true
 serde.workspace = true

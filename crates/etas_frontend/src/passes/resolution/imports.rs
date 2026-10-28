@@ -8,8 +8,8 @@ use etas_utils::{
 
 use crate::passes::{CatalogModuleProvider, ProjectModuleResolver};
 use crate::{
-    ImportTarget, ModuleCatalog, ModuleExport, ModuleExportTarget, ModuleId, ModulePartId,
-    ProjectContext, ResolvedImport, ResolvedImports, ResolvedWildcardImport,
+    ImportTarget, ModuleExport, ModuleExportTarget, ModuleId, ModulePartId, ProjectContext,
+    ResolvedImport, ResolvedImports, ResolvedWildcardImport,
 };
 
 use super::super::artifacts::{
@@ -31,7 +31,11 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
                 MODULE_CATALOG,
                 PARSED_SOURCE_SET,
             ]))
-            .produces(global_with_diagnostics([RESOLVED_IMPORTS]))
+            .produces(global_with_diagnostics([
+                RESOLVED_IMPORTS,
+                MODULE_INDEX,
+                MODULE_CATALOG,
+            ]))
     }
 
     fn run(
@@ -47,8 +51,6 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
                 .module_catalog
                 .as_ref()
                 .expect("module catalog should exist");
-            let catalog_provider = CatalogModuleProvider::new(catalog);
-            let resolver = ProjectModuleResolver::new().with_provider(&catalog_provider);
             let parsed_by_source = parsed_by_source(context);
             let mut imports = Vec::new();
             let mut wildcard_imports = Vec::new();
@@ -56,6 +58,13 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
             let mut diagnostics = Vec::new();
 
             for (_, part) in modules.parts.iter() {
+                let package = match modules.modules[part.module].origin {
+                    crate::ModuleOrigin::DependencySourceOverlay { package, .. } => Some(package),
+                    _ => None,
+                };
+                let catalog_provider =
+                    CatalogModuleProvider::new(catalog).with_package_scope(package);
+                let resolver = ProjectModuleResolver::new().with_provider(&catalog_provider);
                 let parsed = parsed_by_source
                     .get(&part.source)
                     .expect("module part source should be parsed");
@@ -112,14 +121,66 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
             }
         }
         apply_re_exports_to_catalog(context, &imports, &wildcard_imports);
+        if let Err(error) = materialize_source_re_exports(context) {
+            return PassResult::failed(error);
+        }
         context.diagnostics.extend(diagnostics);
         context.resolved_imports = Some(std::sync::Arc::new(ResolvedImports {
             imports,
             wildcard_imports,
             re_exports,
+            module_members: Default::default(),
         }));
-        PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(RESOLVED_IMPORTS))
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::from([RESOLVED_IMPORTS, MODULE_INDEX, MODULE_CATALOG]),
+        )
     }
+}
+
+fn materialize_source_re_exports(context: &mut ProjectContext) -> Result<(), String> {
+    let modules = context
+        .modules
+        .as_mut()
+        .ok_or("source re-exports require a module index")?;
+    let catalog = context
+        .module_catalog
+        .as_ref()
+        .ok_or("source re-exports require a module catalog")?;
+    let originals = modules
+        .modules
+        .iter()
+        .flat_map(|(_, module)| module.visibility_exports.items.values())
+        .map(|export| (export.item.clone(), export.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut projected = Vec::new();
+    for (_, record) in catalog.modules.iter() {
+        let crate::CatalogModuleOrigin::ProjectSource { module } = record.origin else {
+            continue;
+        };
+        for (name, export) in &record.exports.items {
+            let ModuleExportTarget::Source { item, .. } = &export.target else {
+                continue;
+            };
+            let mut source = originals
+                .get(item)
+                .ok_or("source re-export has no declaration export")?
+                .clone();
+            source.name = name.clone();
+            source.visibility = export.visibility;
+            projected.push((module, name.clone(), source));
+        }
+    }
+    for (module, name, export) in projected {
+        std::sync::Arc::make_mut(modules)
+            .modules
+            .get_mut(module)
+            .ok_or("source re-export has no owning module")?
+            .visibility_exports
+            .items
+            .insert(name, export);
+    }
+    Ok(())
 }
 
 fn materialize_catalog_re_export_closure(context: &mut ProjectContext) {
@@ -145,14 +206,18 @@ fn resolve_public_imports_for_catalog(
     let Some(catalog) = context.module_catalog.as_ref() else {
         return (Vec::new(), Vec::new());
     };
-    let catalog_provider = CatalogModuleProvider::new(catalog);
-    let resolver = ProjectModuleResolver::new().with_provider(&catalog_provider);
     let parsed_by_source = parsed_by_source(context);
     let mut imports = Vec::new();
     let mut wildcard_imports = Vec::new();
     let mut diagnostics = Vec::new();
 
     for (_, part) in modules.parts.iter() {
+        let package = match modules.modules[part.module].origin {
+            crate::ModuleOrigin::DependencySourceOverlay { package, .. } => Some(package),
+            _ => None,
+        };
+        let catalog_provider = CatalogModuleProvider::new(catalog).with_package_scope(package);
+        let resolver = ProjectModuleResolver::new().with_provider(&catalog_provider);
         let parsed = parsed_by_source
             .get(&part.source)
             .expect("module part source should be parsed");
@@ -255,7 +320,7 @@ fn apply_re_exports_to_catalog(
     changed
 }
 
-fn module_export_target_for_import(target: &ImportTarget) -> Option<ModuleExportTarget> {
+pub(super) fn module_export_target_for_import(target: &ImportTarget) -> Option<ModuleExportTarget> {
     match target {
         ImportTarget::Module(_) => None,
         ImportTarget::SourceItem { module, item, .. } => Some(ModuleExportTarget::Source {
@@ -294,6 +359,7 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         PassDescriptor::new("ApplyResolvedImportsToHirPass", PassKind::Analysis)
             .requires(ArtifactSet::from([
                 MODULE_INDEX,
+                MODULE_CATALOG,
                 HIR_OUTPUT,
                 RESOLVED_IMPORTS,
                 VALIDATED_EXTERNAL_ENVIRONMENT,
@@ -317,13 +383,24 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         };
         let mut editor = output.hir.edit();
         let hir = editor.program_mut();
-        install_explicit_import_aliases(context, hir, &resolved_imports.imports);
+        if let Err(error) = install_explicit_import_aliases(context, hir, &resolved_imports.imports)
+        {
+            return PassResult::failed(error);
+        }
         let wildcard_imports = &resolved_imports.wildcard_imports;
-        install_wildcard_import_aliases(context, hir, wildcard_imports);
-        install_external_effect_action_refs(context, hir);
+        if let Err(error) = install_wildcard_import_aliases(context, hir, wildcard_imports) {
+            return PassResult::failed(error);
+        }
+        if let Err(error) = super::external_enum_members::install(context, hir) {
+            return PassResult::failed(error);
+        }
+        super::source_members::canonicalize_agent_method_owners(hir);
         let resolved = super::source_members::resolve_members(hir);
-        prune_resolved_wildcard_diagnostics(&mut hir.diagnostics, &resolved);
-        prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved);
+        install_external_effect_action_refs(context, hir);
+        prune_resolved_wildcard_diagnostics(&mut hir.diagnostics, &resolved.paths);
+        prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved.paths);
+        prune_resolved_source_action_diagnostics(&mut hir.diagnostics, &resolved.actions);
+        prune_resolved_source_action_diagnostics(&mut context.diagnostics, &resolved.actions);
         let hir = match editor.finish() {
             Ok(revision) => revision,
             Err(error) => {
@@ -455,6 +532,9 @@ fn external_action_resolution(
     let etas_hir::ResolveResult::Resolved(effect_symbol) = action.effect.path.resolution else {
         return None;
     };
+    if hir.source_import_targets.contains_key(&effect_symbol) {
+        return None;
+    }
     let symbol = hir.symbols.get(effect_symbol)?;
     let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def else {
         return None;
@@ -468,7 +548,9 @@ fn external_action_resolution(
         return None;
     }
     Some(ExternalActionResolution {
-        hir_module: source_to_hir_module.get(&action.span.source).copied()?,
+        hir_module: source_to_hir_module
+            .get(&hir.source_map.lexical_source(action.span.source))
+            .copied()?,
         owner_path: path.clone(),
         action: action.action.clone(),
         span: action.span,
@@ -516,13 +598,17 @@ fn install_wildcard_import_aliases(
     context: &mut ProjectContext,
     hir: &mut etas_hir::HirProgram,
     wildcard_imports: &[ResolvedWildcardImport],
-) {
+) -> Result<(), String> {
     if wildcard_imports.is_empty() {
-        return;
+        return Ok(());
     }
     let Some(modules) = context.modules.as_ref() else {
-        return;
+        return Err("wildcard imports require a module index".into());
     };
+    let catalog = context
+        .module_catalog
+        .as_ref()
+        .ok_or("wildcard imports require a module catalog")?;
     let module_to_hir = modules
         .modules
         .iter()
@@ -556,7 +642,6 @@ fn install_wildcard_import_aliases(
         else {
             continue;
         };
-        let target_path = wildcard.target_module.module_path(modules).segments;
         for name in &wildcard.exported_names {
             let key = (wildcard.from, wildcard.from_part, name.clone());
             if wildcard_name_counts.get(&key).copied().unwrap_or_default() != 1 {
@@ -568,8 +653,13 @@ fn install_wildcard_import_aliases(
             ) {
                 continue;
             }
-            let mut alias_path = target_path.clone();
-            alias_path.push(name.clone());
+            let target = wildcard
+                .targets
+                .get(name)
+                .ok_or("wildcard import has no resolved item target")?;
+            let alias_path = target
+                .catalog_path(catalog)
+                .ok_or("wildcard item target has no catalog path")?;
             let symbol = hir.symbols.alloc(etas_hir::SymbolData {
                 name: name.clone(),
                 kind: etas_hir::SymbolKind::Import,
@@ -584,16 +674,37 @@ fn install_wildcard_import_aliases(
                 definition_span: wildcard.span,
             });
             hir.scopes.insert(part_scope, name.clone(), symbol);
-            if let crate::ResolvedModuleTarget::Source { module, .. } = &wildcard.target_module
-                && let Some(export) = modules
-                    .modules
-                    .get(*module)
-                    .and_then(|module| module.visibility_exports.items.get(name))
+            if let ImportTarget::ExternalItem {
+                package: Some(package),
+                ..
+            } = target
+            {
+                let path = target
+                    .catalog_path(catalog)
+                    .ok_or("external import has no catalog path")?;
+                context
+                    .hir_item_bindings
+                    .as_mut()
+                    .ok_or("external import has no HIR bindings")?
+                    .external_import_members
+                    .insert(
+                        symbol,
+                        crate::project::HirExternalImportMember {
+                            package: *package,
+                            path,
+                            span: wildcard.span,
+                        },
+                    );
+            }
+            if let ImportTarget::SourceItem { item, .. } = target
                 && let Some(item) = context
                     .hir_item_bindings
                     .as_ref()
-                    .and_then(|bindings| bindings.ast_to_hir.get(&export.item))
+                    .and_then(|bindings| bindings.ast_to_hir.get(item))
             {
+                if let Some(target) = hir.items.get(*item).and_then(etas_hir::HirItem::symbol) {
+                    hir.source_import_targets.insert(symbol, target);
+                }
                 super::source_members::bind_members(hir, symbol, *item);
             }
         }
@@ -602,21 +713,22 @@ fn install_wildcard_import_aliases(
     let resolved_alias_paths = resolve_wildcard_alias_paths(hir, &part_scopes);
     prune_resolved_wildcard_diagnostics(&mut hir.diagnostics, &resolved_alias_paths);
     prune_resolved_wildcard_diagnostics(&mut context.diagnostics, &resolved_alias_paths);
+    Ok(())
 }
 
 fn install_explicit_import_aliases(
     context: &mut ProjectContext,
     hir: &mut etas_hir::HirProgram,
     imports: &[ResolvedImport],
-) {
+) -> Result<(), String> {
     if imports.is_empty() {
-        return;
+        return Ok(());
     }
     let Some(modules) = context.modules.as_ref() else {
-        return;
+        return Err("missing module index while applying imports".into());
     };
     let Some(catalog) = context.module_catalog.as_ref() else {
-        return;
+        return Err("missing module catalog while applying imports".into());
     };
     let module_to_hir = modules
         .modules
@@ -645,8 +757,10 @@ fn install_explicit_import_aliases(
         })
         .collect::<HashMap<ModulePartId, etas_hir::ScopeId>>();
 
+    let source_item_symbols = super::source_members::source_item_symbols(hir);
+    let mut external_members = Vec::new();
     for import in imports {
-        let Some(target_path) = canonical_import_target_path(&import.target, catalog) else {
+        let Some(target_path) = import.target.catalog_path(catalog) else {
             continue;
         };
         let Some(scope) = part_scopes.get(&import.from_part).copied() else {
@@ -665,40 +779,61 @@ fn install_explicit_import_aliases(
             continue;
         };
         *path = target_path;
+        if let ImportTarget::ExternalItem {
+            package: Some(package),
+            ..
+        } = &import.target
+        {
+            external_members.push((
+                binding_symbol,
+                crate::project::HirExternalImportMember {
+                    package: *package,
+                    path: path.clone(),
+                    span: import.span,
+                },
+            ));
+        }
         if let ImportTarget::SourceItem { item, .. } = &import.target
             && let Some(item) = context
                 .hir_item_bindings
                 .as_ref()
                 .and_then(|bindings| bindings.ast_to_hir.get(item))
         {
+            if let Some(target) = source_item_symbols.get(item) {
+                hir.source_import_targets.insert(binding_symbol, *target);
+            }
             super::source_members::bind_members(hir, binding_symbol, *item);
         }
-    }
-}
-
-fn canonical_import_target_path(
-    target: &ImportTarget,
-    catalog: &ModuleCatalog,
-) -> Option<Vec<String>> {
-    match target {
-        ImportTarget::Module(module) => catalog
-            .modules
-            .get(module.key())
-            .map(|record| record.path.segments.clone()),
-        ImportTarget::SourceItem {
-            module_key, name, ..
-        }
-        | ImportTarget::StdItem {
-            module_key, name, ..
-        }
-        | ImportTarget::ExternalItem {
-            module_key, name, ..
-        } => {
-            let mut path = catalog.modules.get(*module_key)?.path.segments.clone();
-            path.push(name.clone());
-            Some(path)
+        if let ImportTarget::Module(module) = &import.target {
+            let record = catalog
+                .modules
+                .get(module.key())
+                .ok_or_else(|| "resolved module import has no module catalog record".to_owned())?;
+            let bindings = context.hir_item_bindings.as_ref().ok_or_else(|| {
+                "missing HIR item bindings while applying module imports".to_owned()
+            })?;
+            let environment = context
+                .validated_external_environment
+                .as_ref()
+                .ok_or("missing validated environment while applying module imports")?;
+            external_members.extend(super::source_members::bind_module_members(
+                hir,
+                binding_symbol,
+                &record.exports,
+                bindings,
+                &source_item_symbols,
+                &context.std_registry,
+                &environment.environment().external_modules,
+            )?);
         }
     }
+    context
+        .hir_item_bindings
+        .as_mut()
+        .ok_or("missing HIR item bindings after module import application")?
+        .external_import_members
+        .extend(external_members);
+    Ok(())
 }
 
 fn wildcard_import_name_counts(
@@ -738,19 +873,31 @@ fn resolve_wildcard_alias_paths(
         .map(|(source, _, scope)| (*source, *scope))
         .collect::<HashMap<_, _>>();
     let mut resolved_spans = Vec::new();
-    let expr_updates = hir
-        .exprs
-        .iter()
-        .filter_map(|(expr_id, expr)| {
-            let etas_hir::HirExpr::Path(path) = expr else {
-                return None;
-            };
-            wildcard_alias_resolution(path, &source_scopes, hir)
-                .map(|resolution| (expr_id, resolution, path.span))
-        })
-        .collect::<Vec<_>>();
-    for (expr_id, resolution, span) in expr_updates {
-        if let Some(etas_hir::HirExpr::Path(path)) = hir.exprs.get_mut(expr_id) {
+    let mut expr_updates = Vec::new();
+    for (expr_id, expr) in hir.exprs.iter() {
+        let paths = match expr {
+            etas_hir::HirExpr::Path(path) => [Some(path), None],
+            etas_hir::HirExpr::Reflect(reflection) => {
+                let mut paths = reflection.target.paths();
+                [paths.next(), paths.next()]
+            }
+            _ => [None, None],
+        };
+        for (index, path) in paths.into_iter().enumerate() {
+            if let Some(path) = path
+                && let Some(resolution) = wildcard_alias_resolution(path, &source_scopes, hir)
+            {
+                expr_updates.push((expr_id, index, resolution, path.span));
+            }
+        }
+    }
+    for (expr_id, index, resolution, span) in expr_updates {
+        let path = match hir.exprs.get_mut(expr_id) {
+            Some(etas_hir::HirExpr::Path(path)) if index == 0 => Some(path),
+            Some(etas_hir::HirExpr::Reflect(reflection)) => reflection.target.path_mut(index),
+            _ => None,
+        };
+        if let Some(path) = path {
             path.resolution = resolution;
             resolved_spans.push(span);
         }
@@ -773,6 +920,34 @@ fn resolve_wildcard_alias_paths(
             resolved_spans.push(span);
         }
     }
+    let bound_updates = hir
+        .symbols
+        .iter()
+        .flat_map(|symbol| {
+            let etas_hir::SymbolDef::TypeParam { bounds, .. } = &symbol.def else {
+                return Vec::new();
+            };
+            bounds
+                .iter()
+                .enumerate()
+                .filter_map(|(index, bound)| {
+                    wildcard_alias_resolution(&bound.path, &source_scopes, hir)
+                        .map(|resolution| (symbol.id, index, resolution, bound.path.span))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (symbol, index, resolution, span) in bound_updates {
+        if let Some(etas_hir::Symbol {
+            def: etas_hir::SymbolDef::TypeParam { bounds, .. },
+            ..
+        }) = hir.symbols.get_mut(symbol)
+            && let Some(bound) = bounds.get_mut(index)
+        {
+            bound.path.resolution = resolution;
+            resolved_spans.push(span);
+        }
+    }
     resolved_spans
 }
 
@@ -781,11 +956,13 @@ fn wildcard_alias_resolution(
     source_scopes: &HashMap<SourceId, etas_hir::ScopeId>,
     hir: &etas_hir::HirProgram,
 ) -> Option<etas_hir::ResolveResult> {
-    if !matches!(path.resolution, etas_hir::ResolveResult::Unresolved) || path.segments.len() != 1 {
+    if !matches!(path.resolution, etas_hir::ResolveResult::Unresolved) {
         return None;
     }
     let name = path.segments.first()?.name.as_str();
-    let scope = source_scopes.get(&path.span.source).copied()?;
+    let scope = source_scopes
+        .get(&hir.source_map.lexical_source(path.span.source))
+        .copied()?;
     match hir.scopes.lookup(scope, name) {
         etas_hir::ResolveResult::Resolved(symbol)
             if hir.symbols.get(symbol).is_some_and(|symbol| {
@@ -798,7 +975,19 @@ fn wildcard_alias_resolution(
                 )
             }) =>
         {
-            Some(etas_hir::ResolveResult::Resolved(symbol))
+            Some(if path.segments.len() == 1 {
+                etas_hir::ResolveResult::Resolved(symbol)
+            } else {
+                etas_hir::ResolveResult::PartiallyResolved(etas_hir::PartialResolution {
+                    resolved_prefix: Some(symbol),
+                    resolved_segments: 1,
+                    remaining: path.segments[1..]
+                        .iter()
+                        .map(|segment| segment.name.clone())
+                        .collect(),
+                    reason: etas_hir::PartialResolutionReason::PackageResolverRequired,
+                })
+            })
         }
         _ => None,
     }
@@ -821,6 +1010,22 @@ fn prune_resolved_external_action_diagnostics(
         !matches!(
             diagnostic.code,
             DiagnosticCode::Name(NameDiagnosticCode::UnresolvedEffectAction)
+        ) || !resolved_spans
+            .iter()
+            .any(|span| span_contains(*span, diagnostic.primary.span))
+    });
+}
+
+fn prune_resolved_source_action_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    resolved_spans: &[Span],
+) {
+    diagnostics.retain(|diagnostic| {
+        !matches!(
+            diagnostic.code,
+            DiagnosticCode::Name(
+                NameDiagnosticCode::UnresolvedEffectAction | NameDiagnosticCode::AmbiguousName
+            )
         ) || !resolved_spans
             .iter()
             .any(|span| span_contains(*span, diagnostic.primary.span))

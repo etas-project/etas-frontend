@@ -2,10 +2,11 @@ use crate::{Span, ast::literal::Literal, ast::name::Path, ast::pattern::Pattern}
 
 use super::{Block, EffectRef, GenericArg, Name, TypeExpr};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Expr {
     Literal(Literal),
     Path(Path),
+    Reflect(Box<super::ReflectExpr>),
     Record(RecordExpr),
     EmptyRecordOrMap {
         span: Span,
@@ -40,6 +41,7 @@ pub enum Expr {
     MethodCall(MethodCallExpr),
     SpecMethodCall(SpecMethodCallExpr),
     Perform(PerformExpr),
+    Infer(InferExpr),
     Handle(HandleExpr),
     Handler(HandlerExpr),
     StageCompose(StageComposeExpr),
@@ -62,6 +64,7 @@ impl Expr {
         match self {
             Self::Literal(lit) => lit.span(),
             Self::Path(path) => path.span,
+            Self::Reflect(reflection) => reflection.span,
             Self::Record(record) => record.span,
             Self::Map(map) => map.span,
             Self::Tuple { span, .. }
@@ -77,6 +80,7 @@ impl Expr {
             Self::MethodCall(call) => call.span,
             Self::SpecMethodCall(call) => call.span,
             Self::Perform(perform) => perform.span,
+            Self::Infer(infer) => infer.span,
             Self::Handle(handle) => handle.span,
             Self::Handler(handler) => handler.span,
             Self::StageCompose(compose) => compose.span,
@@ -95,7 +99,7 @@ impl Expr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct RecordExpr {
     pub path: Option<Path>,
     pub generic_args: Vec<GenericArg>,
@@ -103,20 +107,20 @@ pub struct RecordExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MapExpr {
     pub entries: Vec<MapEntry>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MapEntry {
     pub key: Expr,
     pub value: Expr,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum FieldInit {
     Shorthand(Name),
     Named { name: Name, value: Expr },
@@ -131,7 +135,7 @@ impl FieldInit {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct CallExpr {
     pub callee: Box<Expr>,
     pub generic_args: Vec<GenericArg>,
@@ -139,7 +143,7 @@ pub struct CallExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MethodCallExpr {
     pub receiver: Box<Expr>,
     pub method: Name,
@@ -148,7 +152,7 @@ pub struct MethodCallExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct SpecMethodCallExpr {
     pub receiver: Box<Expr>,
     pub spec_path: Path,
@@ -158,7 +162,7 @@ pub struct SpecMethodCallExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Arg {
     Positional(Expr),
     Named { name: Name, value: Expr },
@@ -173,7 +177,7 @@ impl Arg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct PerformExpr {
     pub effect: EffectRef,
     pub action: Name,
@@ -182,14 +186,21 @@ pub struct PerformExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
+pub struct InferExpr {
+    pub generic_args: Vec<GenericArg>,
+    pub args: Vec<Arg>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct HandleExpr {
     pub body: Box<Expr>,
     pub handler: HandlerArg,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum HandlerArg {
     Expr(Box<Expr>),
     Block(HandlerBlock),
@@ -204,19 +215,19 @@ impl HandlerArg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct HandlerExpr {
     pub block: HandlerBlock,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct HandlerBlock {
     pub arms: Vec<HandlerArm>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct HandlerArm {
     pub effect: EffectRef,
     pub action: Name,
@@ -226,7 +237,7 @@ pub struct HandlerArm {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum HandlerArmBody {
     Stmt(Box<super::Stmt>),
     Block(Block),
@@ -241,41 +252,41 @@ impl HandlerArmBody {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct StageComposeExpr {
     pub stages: Vec<PipelineStage>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct PipelineExpr {
     pub input: Box<Expr>,
     pub stages: Vec<PipelineStage>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct PipelineStage {
     pub expr: Box<Expr>,
     pub limits: Vec<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FieldExpr {
     pub receiver: Box<Expr>,
     pub field: Name,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct IndexExpr {
     pub receiver: Box<Expr>,
     pub index: Box<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct SliceExpr {
     pub receiver: Box<Expr>,
     pub start: Box<Expr>,
@@ -284,7 +295,7 @@ pub struct SliceExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct RangeExpr {
     pub start: Box<Expr>,
     pub end: Box<Expr>,
@@ -292,32 +303,36 @@ pub struct RangeExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct TryExpr {
     pub expr: Box<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum RangeBounds {
     ClosedOpen,
     OpenClosed,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct UnaryExpr {
     pub op: UnaryOp,
     pub expr: Box<Expr>,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum UnaryOp {
     Not,
     Neg,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct BinaryExpr {
     pub lhs: Box<Expr>,
     pub op: BinaryOp,
@@ -325,7 +340,9 @@ pub struct BinaryExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+)]
 pub enum BinaryOp {
     EqEq,
     BangEq,
@@ -342,7 +359,7 @@ pub enum BinaryOp {
     OrOr,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct IfExpr {
     pub condition: Box<Expr>,
     pub then_branch: Block,
@@ -350,33 +367,33 @@ pub struct IfExpr {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct MatchExpr {
     pub scrutinee: Box<Expr>,
     pub arms: Vec<super::MatchArm>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct LambdaExpr {
     pub params: LambdaParams,
     pub body: LambdaBody,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum LambdaParams {
     Ident(Name),
     ParamList(Vec<super::Param>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum LambdaBody {
     Expr(Box<Expr>),
     Block(Block),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct BlockExpr {
     pub block: Block,
 }

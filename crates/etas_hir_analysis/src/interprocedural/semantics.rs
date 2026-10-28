@@ -40,6 +40,15 @@ pub trait InterproceduralSemantics {
         state: &Self::Domain,
     ) -> CallTarget<Self::Unit>;
 
+    fn method_call_target(
+        &mut self,
+        _context: UnitContext<Self::Unit>,
+        _call: HirExprId,
+        _state: &Self::Domain,
+    ) -> Option<Self::Unit> {
+        None
+    }
+
     fn handler_arm_dependency(
         &mut self,
         _context: UnitContext<Self::Unit>,
@@ -54,6 +63,14 @@ pub trait InterproceduralSemantics {
         _expr: HirExprId,
     ) -> Option<Self::Unit> {
         None
+    }
+
+    fn expression_dependencies(
+        &mut self,
+        _context: UnitContext<Self::Unit>,
+        _expr: HirExprId,
+    ) -> Vec<Self::Unit> {
+        Vec::new()
     }
 
     fn direct_call(

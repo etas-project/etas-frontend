@@ -9,6 +9,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
                 EFFECT_REGISTRY,
                 EFFECT_UNITS,
                 MEMORY_PROVENANCE,
+                FROZEN_CALL_SUMMARIES,
             ]))
             .produces(ArtifactSet::one(EFFECT_SUMMARIES))
     }
@@ -17,7 +18,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
         &mut self,
         context: &mut EffectPipelineContext<'a>,
         _pass_context: &PassContext<EffectPipelineContext<'a>>,
-        _manager: &mut PassManager<EffectPipelineContext<'a>>,
+        manager: &mut PassManager<EffectPipelineContext<'a>>,
     ) -> PassResult {
         let Some(registry) = context.registry.as_ref() else {
             return context.fail(missing(EffectStage::SolveSummaries, "effect registry"));
@@ -28,8 +29,25 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
         let Some(memory_provenance) = context.memory_provenance.as_ref() else {
             return context.fail(missing(EffectStage::SolveSummaries, "memory provenance"));
         };
+        let Some(frozen_calls) = context.frozen_calls.as_ref() else {
+            return context.fail(missing(
+                EffectStage::SolveSummaries,
+                "frozen call summaries",
+            ));
+        };
+        let parameter_effects = std::sync::Arc::new(frozen_calls.parameter_effects.clone());
         let analysis = run_effect_analysis(
             EffectAnalysisInput {
+                frozen_graphs: std::sync::Arc::new(frozen_calls.graphs.clone()),
+                callable_environments: std::sync::Arc::new(
+                    frozen_calls.callable_environments.clone(),
+                ),
+                global_values: Default::default(),
+                call_results: Default::default(),
+                captured_values: Default::default(),
+                frozen_calls: std::sync::Arc::new(frozen_calls.callables.clone()),
+                parameter_effects: parameter_effects.clone(),
+                frozen_parameter_effects: parameter_effects,
                 hir: context.input.hir,
                 types: context.input.types,
                 std_registry: context.input.std_registry,
@@ -39,6 +57,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
                 external_summaries: context.input.external_summaries,
             },
             units,
+            manager.execution_control(),
         );
         match analysis {
             Ok(analysis) => context.analysis = Some(analysis),

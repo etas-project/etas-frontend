@@ -70,6 +70,14 @@ fn lower_std_decl_with_kind(
                 }
                 let ty =
                     lower_std_type_decl_with_name(ctx, registry, decl, qualified_name.as_deref());
+                let parameters = lower_std_generic_params(ctx, registry, &decl.params);
+                if decl.canonical_type.is_some() {
+                    return SymbolTypeFact::TypeAlias {
+                        target: ty,
+                        params: parameters,
+                    };
+                }
+                ctx.signature_facts.type_generics.insert(ty, parameters);
                 match ctx.interner.store().get(ty) {
                     Some(Type::Nominal(nominal)) => SymbolTypeFact::NominalType {
                         constructor: TypeConstructorId(ty.0),
@@ -165,6 +173,7 @@ fn lower_std_generic_params(
         .map(|param| CallableGenericParam {
             kind: CallableGenericParamKind::Type,
             subject: ctx.interner.intern(Type::Named(NamedTypeRef {
+                source_parameter: None,
                 name: param.name.clone(),
             })),
             name: param.name.clone(),
@@ -207,6 +216,15 @@ pub fn lower_std_effect_action_signature(
         selector_param_names: action.selector_param_names.clone(),
         selector_defaults: vec![None; selector_len],
         returns_never: matches!(action.output, StdType::Primitive(StdPrimitiveType::Never)),
+        default_handler_effects: action.default_handler_effects.as_ref().map(|effects| {
+            EffectRowRef {
+                effects: effects
+                    .iter()
+                    .map(|effect| lower_std_effect_ref(ctx, registry, effect, None))
+                    .collect(),
+                tail: None,
+            }
+        }),
     }
 }
 
@@ -334,6 +352,9 @@ fn lower_std_type_decl_with_name(
     qualified_name: Option<&str>,
 ) -> TypeId {
     let scope = qualified_name.and_then(qualified_scope);
+    if let Some(ty) = &decl.canonical_type {
+        return lower_std_type_with_scope(ctx, registry, ty, scope.as_deref());
+    }
     lower_std_type_constructor(
         ctx,
         registry,
@@ -382,10 +403,12 @@ fn lower_std_type_with_scope(
             StdPrimitiveType::Unit => PrimitiveType::Unit,
             StdPrimitiveType::Never => PrimitiveType::Never,
         }),
-        StdType::Var(name) => ctx
-            .interner
-            .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+        StdType::Var(name) => ctx.interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: name.clone(),
+        })),
         StdType::Support(kind) => ctx.interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
             name: kind.source_name().to_owned(),
         })),
         StdType::Array(inner) => {
@@ -544,31 +567,15 @@ fn lower_named_std_type_with_scope(
         && let Some(scope) = scope
         && let Some((identity, decl)) = lookup_scoped_std_type_decl(registry, scope, name)
     {
-        return lower_std_type_constructor(
-            ctx,
-            registry,
-            &identity,
-            &decl.params,
-            decl.kind,
-            decl.representation.as_ref(),
-            Some(scope),
-        );
+        return lower_std_type_decl_with_name(ctx, registry, decl, Some(&identity));
     }
 
     if let Some((identity, decl)) = lookup_std_type_decl(registry, name) {
-        let constructor_scope = qualified_scope(&identity);
-        return lower_std_type_constructor(
-            ctx,
-            registry,
-            &identity,
-            &decl.params,
-            decl.kind,
-            decl.representation.as_ref(),
-            constructor_scope.as_deref(),
-        );
+        return lower_std_type_decl_with_name(ctx, registry, decl, Some(&identity));
     }
 
     ctx.interner.intern(Type::Named(NamedTypeRef {
+        source_parameter: None,
         name: name.to_owned(),
     }))
 }
@@ -625,36 +632,48 @@ fn lower_std_type_constructor(
     representation: Option<&StdType>,
     scope: Option<&[String]>,
 ) -> TypeId {
-    if let Some(representation) = representation {
+    let ty = if let Some(representation) = representation {
         let representation = lower_std_type_with_scope(ctx, registry, representation, scope);
-        return ctx.interner.intern(Type::Nominal(NominalTypeRef {
+        ctx.interner.intern(Type::Nominal(NominalTypeRef {
             name: name.to_owned(),
             params: params.iter().map(|param| param.name.clone()).collect(),
             representation: Some(representation),
-        }));
+        }))
+    } else {
+        match kind {
+            TypeDeclKind::Enum => {
+                let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
+                    name: name.to_owned(),
+                }));
+                lower_std_enum_layout(ctx, registry, ty, name, params, scope);
+                ty
+            }
+            TypeDeclKind::Struct | TypeDeclKind::Wrapper => {
+                ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                    name: name.to_owned(),
+                    params: params.iter().map(|param| param.name.clone()).collect(),
+                    representation: None,
+                }))
+            }
+            TypeDeclKind::Primitive | TypeDeclKind::Support | TypeDeclKind::Spec => {
+                ctx.interner.intern(Type::Named(NamedTypeRef {
+                    source_parameter: None,
+                    name: name.to_owned(),
+                }))
+            }
+        }
+    };
+    if kind != TypeDeclKind::Spec {
+        let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
+        if let Some(identity) = ctx.reflection_declaration_identity(&path).cloned()
+            && identity.kind() == etas_code::DefinitionKind::Type
+        {
+            ctx.signature_facts
+                .reflection_type_identities
+                .insert(ty, identity);
+        }
     }
-
-    match kind {
-        TypeDeclKind::Enum => {
-            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
-                name: name.to_owned(),
-            }));
-            lower_std_enum_layout(ctx, registry, ty, name, params, scope);
-            ty
-        }
-        TypeDeclKind::Struct | TypeDeclKind::Wrapper => {
-            ctx.interner.intern(Type::Nominal(NominalTypeRef {
-                name: name.to_owned(),
-                params: params.iter().map(|param| param.name.clone()).collect(),
-                representation: None,
-            }))
-        }
-        TypeDeclKind::Primitive | TypeDeclKind::Support | TypeDeclKind::Spec => {
-            ctx.interner.intern(Type::Named(NamedTypeRef {
-                name: name.to_owned(),
-            }))
-        }
-    }
+    ty
 }
 
 fn lower_std_enum_layout(

@@ -6,12 +6,12 @@ use etas_core::SourceId;
 use super::{FrontendArtifactManifest, fingerprint_text};
 use crate::{ImportGraph, ModuleIndex, SourceSet};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct SourceFingerprintSummary {
     pub sources: Vec<SourceFingerprintRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct SourceFingerprintRecord {
     pub source: SourceId,
     pub path: Option<String>,
@@ -20,13 +20,13 @@ pub struct SourceFingerprintRecord {
     pub byte_len: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ModuleImportExportSummary {
     pub modules: Vec<ModuleSurfaceRecord>,
     pub imports: Vec<ImportEdgeSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ModuleSurfaceRecord {
     pub module: u32,
     pub path: String,
@@ -36,7 +36,7 @@ pub struct ModuleSurfaceRecord {
     pub surface_hash: ArtifactFingerprint,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ModulePartSurfaceRecord {
     pub part: u32,
     pub source: SourceId,
@@ -44,7 +44,7 @@ pub struct ModulePartSurfaceRecord {
     pub item_count: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ImportEdgeSummary {
     pub from: u32,
     pub from_part: u32,
@@ -52,25 +52,25 @@ pub struct ImportEdgeSummary {
     pub resolved: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ArtifactDependencySummary {
     pub records: Vec<ArtifactDependencySummaryRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ArtifactDependencySummaryRecord {
     pub artifact: ArtifactKey,
     pub fingerprint: ArtifactFingerprint,
     pub dependencies: Vec<ArtifactDependencyEdgeSummary>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ArtifactDependencyEdgeSummary {
     pub dependency: ArtifactKey,
     pub fingerprint: Option<ArtifactFingerprint>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ArtifactReuseStatsSummary {
     pub reused_count: usize,
     pub stored_count: usize,
@@ -78,7 +78,7 @@ pub struct ArtifactReuseStatsSummary {
     pub stored_by_kind: Vec<ArtifactKindCount>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ArtifactKindCount {
     pub namespace: String,
     pub kind: String,

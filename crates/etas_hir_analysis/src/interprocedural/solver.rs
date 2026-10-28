@@ -52,14 +52,30 @@ impl SummarySolver {
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
     {
+        self.solve_with_checkpoint(units, semantics, &|| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {})
+    }
+
+    pub(super) fn solve_with_checkpoint<S, E>(
+        &self,
+        units: impl IntoIterator<Item = S::Unit>,
+        semantics: &mut S,
+        checkpoint: &impl Fn() -> Result<(), E>,
+    ) -> Result<SummarySolverResult<S::Unit, S::Summary>, E>
+    where
+        S: InterproceduralSemantics
+            + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
+    {
+        checkpoint()?;
         let mut units = units.into_iter().collect::<Vec<_>>();
         units.sort();
         units.dedup();
 
         let mut diagnostics = Vec::new();
-        let call_graph = self.build_call_graph(&units, semantics);
+        let call_graph = self.build_call_graph(&units, semantics, checkpoint)?;
         let mut summaries = SummaryStore::new();
         for unit in &units {
+            checkpoint()?;
             summaries.ensure_bottom(*unit);
         }
 
@@ -67,22 +83,34 @@ impl SummarySolver {
             Ok(components) => components,
             Err(()) => {
                 diagnostics.push(InterproceduralDiagnostic::InvalidCondensationGraph);
-                return SummarySolverResult {
+                return Ok(SummarySolverResult {
                     summaries,
                     call_graph,
                     convergence: Vec::new(),
                     diagnostics,
-                };
+                });
             }
         };
 
         let mut convergence = Vec::new();
         for component in components {
+            checkpoint()?;
             let component_set = component.iter().copied().collect::<BTreeSet<_>>();
-            let result = self.engine.solve_worklist(
+            let result = self.engine.try_solve_worklist(
                 summaries,
                 component.clone(),
-                |unit, summaries| self.transfer_unit(*unit, semantics, summaries, &mut diagnostics),
+                |unit, summaries| {
+                    checkpoint()?;
+                    let changed = self.transfer_unit(
+                        *unit,
+                        semantics,
+                        summaries,
+                        &mut diagnostics,
+                        checkpoint,
+                    )?;
+                    checkpoint()?;
+                    Ok(changed)
+                },
                 |unit, _summaries| {
                     call_graph
                         .dependents(*unit)
@@ -90,7 +118,7 @@ impl SummarySolver {
                         .filter(|dependent| component_set.contains(dependent))
                         .collect()
                 },
-            );
+            )?;
             if result.status == ConvergenceStatus::IterationLimitReached {
                 push_unique(
                     &mut diagnostics,
@@ -107,25 +135,33 @@ impl SummarySolver {
             summaries = result.value;
         }
 
-        SummarySolverResult {
+        checkpoint()?;
+        Ok(SummarySolverResult {
             summaries,
             call_graph,
             convergence,
             diagnostics,
-        }
+        })
     }
 
-    fn build_call_graph<S>(&self, units: &[S::Unit], semantics: &mut S) -> CallGraph<S::Unit>
+    fn build_call_graph<S, E>(
+        &self,
+        units: &[S::Unit],
+        semantics: &mut S,
+        checkpoint: &impl Fn() -> Result<(), E>,
+    ) -> Result<CallGraph<S::Unit>, E>
     where
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
     {
         let mut graph = CallGraph::new();
         for unit in units {
+            checkpoint()?;
             graph.add_unit(*unit);
         }
 
         for unit in units {
+            checkpoint()?;
             let body = semantics.body_of(*unit);
             if !body.is_traversable() {
                 continue;
@@ -134,19 +170,21 @@ impl SummarySolver {
             let entry = <S as InterproceduralSemantics>::Domain::bottom();
             let adapter = CallGraphCollectionAdapter::new(semantics, *unit, &mut graph);
             let mut interpreter = HirAbstractInterpreter::new(adapter);
-            traverse_body(&mut interpreter, body, entry);
+            traverse_body(&mut interpreter, body, entry, checkpoint)?;
+            checkpoint()?;
         }
 
-        graph
+        Ok(graph)
     }
 
-    fn transfer_unit<S>(
+    fn transfer_unit<S, E>(
         &self,
         unit: S::Unit,
         semantics: &mut S,
         summaries: &mut SummaryStore<S::Unit, S::Summary>,
         diagnostics: &mut Vec<InterproceduralDiagnostic<S::Unit>>,
-    ) -> bool
+        checkpoint: &impl Fn() -> Result<(), E>,
+    ) -> Result<bool, E>
     where
         S: InterproceduralSemantics
             + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
@@ -158,13 +196,13 @@ impl SummarySolver {
             HirAnalysisBody::External => {
                 let summary = semantics.external_summary(context);
                 let summary = semantics.stabilize_summary(context, summary, summaries.get(unit));
-                return summaries.join_summary(unit, summary);
+                return Ok(summaries.join_summary(unit, summary));
             }
             HirAnalysisBody::Missing => {
                 push_unique(diagnostics, InterproceduralDiagnostic::MissingBody { unit });
                 let summary = semantics.missing_summary(context);
                 let summary = semantics.stabilize_summary(context, summary, summaries.get(unit));
-                return summaries.join_summary(unit, summary);
+                return Ok(summaries.join_summary(unit, summary));
             }
             HirAnalysisBody::Block(_)
             | HirAnalysisBody::Expr(_)
@@ -175,11 +213,11 @@ impl SummarySolver {
         let exit = {
             let adapter = SummaryApplicationAdapter::new(semantics, unit, summaries, diagnostics);
             let mut interpreter = HirAbstractInterpreter::new(adapter);
-            traverse_body(&mut interpreter, body, entry)
+            traverse_body(&mut interpreter, body, entry, checkpoint)?
         };
         let summary = semantics.end_unit(context, exit);
         let summary = semantics.stabilize_summary(context, summary, summaries.get(unit));
-        summaries.join_summary(unit, summary)
+        Ok(summaries.join_summary(unit, summary))
     }
 }
 
@@ -189,25 +227,26 @@ impl HirAnalysisBody {
     }
 }
 
-fn traverse_body<S>(
+fn traverse_body<S, E>(
     interpreter: &mut HirAbstractInterpreter<S>,
     body: HirAnalysisBody,
     state: S::Domain,
-) -> Control<S::Domain>
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<Control<S::Domain>, E>
 where
     S: HirAnalysisSemantics,
 {
     match body {
-        HirAnalysisBody::Block(block) => interpreter.block_control(block, state),
-        HirAnalysisBody::Expr(expr) => interpreter.expr_control(expr, state),
+        HirAnalysisBody::Block(block) => interpreter.try_block_control(block, state, checkpoint),
+        HirAnalysisBody::Expr(expr) => interpreter.try_expr_control(expr, state, checkpoint),
         HirAnalysisBody::HandlerArm(handler) => {
             let body = interpreter
                 .context()
                 .handler_arm_body(handler)
                 .expect("handler arm analysis body should exist in HIR tree");
-            interpreter.block_control(body, state)
+            interpreter.try_block_control(body, state, checkpoint)
         }
-        HirAnalysisBody::External | HirAnalysisBody::Missing => Control::normal(state),
+        HirAnalysisBody::External | HirAnalysisBody::Missing => Ok(Control::normal(state)),
     }
 }
 

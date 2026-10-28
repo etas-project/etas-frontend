@@ -4,7 +4,7 @@ use etas_types::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, etas_core::RetainedSize)]
 pub(crate) enum PersistedItemSignature {
     Flow {
         generic_params: Vec<CallableGenericParam>,
@@ -14,11 +14,7 @@ pub(crate) enum PersistedItemSignature {
         requested_actions: Option<PersistedEffectRowRef>,
     },
     Agent {
-        generic_params: Vec<CallableGenericParam>,
-        input: Vec<TypeId>,
-        output: TypeId,
-        effects: Option<PersistedEffectRowRef>,
-        requested_actions: Option<PersistedEffectRowRef>,
+        signature: AgentSignature,
     },
     Tool {
         generic_params: Vec<CallableGenericParam>,
@@ -49,17 +45,7 @@ impl PersistedItemSignature {
                     .map(PersistedEffectRowRef::from_frontend),
             },
             ItemSignature::Agent(signature) => Self::Agent {
-                generic_params: signature.generic_params.clone(),
-                input: signature.params.clone(),
-                output: signature.output,
-                effects: signature
-                    .effects
-                    .as_ref()
-                    .map(PersistedEffectRowRef::from_frontend),
-                requested_actions: signature
-                    .requested_actions
-                    .as_ref()
-                    .map(PersistedEffectRowRef::from_frontend),
+                signature: signature.clone(),
             },
             ItemSignature::Tool(signature) => Self::Tool {
                 generic_params: signature.generic_params.clone(),
@@ -93,19 +79,7 @@ impl PersistedItemSignature {
                 effects: effects.map(PersistedEffectRowRef::into_frontend),
                 requested_actions: requested_actions.map(PersistedEffectRowRef::into_frontend),
             }),
-            Self::Agent {
-                generic_params,
-                input,
-                output,
-                effects,
-                requested_actions,
-            } => ItemSignature::Agent(AgentSignature {
-                generic_params,
-                params: input,
-                output,
-                effects: effects.map(PersistedEffectRowRef::into_frontend),
-                requested_actions: requested_actions.map(PersistedEffectRowRef::into_frontend),
-            }),
+            Self::Agent { signature } => ItemSignature::Agent(signature),
             Self::Tool {
                 generic_params,
                 input,
@@ -124,7 +98,7 @@ impl PersistedItemSignature {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, etas_core::RetainedSize)]
 pub(crate) struct PersistedEffectRowRef {
     effects: Vec<PersistedEffectRef>,
     tail: Option<String>,
@@ -154,7 +128,7 @@ impl PersistedEffectRowRef {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, etas_core::RetainedSize)]
 struct PersistedEffectRef {
     name: String,
     args: Vec<EffectArgRef>,

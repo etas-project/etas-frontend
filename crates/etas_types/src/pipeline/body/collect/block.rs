@@ -6,18 +6,22 @@ use crate::{
     },
 };
 
-pub fn collect_block(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_block<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     block: etas_hir::HirBlockId,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let block_data = ctx.ctx.hir.blocks[block].clone();
     let mut last_stmt = None;
     for stmt in block_data.stmts {
-        last_stmt = Some(collect_stmt(ctx, stmt));
+        ctx.checkpoint()?;
+        last_stmt = Some(collect_stmt(ctx, stmt)?);
     }
-    block_data
+    let ty = block_data
         .final_expr
         .map(|expr| collect_expr(ctx, expr, expected))
-        .unwrap_or_else(|| last_stmt.unwrap_or_else(|| ctx.primitive(PrimitiveType::Unit)))
+        .transpose()?
+        .unwrap_or_else(|| last_stmt.unwrap_or_else(|| ctx.primitive(PrimitiveType::Unit)));
+    Ok(ty)
 }

@@ -15,7 +15,9 @@ pub enum FrontendSessionStore {
 impl FrontendSessionStore {
     pub fn from_options(options: &FrontendSessionOptions) -> CacheResult<Self> {
         match &options.cache {
-            FrontendCacheConfig::MemoryOnly => Ok(Self::Memory(MemoryArtifactStore::new())),
+            FrontendCacheConfig::MemoryOnly => Ok(Self::Memory(
+                MemoryArtifactStore::with_byte_budget(options.memory_cache_byte_budget),
+            )),
             FrontendCacheConfig::Disk {
                 root,
                 access,
@@ -26,13 +28,21 @@ impl FrontendSessionStore {
                 options.cache_namespace.clone(),
                 *access,
             )
-            .map(Box::new)
+            .and_then(|mut store| {
+                store.set_memory_byte_budget(options.memory_cache_byte_budget)?;
+                Ok(Box::new(store))
+            })
             .map(Self::Disk),
         }
     }
 }
 
 pub trait FrontendArtifactStore: TypedArtifactStore {
+    /// None means a custom store does not expose RAM accounting, never zero.
+    fn memory_usage(&self) -> Option<etas_cache::MemoryCacheUsage> {
+        None
+    }
+
     fn meta_with_disk_access(
         &self,
         key: &ArtifactKey,
@@ -49,18 +59,26 @@ pub trait FrontendArtifactStore: TypedArtifactStore {
         self.get(key)
     }
 
-    fn put_with_disk_access<T: Clone + 'static>(
+    fn put_with_disk_access<T: Clone + etas_core::memory::RetainedSize + 'static>(
         &mut self,
         artifact: CachedArtifact<T>,
         _access: DiskCacheAccess,
-    ) -> CacheResult<()> {
+    ) -> CacheResult<etas_cache::ArtifactPutStatus> {
         self.put(artifact)
     }
 }
 
-impl FrontendArtifactStore for MemoryArtifactStore {}
+impl FrontendArtifactStore for MemoryArtifactStore {
+    fn memory_usage(&self) -> Option<etas_cache::MemoryCacheUsage> {
+        Some(MemoryArtifactStore::memory_usage(self))
+    }
+}
 
 impl FrontendArtifactStore for FrontendDiskArtifactStore {
+    fn memory_usage(&self) -> Option<etas_cache::MemoryCacheUsage> {
+        Some(FrontendDiskArtifactStore::memory_usage(self))
+    }
+
     fn meta_with_disk_access(
         &self,
         key: &ArtifactKey,
@@ -77,16 +95,23 @@ impl FrontendArtifactStore for FrontendDiskArtifactStore {
         FrontendDiskArtifactStore::get_with_disk_access(self, key, access)
     }
 
-    fn put_with_disk_access<T: Clone + 'static>(
+    fn put_with_disk_access<T: Clone + etas_core::memory::RetainedSize + 'static>(
         &mut self,
         artifact: CachedArtifact<T>,
         access: DiskCacheAccess,
-    ) -> CacheResult<()> {
+    ) -> CacheResult<etas_cache::ArtifactPutStatus> {
         FrontendDiskArtifactStore::put_with_disk_access(self, artifact, access)
     }
 }
 
 impl FrontendArtifactStore for FrontendSessionStore {
+    fn memory_usage(&self) -> Option<etas_cache::MemoryCacheUsage> {
+        match self {
+            Self::Memory(store) => FrontendArtifactStore::memory_usage(store),
+            Self::Disk(store) => FrontendArtifactStore::memory_usage(&**store),
+        }
+    }
+
     fn meta_with_disk_access(
         &self,
         key: &ArtifactKey,
@@ -109,11 +134,11 @@ impl FrontendArtifactStore for FrontendSessionStore {
         }
     }
 
-    fn put_with_disk_access<T: Clone + 'static>(
+    fn put_with_disk_access<T: Clone + etas_core::memory::RetainedSize + 'static>(
         &mut self,
         artifact: CachedArtifact<T>,
         access: DiskCacheAccess,
-    ) -> CacheResult<()> {
+    ) -> CacheResult<etas_cache::ArtifactPutStatus> {
         match self {
             Self::Memory(store) => store.put_with_disk_access(artifact, access),
             Self::Disk(store) => store.put_with_disk_access(artifact, access),
@@ -159,7 +184,10 @@ impl TypedArtifactStore for FrontendSessionStore {
         }
     }
 
-    fn put<T: Clone + 'static>(&mut self, artifact: CachedArtifact<T>) -> CacheResult<()> {
+    fn put<T: Clone + etas_core::memory::RetainedSize + 'static>(
+        &mut self,
+        artifact: CachedArtifact<T>,
+    ) -> CacheResult<etas_cache::ArtifactPutStatus> {
         match self {
             Self::Memory(store) => store.put(artifact),
             Self::Disk(store) => store.put(artifact),

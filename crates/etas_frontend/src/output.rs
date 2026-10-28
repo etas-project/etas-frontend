@@ -32,7 +32,7 @@ pub const BODY_UNIT_KIND: UnitKindKey = UnitKindKey::new("frontend", "body");
 pub const BLOCK_UNIT_KIND: UnitKindKey = UnitKindKey::new("frontend", "block");
 pub const EXPRESSION_UNIT_KIND: UnitKindKey = UnitKindKey::new("frontend", "expression");
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectInput {
     pub project_root: PathBuf,
     pub source_root: Option<PathBuf>,
@@ -58,9 +58,10 @@ impl ProjectInput {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
+    pub reflection: crate::code::definition::ReflectionOptions,
 }
 
 impl ProjectCompileOptions {
@@ -70,11 +71,16 @@ impl ProjectCompileOptions {
             EntryPolicy::Optional => "optional",
             EntryPolicy::Runnable => "runnable",
         };
-        crate::artifact::fingerprint_text(&["frontend-options", "v2", entry_policy]).to_string()
+        let (retained, exported) = self.reflection.canonical_entries();
+        let mut parts = vec!["frontend-options", "v3", entry_policy, "retain-bodies"];
+        parts.extend(retained);
+        parts.push("export-bodies");
+        parts.extend(exported);
+        crate::artifact::fingerprint_text(&parts).to_string()
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum EntryPolicy {
     #[default]
     CompileOnly,
@@ -82,9 +88,11 @@ pub enum EntryPolicy {
     Runnable,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ProjectEnvironmentInput {
+    pub external_definition_origins: Vec<ProjectExternalDefinitionOriginsInput>,
     pub external_packages: Vec<ProjectExternalPackageInput>,
+    pub external_package_dependencies: Vec<ProjectExternalPackageDependencyInput>,
     pub external_modules: Vec<ProjectExternalModuleInput>,
     pub external_public_metadata: Vec<ProjectExternalPublicMetadataInput>,
     pub external_effect_metadata: DependencyEffectMetadata,
@@ -93,24 +101,54 @@ pub struct ProjectEnvironmentInput {
     pub external_modules_fingerprint: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
+pub struct ProjectExternalDefinitionOriginsInput {
+    pub package: ExternalPackageId,
+    pub origins: etas_code::identity::PackageDefinitionOrigins,
+    pub descriptors: Option<etas_code::descriptor::DefinitionDescriptorSet>,
+}
+
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub(crate) struct ValidatedExternalEnvironment {
     environment: ProjectEnvironmentInput,
+    fingerprint: String,
 }
 
 impl ValidatedExternalEnvironment {
     pub(crate) fn new(environment: ProjectEnvironmentInput) -> Self {
-        Self { environment }
+        let fingerprint = environment.canonical_environment_fingerprint();
+        Self {
+            environment,
+            fingerprint,
+        }
     }
 
     pub(crate) fn environment(&self) -> &ProjectEnvironmentInput {
         &self.environment
+    }
+
+    pub(crate) fn fingerprint(&self) -> &str {
+        &self.fingerprint
     }
 }
 
 impl ProjectEnvironmentInput {
     pub fn canonical_environment_fingerprint(&self) -> String {
         let mut parts = vec!["frontend_project_environment:v1".to_owned()];
+        for input in &self.external_definition_origins {
+            parts.push(format!(
+                "definition-origins:{}:{}",
+                input.package.0,
+                input.origins.fingerprint()
+            ));
+            if let Some(descriptors) = &input.descriptors {
+                parts.push(format!(
+                    "definition-descriptors:{}:{}",
+                    input.package.0,
+                    etas_package_metadata::definition_descriptors_fingerprint(descriptors)
+                ));
+            }
+        }
         if let Some(fingerprint) = &self.environment_fingerprint {
             parts.push(format!("external-fingerprint:{fingerprint}"));
         }
@@ -118,6 +156,18 @@ impl ProjectEnvironmentInput {
             "external-packages:{}",
             self.canonical_external_packages_fingerprint()
         ));
+        let mut dependencies = self
+            .external_package_dependencies
+            .iter()
+            .map(|edge| (edge.package, edge.dependency))
+            .collect::<Vec<_>>();
+        dependencies.sort();
+        for (package, dependency) in dependencies {
+            parts.push(format!(
+                "external-dependency:{}:{}",
+                package.0, dependency.0
+            ));
+        }
         parts.push(format!(
             "external-modules:{}",
             self.canonical_external_modules_fingerprint()
@@ -244,12 +294,33 @@ impl ProjectEnvironmentInput {
                 ));
             }
             for summary in metadata.effect_summaries {
+                if let Some(defaults) = &summary.default_handler_effects {
+                    parts.push(format!(
+                        "default-handler-effects:{}:{}:{}",
+                        summary.item.join("."),
+                        external_effect_row_fingerprint(&defaults.direct_effects),
+                        external_effect_row_fingerprint(&defaults.default_actions)
+                    ));
+                    for handler in &defaults.handlers {
+                        parts.push(format!(
+                            "default-handler:{}:{:?}:{}",
+                            summary.item.join("."),
+                            handler.action,
+                            external_effect_row_fingerprint(&handler.produced)
+                        ));
+                    }
+                }
                 parts.push(format!(
                     "effect-summary:{}:{}:{}:{}",
                     summary.item.join("."),
                     external_effect_row_fingerprint(&summary.public_effects),
                     external_effect_row_fingerprint(&summary.requested_actions),
                     external_effect_row_fingerprint(&summary.handled_requested_actions)
+                ));
+                parts.push(format!(
+                    "returned-callables:{}:{:?}",
+                    summary.item.join("."),
+                    summary.returned_callables
                 ));
                 for latent in summary.latent_flows {
                     parts.push(format!(
@@ -510,6 +581,19 @@ fn external_type_fingerprint(ty: &ProjectExternalTypeInput) -> String {
         ProjectExternalTypeInput::Primitive(name) => format!("primitive:{name}"),
         ProjectExternalTypeInput::Var(name) => format!("var:{name}"),
         ProjectExternalTypeInput::Named(path) => format!("named:{}", path.join(".")),
+        ProjectExternalTypeInput::Enum { path, variants } => format!(
+            "enum:{}:{}",
+            path.join("."),
+            variants
+                .iter()
+                .map(|variant| format!(
+                    "{}={}",
+                    variant.name,
+                    external_type_fingerprint(&variant.ty)
+                ))
+                .collect::<Vec<_>>()
+                .join("|")
+        ),
         ProjectExternalTypeInput::Applied { path, args } => format!(
             "applied:{}<{}>",
             path.join("."),
@@ -642,7 +726,7 @@ fn external_type_fingerprint(ty: &ProjectExternalTypeInput) -> String {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectExternalPackageInput {
     pub id: ExternalPackageId,
     pub name: String,
@@ -651,7 +735,13 @@ pub struct ProjectExternalPackageInput {
     pub import_root: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalPackageDependencyInput {
+    pub package: ExternalPackageId,
+    pub dependency: ExternalPackageId,
+}
+
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectExternalModuleInput {
     pub package: Option<ExternalPackageId>,
     pub id: ExternalModuleId,
@@ -659,7 +749,7 @@ pub struct ProjectExternalModuleInput {
     pub exports: Vec<ProjectExternalExportInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectExternalPublicMetadataInput {
     pub package: ExternalPackageId,
     pub types: Vec<ProjectExternalNamedSignatureInput>,
@@ -683,14 +773,15 @@ pub struct ProjectExternalPublicMetadataInput {
     pub re_exports: Vec<ProjectExternalReExportInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalNamedSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub visibility: String,
     pub ty: Option<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalSpecSignatureInput {
     pub path: Vec<String>,
     pub visibility: String,
@@ -701,27 +792,27 @@ pub struct ProjectExternalSpecSignatureInput {
     pub super_specs: Vec<ProjectExternalSpecBoundInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalSpecKindInput {
     Type,
     Callable,
     Trace,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalSpecMethodInput {
     pub name: String,
     pub path: Vec<String>,
     pub signature: Option<ProjectExternalFlowSignatureInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalSpecBoundInput {
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalSpecImplInput {
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
@@ -729,27 +820,27 @@ pub struct ProjectExternalSpecImplInput {
     pub methods: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTypeSpecSatisfactionInput {
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalCallableSpecSatisfactionInput {
     pub item: Vec<String>,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTraceSpecConformanceInput {
     pub item: Vec<String>,
     pub target: ProjectExternalTraceSpecConformanceTargetInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalTraceSpecConformanceTargetInput {
     Inline,
     Named {
@@ -758,7 +849,7 @@ pub enum ProjectExternalTraceSpecConformanceTargetInput {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalFlowSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
@@ -769,18 +860,18 @@ pub struct ProjectExternalFlowSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalAgentSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
     pub input: Vec<ProjectExternalTypeInput>,
-    pub output: ProjectExternalTypeInput,
+    pub output: Option<ProjectExternalTypeInput>,
     pub effects: Option<ProjectExternalEffectRowInput>,
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalToolSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
@@ -791,13 +882,13 @@ pub struct ProjectExternalToolSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalToolSchemaInput {
     pub path: Vec<String>,
     pub schema_json: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalActionSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalActionGenericParamInput>,
@@ -810,14 +901,14 @@ pub struct ProjectExternalActionSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalCallableGenericParamInput {
     pub name: String,
     pub kind: ProjectExternalCallableGenericParamKindInput,
     pub bounds: Vec<ProjectExternalSpecBoundInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalCallableGenericParamKindInput {
     Type,
     Effect,
@@ -825,7 +916,7 @@ pub enum ProjectExternalCallableGenericParamKindInput {
 
 pub type ProjectExternalActionGenericParamInput = ProjectExternalCallableGenericParamInput;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalActionArgKindInput {
     Type,
     MemoryPlace,
@@ -833,19 +924,19 @@ pub enum ProjectExternalActionArgKindInput {
     StringPattern,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub struct ProjectExternalEffectRowInput {
     pub effects: Vec<ProjectExternalEffectRefInput>,
     pub tail: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub struct ProjectExternalEffectRefInput {
     pub path: Vec<String>,
     pub args: Vec<ProjectExternalEffectArgInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ProjectExternalEffectArgInput {
     Type(ProjectExternalTypeInput),
     Path(Vec<String>),
@@ -854,11 +945,15 @@ pub enum ProjectExternalEffectArgInput {
     Wildcard,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ProjectExternalTypeInput {
     Primitive(String),
     Var(String),
     Named(Vec<String>),
+    Enum {
+        path: Vec<String>,
+        variants: Vec<ProjectExternalRecordFieldInput>,
+    },
     Applied {
         path: Vec<String>,
         args: Vec<ProjectExternalTypeInput>,
@@ -918,14 +1013,17 @@ pub enum ProjectExternalTypeInput {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub struct ProjectExternalRecordFieldInput {
     pub name: String,
     pub ty: ProjectExternalTypeInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalEffectSummaryInput {
+    pub handler_requests: Option<ProjectExternalRequestInstantiationInput>,
+    pub returned_callables: Option<etas_package_metadata::CallableValueGraph>,
+    pub default_handler_effects: Option<ProjectExternalDefaultHandlerEffectsInput>,
     pub item: Vec<String>,
     pub public_effects: ProjectExternalEffectRowInput,
     pub requested_actions: ProjectExternalEffectRowInput,
@@ -934,7 +1032,38 @@ pub struct ProjectExternalEffectSummaryInput {
     pub action_trace: ProjectExternalActionTraceInput,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalRequestInstantiationInput {
+    pub actions: Vec<ProjectExternalActionRequestInput>,
+    pub parameters: Vec<ProjectExternalParameterRequestInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalActionRequestInput {
+    pub action: ProjectExternalEffectRefInput,
+    pub type_bindings: Option<Vec<(String, ProjectExternalTypeInput)>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalParameterRequestInput {
+    pub parameter: String,
+    pub excluded: Vec<ProjectExternalEffectRefInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalDefaultHandlerEffectsInput {
+    pub direct_effects: ProjectExternalEffectRowInput,
+    pub default_actions: ProjectExternalEffectRowInput,
+    pub handlers: Vec<ProjectExternalDefaultHandlerContributionInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalDefaultHandlerContributionInput {
+    pub action: ProjectExternalEffectRefInput,
+    pub produced: ProjectExternalEffectRowInput,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalActionTraceInput {
     #[default]
     Empty,
@@ -955,7 +1084,7 @@ pub enum ProjectExternalActionTraceInput {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalActionTraceEventSourceInput {
     Perform,
     StdIntrinsic,
@@ -966,25 +1095,25 @@ pub enum ProjectExternalActionTraceEventSourceInput {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalLatentFlowSummaryInput {
     pub declared_bound: ProjectExternalEffectRowInput,
     pub inferred_effects: ProjectExternalEffectRowInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalActionSummaryInput {
     pub action: Vec<String>,
     pub args: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTraceSpecSummaryInput {
     pub trace_spec: Vec<String>,
     pub clauses: Vec<ProjectExternalTraceSpecClauseInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTraceSpecClauseInput {
     pub kind: ProjectExternalTraceSpecClauseKindInput,
     pub pattern: Option<ProjectExternalEffectRowInput>,
@@ -993,7 +1122,7 @@ pub struct ProjectExternalTraceSpecClauseInput {
     pub obligation: Option<ProjectExternalEffectRowInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ProjectExternalTraceSpecClauseKindInput {
     Allow,
     Deny,
@@ -1012,20 +1141,20 @@ impl ProjectExternalTraceSpecClauseKindInput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalReExportInput {
     pub from: Vec<String>,
     pub exported: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectExternalExportInput {
     pub symbol: ExternalSymbolId,
     pub name: String,
     pub visibility: etas_hir::Visibility,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectToolBindingInput {
     pub tool: String,
     pub provider: String,
@@ -1033,13 +1162,13 @@ pub struct ProjectToolBindingInput {
     pub action_row: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectEntry {
     pub module: Option<ModulePath>,
     pub flow: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, etas_core::RetainedSize)]
 pub struct ModulePath {
     pub segments: Vec<String>,
 }
@@ -1062,7 +1191,7 @@ impl ModulePath {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticDumpOptions {
     pub include_labels: bool,
     pub include_notes: bool,
@@ -1079,12 +1208,12 @@ impl Default for DiagnosticDumpOptions {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticDocument {
     pub diagnostics: Vec<DiagnosticRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticRecord {
     pub code: String,
     pub phase: String,
@@ -1097,7 +1226,7 @@ pub struct DiagnosticRecord {
     pub suggestions: Vec<DiagnosticSuggestionRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticSpanRecord {
     pub source: SourceId,
     pub start: u32,
@@ -1105,7 +1234,7 @@ pub struct DiagnosticSpanRecord {
     pub label: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticLabelRecord {
     pub source: SourceId,
     pub start: u32,
@@ -1114,21 +1243,21 @@ pub struct DiagnosticLabelRecord {
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticSuggestionRecord {
     pub title: String,
     pub applicability: String,
     pub edits: Vec<DiagnosticTextEditRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct DiagnosticTextEditRecord {
     pub start: u32,
     pub end: u32,
     pub replacement: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckOutput {
     pub checked: Option<CheckedProgram>,
     pub diagnostics: Vec<Diagnostic>,
@@ -1140,7 +1269,7 @@ pub struct CheckOutput {
     pub effects: Option<SharedEffectOutput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectOutput {
     pub checked: Option<CheckedProject>,
     pub diagnostics: Vec<Diagnostic>,
@@ -1180,7 +1309,7 @@ impl ProjectOutput {
             .first()
             .cloned()
             .map(|parsed| ParseOutput {
-                source: parsed.source_file,
+                source: (*parsed.source_file).clone(),
                 parsed: parsed.parse,
             });
 
@@ -1197,14 +1326,24 @@ impl ProjectOutput {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckedProgramData {
+    pub(crate) reflection_targets: Arc<crate::code::reflection::CheckedReflectionTargets>,
+    pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
     pub compiler_version: String,
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
     pub project_environment_fingerprint: String,
     pub dependency_metadata_fingerprints: Vec<(String, String)>,
     pub sources: SourceBundle,
     pub module_index: Arc<ModuleIndex>,
+    pub hir_item_bindings: Arc<HirItemBindings>,
+    pub resolved_imports: Arc<ResolvedImports>,
+    pub definition_sources: Arc<crate::code::definition::DefinitionSources>,
+    pub(crate) definition_environment: Arc<ValidatedExternalEnvironment>,
+    // Native candidate source declarations execute through their frozen program,
+    // not through this revision's local body/intrinsic reachability closure.
+    pub(crate) frozen_agent_call_boundaries: std::collections::BTreeSet<HirItemId>,
+    pub compile_options: ProjectCompileOptions,
     pub hir: etas_hir::HirRevision,
     pub top_level_lets: TopLevelLetFacts,
     pub types: Arc<TypeFacts>,
@@ -1225,12 +1364,34 @@ impl std::ops::Deref for CheckedProgramData {
     }
 }
 
+impl CheckedProgramData {
+    pub fn checked_reflections(
+        &self,
+    ) -> &std::collections::HashMap<etas_hir::HirExprId, etas_types::CheckedReflectionFact> {
+        self.reflection_targets.facts()
+    }
+
+    pub fn reflection_site(
+        &self,
+        expression: etas_hir::HirExprId,
+    ) -> Option<(etas_hir::HirItemId, etas_core::Span)> {
+        self.reflection_targets.site(expression)
+    }
+
+    pub fn external_definition_origins(&self) -> &[ProjectExternalDefinitionOriginsInput] {
+        &self
+            .definition_environment
+            .environment()
+            .external_definition_origins
+    }
+}
+
 pub type CheckedProgram = Arc<CheckedProgramData>;
 pub type CheckedProject = CheckedProgram;
 
 /// Finalized effect facts are shared by outputs, snapshots and cache entries.
 /// Mutable stage output remains owned by the effect pipeline until publication.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SharedEffectOutput {
     pub facts: Arc<EffectFacts>,
     pub diagnostics: Vec<Diagnostic>,
@@ -1245,25 +1406,25 @@ impl From<etas_effects::EffectOutput> for SharedEffectOutput {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct TopLevelLetFacts {
     pub items: std::collections::HashMap<HirItemId, TopLevelLetFact>,
     pub symbols: std::collections::HashMap<SymbolId, TopLevelLetFact>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct TopLevelLetFact {
     pub ty: TypeId,
     pub classification: TopLevelLetClassification,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ProjectEntryFact {
     pub requested: ProjectEntry,
     pub resolved: Option<ProjectEntryResolution>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectEntryResolution {
     pub module: HirModuleId,
     pub item: HirItemId,

@@ -5,7 +5,16 @@ use etas_types::TypeId;
 use super::{ActionInstanceRef, ActionRef, EffectTagId, EffectVarId};
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum Effect {
     Tag(EffectTagId),
@@ -33,6 +42,7 @@ impl Effect {
     Hash,
     serde::Serialize,
     serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct EffectSet {
     effects: BTreeSet<Effect>,
@@ -93,6 +103,7 @@ impl FromIterator<Effect> for EffectSet {
     Hash,
     serde::Serialize,
     serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct EffectRow {
     pub effects: EffectSet,

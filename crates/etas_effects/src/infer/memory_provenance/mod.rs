@@ -25,10 +25,7 @@ impl MemoryProvenance {
         let hir = context.revision();
         let analysis = analyze_aliases(AliasAnalysisInput {
             hir,
-            units: units
-                .iter()
-                .filter_map(|unit| semantic_unit(hir, *unit))
-                .collect(),
+            units: units.iter().map(|unit| semantic_unit(hir, *unit)).collect(),
             config: AliasPrecisionConfig {
                 field_sensitivity: FieldSensitivity::FullProjection,
                 heap_model: HeapModel::ResourceAware,
@@ -122,9 +119,9 @@ impl MemoryProvenance {
     }
 }
 
-fn semantic_unit(hir: &HirProgram, unit: crate::EffectUnit) -> Option<HirSemanticUnit> {
+fn semantic_unit(hir: &HirProgram, unit: crate::EffectUnit) -> HirSemanticUnit {
     use crate::infer::unit::{EffectAnonymousFlowBody, EffectUnit};
-    Some(match unit {
+    match unit {
         EffectUnit::Item(item) => match hir.items.get(item) {
             Some(HirItem::TopLevelLet(_)) => HirSemanticUnit::TopLevelLet(item),
             _ => HirSemanticUnit::Item(item),
@@ -138,7 +135,5 @@ fn semantic_unit(hir: &HirProgram, unit: crate::EffectUnit) -> Option<HirSemanti
                 EffectAnonymousFlowBody::Block(block) => HirAnonymousFlowBody::Block(block),
             },
         },
-        // Call sites are not declarations; they are visited inside their owning bodies.
-        EffectUnit::FirstClassFlowCall { .. } => return None,
-    })
+    }
 }

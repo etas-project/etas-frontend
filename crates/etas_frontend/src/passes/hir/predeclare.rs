@@ -67,9 +67,19 @@ impl Pass<ProjectContext> for PredeclareProjectSymbolsPass {
                 .collect::<Vec<_>>();
             part_sets.push(parts);
         }
-        for parts in &part_sets {
+        for (parts, module_id) in part_sets.iter().zip(&topo_order.modules) {
+            let module = &modules.modules[*module_id];
             project_modules.push(HirProjectModule {
                 parts: parts.as_slice(),
+                namespace: match module.origin {
+                    crate::ModuleOrigin::DependencySourceOverlay { package, .. } => {
+                        Some(etas_hir::HirProjectNamespace {
+                            path: &module.path.segments,
+                            group: package.0,
+                        })
+                    }
+                    _ => None,
+                },
             });
         }
 

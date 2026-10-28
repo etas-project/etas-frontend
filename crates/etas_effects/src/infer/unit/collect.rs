@@ -1,9 +1,6 @@
 use std::collections::BTreeSet;
 
-use etas_hir::{
-    ExprView, HirBodyKind, HirExpr, HirExprId, HirItem, HirItemId, HirProgram, HirTreeView,
-    HirVisitor, ResolveResult, SymbolDef, walk_body,
-};
+use etas_hir::{ExprView, HirBodyKind, HirExpr, HirItemId, HirTreeView, HirVisitor, walk_body};
 use etas_hir_analysis::HirAnalysisContext;
 use etas_hir_analysis::unit::{HirAnonymousFlowBody, HirSemanticUnit, HirSemanticUnitCollector};
 
@@ -12,21 +9,15 @@ use super::{EffectAnonymousFlowBody, EffectUnit};
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EffectUnitCollector {
     units: BTreeSet<EffectUnit>,
-    #[serde(skip)]
-    static_anonymous_flow_symbols: BTreeSet<etas_hir::SymbolId>,
 }
 
 impl EffectUnitCollector {
     pub(crate) fn collect_with_context(context: &HirAnalysisContext) -> Vec<EffectUnit> {
-        let hir = context.program();
         let view = context.view();
         let semantic_units = HirSemanticUnitCollector::collect_with_context(context);
-        let mut collector = Self {
-            static_anonymous_flow_symbols: static_anonymous_flow_symbols(hir, &semantic_units),
-            ..Self::default()
-        };
+        let mut collector = Self::default();
         collector.collect_semantic_units(&semantic_units);
-        collector.collect_effect_specific_units(hir, &view);
+        collector.collect_effect_specific_units(&view);
         collector.units.into_iter().collect()
     }
 
@@ -50,7 +41,7 @@ impl EffectUnitCollector {
         }
     }
 
-    fn collect_effect_specific_units(&mut self, hir: &HirProgram, view: &HirTreeView<'_>) {
+    fn collect_effect_specific_units(&mut self, view: &HirTreeView<'_>) {
         for module in view.modules() {
             for item in module.items() {
                 let owner = item.id();
@@ -60,7 +51,6 @@ impl EffectUnitCollector {
                     }
                     let mut visitor = EffectSpecificUnitVisitor {
                         collector: self,
-                        hir,
                         owner,
                     };
                     walk_body(view, body.id(), &mut visitor);
@@ -68,84 +58,21 @@ impl EffectUnitCollector {
             }
         }
     }
-
-    fn is_first_class_call_site(&self, hir: &HirProgram, callee: HirExprId) -> bool {
-        let Some(HirExpr::Path(path)) = hir.exprs.get(callee) else {
-            return true;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return false;
-        };
-        let Some(symbol) = hir.symbols.get(symbol) else {
-            return true;
-        };
-        match (&symbol.kind, &symbol.def) {
-            (_, SymbolDef::Local { .. } | SymbolDef::TopLevelLet { .. }) => false,
-            (_, SymbolDef::Item { item }) => !matches!(
-                hir.items.get(*item),
-                Some(HirItem::Flow(_) | HirItem::Agent(_) | HirItem::Tool(_))
-            ),
-            (_, SymbolDef::ImportAlias { .. }) => false,
-            _ => true,
-        }
-    }
-
-    fn is_static_anonymous_flow_call(&self, hir: &HirProgram, callee: HirExprId) -> bool {
-        let Some(HirExpr::Path(path)) = hir.exprs.get(callee) else {
-            return false;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return false;
-        };
-        let Some(symbol_data) = hir.symbols.get(symbol) else {
-            return false;
-        };
-        match symbol_data.def {
-            SymbolDef::Item { item } => {
-                hir.items
-                    .get(item)
-                    .is_some_and(|item| matches!(item, HirItem::TopLevelLet(_)))
-                    && self.static_anonymous_flow_symbols.contains(&symbol)
-            }
-            SymbolDef::TopLevelLet { .. }
-            | SymbolDef::Local { .. }
-            | SymbolDef::PatternBinding { .. } => {
-                self.static_anonymous_flow_symbols.contains(&symbol)
-            }
-            _ => false,
-        }
-    }
 }
 
-struct EffectSpecificUnitVisitor<'collector, 'hir> {
+struct EffectSpecificUnitVisitor<'collector> {
     collector: &'collector mut EffectUnitCollector,
-    hir: &'hir HirProgram,
     owner: HirItemId,
 }
 
-impl<'view, 'hir> HirVisitor<'view, 'hir> for EffectSpecificUnitVisitor<'_, 'hir> {
+impl<'view, 'hir> HirVisitor<'view, 'hir> for EffectSpecificUnitVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
-        match expr.data() {
-            HirExpr::Call { callee, .. } => {
-                if self.collector.is_first_class_call_site(self.hir, *callee)
-                    && !self
-                        .collector
-                        .is_static_anonymous_flow_call(self.hir, *callee)
-                {
-                    self.collector.units.insert(EffectUnit::FirstClassFlowCall {
-                        owner: self.owner,
-                        call: expr.id(),
-                    });
-                }
-            }
-            HirExpr::StageCompose { .. } => {
-                self.collector.units.insert(EffectUnit::AnonymousFlow {
-                    owner: self.owner,
-                    value: expr.id(),
-                    body: EffectAnonymousFlowBody::Expr(expr.id()),
-                });
-            }
-            _ => {}
+        if let HirExpr::StageCompose { .. } = expr.data() {
+            self.collector.units.insert(EffectUnit::AnonymousFlow {
+                owner: self.owner,
+                value: expr.id(),
+                body: EffectAnonymousFlowBody::Expr(expr.id()),
+            });
         }
     }
 }
@@ -155,37 +82,6 @@ fn effect_anonymous_flow_body(body: HirAnonymousFlowBody) -> EffectAnonymousFlow
         HirAnonymousFlowBody::Expr(expr) => EffectAnonymousFlowBody::Expr(expr),
         HirAnonymousFlowBody::Block(block) => EffectAnonymousFlowBody::Block(block),
     }
-}
-
-fn static_anonymous_flow_symbols(
-    hir: &HirProgram,
-    semantic_units: &[HirSemanticUnit],
-) -> BTreeSet<etas_hir::SymbolId> {
-    let lambda_values = semantic_units
-        .iter()
-        .filter_map(|unit| match unit {
-            HirSemanticUnit::AnonymousFlow { expr, .. } => Some(*expr),
-            _ => None,
-        })
-        .collect::<BTreeSet<_>>();
-    hir.symbols
-        .iter()
-        .filter_map(|symbol| {
-            let initializer = match symbol.def {
-                SymbolDef::TopLevelLet { initializer, .. }
-                | SymbolDef::Local {
-                    initializer: Some(initializer),
-                    ..
-                }
-                | SymbolDef::PatternBinding {
-                    initializer: Some(initializer),
-                    ..
-                } => initializer,
-                _ => return None,
-            };
-            lambda_values.contains(&initializer).then_some(symbol.id)
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -333,7 +229,7 @@ flow main(input: string) -> string {
     }
 
     #[test]
-    fn static_lambda_call_detection_uses_resolved_symbols_not_owner_block_scan() {
+    fn calling_local_lambdas_does_not_create_additional_definition_units() {
         let parsed = etas_syntax::parse_program(SourceFile::new(
             SourceId(0),
             None,
@@ -361,14 +257,17 @@ flow main(input: string) -> string {
 
         let context = HirAnalysisContext::new(&hir);
         let effect_units = EffectUnitCollector::collect_with_context(&context);
-        let first_class_calls = effect_units
-            .iter()
-            .filter(|unit| matches!(unit, EffectUnit::FirstClassFlowCall { .. }))
-            .collect::<Vec<_>>();
-
-        assert!(
-            first_class_calls.is_empty(),
-            "static lambda calls through top-level, nested, and shadowed symbols must not become first-class call units: {first_class_calls:?}"
+        assert_eq!(
+            effect_units.len(),
+            6,
+            "only two items and four lambda definitions are analysis units: {effect_units:?}"
+        );
+        assert_eq!(
+            effect_units
+                .iter()
+                .filter(|unit| matches!(unit, EffectUnit::AnonymousFlow { .. }))
+                .count(),
+            4
         );
     }
 }

@@ -4,38 +4,67 @@ use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
     AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass, BuildCheckedProjectPass,
     BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass, BuildSignatureFactsPass,
-    BuildSourceSetPass, BuildUnitTreePass, ComputeAffectedModulesPass,
-    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
-    FinalizeProjectHirPass, FinalizeTypeFactsPass, LowerModuleItemsPass,
-    NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
-    PrepareBodyTypeEnvironmentPass, ResolveEntryItemPass, ResolveImportTargetsPass,
-    ResolvePathsPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
-    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateTopLevelLetPass,
-    VerifyInterpreterSupportPass,
+    BuildSourceSetPass, BuildUnitTreePass, CompleteTypedAnalysisReachabilityPass,
+    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
+    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
+    FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
+    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareInvocationTypesPass,
+    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    ValidateItemAnnotationsPass, ValidateTopLevelLetPass, VerifyInterpreterSupportPass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
-    project::ENTRY_REACHABLE_UNIT_FILTER,
+    project::ANALYZED_BODY_UNIT_FILTER,
 };
 
 pub fn project_pipeline() -> Pipeline<ProjectContext> {
     Pipeline::new("frontend.check_project")
-        .pass(BuildSourceSetPass)
-        .for_each(
-            UnitSelector::Kind(SOURCE_FILE_UNIT_KIND),
-            UnitOrder::SourceOrder,
-            Pipeline::new("frontend.source").pass(ParseSourceFilePass),
+        .group(
+            Pipeline::new("frontend.project_sources")
+                .pass(BuildSourceSetPass)
+                .for_each(
+                    UnitSelector::Kind(SOURCE_FILE_UNIT_KIND),
+                    UnitOrder::SourceOrder,
+                    Pipeline::new("frontend.source").pass(ParseSourceFilePass),
+                ),
         )
+        .group(semantic_pipeline(false))
+        .pass(BuildCheckedProjectPass)
+}
+
+pub(crate) fn candidate_body_pipeline() -> Pipeline<ProjectContext> {
+    Pipeline::new("frontend.check_candidate_body")
+        .pass(crate::code::pipeline::passes::FreezeDefinitionEnvironmentPass)
+        .pass(crate::code::pipeline::passes::ParseCandidateDependencySourcesPass)
+        .group(semantic_pipeline(true))
+        .pass(BuildCheckedProjectPass)
+        .pass(crate::code::pipeline::passes::MaterializeCandidateInvocationTypesPass)
+        .pass(crate::code::pipeline::passes::BuildDefinitionDescriptorsPass)
+        .pass(crate::code::pipeline::passes::ValidateCandidateContractPass)
+        .pass(crate::code::pipeline::passes::EmitCheckedCandidatePass)
+}
+
+fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
+    let mut pipeline = Pipeline::new("frontend.project_semantics")
         .pass(BuildModuleIndexPass)
         .pass(BuildModuleCatalogPass)
         .pass(ResolveImportTargetsPass)
         .pass(ValidateExternalEnvironmentPass)
+        .pass(crate::passes::BindValidatedExternalImportTargetsPass)
         .pass(BuildUnitTreePass)
         .pass(BuildImportGraphPass)
         .pass(DetectImportCyclesPass)
         .pass(ComputeModuleTopoOrderPass)
         .pass(ComputeAffectedModulesPass)
-        .pass(PredeclareProjectSymbolsPass)
+        .pass(PredeclareProjectSymbolsPass);
+    if candidate {
+        pipeline.push_pass(crate::code::pipeline::passes::ApplyCandidateBodyOverlaysPass);
+    }
+    pipeline = pipeline
         .for_each(
             UnitSelector::Kind(MODULE_PART_UNIT_KIND),
             UnitOrder::DependencyOrder,
@@ -45,28 +74,45 @@ pub fn project_pipeline() -> Pipeline<ProjectContext> {
         )
         .pass(FinalizeProjectHirPass)
         .pass(ApplyResolvedImportsToHirPass)
-        .pass(ResolvePathsPass)
-        .pass(ResolveEntryItemPass)
+        .pass(ResolvePathsPass);
+    if candidate {
+        pipeline.push_pass(crate::code::pipeline::passes::ResolveCandidateTargetPass);
+    } else {
+        pipeline.push_pass(ResolveEntryItemPass);
+    }
+    pipeline = pipeline
         .pass(ComputeEntryReachabilityPass)
         .pass(BuildSignatureFactsPass)
         .pass(ValidateTopLevelLetPass)
+        .pass(ValidateItemAnnotationsPass)
+        .pass(InferCallableOutputsPass)
+        .pass(RetainDefinitionSourcesPass)
+        .pass(ComputeDefinitionAnalysisReachabilityPass)
         .pass(PrepareBodyTypeEnvironmentPass)
         .pass(ReuseTypeBodyFactsPass)
         .for_each(
             UnitSelector::AffectedArtifact {
                 kind: BODY_UNIT_KIND,
                 artifact: TYPE_OUTPUT,
-                filter: Some(ENTRY_REACHABLE_UNIT_FILTER),
+                filter: Some(ANALYZED_BODY_UNIT_FILTER),
             },
             UnitOrder::Stable,
             Pipeline::new("frontend.type_body").pass(TypeCheckBodyPass),
         )
         .pass(FinalizeTypeFactsPass)
+        .pass(CompleteTypedAnalysisReachabilityPass)
+        .pass(CompleteTypedRuntimeReachabilityPass)
         .pass(RunEffectPipelinePass)
+        .pass(MaterializeGenericEffectRowsPass)
+        .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)
-        .pass(VerifyInterpreterSupportPass)
-        .pass(ValidateEntryContractPass)
-        .pass(BuildCheckedProjectPass)
+        .pass(VerifyInterpreterSupportPass);
+    if !candidate {
+        pipeline.push_pass(ValidateEntryContractPass);
+    }
+    pipeline
+        .pass(PrepareInvocationTypesPass)
+        .pass(crate::code::pipeline::passes::ResolveReflectionTargetsPass)
 }
 
 #[cfg(test)]

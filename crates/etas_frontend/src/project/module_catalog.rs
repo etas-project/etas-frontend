@@ -8,8 +8,9 @@ use crate::{
 
 id_type!(ModuleKey);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ModuleCatalog {
+    pub(crate) dependency_namespaces: std::sync::Arc<super::DependencyModuleNamespaces>,
     pub modules: Arena<ModuleKey, ModuleRecord>,
     pub by_path: HashMap<ModulePath, Vec<ModuleKey>>,
     pub namespace: ModuleNamespaceTree,
@@ -52,7 +53,7 @@ impl ModuleCatalog {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ModuleRecord {
     pub key: ModuleKey,
     pub path: ModulePath,
@@ -61,7 +62,7 @@ pub struct ModuleRecord {
     pub exports: ModuleExportTable,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ModuleOriginKind {
     ProjectSource,
     DependencySourceOverlay,
@@ -69,7 +70,7 @@ pub enum ModuleOriginKind {
     Std,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ModuleOrigin {
     ProjectSource {
         module: ModuleId,
@@ -98,19 +99,19 @@ impl ModuleOrigin {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ModuleExportTable {
     pub items: HashMap<String, ModuleExport>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ModuleExport {
     pub name: String,
     pub visibility: etas_hir::Visibility,
     pub target: ModuleExportTarget,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum ModuleExportTarget {
     Source {
         module: ModuleId,
@@ -129,7 +130,7 @@ pub enum ModuleExportTarget {
     },
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ModuleNamespaceTree {
     pub root: ModuleNamespaceNode,
 }
@@ -152,7 +153,7 @@ impl ModuleNamespaceTree {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ModuleNamespaceNode {
     pub modules: Vec<ModuleKey>,
     pub children: BTreeMap<String, ModuleNamespaceNode>,

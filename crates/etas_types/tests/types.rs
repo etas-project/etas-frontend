@@ -7,6 +7,74 @@ use etas_types::{
 };
 
 #[test]
+fn callback_result_uses_the_enclosing_rigid_type_parameter() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow invoke<T>(callback: () -> T ![]) -> T { return callback(); }",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn callback_arguments_cannot_rebind_an_enclosing_type_parameter() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow invoke<T>(callback: (T) -> unit ![]) -> unit { callback(\"not a T\"); }",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn expected_value_type_does_not_erase_a_non_returning_callable_result() {
+    for source in [
+        "flow stop() -> never { return stop(); } flow caller() -> i32 { return stop(); }",
+        "effect Stop { action stop() -> never; } flow caller() -> i32 ![Stop.stop] { return perform Stop.stop(); }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let output = check_program(&hir);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let calls = hir
+            .exprs
+            .iter()
+            .filter(|(_, expr)| {
+                matches!(
+                    expr,
+                    etas_hir::HirExpr::Call { .. } | etas_hir::HirExpr::Perform { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!calls.is_empty());
+        for (expr, _) in calls {
+            assert_eq!(
+                output.store.get(output.facts.expr_types[&expr]),
+                Some(&Type::Primitive(PrimitiveType::Never)),
+                "{source}"
+            );
+        }
+    }
+}
+
+#[test]
 fn nested_count_argument_calls_keep_concrete_expression_types() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -882,6 +950,7 @@ effect Error {
         output.facts.symbol_types.get(&action.symbol),
         Some(SymbolTypeFact::EffectAction {
             signature: EffectActionSignature {
+                default_handler_effects: None,
                 returns_never: true,
                 ..
             }
@@ -2564,7 +2633,7 @@ fn check_program_types_agent_run_method_call() {
         None,
         r#"
 agent Reviewer(input: Prompt) -> string ![] {
-  return input;
+  return perform infer<string>(input);
 }
 
 flow main(input: Prompt) -> string {
@@ -2589,6 +2658,8 @@ flow main(input: Prompt) -> string {
         other => panic!("expected agent signature, got {other:?}"),
     };
     let agent_effects = agent_signature
+        .callable()
+        .expect("default entry")
         .effects
         .as_ref()
         .expect("agent effect suffix should be typed");
@@ -2596,13 +2667,11 @@ flow main(input: Prompt) -> string {
         agent_effects.effects.is_empty(),
         "agent declarations must not publish Agentic.infer as an escaping effect"
     );
-    let method_call_ty = hir
-        .exprs
-        .iter()
-        .find_map(|(id, expr)| match expr {
-            etas_hir::HirExpr::MethodCall { .. } => output.facts.expr_types.get(&id).copied(),
-            _ => None,
-        })
+    let method_call_ty = output
+        .facts
+        .agent_method_calls
+        .keys()
+        .find_map(|id| output.facts.expr_types.get(id).copied())
         .expect("agent run method call should have a type fact");
     assert!(matches!(
         output.store.get(method_call_ty),
@@ -2631,10 +2700,19 @@ agent Reviewer;
             _ => None,
         })
         .expect("agent should lower");
+    let Some(etas_types::ItemSignature::Agent(signature)) =
+        output.facts.item_signatures.get(&agent_id)
+    else {
+        panic!("agent component signature")
+    };
     assert!(
-        !output.facts.item_signatures.contains_key(&agent_id),
-        "bodyless agent declaration must not materialize a callable agent signature"
+        signature.default_entry.is_none(),
+        "bare agent has no callable entry"
     );
+    assert!(matches!(
+        output.store.get(signature.component),
+        Some(Type::Nominal(_))
+    ));
 }
 
 #[test]
@@ -2671,7 +2749,7 @@ fn check_program_types_prompt_builder_methods_and_direct_agent_call() {
 import std.agent.prompt.Prompt;
 
 agent Reviewer(input: string) -> string {
-  return Prompt.new().system(Trusted("review")).user(Public(input));
+  return perform infer<string>(Prompt.new().system(Trusted("review")).user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -3011,7 +3089,7 @@ tool Search(input: string) -> string {
 
 @tools([Search])
 agent Reviewer(input: string) -> string {
-  return Prompt.new().system(Trusted("review")).user(Public(input));
+  return perform infer<string>(Prompt.new().system(Trusted("review")).user(Public(input)));
 }
 "#,
     ));
@@ -4673,8 +4751,9 @@ fn check_program_rejects_effect_row_generic_arg_in_type_only_call() {
         etas_core::SourceId(0),
         None,
         r#"
+flow type_only<T>(value: T) -> unit { return; }
 flow bad<effect E>() -> unit ![E] {
-  unknown<![Console.stdout_write, E]>();
+  type_only<![Console.stdout_write, E]>(1);
   return;
 }
 "#,
@@ -4688,6 +4767,43 @@ flow bad<effect E>() -> unit ![E] {
                 .message
                 .contains("effect-row generic argument is only valid")
     }));
+}
+
+#[test]
+fn check_program_rejects_effect_row_generic_arg_for_an_unresolved_callee() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow bad<effect E>() -> unit ![E] {
+  unknown<![Console.stdout_write, E]>();
+  return;
+}
+"#,
+    ));
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::UnknownType)
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn check_program_accepts_never_as_a_generic_callable_argument() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow apply<T>(callback: T -> T, value: T) -> T { return callback(value); }
+flow main(impossible: never) -> string { return apply<string>(impossible, "value"); }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }
 
 #[test]

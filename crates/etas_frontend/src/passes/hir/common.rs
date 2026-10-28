@@ -33,7 +33,7 @@ pub(super) fn failed_pass_result(failure: PassFailure) -> PassResult {
 pub(super) fn parsed_program_for_part(
     context: &ProjectContext,
     part_id: ModulePartId,
-) -> etas_syntax::ast::Program {
+) -> std::sync::Arc<etas_syntax::Parse<etas_syntax::ast::Program>> {
     let part = context
         .modules
         .as_ref()
@@ -46,7 +46,6 @@ pub(super) fn parsed_program_for_part(
         .get(&part.source)
         .expect("module part source should be parsed")
         .parse
-        .value
         .clone()
 }
 

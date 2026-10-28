@@ -1,4 +1,5 @@
 pub mod collect {
+    pub mod agent_methods;
     pub mod aliases;
     pub mod callables;
     pub mod effect_actions;
@@ -20,6 +21,7 @@ pub mod validate {
     pub mod exported_contracts;
     pub mod flow_spec_satisfaction;
     pub mod spec_impls;
+    pub(super) mod type_applications;
 }
 
 use crate::pipeline::context::TypePipelineContext;
@@ -33,14 +35,20 @@ pub fn run_from_input(
     ctx: &mut TypePipelineContext<'_>,
     input: &crate::SignaturePipelineInput<'_>,
 ) {
+    imports::reflection::initialize(ctx, &input.reflection);
     imports::std::apply_hir_std_prelude(ctx);
     imports::std::apply_std_signature_input(ctx, &input.std);
     imports::external::apply_external_signature_input(ctx, &input.external);
-    run(ctx);
+    run_with_annotations(ctx, input.annotation_validation);
     imports::source::apply_source_signature_input(ctx, &input.source);
+    imports::reflection::apply(ctx, &input.reflection);
 }
 
 pub fn run(ctx: &mut TypePipelineContext<'_>) {
+    run_with_annotations(ctx, crate::AnnotationValidationMode::Immediate);
+}
+
+fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::AnnotationValidationMode) {
     let mut state = state::SignaturePipelineState::default();
     collect::imports::collect_imports(ctx, &mut state);
     collect::nominal_types::collect_nominal_types(ctx, &mut state);
@@ -49,6 +57,7 @@ pub fn run(ctx: &mut TypePipelineContext<'_>) {
     publish_signature_prefix(ctx, &state);
     collect::specs::collect_specs(ctx, &mut state);
     collect::specs::record_type_param_bounds(ctx, &mut state);
+    collect::aliases::collect_alias_bounds(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
     collect::nominal_types::collect_members(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
@@ -56,13 +65,23 @@ pub fn run(ctx: &mut TypePipelineContext<'_>) {
     collect::std_actions::collect_std_actions(ctx, &mut state);
     publish_action_signature_prefix(ctx, &state);
     collect::callables::collect_callables(ctx, &mut state);
+    collect::agent_methods::collect_agent_methods(ctx, &mut state);
+    collect::agent_methods::collect_agent_spec_satisfactions(ctx, &mut state);
     solve::aliases::solve_aliases(ctx, &mut state);
     solve::spec_closure::solve_spec_closure(ctx, &mut state);
-    validate::annotations::validate_annotations(ctx, &state);
     validate::spec_impls::validate_spec_impls(ctx, &state);
     validate::flow_spec_satisfaction::validate_flow_spec_satisfaction(ctx, &mut state);
     validate::exported_contracts::validate_exported_contracts(ctx, &state);
     materialize::materialize_signature_facts(ctx, state);
+    validate::type_applications::run(ctx);
+    if mode == crate::AnnotationValidationMode::Immediate {
+        ctx.diagnostics
+            .extend(validate::annotations::validate_annotations(
+                ctx.hir,
+                &ctx.signature_facts,
+                &ctx.std_registry,
+            ));
+    }
 }
 
 fn publish_action_signature_prefix(

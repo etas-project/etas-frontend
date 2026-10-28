@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
+mod rows;
+use rows::EffectRowSubstitution;
+
 use crate::solver::Substitution;
 
 use super::{
@@ -9,20 +12,46 @@ use super::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeSubstitutionError {
+    InvalidApplication(TypeId),
     MissingType(TypeId),
+    MissingTypeIdentity(TypeId),
+    MissingEffectIdentity(String),
+    OpenEffectRow(String),
     CyclicType(TypeId),
+    CyclicEffectRow(String),
     UnmaterializedType(Type),
     RepresentationLimit(usize),
+    ExpansionDepth(usize),
 }
 
 impl std::fmt::Display for TypeSubstitutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ExpansionDepth(limit) => {
+                write!(f, "type substitution exceeds expansion depth {limit}")
+            }
+            Self::InvalidApplication(ty) => write!(
+                f,
+                "generic application has inconsistent constructor arguments at {ty:?}"
+            ),
             Self::RepresentationLimit(limit) => {
                 write!(f, "nominal representation expansion exceeds {limit} types")
             }
             Self::MissingType(ty) => write!(f, "type store is missing {ty:?}"),
+            Self::MissingTypeIdentity(ty) => {
+                write!(f, "type has no checked relocation identity: {ty:?}")
+            }
+            Self::MissingEffectIdentity(name) => {
+                write!(f, "effect has no checked relocation identity: {name}")
+            }
+            Self::OpenEffectRow(name) => write!(
+                f,
+                "runtime type relocation requires a closed effect row, found `{name}`"
+            ),
             Self::CyclicType(ty) => write!(f, "type graph contains a cycle at {ty:?}"),
+            Self::CyclicEffectRow(name) => {
+                write!(f, "effect-row substitution contains a cycle at `{name}`")
+            }
             Self::UnmaterializedType(ty) => {
                 write!(f, "specialized type was not materialized: {ty:?}")
             }
@@ -35,14 +64,36 @@ impl std::error::Error for TypeSubstitutionError {}
 enum SubstitutionTarget<'a> {
     Materialize(&'a mut TypeInterner),
     Existing(&'a TypeStore),
+    Relocate(TypeRelocationInput<'a>),
+    RelocateMaterialize(TypeRelocationMaterializationInput<'a>),
+}
+
+/// Immutable native type correspondence supplied by a checked program bridge.
+/// Matching value shape or display names cannot populate declaration_types.
+pub struct TypeRelocationInput<'a> {
+    pub source: &'a TypeStore,
+    pub target: &'a TypeStore,
+    pub declaration_types: &'a HashMap<TypeId, TypeId>,
+    pub target_types: &'a super::TypeLookupIndex,
+    pub effect_names: &'a HashMap<String, String>,
+}
+
+pub struct TypeRelocationMaterializationInput<'a> {
+    pub source: &'a TypeStore,
+    pub target: &'a mut TypeInterner,
+    pub declaration_types: &'a HashMap<TypeId, TypeId>,
+    pub effect_names: &'a HashMap<String, String>,
 }
 
 pub struct TypeSubstitutionEngine<'a> {
     target: SubstitutionTarget<'a>,
-    named: &'a HashMap<String, TypeId>,
+    named: Option<&'a HashMap<String, TypeId>>,
     variables: Option<&'a Substitution>,
+    effect_rows: Option<EffectRowSubstitution<'a>>,
     active: HashSet<TypeId>,
     memo: HashMap<TypeId, TypeId>,
+    memo_depths: HashMap<TypeId, usize>,
+    expansion_depth: Option<usize>,
 }
 
 impl<'a> TypeSubstitutionEngine<'a> {
@@ -53,43 +104,280 @@ impl<'a> TypeSubstitutionEngine<'a> {
     ) -> Self {
         Self {
             target: SubstitutionTarget::Materialize(interner),
-            named,
+            named: Some(named),
             variables,
+            effect_rows: None,
             active: HashSet::new(),
             memo: HashMap::new(),
+            memo_depths: HashMap::new(),
+            expansion_depth: None,
         }
     }
 
     pub fn existing(store: &'a TypeStore, named: &'a HashMap<String, TypeId>) -> Self {
         Self {
             target: SubstitutionTarget::Existing(store),
-            named,
+            named: Some(named),
             variables: None,
+            effect_rows: None,
             active: HashSet::new(),
             memo: HashMap::new(),
+            memo_depths: HashMap::new(),
+            expansion_depth: None,
         }
+    }
+
+    pub fn existing_with_variables(
+        store: &'a TypeStore,
+        named: &'a HashMap<String, TypeId>,
+        variables: &'a Substitution,
+    ) -> Self {
+        Self {
+            variables: Some(variables),
+            ..Self::existing(store, named)
+        }
+    }
+
+    pub fn with_expansion_depth(mut self, limit: usize) -> Self {
+        self.expansion_depth = Some(limit);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
+    pub fn relocating(input: TypeRelocationInput<'a>) -> Self {
+        Self {
+            target: SubstitutionTarget::Relocate(input),
+            named: None,
+            variables: None,
+            effect_rows: None,
+            active: HashSet::new(),
+            memo: HashMap::new(),
+            memo_depths: HashMap::new(),
+            expansion_depth: None,
+        }
+    }
+
+    pub fn relocating_materialized(input: TypeRelocationMaterializationInput<'a>) -> Self {
+        Self {
+            target: SubstitutionTarget::RelocateMaterialize(input),
+            named: None,
+            variables: None,
+            effect_rows: None,
+            active: HashSet::new(),
+            memo: HashMap::new(),
+            memo_depths: HashMap::new(),
+            expansion_depth: None,
+        }
+    }
+
+    fn is_relocation(&self) -> bool {
+        matches!(
+            self.target,
+            SubstitutionTarget::Relocate(_) | SubstitutionTarget::RelocateMaterialize(_)
+        )
     }
 
     pub fn substitute(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
         if let Some(specialized) = self.memo.get(&ty).copied() {
             return Ok(specialized);
         }
-        if !self.active.insert(ty) {
-            return Err(TypeSubstitutionError::CyclicType(ty));
+        let mut pending = vec![(ty, false)];
+        let mut entered = Vec::new();
+        let result = (|| {
+            while let Some((current, finish)) = pending.pop() {
+                if self.memo.contains_key(&current) {
+                    continue;
+                }
+                if finish {
+                    if let Some(limit) = self.expansion_depth {
+                        let depth = 1 + self
+                            .dependencies(current)?
+                            .iter()
+                            .filter_map(|child| self.memo_depths.get(child))
+                            .copied()
+                            .max()
+                            .unwrap_or(0);
+                        if depth > limit {
+                            return Err(TypeSubstitutionError::ExpansionDepth(limit));
+                        }
+                        self.memo_depths.insert(current, depth);
+                    }
+                    // Every immediate dependency is memoized by the postorder
+                    // walk, so assembly never recursively expands the graph.
+                    let specialized = self.assemble(current)?;
+                    self.active.remove(&current);
+                    self.memo.insert(current, specialized);
+                    continue;
+                }
+                if self.active.contains(&current) {
+                    return Err(TypeSubstitutionError::CyclicType(current));
+                }
+                self.check_expansion_depth()?;
+                self.active.insert(current);
+                entered.push(current);
+                pending.push((current, true));
+                pending.extend(
+                    self.dependencies(current)?
+                        .into_iter()
+                        .rev()
+                        .map(|child| (child, false)),
+                );
+            }
+            self.memo
+                .get(&ty)
+                .copied()
+                .ok_or(TypeSubstitutionError::MissingType(ty))
+        })();
+        for current in entered {
+            self.active.remove(&current);
         }
-        let result = self.substitute_active(ty);
-        self.active.remove(&ty);
-        let specialized = result?;
-        self.memo.insert(ty, specialized);
-        Ok(specialized)
+        result
     }
 
-    fn substitute_active(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
+    fn check_expansion_depth(&self) -> Result<(), TypeSubstitutionError> {
+        if let Some(limit) = self.expansion_depth
+            && self.active.len() >= limit
+        {
+            return Err(TypeSubstitutionError::ExpansionDepth(limit));
+        }
+        Ok(())
+    }
+
+    fn dependencies(&self, ty: TypeId) -> Result<Vec<TypeId>, TypeSubstitutionError> {
+        let data = self.require_type(ty)?;
+        let mapped = match &self.target {
+            SubstitutionTarget::Relocate(input) => input.declaration_types.contains_key(&ty),
+            SubstitutionTarget::RelocateMaterialize(input) => {
+                input.declaration_types.contains_key(&ty)
+            }
+            _ => false,
+        };
+        if mapped {
+            return Ok(vec![]);
+        }
+        if let Some(replacement) = self
+            .replacement(&data)
+            .filter(|replacement| *replacement != ty)
+        {
+            if matches!(data, Type::Named(_)) {
+                return Ok(vec![]);
+            }
+            return Ok(vec![replacement]);
+        }
+        let mut dependencies = Vec::new();
+        match data {
+            Type::Array(inner)
+            | Type::List(inner)
+            | Type::Set(inner)
+            | Type::Range { index: inner }
+            | Type::Slice(inner)
+            | Type::Option(inner)
+            | Type::Refined { base: inner, .. }
+            | Type::Trust { inner, .. }
+            | Type::Schema(inner)
+            | Type::Message(inner)
+            | Type::MemorySelection(inner)
+            | Type::MemoryRegion(inner) => dependencies.push(inner),
+            Type::Map { key, value }
+            | Type::Store { key, value }
+            | Type::Result {
+                ok: key,
+                err: value,
+            } => dependencies.extend([key, value]),
+            Type::Record(record) => {
+                dependencies.extend(record.fields.into_iter().map(|field| field.ty))
+            }
+            Type::Tuple(elements) => dependencies.extend(elements),
+            Type::Function(flow) => {
+                dependencies.extend(flow.input);
+                dependencies.push(flow.output);
+                if let Some(row) = flow.effects {
+                    self.row_dependencies(row, &mut dependencies)?;
+                }
+            }
+            Type::Handler(handler) => {
+                self.row_dependencies(handler.handled, &mut dependencies)?;
+                if let HandlerProducedEffects::Explicit(row) = handler.produced {
+                    self.row_dependencies(row, &mut dependencies)?;
+                }
+                dependencies.extend(handler.result);
+            }
+            Type::Applied { constructor, args } => {
+                if self.is_relocation() {
+                    dependencies.push(TypeId(constructor.0));
+                }
+                dependencies.extend(args);
+            }
+            Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
+                dependencies.push(schema)
+            }
+            Type::ResourceHandle(ResourceHandleType::ExternalTool { signature }) => {
+                dependencies.push(signature)
+            }
+            Type::ResourceHandle(ResourceHandleType::Other { args, .. }) => {
+                dependencies.extend(args)
+            }
+            Type::Primitive(_)
+            | Type::IntegerLiteral { .. }
+            | Type::Var(_)
+            | Type::Enum(_)
+            | Type::Named(_)
+            | Type::Nominal(_)
+            | Type::Prompt
+            | Type::PromptPart
+            | Type::MemoryPlace(_) => {}
+        }
+        Ok(dependencies)
+    }
+
+    fn row_dependencies(
+        &self,
+        row: EffectRowRef,
+        dependencies: &mut Vec<TypeId>,
+    ) -> Result<(), TypeSubstitutionError> {
+        let expanded = self.expanded_row(row)?;
+        for (index, effect) in expanded.row.effects.into_iter().enumerate() {
+            if expanded.argument_start.is_some_and(|start| index >= start) {
+                continue;
+            }
+            for arg in effect.args {
+                if let EffectArgRef::Type(ty) = arg {
+                    dependencies.push(ty);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn assemble(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
         let ty_data = self.require_type(ty)?;
+        if let SubstitutionTarget::Relocate(input) = &self.target
+            && let Some(mapped) = input.declaration_types.get(&ty)
+        {
+            input
+                .target
+                .get(*mapped)
+                .ok_or(TypeSubstitutionError::MissingType(*mapped))?;
+            return Ok(*mapped);
+        }
+        if let SubstitutionTarget::RelocateMaterialize(input) = &self.target
+            && let Some(mapped) = input.declaration_types.get(&ty)
+        {
+            input
+                .target
+                .store()
+                .get(*mapped)
+                .ok_or(TypeSubstitutionError::MissingType(*mapped))?;
+            return Ok(*mapped);
+        }
         if let Some(replacement) = self
             .replacement(&ty_data)
             .filter(|replacement| *replacement != ty)
         {
+            if matches!(ty_data, Type::Named(_)) {
+                return self.substitute_argument(replacement);
+            }
             return self.substitute(replacement);
         }
         let specialized = match ty_data {
@@ -153,16 +441,25 @@ impl<'a> TypeSubstitutionEngine<'a> {
                     .transpose()?,
             }),
             Type::Applied { constructor, args } => Type::Applied {
-                constructor,
+                constructor: if self.is_relocation() {
+                    super::TypeConstructorId(self.substitute(TypeId(constructor.0))?.0)
+                } else {
+                    constructor
+                },
                 args: args
                     .into_iter()
                     .map(|arg| self.substitute(arg))
                     .collect::<Result<Vec<_>, _>>()?,
             },
-            Type::Refined { base, predicate } => Type::Refined {
-                base: self.substitute(base)?,
-                predicate,
-            },
+            Type::Refined { base, predicate } => {
+                if self.is_relocation() {
+                    return Err(TypeSubstitutionError::MissingTypeIdentity(ty));
+                }
+                Type::Refined {
+                    base: self.substitute(base)?,
+                    predicate,
+                }
+            }
             Type::Trust { wrapper, inner } => Type::Trust {
                 wrapper,
                 inner: self.substitute(inner)?,
@@ -194,36 +491,51 @@ impl<'a> TypeSubstitutionEngine<'a> {
                         .collect::<Result<Vec<_>, _>>()?,
                 })
             }
-            Type::Primitive(_)
-            | Type::IntegerLiteral { .. }
+            Type::Primitive(_) | Type::Prompt | Type::PromptPart | Type::MemoryPlace(_) => {
+                if self.is_relocation() {
+                    ty_data
+                } else {
+                    return Ok(ty);
+                }
+            }
+            Type::IntegerLiteral { .. }
             | Type::Var(_)
             | Type::Enum(_)
             | Type::Named(_)
-            | Type::Nominal(_)
-            | Type::Prompt
-            | Type::PromptPart
-            | Type::MemoryPlace(_) => return Ok(ty),
+            | Type::Nominal(_) => {
+                if self.is_relocation() {
+                    return Err(TypeSubstitutionError::MissingTypeIdentity(ty));
+                }
+                return Ok(ty);
+            }
         };
         self.materialize(ty, specialized)
     }
 
-    pub fn substitute_effect_row(
-        &mut self,
-        mut row: EffectRowRef,
-    ) -> Result<EffectRowRef, TypeSubstitutionError> {
-        for effect in &mut row.effects {
-            for arg in &mut effect.args {
-                if let EffectArgRef::Type(ty) = arg {
-                    *ty = self.substitute(*ty)?;
-                }
-            }
+    fn substitute_argument(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
+        self.require_type(ty)?;
+        if self.variables.is_none() {
+            return Ok(ty);
         }
-        Ok(row)
+        // Arguments belong to the caller's binder namespace. Only globally
+        // unique solver variables may be normalized inside them.
+        let named = self.named.take();
+        let rows = self.effect_rows.take();
+        let memo = std::mem::take(&mut self.memo);
+        let depths = std::mem::take(&mut self.memo_depths);
+        let active = std::mem::take(&mut self.active);
+        let result = self.substitute(ty);
+        self.named = named;
+        self.effect_rows = rows;
+        self.memo = memo;
+        self.memo_depths = depths;
+        self.active = active;
+        result
     }
 
     fn replacement(&self, ty: &Type) -> Option<TypeId> {
         match ty {
-            Type::Named(name) => self.named.get(&name.name).copied(),
+            Type::Named(name) => self.named.and_then(|named| named.get(&name.name).copied()),
             Type::Var(var) => self.variables.and_then(|variables| variables.get(*var)),
             _ => None,
         }
@@ -238,6 +550,8 @@ impl<'a> TypeSubstitutionEngine<'a> {
         match &self.target {
             SubstitutionTarget::Materialize(interner) => interner.store().get(ty).cloned(),
             SubstitutionTarget::Existing(store) => store.get(ty).cloned(),
+            SubstitutionTarget::Relocate(input) => input.source.get(ty).cloned(),
+            SubstitutionTarget::RelocateMaterialize(input) => input.source.get(ty).cloned(),
         }
     }
 
@@ -246,7 +560,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         original: TypeId,
         specialized: Type,
     ) -> Result<TypeId, TypeSubstitutionError> {
-        if self.require_type(original)? == specialized {
+        if !self.is_relocation() && self.require_type(original)? == specialized {
             return Ok(original);
         }
         match &mut self.target {
@@ -255,6 +569,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
                 .iter()
                 .find_map(|(id, candidate)| (candidate == &specialized).then_some(id))
                 .ok_or(TypeSubstitutionError::UnmaterializedType(specialized)),
+            SubstitutionTarget::Relocate(input) => input
+                .target_types
+                .get(input.target, &specialized)
+                .ok_or(TypeSubstitutionError::UnmaterializedType(specialized)),
+            SubstitutionTarget::RelocateMaterialize(input) => Ok(input.target.intern(specialized)),
         }
     }
 }
@@ -313,6 +632,7 @@ mod tests {
     fn substitution_specializes_function_and_handler_effect_rows() {
         let mut interner = TypeInterner::new();
         let param = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
             name: "T".to_owned(),
         }));
         let concrete = interner.primitive(PrimitiveType::String);
@@ -354,6 +674,7 @@ mod tests {
     fn readonly_substitution_specializes_nested_applied_types() {
         let mut interner = TypeInterner::new();
         let param = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
             name: "T".to_owned(),
         }));
         let concrete_arg = interner.primitive(PrimitiveType::I32);
@@ -383,5 +704,448 @@ mod tests {
             Err(TypeSubstitutionError::UnmaterializedType(Type::Applied { args, .. }))
                 if args == vec![concrete_arg]
         ));
+    }
+
+    #[test]
+    fn effect_row_bindings_specialize_nested_function_and_handler_rows() {
+        let mut interner = TypeInterner::new();
+        let param = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let concrete = interner.primitive(PrimitiveType::String);
+        let mut open = typed_row(param);
+        open.tail = Some("E".into());
+        let function = interner.intern(Type::Function(FlowType {
+            input: vec![param],
+            output: param,
+            effects: Some(open.clone()),
+        }));
+        let handler = interner.intern(Type::Handler(HandlerType {
+            handled: open.clone(),
+            produced: HandlerProducedEffects::Explicit(open),
+            result: Some(function),
+        }));
+        let named = HashMap::from([("T".into(), concrete)]);
+        let mut closed = typed_row(param);
+        closed.effects.push(EffectRef {
+            name: "Console.stdout_write".into(),
+            args: vec![],
+        });
+        let rows = HashMap::from([
+            (
+                "E".into(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some("F".into()),
+                },
+            ),
+            ("F".into(), closed),
+        ]);
+        let specialized = TypeSubstitutionEngine::materializing(&mut interner, &named, None)
+            .with_row_equations(&rows)
+            .substitute(handler)
+            .unwrap();
+        let Type::Handler(handler) = interner.store().get(specialized).unwrap() else {
+            panic!("handler")
+        };
+        let Type::Function(function) = interner.store().get(handler.result.unwrap()).unwrap()
+        else {
+            panic!("function")
+        };
+        let HandlerProducedEffects::Explicit(produced) = &handler.produced else {
+            panic!("explicit row")
+        };
+        for row in [
+            &handler.handled,
+            produced,
+            function.effects.as_ref().unwrap(),
+        ] {
+            assert_eq!(row.tail, None);
+            assert_eq!(row.effects.len(), 2, "duplicate row members must be merged");
+            assert_eq!(row.effects[0].args, [EffectArgRef::Type(concrete)]);
+            assert_eq!(row.effects[1].name, "Console.stdout_write");
+        }
+        assert_eq!(function.input, [concrete]);
+        assert_eq!(function.output, concrete);
+    }
+
+    #[test]
+    fn effect_arguments_preserve_the_callers_type_and_row_binder_namespace() {
+        let mut interner = TypeInterner::new();
+        let param = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let string = interner.primitive(PrimitiveType::String);
+        let mut template = typed_row(param);
+        template.tail = Some("E".into());
+        let mut argument = typed_row(param);
+        argument.tail = Some("E".into());
+        let names = HashMap::from([("T".into(), string)]);
+        let rows = HashMap::from([("E".into(), argument)]);
+        let mut engine = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_effect_arguments(&rows);
+        let actual = engine.substitute_effect_row(template).unwrap();
+        assert_eq!(actual.tail.as_deref(), Some("E"));
+        assert_eq!(actual.effects.len(), 2);
+        assert_eq!(actual.effects[0].args, [EffectArgRef::Type(string)]);
+        assert_eq!(actual.effects[1].args, [EffectArgRef::Type(param)]);
+    }
+
+    #[test]
+    fn effect_arguments_are_simultaneous_not_transitive_solver_equations() {
+        let mut interner = TypeInterner::new();
+        let names = HashMap::new();
+        let rows = HashMap::from([
+            (
+                "E".into(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some("F".into()),
+                },
+            ),
+            (
+                "F".into(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: None,
+                },
+            ),
+        ]);
+        let mut engine = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_effect_arguments(&rows);
+        let actual = engine
+            .substitute_effect_row(EffectRowRef {
+                effects: vec![],
+                tail: Some("E".into()),
+            })
+            .unwrap();
+        assert_eq!(actual.tail.as_deref(), Some("F"));
+    }
+
+    #[test]
+    fn identity_effect_row_substitution_keeps_the_open_binder_without_recursion() {
+        let mut interner = TypeInterner::new();
+        let named = HashMap::new();
+        let row = EffectRowRef {
+            effects: vec![],
+            tail: Some("E".into()),
+        };
+        let rows = HashMap::from([("E".into(), row.clone())]);
+        let mut engine = TypeSubstitutionEngine::materializing(&mut interner, &named, None)
+            .with_row_equations(&rows);
+        assert_eq!(engine.substitute_effect_row(row.clone()).unwrap(), row);
+    }
+
+    #[test]
+    fn cyclic_effect_row_bindings_are_rejected_on_each_query() {
+        let mut interner = TypeInterner::new();
+        let named = HashMap::new();
+        let rows = HashMap::from([
+            (
+                "E".into(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some("F".into()),
+                },
+            ),
+            (
+                "F".into(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some("E".into()),
+                },
+            ),
+        ]);
+        let mut engine = TypeSubstitutionEngine::materializing(&mut interner, &named, None)
+            .with_row_equations(&rows);
+        for _ in 0..2 {
+            assert_eq!(
+                engine.substitute_effect_row(EffectRowRef {
+                    effects: vec![],
+                    tail: Some("E".into()),
+                }),
+                Err(TypeSubstitutionError::CyclicEffectRow("E".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn relocation_reuses_the_substitution_walk_for_nested_callable_and_handler_types() {
+        let mut source = TypeInterner::new();
+        let a = source.intern(Type::Nominal(NominalTypeRef {
+            name: "app.UserId".into(),
+            params: vec![],
+            representation: None,
+        }));
+        let array = source.intern(Type::Array(a));
+        let function = source.intern(Type::Function(FlowType {
+            input: vec![array],
+            output: a,
+            effects: Some(typed_row(a)),
+        }));
+        let handler = source.intern(Type::Handler(HandlerType {
+            handled: typed_row(a),
+            produced: HandlerProducedEffects::Explicit(typed_row(a)),
+            result: Some(function),
+        }));
+        let mut target = TypeInterner::new();
+        target.intern(Type::Nominal(NominalTypeRef {
+            name: "app.Unrelated".into(),
+            params: vec![],
+            representation: None,
+        }));
+        let a2 = target.intern(Type::Nominal(NominalTypeRef {
+            name: "app.UserId".into(),
+            params: vec![],
+            representation: None,
+        }));
+        assert_ne!(a, a2);
+        let array2 = target.intern(Type::Array(a2));
+        let function2 = target.intern(Type::Function(FlowType {
+            input: vec![array2],
+            output: a2,
+            effects: Some(typed_row(a2)),
+        }));
+        let handler2 = target.intern(Type::Handler(HandlerType {
+            handled: typed_row(a2),
+            produced: HandlerProducedEffects::Explicit(typed_row(a2)),
+            result: Some(function2),
+        }));
+        let source = source.into_store();
+        let target = target.into_store();
+        let declarations = HashMap::from([(a, a2)]);
+        let types = super::super::TypeLookupIndex::new(&target);
+        let effects = HashMap::from([("Fs.read".into(), "Fs.read".into())]);
+        let mut engine = TypeSubstitutionEngine::relocating(TypeRelocationInput {
+            source: &source,
+            target: &target,
+            declaration_types: &declarations,
+            target_types: &types,
+            effect_names: &effects,
+        });
+        assert_eq!(engine.substitute(handler), Ok(handler2));
+        assert_eq!(engine.substitute(function), Ok(function2));
+        assert_eq!(engine.substitute(array), Ok(array2));
+    }
+
+    #[test]
+    fn relocation_rejects_unproven_nominal_names_and_open_effect_rows() {
+        let mut interner = TypeInterner::new();
+        let nominal = interner.intern(Type::Nominal(NominalTypeRef {
+            name: "app.SameName".into(),
+            params: vec![],
+            representation: None,
+        }));
+        let unit = interner.primitive(PrimitiveType::Unit);
+        let function = interner.intern(Type::Function(FlowType {
+            input: vec![],
+            output: unit,
+            effects: Some(EffectRowRef {
+                effects: vec![],
+                tail: Some("E".into()),
+            }),
+        }));
+        let store = interner.into_store();
+        let declarations = HashMap::new();
+        let types = super::super::TypeLookupIndex::new(&store);
+        let effects = HashMap::new();
+        let mut engine = TypeSubstitutionEngine::relocating(TypeRelocationInput {
+            source: &store,
+            target: &store,
+            declaration_types: &declarations,
+            target_types: &types,
+            effect_names: &effects,
+        });
+        assert_eq!(
+            engine.substitute(nominal),
+            Err(TypeSubstitutionError::MissingTypeIdentity(nominal))
+        );
+        assert_eq!(
+            engine.substitute(function),
+            Err(TypeSubstitutionError::OpenEffectRow("E".into()))
+        );
+    }
+
+    #[test]
+    fn relocation_materializes_aggregate_types_without_inventing_declaration_identity() {
+        let mut source = TypeInterner::new();
+        let nominal = source.intern(Type::Nominal(NominalTypeRef {
+            name: "app.Id".into(),
+            params: vec![],
+            representation: None,
+        }));
+        let option = source.intern(Type::Option(nominal));
+        let source = source.into_store();
+        let mut target = TypeInterner::new();
+        target.primitive(PrimitiveType::Bool);
+        let destination = target.intern(Type::Nominal(NominalTypeRef {
+            name: "app.Id".into(),
+            params: vec![],
+            representation: None,
+        }));
+        let declarations = HashMap::from([(nominal, destination)]);
+        let effects = HashMap::new();
+        let relocated =
+            TypeSubstitutionEngine::relocating_materialized(TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &effects,
+            })
+            .substitute(option)
+            .unwrap();
+        assert_eq!(
+            target.store().get(relocated),
+            Some(&Type::Option(destination))
+        );
+        let missing = HashMap::new();
+        assert_eq!(
+            TypeSubstitutionEngine::relocating_materialized(TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &missing,
+                effect_names: &effects,
+            })
+            .substitute(option),
+            Err(TypeSubstitutionError::MissingTypeIdentity(nominal))
+        );
+    }
+
+    #[test]
+    fn deeply_nested_substitution_uses_a_heap_worklist() {
+        let mut interner = TypeInterner::new();
+        let parameter = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let concrete = interner.primitive(PrimitiveType::I32);
+        let mut root = parameter;
+        for _ in 0..10_000 {
+            root = interner.intern(Type::Array(root));
+        }
+        let substitutions = HashMap::from([("T".into(), concrete)]);
+        let mut result = TypeSubstitutionEngine::materializing(&mut interner, &substitutions, None)
+            .substitute(root)
+            .unwrap();
+        for _ in 0..10_000 {
+            let Some(Type::Array(inner)) = interner.store().get(result) else {
+                panic!("array identity was lost");
+            };
+            result = *inner;
+        }
+        assert_eq!(result, concrete);
+    }
+
+    #[test]
+    fn deep_effect_row_binding_chains_do_not_recurse_on_the_native_stack() {
+        let mut interner = TypeInterner::new();
+        let names = HashMap::new();
+        let mut rows = HashMap::new();
+        for index in 0..10_000 {
+            rows.insert(
+                format!("E{index}"),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some(format!("E{}", index + 1)),
+                },
+            );
+        }
+        let result = EffectRowRef {
+            effects: vec![crate::EffectRef {
+                name: "Console.stdout_write".into(),
+                args: vec![],
+            }],
+            tail: None,
+        };
+        rows.insert("E10000".into(), result.clone());
+        let actual = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_row_equations(&rows)
+            .substitute_effect_row(EffectRowRef {
+                effects: vec![],
+                tail: Some("E0".into()),
+            })
+            .unwrap();
+        assert_eq!(actual, result);
+    }
+
+    #[test]
+    fn failed_type_cycle_queries_do_not_poison_the_worklist() {
+        let mut interner = TypeInterner::new();
+        let parameter = interner.intern(Type::Var(crate::TypeVarId(0)));
+        let cycle = interner.intern(Type::Array(parameter));
+        let bindings = HashMap::new();
+        let mut variables = Substitution::default();
+        variables.insert(crate::TypeVarId(0), cycle);
+        let mut engine =
+            TypeSubstitutionEngine::materializing(&mut interner, &bindings, Some(&variables));
+        for _ in 0..2 {
+            assert_eq!(
+                engine.substitute(parameter),
+                Err(TypeSubstitutionError::CyclicType(parameter))
+            );
+        }
+    }
+
+    #[test]
+    fn readonly_identity_substitution_does_not_rewrite_original_row_members() {
+        let mut interner = TypeInterner::new();
+        let unit = interner.primitive(PrimitiveType::Unit);
+        let member = crate::EffectRef {
+            name: "Console.stdout_write".into(),
+            args: vec![],
+        };
+        let function = interner.intern(Type::Function(FlowType {
+            input: vec![],
+            output: unit,
+            effects: Some(EffectRowRef {
+                effects: vec![member.clone(), member],
+                tail: None,
+            }),
+        }));
+        let store = interner.into_store();
+        let bindings = HashMap::new();
+        assert_eq!(
+            TypeSubstitutionEngine::existing(&store, &bindings).substitute(function),
+            Ok(function)
+        );
+    }
+
+    #[test]
+    fn named_arguments_preserve_the_callers_identically_spelled_binder() {
+        let mut interner = TypeInterner::new();
+        let parameter = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let argument = interner.intern(Type::Array(parameter));
+        let template = interner.intern(Type::Option(parameter));
+        let expected = interner.intern(Type::Option(argument));
+        let store = interner.into_store();
+        let bindings = HashMap::from([("T".into(), argument)]);
+        assert_eq!(
+            TypeSubstitutionEngine::existing(&store, &bindings).substitute(template),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn simultaneous_named_arguments_still_normalize_solver_variables() {
+        let mut interner = TypeInterner::new();
+        let parameter = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let variable = interner.intern(Type::Var(crate::TypeVarId(0)));
+        let concrete = interner.primitive(PrimitiveType::I32);
+        let bindings = HashMap::from([("T".into(), variable)]);
+        let mut variables = Substitution::default();
+        variables.insert(crate::TypeVarId(0), concrete);
+        assert_eq!(
+            TypeSubstitutionEngine::materializing(&mut interner, &bindings, Some(&variables))
+                .substitute(parameter),
+            Ok(concrete)
+        );
     }
 }

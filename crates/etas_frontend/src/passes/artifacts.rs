@@ -21,19 +21,37 @@ pub(crate) const VALIDATED_EXTERNAL_ENVIRONMENT: ArtifactKey =
     ArtifactKey::new("frontend", "validated_external_environment");
 pub(crate) const RESOLVED_PATHS: ArtifactKey = ArtifactKey::new("frontend", "resolved_paths");
 pub(crate) const SIGNATURE_FACTS: ArtifactKey = ArtifactKey::new("frontend", "signature_facts");
+pub(crate) const CALLABLE_OUTPUT_FACTS: ArtifactKey =
+    ArtifactKey::new("frontend", "callable_output_facts");
 pub(crate) const TYPE_ENVIRONMENT: ArtifactKey = ArtifactKey::new("frontend", "type_environment");
 pub(crate) const TOP_LEVEL_LET_FACTS: ArtifactKey =
     ArtifactKey::new("frontend", "top_level_let_facts");
+pub(crate) const VALIDATED_ITEM_ANNOTATIONS: ArtifactKey =
+    ArtifactKey::new("frontend", "validated_item_annotations");
 pub(crate) const TYPE_OUTPUT: ArtifactKey = ArtifactKey::new("frontend", "type_facts");
+pub(crate) const CHECKED_REFLECTION_TARGETS: ArtifactKey =
+    ArtifactKey::new("frontend", "checked_reflection_targets");
+pub(crate) const GENERIC_EFFECT_BINDINGS: ArtifactKey =
+    ArtifactKey::new("frontend", "generic_effect_bindings");
+pub(crate) const HANDLER_INSTANTIATIONS: ArtifactKey =
+    ArtifactKey::new("frontend", "handler_instantiations");
+pub(crate) const CALLABLE_INSTANTIATIONS: ArtifactKey =
+    ArtifactKey::new("frontend", "callable_instantiations");
 pub(crate) const EFFECT_OUTPUT: ArtifactKey = ArtifactKey::new("frontend", "effect_facts");
 pub(crate) const INTERPRETER_SUPPORT: ArtifactKey =
     ArtifactKey::new("frontend", "interpreter_support");
 pub(crate) const PROJECT_ENTRY: ArtifactKey = ArtifactKey::new("frontend", "project_entry");
+pub(crate) const PROJECT_ANALYSIS_ROOTS: ArtifactKey =
+    ArtifactKey::new("frontend", "project_analysis_roots");
 pub(crate) const REACHABILITY_FACTS: ArtifactKey =
     ArtifactKey::new("frontend", "reachability_facts");
+pub(crate) const ANALYSIS_REACHABILITY_FACTS: ArtifactKey =
+    ArtifactKey::new("frontend", "analysis_reachability_facts");
 pub(crate) const RUNTIME_SOURCE_REQUIREMENTS: ArtifactKey =
     ArtifactKey::new("frontend", "runtime_source_requirements");
 pub(crate) const CHECKED_PROJECT: ArtifactKey = ArtifactKey::new("frontend", "checked_project");
+pub(crate) const DEFINITION_SOURCES: ArtifactKey =
+    ArtifactKey::new("frontend", "definition_sources");
 pub(crate) const DIAGNOSTICS: ArtifactKey = ArtifactKey::new("frontend", "diagnostics");
 
 pub(crate) fn global_with_diagnostics<const N: usize>(keys: [ArtifactKey; N]) -> ArtifactSet {
