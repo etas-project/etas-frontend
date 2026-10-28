@@ -45,6 +45,12 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
     if facts.known_std_types.priority_queue.is_none() {
         facts.known_std_types.priority_queue = body.known_std_types.priority_queue;
     }
+    if facts.known_std_types.ordered_map.is_none() {
+        facts.known_std_types.ordered_map = body.known_std_types.ordered_map;
+    }
+    if facts.known_std_types.ordered_set.is_none() {
+        facts.known_std_types.ordered_set = body.known_std_types.ordered_set;
+    }
     facts
         .known_std_types
         .support_constraints
