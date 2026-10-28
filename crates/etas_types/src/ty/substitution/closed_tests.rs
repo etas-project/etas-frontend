@@ -27,7 +27,7 @@ fn closed_arguments_reject_unbound_types_through_the_complete_structural_graph()
     }));
     let store = interner.into_store();
     let names = HashMap::new();
-    let known = HashSet::new();
+    let known = |_| false;
     let mut engine =
         TypeSubstitutionEngine::existing(&store, &names).require_closed_parameters(&known);
     for ty in [parameter, array, optional, record, function, variable] {
@@ -54,7 +54,7 @@ fn closed_arguments_check_replacements_in_the_callers_namespace() {
     let concrete = interner.primitive(PrimitiveType::I32);
     let concrete_array = interner.intern(Type::Array(concrete));
     let store = interner.into_store();
-    let known = HashSet::new();
+    let known = |_| false;
     let unresolved = HashMap::from([("T".into(), argument)]);
     assert_eq!(
         TypeSubstitutionEngine::existing(&store, &unresolved)
@@ -84,7 +84,7 @@ fn closed_arguments_admit_native_named_atoms_by_identity_not_spelling() {
     }));
     let store = interner.into_store();
     let names = HashMap::new();
-    let known = HashSet::from([native]);
+    let known = |ty| ty == native;
     let mut engine =
         TypeSubstitutionEngine::existing(&store, &names).require_closed_parameters(&known);
     assert_eq!(engine.substitute(native), Ok(native));
@@ -99,7 +99,7 @@ fn closed_arguments_require_bound_effect_rows_and_closed_argument_rows() {
     let interner = TypeInterner::new();
     let store = interner.into_store();
     let names = HashMap::new();
-    let known = HashSet::new();
+    let known = |_| false;
     let open = EffectRowRef {
         effects: vec![],
         tail: Some("E".into()),

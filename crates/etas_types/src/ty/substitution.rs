@@ -98,7 +98,7 @@ pub struct TypeSubstitutionEngine<'a> {
     named: Option<&'a HashMap<String, TypeId>>,
     variables: Option<&'a Substitution>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
-    closed_named_types: Option<&'a HashSet<TypeId>>,
+    closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
     memo: HashMap<TypeId, TypeId>,
     memo_depths: HashMap<TypeId, usize>,
@@ -158,7 +158,10 @@ impl<'a> TypeSubstitutionEngine<'a> {
 
     /// Runtime value contracts require closed arguments even when no payload
     /// element is present. Native named atoms are admitted by checked identity.
-    pub fn require_closed_parameters(mut self, named_types: &'a HashSet<TypeId>) -> Self {
+    pub fn require_closed_parameters(
+        mut self,
+        named_types: &'a (dyn Fn(TypeId) -> bool + Sync),
+    ) -> Self {
         self.closed_named_types = Some(named_types);
         self.memo.clear();
         self.memo_depths.clear();
@@ -523,11 +526,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             Type::Var(_) if self.closed_named_types.is_some() => {
                 return Err(TypeSubstitutionError::UnresolvedParameter(ty));
             }
-            Type::Named(_)
-                if self
-                    .closed_named_types
-                    .is_some_and(|known| !known.contains(&ty)) =>
-            {
+            Type::Named(_) if self.closed_named_types.is_some_and(|known| !known(ty)) => {
                 return Err(TypeSubstitutionError::UnresolvedParameter(ty));
             }
             Type::IntegerLiteral { .. }
