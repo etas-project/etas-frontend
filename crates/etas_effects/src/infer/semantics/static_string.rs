@@ -1,4 +1,4 @@
-use etas_hir::{HirExpr, HirExprId, HirFlowBody, HirItem, HirStmt, ResolveResult, SymbolDef};
+use etas_hir::{HirExpr, HirExprId, HirFlowBody, HirItem, HirStmt, ResolveResult};
 use etas_hir_analysis::static_string::{
     StaticStringCallSemantics, StaticStringEvaluationError, StaticStringEvaluator,
     StaticStringOracle, StaticStringTransform,
@@ -59,14 +59,7 @@ impl EffectStaticStringOracle<'_, '_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return None;
         };
-        let item = match &self.semantics.hir.symbols.get(symbol)?.def {
-            SymbolDef::Item { item } => *item,
-            SymbolDef::ImportAlias {
-                path,
-                origin: etas_hir::ImportAliasOrigin::SourceImport,
-            } => self.semantics.source_item_for_path(path)?,
-            _ => return None,
-        };
+        let item = self.semantics.source_item_for_symbol(symbol)?;
         let HirItem::Flow(flow) = self.semantics.hir.items.get(item)? else {
             return None;
         };

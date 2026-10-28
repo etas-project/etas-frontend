@@ -95,11 +95,15 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return CallTarget::Incomplete;
         };
+        let local_symbol = symbol;
+        let Some(symbol) = self.hir.canonical_source_symbol(symbol) else {
+            return CallTarget::Incomplete;
+        };
         let Some(symbol_data) = self.hir.symbols.get(symbol) else {
             return CallTarget::Incomplete;
         };
         if self.is_typed_flow_expr(callee)
-            && let Some(sources) = state.local_latent_values.symbol_sources(symbol)
+            && let Some(sources) = state.local_latent_values.symbol_sources(local_symbol)
             && !sources.is_empty()
         {
             return match sources.first().filter(|_| sources.len() == 1) {
@@ -154,9 +158,7 @@ impl EffectSemantics<'_> {
                     origin: etas_hir::ImportAliasOrigin::SourceImport,
                 },
             ) => {
-                if let Some(item) = self.source_item_for_path(path) {
-                    self.source_import_target(item)
-                } else if path.first().is_some_and(|segment| segment == "std")
+                if path.first().is_some_and(|segment| segment == "std")
                     || self.has_external_summary_for_path(path)
                 {
                     CallTarget::External
@@ -194,30 +196,6 @@ impl EffectSemantics<'_> {
 }
 
 impl EffectSemantics<'_> {
-    fn source_import_target(&self, item: etas_hir::HirItemId) -> CallTarget<EffectUnit> {
-        match self.hir.items.get(item) {
-            Some(HirItem::Agent(_)) => self.agent_default_call_target(item),
-            Some(HirItem::Flow(_)) => CallTarget::Direct(EffectUnit::Item(item)),
-            Some(HirItem::Tool(tool)) => match tool.body {
-                etas_hir::HirToolBody::Source(_) => CallTarget::Direct(EffectUnit::Item(item)),
-                etas_hir::HirToolBody::Decl { .. } => CallTarget::External,
-                etas_hir::HirToolBody::Error { .. } => CallTarget::Incomplete,
-            },
-            Some(HirItem::TopLevelLet(_)) => self
-                .top_level_anonymous_flow_unit(item)
-                .map(CallTarget::Direct)
-                .unwrap_or_else(|| {
-                    if self.item_symbol_has_flow_type(item) {
-                        CallTarget::Direct(EffectUnit::Item(item))
-                    } else {
-                        CallTarget::External
-                    }
-                }),
-            Some(_) => CallTarget::External,
-            None => CallTarget::Incomplete,
-        }
-    }
-
     pub(crate) fn agent_default_call_target(
         &self,
         item: etas_hir::HirItemId,
@@ -236,22 +214,5 @@ impl EffectSemantics<'_> {
             return CallTarget::Incomplete;
         };
         CallTarget::Direct(EffectUnit::Item(method.body))
-    }
-
-    fn item_symbol_has_flow_type(&self, item: etas_hir::HirItemId) -> bool {
-        let Some(symbol) = self.item_symbol(item) else {
-            return false;
-        };
-        self.types.facts.symbol_types.contains_key(&symbol)
-    }
-
-    fn item_symbol(&self, item: etas_hir::HirItemId) -> Option<etas_hir::SymbolId> {
-        match self.hir.items.get(item)? {
-            HirItem::Flow(flow) => Some(flow.symbol),
-            HirItem::Agent(agent) => Some(agent.symbol),
-            HirItem::Tool(tool) => Some(tool.symbol),
-            HirItem::TopLevelLet(value) => Some(value.symbol),
-            _ => None,
-        }
     }
 }

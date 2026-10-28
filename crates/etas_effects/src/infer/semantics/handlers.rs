@@ -313,18 +313,7 @@ impl EffectSemantics<'_> {
         let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
             return None;
         };
-        let symbol = self.hir.symbols.get(symbol)?;
-        let item = match &symbol.def {
-            etas_hir::SymbolDef::Item { item } | etas_hir::SymbolDef::TopLevelLet { item, .. } => {
-                *item
-            }
-            etas_hir::SymbolDef::ImportAlias {
-                path,
-                origin: etas_hir::ImportAliasOrigin::SourceImport,
-            } => self.source_item_for_path(path)?,
-            etas_hir::SymbolDef::ImportAlias { .. } => return None,
-            _ => return None,
-        };
+        let item = self.source_item_for_symbol(symbol)?;
         if !matches!(
             self.hir.items.get(item),
             Some(etas_hir::HirItem::TopLevelLet(_))
