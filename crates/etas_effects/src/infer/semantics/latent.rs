@@ -226,30 +226,34 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         pat: HirPatId,
         sources: Vec<LatentSource>,
-    ) {
-        let Some(pat_data) = self.hir.pats.get(pat) else {
-            return;
-        };
-        match pat_data {
-            HirPat::Binding { symbol, .. } => {
-                state
-                    .local_latent_values
-                    .record_symbol_sources(*symbol, sources);
-            }
-            HirPat::Tuple { elems, .. } | HirPat::Variant { args: elems, .. } => {
-                for elem in elems {
-                    self.record_latent_sources_for_pat(state, *elem, sources.clone());
+    ) -> Result<(), &'static str> {
+        let mut pending = vec![pat];
+        while let Some(pat) = pending.pop() {
+            let pat_data = self
+                .hir
+                .pats
+                .get(pat)
+                .ok_or("callable pattern has no checked HIR node")?;
+            match pat_data {
+                HirPat::Binding { symbol, .. } => {
+                    state
+                        .local_latent_values
+                        .record_symbol_sources(*symbol, sources.clone());
                 }
-            }
-            HirPat::Record { fields, .. } => {
-                for field in fields {
-                    if let Some(pat) = field.pat {
-                        self.record_latent_sources_for_pat(state, pat, sources.clone());
+                HirPat::Tuple { elems, .. } | HirPat::Variant { args: elems, .. } => {
+                    pending.extend(elems)
+                }
+                HirPat::Record { fields, .. } => {
+                    for field in fields {
+                        if let Some(pat) = field.pat {
+                            pending.push(pat);
+                        }
                     }
                 }
+                HirPat::Wildcard { .. } | HirPat::Literal(_) | HirPat::Error { .. } => {}
             }
-            HirPat::Wildcard { .. } | HirPat::Literal(_) | HirPat::Error { .. } => {}
         }
+        Ok(())
     }
 
     pub(crate) fn top_level_anonymous_flow_unit(&self, item: HirItemId) -> Option<EffectUnit> {

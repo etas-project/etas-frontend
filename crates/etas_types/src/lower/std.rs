@@ -99,13 +99,18 @@ fn lower_std_decl_with_kind(
                     .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
                     .collect(),
                 output: lower_std_type_with_scope(ctx, registry, &flow.output, scope),
-                effects: std_effect_row_with_scope(ctx, registry, &flow.public_effects, scope),
-                requested_actions: std_effect_row_with_scope(
+                effects: Some(std_effect_row_with_scope(
+                    ctx,
+                    registry,
+                    &flow.public_effects,
+                    scope,
+                )),
+                requested_actions: Some(std_effect_row_with_scope(
                     ctx,
                     registry,
                     &flow.requested_actions,
                     scope,
-                ),
+                )),
             },
         },
         StdDecl::Tool(tool) => SymbolTypeFact::Tool {
@@ -117,7 +122,12 @@ fn lower_std_decl_with_kind(
                     .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
                     .collect(),
                 output: lower_std_type_with_scope(ctx, registry, &tool.output, scope),
-                effects: std_effect_row_with_scope(ctx, registry, &tool.effects, scope),
+                effects: Some(std_effect_row_with_scope(
+                    ctx,
+                    registry,
+                    &tool.effects,
+                    scope,
+                )),
                 requested_actions: None,
             },
         },
@@ -315,8 +325,8 @@ fn lower_std_constructor_decl(
             generic_params: lower_std_generic_params(ctx, registry, &decl.params),
             params,
             output,
-            effects: None,
-            requested_actions: None,
+            effects: Some(std_effect_row_with_scope(ctx, registry, &[], scope)),
+            requested_actions: Some(std_effect_row_with_scope(ctx, registry, &[], scope)),
         },
     }
 }
@@ -540,7 +550,7 @@ pub fn std_effect_row(
     registry: &StdRegistry,
     effects: &[StdEffectRef],
 ) -> Option<EffectRowRef> {
-    std_effect_row_with_scope(ctx, registry, effects, None)
+    Some(std_effect_row_with_scope(ctx, registry, effects, None))
 }
 
 fn std_effect_row_with_scope(
@@ -548,14 +558,14 @@ fn std_effect_row_with_scope(
     registry: &StdRegistry,
     effects: &[StdEffectRef],
     scope: Option<&[String]>,
-) -> Option<EffectRowRef> {
-    (!effects.is_empty()).then(|| EffectRowRef {
+) -> EffectRowRef {
+    EffectRowRef {
         effects: effects
             .iter()
             .map(|effect| lower_std_effect_ref(ctx, registry, effect, scope))
             .collect(),
         tail: None,
-    })
+    }
 }
 
 pub fn lower_std_action_arg_kind(kind: &etas_std::EffectActionArgKind) -> EffectActionArgKind {

@@ -290,6 +290,22 @@ where
         <S as HirAnalysisSemantics>::stage_targets_are_captured(self.semantics, expr, state)
     }
 
+    fn begin_match_arm(
+        &mut self,
+        expr: HirExprId,
+        scrutinee: HirExprId,
+        pattern: etas_hir::HirPatId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        <S as HirAnalysisSemantics>::begin_match_arm(
+            self.semantics,
+            expr,
+            scrutinee,
+            pattern,
+            state,
+        )
+    }
+
     fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         <S as HirAnalysisSemantics>::after_expr(self.semantics, expr, state)
     }

@@ -326,7 +326,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             let mut realized: Option<EffectSummary> = None;
             let mut parameter_calls = std::collections::BTreeSet::new();
             let mut other_unproved_control = false;
-            let returns_flow = self.flow_type_for_expr(site.call).is_some();
+            let returns_flow = self.expr_type_contains_flow(site.call);
             for source in sources {
                 let mut summary = match self.latent_source_summary(source, site.span) {
                     Ok(summary) => summary,
@@ -339,6 +339,19 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             return self.incomplete_at(site.span, error.to_string(), state);
                         }
                     };
+                } else if let LatentSource::StdReference { value, .. } = source {
+                    match self.record_std_reference_result(value, &site, &mut state) {
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                        Ok(false) if returns_flow => {
+                            state.local_latent_values.record_value_sources(
+                                site.call,
+                                [LatentSource::Unavailable { expr: site.call }],
+                            );
+                        }
+                        _ => {}
+                    }
                 } else if let LatentSource::Unit(unit)
                 | LatentSource::Reference { unit, .. }
                 | LatentSource::Captured { unit, .. } = source

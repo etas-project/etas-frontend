@@ -1,5 +1,7 @@
 use etas_core::Span;
-use etas_hir::{HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirStmtId, ResolvedActionRef};
+use etas_hir::{
+    HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirPatId, HirStmtId, ResolvedActionRef,
+};
 
 use crate::intraprocedural::{AbstractDomain, Control};
 
@@ -90,6 +92,17 @@ pub trait HirAnalysisSemantics {
     }
 
     fn after_expr(&mut self, _expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
+    /// Bind an arm's pattern after its scrutinee completes and before its body.
+    fn begin_match_arm(
+        &mut self,
+        _expr: HirExprId,
+        _scrutinee: HirExprId,
+        _pattern: HirPatId,
+        state: Self::Domain,
+    ) -> Self::Domain {
         state
     }
 
