@@ -222,12 +222,26 @@ impl EffectSemantics<'_> {
                         "standard reference declaration is absent from the registry",
                     ));
                 };
-                let etas_std::StdDecl::Flow(flow) = &declaration.decl else {
-                    return Err(invalid("standard reference descriptor is not callable"));
+                if declaration
+                    .intrinsic
+                    .as_ref()
+                    .is_none_or(|descriptor| descriptor.id.0 != intrinsic)
+                {
+                    return Err(invalid(
+                        "standard reference descriptor has a different intrinsic identity",
+                    ));
+                }
+                let Some(etas_types::SymbolTypeFact::Flow { signature }) = self
+                    .type_symbols
+                    .symbol_fact(self.hir, &self.types.facts, fact.symbol)
+                else {
+                    return Err(invalid(
+                        "standard reference descriptor has no checked callable signature",
+                    ));
                 };
                 // Std declarations expose positional parameters, not source names.
                 Ok((
-                    (0..flow.params.len())
+                    (0..signature.params.len())
                         .map(|position| format!("arg{position}"))
                         .collect(),
                     vec![],

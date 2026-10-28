@@ -40,11 +40,12 @@ where
                     let mut joined = Control::bottom();
                     for arm in arms {
                         (self.checkpoint)()?;
+                        let state =
+                            self.semantics
+                                .begin_match_arm(expr, scrutinee, arm.pat, base.clone());
                         let arm_state = match arm.body {
-                            HirMatchArmBody::Expr(expr) => self.expr_control(expr, base.clone())?,
-                            HirMatchArmBody::Block(block) => {
-                                self.block_control(block, base.clone())?
-                            }
+                            HirMatchArmBody::Expr(expr) => self.expr_control(expr, state)?,
+                            HirMatchArmBody::Block(block) => self.block_control(block, state)?,
                         };
                         joined.join_assign(&arm_state);
                     }

@@ -23,6 +23,36 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
+    fn begin_match_arm(
+        &mut self,
+        expr: HirExprId,
+        scrutinee: HirExprId,
+        pattern: HirPatId,
+        mut state: Self::Domain,
+    ) -> Self::Domain {
+        if self.expr_type_contains_flow(scrutinee) {
+            match self.latent_sources_for_expr(&state, scrutinee) {
+                Some(sources) => {
+                    if let Err(reason) =
+                        self.record_latent_sources_for_pat(&mut state, pattern, sources)
+                    {
+                        let span = self.hir.exprs[expr].span(&self.hir.blocks);
+                        return self.incomplete_at(span, reason, state);
+                    }
+                }
+                None => {
+                    let span = self.hir.exprs[expr].span(&self.hir.blocks);
+                    return self.incomplete_at(
+                        span,
+                        "match payload requires checked latent callable origins",
+                        state,
+                    );
+                }
+            }
+        }
+        state
+    }
+
     fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         let mut state = state;
         self.record_structural_latent_result(expr, &mut state);
@@ -180,7 +210,12 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     );
                 }
                 if let Some(sources) = self.latent_sources_for_expr(&state, value) {
-                    self.record_latent_sources_for_pat(&mut state, pat, sources);
+                    if let Err(reason) =
+                        self.record_latent_sources_for_pat(&mut state, pat, sources)
+                    {
+                        let span = self.hir.exprs[value].span(&self.hir.blocks);
+                        state = self.incomplete_at(span, reason, state);
+                    }
                 }
             }
             HirStmt::Resume { span, .. } => {

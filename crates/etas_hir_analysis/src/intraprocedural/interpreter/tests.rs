@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use etas_core::{SourceId, Span, TextSize};
 use etas_hir::{
     HirBlock, HirBlockId, HirElseBranch, HirExpr, HirExprId, HirFlowBody, HirFlowDecl, HirItem,
-    HirLiteral, HirModule, HirProgram, HirStmt, HirStmtId, ScopeId, ScopeOwner, SymbolId,
+    HirLiteral, HirModule, HirPatId, HirProgram, HirStmt, HirStmtId, ScopeId, ScopeOwner, SymbolId,
 };
 use etas_utils::{JoinSemiLattice, PartialOrder};
 
@@ -66,6 +66,8 @@ struct TraceSemantics {
     cancel_after_expr: Option<(HirExprId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     returned_values: Vec<(HirStmtId, Option<HirExprId>)>,
     terminal_exprs: BTreeSet<HirExprId>,
+    match_entries: Vec<(HirExprId, HirExprId, HirPatId, usize)>,
+    match_event: Option<&'static str>,
 }
 
 impl TraceSemantics {
@@ -85,6 +87,8 @@ impl TraceSemantics {
             cancel_after_expr: None,
             returned_values: Vec::new(),
             terminal_exprs: BTreeSet::new(),
+            match_entries: Vec::new(),
+            match_event: None,
         }
     }
 
@@ -160,6 +164,22 @@ impl HirAnalysisSemantics for TraceSemantics {
             .get(&expr)
             .map(|event| state.clone().with_event(event))
             .unwrap_or(state)
+    }
+
+    fn begin_match_arm(
+        &mut self,
+        expr: HirExprId,
+        scrutinee: HirExprId,
+        pattern: HirPatId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        assert!(self.completed_exprs.contains(&scrutinee));
+        self.match_entries
+            .push((expr, scrutinee, pattern, self.started_exprs.len()));
+        match self.match_event {
+            Some(event) => state.with_event(event),
+            None => state,
+        }
     }
 
     fn after_expr_control(
@@ -570,6 +590,67 @@ fn joins_if_branches() {
     assert!(result.events.contains("cond"));
     assert!(result.events.contains("then"));
     assert!(result.events.contains("else"));
+}
+
+#[test]
+fn match_pattern_hooks_run_after_scrutinee_and_before_each_arm() {
+    for terminal in [false, true] {
+        let mut builder = HirBuilder::default();
+        let scrutinee = builder.literal();
+        let first = builder.literal();
+        let second = builder.literal();
+        let patterns = [0, 1].map(|_| {
+            builder
+                .program
+                .pats
+                .alloc(etas_hir::HirPat::Wildcard { span: span() })
+        });
+        let expression = builder.expr(HirExpr::Match {
+            scrutinee,
+            arms: vec![
+                etas_hir::HirMatchArm {
+                    pat: patterns[0],
+                    body: etas_hir::HirMatchArmBody::Expr(first),
+                    scope: ScopeId(0),
+                    span: span(),
+                },
+                etas_hir::HirMatchArm {
+                    pat: patterns[1],
+                    body: etas_hir::HirMatchArmBody::Expr(second),
+                    scope: ScopeId(0),
+                    span: span(),
+                },
+            ],
+            span: span(),
+        });
+        let root = builder.block(vec![], Some(expression));
+        let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+        semantics.match_event = Some("bound");
+        if terminal {
+            semantics.terminal_exprs.insert(scrutinee);
+        }
+        let mut interpreter = HirAbstractInterpreter::new(semantics);
+        let control = interpreter.expr_control(expression, EventDomain::initial());
+        let semantics = interpreter.semantics();
+        if terminal {
+            assert!(semantics.match_entries.is_empty());
+            assert!(!semantics.started_exprs.contains(&first));
+            assert!(control.normal_state().is_none());
+        } else {
+            assert_eq!(
+                semantics.match_entries,
+                [
+                    (expression, scrutinee, patterns[0], 2),
+                    (expression, scrutinee, patterns[1], 3)
+                ]
+            );
+            assert!(control.normal_state().unwrap().events.contains("bound"));
+            assert_eq!(
+                semantics.started_exprs,
+                [expression, scrutinee, first, second]
+            );
+        }
+    }
 }
 
 #[test]

@@ -158,13 +158,23 @@ impl EffectSemantics<'_> {
         bindings.extend(self.call_trace_bindings(site, &targets)?);
         let sources =
             self.returned_callable_bindings(&parameters, &bindings, state, site.call, environment)?;
+        self.record_callable_result_sources(site.call, sources, state)?;
+        Ok(true)
+    }
+
+    pub(super) fn record_callable_result_sources(
+        &self,
+        call: HirExprId,
+        sources: Vec<LatentSource>,
+        state: &mut EffectState,
+    ) -> Result<(), EffectSpecializationError> {
         if !sources.is_empty()
             && !sources
                 .iter()
                 .any(|source| matches!(source, LatentSource::Unavailable { .. }))
         {
             let mut results = self.discovered_call_results.borrow_mut();
-            results.record_value_sources(site.call, sources.iter().copied());
+            results.record_value_sources(call, sources.iter().copied());
             if results.values.len() + results.values.values().map(BTreeSet::len).sum::<usize>()
                 > etas_package_metadata::MAX_METADATA_GRAPH_NODES
             {
@@ -175,7 +185,7 @@ impl EffectSemantics<'_> {
         }
         state
             .local_latent_values
-            .record_value_sources(site.call, sources);
-        Ok(true)
+            .record_value_sources(call, sources);
+        Ok(())
     }
 }
