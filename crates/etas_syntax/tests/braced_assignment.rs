@@ -27,6 +27,8 @@ fn assignment_leading_braces_are_blocks_in_handled_and_plain_expressions() {
         "{ text = text + suffix; }",
         "{ text = text + call(1, 2); text }",
         "{ text = text + { let part = [1, 2]; part[0] }; }",
+        "{ text = call<Map<i32, string>, Result<i32, string>>(left, right); }",
+        "{ text = left < right; }",
     ] {
         let Expr::Block(block) = initializer(body) else {
             panic!("assignment block")
@@ -49,6 +51,7 @@ fn record_fields_and_nested_block_semicolons_remain_record_expressions() {
         "{ text = call(1, 2), other = [1, 2], }",
         "{ text = { let item = 1; item }, other }",
         "{ text, other }",
+        "{ text = call<Map<i32, string>, Result<i32, string>>(left, right), other = left < right }",
         "Row { text = { value = 1; value }, other = [1, 2] }",
     ] {
         assert!(

@@ -517,21 +517,21 @@ impl Parser<'_> {
         }
         match (&self.cursor.nth(1).kind, &self.cursor.nth(2).kind) {
             (TokenKind::Punct(Punct::RBrace), _) => true,
-            (TokenKind::Ident, TokenKind::Punct(Punct::Eq)) => self.record_field_has_delimiter(),
+            (TokenKind::Ident, TokenKind::Punct(Punct::Eq)) => self.brace_body_has_no_statements(),
             (TokenKind::Ident, TokenKind::Punct(Punct::Comma | Punct::RBrace)) => true,
             (TokenKind::Ident, TokenKind::Ident | TokenKind::Keyword(_)) => false,
             _ => false,
         }
     }
 
-    fn record_field_has_delimiter(&self) -> bool {
+    fn brace_body_has_no_statements(&self) -> bool {
         let mut depth = 0usize;
         let mut index = 3usize;
         loop {
             match self.cursor.nth(index).kind {
                 TokenKind::Eof => return false,
                 TokenKind::Punct(Punct::Semi) if depth == 0 => return false,
-                TokenKind::Punct(Punct::Comma | Punct::RBrace) if depth == 0 => return true,
+                TokenKind::Punct(Punct::RBrace) if depth == 0 => return true,
                 TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => depth += 1,
                 TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => {
                     if depth == 0 {
