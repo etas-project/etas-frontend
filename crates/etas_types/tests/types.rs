@@ -26,7 +26,7 @@ flow error_output(value: ProcessResult) -> bytes { return value.stderr; }
     let native = output
         .facts
         .known_std_types
-        .command_result
+        .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
         .expect("canonical native role");
     let fields = output
         .facts

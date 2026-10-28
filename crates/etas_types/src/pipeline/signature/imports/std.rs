@@ -75,11 +75,10 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
             && let Some(role) = declaration.runtime_role
             && let Some(ty) = lower_std_type_symbol(ctx, registry, symbol)
         {
-            match role {
-                etas_std::RuntimeTypeRole::CommandResult => {
-                    ctx.signature_facts.known_std_types.command_result = Some(ty);
-                }
-            }
+            ctx.signature_facts
+                .known_std_types
+                .runtime_types
+                .insert(role, ty);
         }
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && !declaration.projected_fields.is_empty()

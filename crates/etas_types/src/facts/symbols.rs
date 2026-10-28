@@ -22,7 +22,7 @@ pub enum ResourceHandleFact {
 )]
 pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
-    pub command_result: Option<TypeId>,
+    pub runtime_types: std::collections::BTreeMap<etas_std::RuntimeTypeRole, TypeId>,
     pub priority_queue: Option<TypeId>,
     pub ordered_map: Option<TypeId>,
     pub ordered_set: Option<TypeId>,
@@ -35,6 +35,24 @@ pub struct KnownStdTypes {
 }
 
 impl KnownStdTypes {
+    pub fn runtime_type(&self, role: etas_std::RuntimeTypeRole) -> Option<TypeId> {
+        self.runtime_types.get(&role).copied()
+    }
+
+    pub fn runtime_role(
+        &self,
+        store: &crate::TypeStore,
+        ty: TypeId,
+    ) -> Option<etas_std::RuntimeTypeRole> {
+        let constructor = match store.get(ty)? {
+            crate::Type::Applied { constructor, .. } => TypeId(constructor.0),
+            _ => ty,
+        };
+        self.runtime_types
+            .iter()
+            .find_map(|(role, ty)| (*ty == constructor).then_some(*role))
+    }
+
     pub fn projected_field_templates(
         &self,
         store: &crate::TypeStore,

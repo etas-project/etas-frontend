@@ -42,9 +42,10 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
     if facts.known_std_types.index_error.is_none() {
         facts.known_std_types.index_error = body.known_std_types.index_error;
     }
-    if facts.known_std_types.command_result.is_none() {
-        facts.known_std_types.command_result = body.known_std_types.command_result;
-    }
+    facts
+        .known_std_types
+        .runtime_types
+        .extend(body.known_std_types.runtime_types);
     if facts.known_std_types.priority_queue.is_none() {
         facts.known_std_types.priority_queue = body.known_std_types.priority_queue;
     }
