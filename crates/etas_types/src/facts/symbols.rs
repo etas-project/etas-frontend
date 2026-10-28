@@ -22,6 +22,7 @@ pub enum ResourceHandleFact {
 )]
 pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
+    pub command_result: Option<TypeId>,
     pub priority_queue: Option<TypeId>,
     pub ordered_map: Option<TypeId>,
     pub ordered_set: Option<TypeId>,

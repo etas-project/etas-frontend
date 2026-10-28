@@ -7,6 +7,97 @@ use etas_types::{
 };
 
 #[test]
+fn command_result_projects_registry_fields_from_the_canonical_native_type() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+module app.main;
+import std.host.command.CommandResult;
+alias ProcessResult = CommandResult;
+flow status(value: CommandResult) -> i32 { return value.exit_code; }
+flow output(value: ProcessResult) -> bytes { return (value).stdout; }
+flow error_output(value: ProcessResult) -> bytes { return value.stderr; }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let native = output
+        .facts
+        .known_std_types
+        .command_result
+        .expect("canonical native role");
+    let fields = output
+        .facts
+        .known_std_types
+        .projected_field_templates(&output.store, native)
+        .unwrap();
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| (field.name.as_str(), output.store.get(field.ty)))
+            .collect::<Vec<_>>(),
+        [
+            ("exit_code", Some(&Type::Primitive(PrimitiveType::I32))),
+            ("stdout", Some(&Type::Primitive(PrimitiveType::Bytes))),
+            ("stderr", Some(&Type::Primitive(PrimitiveType::Bytes))),
+        ]
+    );
+    let signatures = output
+        .facts
+        .item_signatures
+        .values()
+        .filter_map(|signature| match signature {
+            etas_types::ItemSignature::Flow(signature) => Some(signature),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(signatures.len(), 3);
+    for signature in signatures {
+        assert_eq!(signature.params, [native]);
+    }
+    assert!(
+        output
+            .facts
+            .known_std_types
+            .intrinsic_only_constructors
+            .contains(&native)
+    );
+}
+
+#[test]
+fn command_result_rejects_unknown_fields_wrong_outputs_and_source_forgery() {
+    for source in [
+        "import std.host.command.CommandResult; flow f(value: CommandResult) -> string { return value.stdout; }",
+        "import std.host.command.CommandResult; flow f(value: CommandResult) -> i32 { return value.unknown; }",
+        "import std.host.command.CommandResult; flow f(out: bytes, err: bytes) -> CommandResult { return CommandResult { exit_code = 0, stdout = out, stderr = err }; }",
+        "import std.host.command.CommandResult; flow f(value: CommandResult) -> unit { var result = value; result.exit_code = 0; return; }",
+        "type CommandResult = string; flow f(value: CommandResult) -> i32 { return value.exit_code; }",
+    ] {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{source}: {:?}",
+            parsed.diagnostics
+        );
+        let output = check_program(&lower_program(&parsed.value));
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
 fn structured_std_type_members_preserve_explicit_generic_parameters() {
     for source in [
         "flow main() -> Range<u8> { return Range.closed<u8>(0, 255); }",
