@@ -632,6 +632,26 @@ impl Parser<'_> {
 
     pub(crate) fn impl_decl(&mut self) -> ImplDecl {
         let start = self.expect_keyword(Keyword::Impl, "expected `impl`");
+        let agent = self.cursor.eat_keyword(Keyword::Agent).is_some();
+        if agent {
+            let target = self.path();
+            let mut specs = Vec::new();
+            if self.cursor.eat_punct(Punct::Tilde).is_some() {
+                specs.push(self.impl_spec_ref());
+                while self.cursor.eat_punct(Punct::Plus).is_some() {
+                    specs.push(self.impl_spec_ref());
+                }
+            }
+            let span = start.cover(specs.last().map_or(target.span, |spec| spec.span));
+            return self.impl_body(
+                start,
+                ImplTarget::Agent {
+                    target,
+                    specs,
+                    span,
+                },
+            );
+        }
         let self_type = self.type_expr();
         let target = if self.cursor.at_punct(Punct::Comma) || self.cursor.at_keyword(Keyword::For) {
             self.legacy_impl_for_target(self_type)
@@ -667,6 +687,10 @@ impl Parser<'_> {
                 }
             }
         };
+        self.impl_body(start, target)
+    }
+
+    fn impl_body(&mut self, start: etas_core::Span, target: ImplTarget) -> ImplDecl {
         if let Some(semi) = self.cursor.eat_punct(Punct::Semi) {
             return ImplDecl {
                 span: start.cover(semi.span),
@@ -679,11 +703,12 @@ impl Parser<'_> {
         let owner_path = target.owner_path().cloned();
         while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
             let before = self.cursor.position();
+            let visibility = self.item_visibility();
             if self.cursor.at_keyword(Keyword::Flow) {
-                items.push(ImplItem::Flow(Box::new(
-                    self.flow_decl(Visibility::Private),
-                )));
-            } else if self.cursor.at_keyword(Keyword::Action) {
+                items.push(ImplItem::Flow(Box::new(self.flow_decl(visibility))));
+            } else if self.cursor.at_keyword(Keyword::Action)
+                && !matches!(target, ImplTarget::Agent { .. })
+            {
                 let owner = owner_path.as_ref().and_then(|owner_path| {
                     owner_path
                         .segments

@@ -14,6 +14,7 @@ pub(super) struct EffectPipelineContext<'a> {
     pub(super) input: EffectPipelineInput<'a>,
     pub(super) analysis_context: HirAnalysisContext,
     pub(super) registry: Option<EffectRegistry>,
+    pub(super) frozen_calls: Option<std::sync::Arc<crate::FrozenCallableEnvironment>>,
     pub(super) units: Option<Vec<EffectUnit>>,
     pub(super) memory_provenance:
         Option<std::sync::Arc<crate::infer::memory_provenance::MemoryProvenance>>,
@@ -32,6 +33,7 @@ impl<'a> EffectPipelineContext<'a> {
             analysis_context: HirAnalysisContext::new(input.hir),
             input,
             registry: None,
+            frozen_calls: None,
             units: None,
             memory_provenance: None,
             registry_diagnostics: Vec::new(),
@@ -62,6 +64,11 @@ impl<'a> EffectPipelineContext<'a> {
     }
 
     pub(super) fn fail(&mut self, error: EffectPipelineError) -> PassResult {
+        if let EffectPipelineError::Interrupted(interruption) = &error {
+            let result = PassResult::interrupted(interruption.clone());
+            self.failure = Some(error);
+            return result;
+        }
         let message = error.to_string();
         self.failure = Some(error);
         PassResult::failed(message)

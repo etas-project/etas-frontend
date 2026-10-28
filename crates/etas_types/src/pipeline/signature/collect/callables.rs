@@ -27,7 +27,10 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                     output: flow
                         .return_type
                         .and_then(|ty| lower_type_ref(ctx, ty))
-                        .unwrap_or_else(|| ctx.interner.primitive(PrimitiveType::Unit)),
+                        .unwrap_or_else(|| {
+                            let variable = crate::TypeVarId(ctx.interner.store().len() as u32);
+                            ctx.interner.intern(Type::Var(variable))
+                        }),
                     effects: flow.effects.as_ref().map(|row| lower_effect_row(ctx, row)),
                     requested_actions: None,
                 };
@@ -39,16 +42,45 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                     .insert(flow.symbol, SymbolTypeFact::Flow { signature });
             }
             HirItem::Agent(agent) => {
-                let Some(output_type) = agent.output_type else {
+                let Some(SymbolTypeFact::Agent {
+                    signature: component,
+                }) = state.symbol_types.get(&agent.symbol)
+                else {
+                    ctx.diagnostics.push(etas_core::Diagnostic::type_check(
+                        etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        agent.span,
+                        "agent signature is missing its predeclared nominal component",
+                    ));
                     continue;
                 };
-                let signature = CallableSignature {
-                    generic_params: Vec::new(),
-                    params: lower_params(ctx, &agent.params),
-                    output: lower_type_ref(ctx, output_type)
-                        .unwrap_or_else(|| ctx.interner.primitive(PrimitiveType::Never)),
-                    effects: agent.effects.as_ref().map(|row| lower_effect_row(ctx, row)),
-                    requested_actions: None,
+                let definition_type = component.definition_type;
+                let component = component.component;
+                let default_entry = if let Some(output_type) = agent.output_type {
+                    let callable = CallableSignature {
+                        generic_params: Vec::new(),
+                        params: lower_params(ctx, &agent.params),
+                        output: lower_type_ref(ctx, output_type)
+                            .unwrap_or_else(|| ctx.interner.primitive(PrimitiveType::Never)),
+                        effects: agent.effects.as_ref().map(|row| lower_effect_row(ctx, row)),
+                        requested_actions: None,
+                    };
+                    let callable_type = ctx.interner.intern(Type::Function(crate::FlowType {
+                        input: callable.params.clone(),
+                        output: callable.output,
+                        effects: callable.effects.clone(),
+                    }));
+                    Some(std::sync::Arc::new(crate::AgentEntrySignature {
+                        method: None,
+                        callable_type,
+                        callable,
+                    }))
+                } else {
+                    None
+                };
+                let signature = crate::AgentSignature {
+                    component,
+                    definition_type,
+                    default_entry,
                 };
                 state
                     .item_signatures
@@ -120,9 +152,10 @@ pub(super) fn callable_generic_params(
                 .unwrap_or_default();
             Some(CallableGenericParam {
                 kind,
-                subject: ctx
-                    .interner
-                    .intern(Type::Named(NamedTypeRef { name: name.clone() })),
+                subject: ctx.interner.intern(Type::Named(NamedTypeRef {
+                    source_parameter: Some(*param),
+                    name: name.clone(),
+                })),
                 name,
                 bounds: bounds
                     .into_iter()

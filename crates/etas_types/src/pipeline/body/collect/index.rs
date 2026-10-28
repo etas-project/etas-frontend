@@ -3,20 +3,21 @@ use crate::{
     pipeline::{body::collect::expr::collect_expr, context::BodyCollectContext},
 };
 
-pub fn collect_index(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_index<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     base: etas_hir::HirExprId,
     index: etas_hir::HirExprId,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
-    let base_ty = collect_expr(ctx, base, None);
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    let base_ty = collect_expr(ctx, base, None)?;
     let expected_index = match ctx.ctx.interner.store().get(base_ty) {
         Some(Type::Map { key, .. }) => Some(*key),
         _ => None,
     };
-    let index_ty = collect_expr(ctx, index, expected_index);
+    let index_ty = collect_expr(ctx, index, expected_index)?;
     let inferred_output = match ctx.ctx.interner.store().get(base_ty).cloned() {
         Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
             Some(inner)
@@ -42,21 +43,22 @@ pub fn collect_index(
         index_error,
         origin: ConstraintOrigin { span },
     });
-    output
+    Ok(output)
 }
 
-pub fn collect_slice(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_slice<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     base: etas_hir::HirExprId,
     start: etas_hir::HirExprId,
     end: etas_hir::HirExprId,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
-    let base_ty = collect_expr(ctx, base, None);
-    let start_ty = collect_expr(ctx, start, None);
-    let end_ty = collect_expr(ctx, end, Some(start_ty));
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    let base_ty = collect_expr(ctx, base, None)?;
+    let start_ty = collect_expr(ctx, start, None)?;
+    let end_ty = collect_expr(ctx, end, Some(start_ty))?;
     let inferred_output = match ctx.ctx.interner.store().get(base_ty).cloned() {
         Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
             Some(ctx.ctx.interner.intern(Type::Slice(inner)))
@@ -75,11 +77,11 @@ pub fn collect_slice(
         output,
         origin: ConstraintOrigin { span },
     });
-    output
+    Ok(output)
 }
 
-fn checked_index_error_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn checked_index_error_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     span: etas_core::Span,
 ) -> Option<TypeId> {
     let found = ctx.ctx.known_std_types().index_error;

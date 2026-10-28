@@ -12,11 +12,24 @@ pub(crate) fn lex_with_diagnostics(
     source: &SourceFile,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> TokenStream {
+    lex_with_checkpoint(source, diagnostics, &|| {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+pub(crate) fn lex_with_checkpoint<E>(
+    source: &SourceFile,
+    diagnostics: &mut Vec<Diagnostic>,
+    checkpoint: &impl Fn() -> Result<(), E>,
+) -> Result<TokenStream, E> {
+    checkpoint()?;
     let text = source.text();
     let mut tokens = Vec::new();
     let mut offset = 0;
 
     while offset < text.len() {
+        checkpoint()?;
         let rest = &text[offset..];
         let Some(ch) = rest.chars().next() else {
             break;
@@ -26,6 +39,7 @@ pub(crate) fn lex_with_diagnostics(
         if ch.is_whitespace() {
             offset += ch.len_utf8();
             while offset < text.len() {
+                checkpoint()?;
                 let next = text[offset..].chars().next().unwrap();
                 if !next.is_whitespace() {
                     break;
@@ -39,6 +53,7 @@ pub(crate) fn lex_with_diagnostics(
         if rest.starts_with("//") {
             offset += 2;
             while offset < text.len() && text.as_bytes()[offset] != b'\n' {
+                checkpoint()?;
                 offset += 1;
             }
             push(
@@ -54,6 +69,7 @@ pub(crate) fn lex_with_diagnostics(
         if rest.starts_with("/*") {
             offset += 2;
             while offset < text.len() && !text[offset..].starts_with("*/") {
+                checkpoint()?;
                 offset += text[offset..].chars().next().unwrap().len_utf8();
             }
             if offset < text.len() {
@@ -78,6 +94,7 @@ pub(crate) fn lex_with_diagnostics(
         if is_ident_start(ch) {
             offset += ch.len_utf8();
             while offset < text.len() {
+                checkpoint()?;
                 let next = text[offset..].chars().next().unwrap();
                 if !is_ident_continue(next) {
                     break;
@@ -97,6 +114,7 @@ pub(crate) fn lex_with_diagnostics(
                 if matches!(prefix, 'x' | 'X' | 'o' | 'O' | 'b' | 'B') {
                     offset += prefix.len_utf8();
                     while offset < text.len() {
+                        checkpoint()?;
                         let next = text[offset..].chars().next().unwrap();
                         if !(next.is_ascii_alphanumeric() || next == '_') {
                             break;
@@ -108,6 +126,7 @@ pub(crate) fn lex_with_diagnostics(
                 }
             }
             while offset < text.len() {
+                checkpoint()?;
                 let next = text[offset..].chars().next().unwrap();
                 if !(next.is_ascii_digit() || next == '_') {
                     break;
@@ -125,6 +144,7 @@ pub(crate) fn lex_with_diagnostics(
                 kind = TokenKind::FloatLit;
                 offset += 1;
                 while offset < text.len() {
+                    checkpoint()?;
                     let next = text[offset..].chars().next().unwrap();
                     if !(next.is_ascii_digit() || next == '_') {
                         break;
@@ -139,6 +159,7 @@ pub(crate) fn lex_with_diagnostics(
                     offset += 1;
                 }
                 while offset < text.len() {
+                    checkpoint()?;
                     let next = text[offset..].chars().next().unwrap();
                     if !(next.is_ascii_digit() || next == '_') {
                         break;
@@ -154,6 +175,7 @@ pub(crate) fn lex_with_diagnostics(
             offset += 1;
             let mut terminated = false;
             while offset < text.len() {
+                checkpoint()?;
                 let next = text[offset..].chars().next().unwrap();
                 offset += next.len_utf8();
                 if next == '\\' && offset < text.len() {
@@ -187,6 +209,7 @@ pub(crate) fn lex_with_diagnostics(
             offset += 1;
             let mut terminated = false;
             while offset < text.len() {
+                checkpoint()?;
                 let next = text[offset..].chars().next().unwrap();
                 offset += next.len_utf8();
                 if next == '\\' && offset < text.len() {
@@ -238,10 +261,11 @@ pub(crate) fn lex_with_diagnostics(
         span: eof,
     });
 
-    TokenStream {
+    checkpoint()?;
+    Ok(TokenStream {
         source: source.id,
         tokens,
-    }
+    })
 }
 
 fn punct(rest: &str) -> Option<(TokenKind, usize)> {
@@ -289,6 +313,7 @@ fn punct(rest: &str) -> Option<(TokenKind, usize)> {
         '?' => Punct::Question,
         '#' => Punct::Hash,
         '@' => Punct::At,
+        '^' => Punct::Caret,
         _ => return None,
     };
     Some((TokenKind::Punct(punct), 1))

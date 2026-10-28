@@ -3,19 +3,19 @@ use std::collections::HashSet;
 use etas_hir::{HirFieldInit, HirGenericArg, HirRecordExpr, ResolveResult};
 
 use crate::{
-    AssignabilityReason, ConstraintOrigin, FieldType, RecordType, SymbolTypeFact, Type,
-    TypeConstraint, TypeConstructorId, TypeId,
+    AssignabilityReason, ConstraintOrigin, FieldType, RecordType, Type, TypeConstraint, TypeId,
     lower::type_ref::lower_type_ref,
     pipeline::{body::collect::expr::collect_expr, context::BodyCollectContext},
 };
 
-pub fn collect_record(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_record<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     record: &HirRecordExpr,
     expected: Option<TypeId>,
-) -> TypeId {
-    if let Some(ty) = super::enum_variant::collect_record(ctx, record, expected) {
-        return ty;
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    if let Some(ty) = super::enum_variant::collect_record(ctx, record, expected)? {
+        return Ok(ty);
     }
     let constructor_target = record
         .path
@@ -33,6 +33,7 @@ pub fn collect_record(
     let mut seen = HashSet::new();
     let mut fields = Vec::new();
     for field in &record.fields {
+        ctx.checkpoint()?;
         let name = field_name(field).to_owned();
         if !seen.insert(name.clone()) {
             ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -48,11 +49,15 @@ pub fn collect_record(
                 .find(|candidate| candidate.name == name)
                 .map(|candidate| candidate.ty)
         });
-        let ty = collect_field_value(ctx, field, expected_field);
+        let ty = collect_field_value(ctx, field, expected_field)?;
         fields.push(FieldType { name, ty });
     }
     let actual = ctx.ctx.interner.intern(Type::Record(RecordType { fields }));
-    if let Some(expected) = constructor_target {
+    let ty = if let Some(expected) = constructor_target {
+        ctx.emit(TypeConstraint::Constructible {
+            target: expected,
+            origin: ConstraintOrigin { span: record.span },
+        });
         let reason = if record.path.is_some() {
             AssignabilityReason::Constructor
         } else {
@@ -75,11 +80,12 @@ pub fn collect_record(
         expected
     } else {
         actual
-    }
+    };
+    Ok(ty)
 }
 
-fn record_constructor_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn record_constructor_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
     generic_args: &[HirGenericArg],
     span: etas_core::Span,
@@ -89,23 +95,11 @@ fn record_constructor_type(
     };
     let args = lower_record_generic_args(ctx, generic_args);
     let fact = ctx.ctx.symbol_fact(symbol)?.clone();
-    match fact {
-        SymbolTypeFact::TypeAlias { target, params } => {
-            Some(apply_alias_type_args(ctx, target, params, args, span))
-        }
-        SymbolTypeFact::Type { constructor } | SymbolTypeFact::NominalType { constructor, .. } => {
-            Some(apply_constructor_type_args(
-                ctx,
-                TypeId(constructor.0),
-                args,
-            ))
-        }
-        _ => ctx.ctx.type_fact_as_type_id(symbol),
-    }
+    super::nominal_constructor::target(ctx, fact, &args, span)
 }
 
-fn lower_record_generic_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn lower_record_generic_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     generic_args: &[HirGenericArg],
 ) -> Vec<TypeId> {
     generic_args
@@ -133,81 +127,36 @@ fn lower_record_generic_args(
         .collect()
 }
 
-fn apply_alias_type_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    target: TypeId,
-    params: Vec<String>,
-    args: Vec<TypeId>,
-    span: etas_core::Span,
-) -> TypeId {
-    if params.len() != args.len() {
-        ctx.validate(crate::ValidationRequest::Diagnostic {
-            code: etas_core::TypeDiagnosticCode::ArityMismatch,
-            span,
-            message: "record constructor type alias was given the wrong number of type arguments"
-                .to_owned(),
-        });
-        return ctx.primitive(crate::PrimitiveType::Never);
-    }
-    if params.is_empty() {
-        return target;
-    }
-    let substitutions = params.into_iter().zip(args).collect();
-    match crate::substitute_named_params(&mut ctx.ctx.interner, target, &substitutions) {
-        Ok(ty) => ty,
-        Err(error) => {
-            ctx.validate(crate::ValidationRequest::Diagnostic {
-                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                span,
-                message: format!("record alias substitution failed: {error}"),
-            });
-            ctx.primitive(crate::PrimitiveType::Never)
-        }
-    }
-}
-
-fn apply_constructor_type_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    base: TypeId,
-    args: Vec<TypeId>,
-) -> TypeId {
-    if args.is_empty() {
-        base
-    } else {
-        ctx.ctx.interner.intern(Type::Applied {
-            constructor: TypeConstructorId(base.0),
-            args,
-        })
-    }
-}
-
 fn field_name(field: &HirFieldInit) -> &str {
     match field {
         HirFieldInit::Shorthand { name, .. } | HirFieldInit::Named { name, .. } => name,
     }
 }
 
-pub(super) fn collect_field_value(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn collect_field_value<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     field: &HirFieldInit,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     match field {
         HirFieldInit::Named { value, .. } => collect_expr(ctx, *value, expected),
         HirFieldInit::Shorthand {
             resolution: ResolveResult::Resolved(symbol),
             ..
-        } => super::expr::symbol_value_type(ctx, *symbol).unwrap_or_else(|| {
-            super::enum_variant::invalid(
-                ctx,
-                field_span(field),
-                "shorthand field has no checked symbol type",
-            );
-            ctx.primitive(crate::PrimitiveType::Never)
-        }),
+        } => Ok(
+            super::expr::symbol_value_type(ctx, *symbol).unwrap_or_else(|| {
+                super::enum_variant::invalid(
+                    ctx,
+                    field_span(field),
+                    "shorthand field has no checked symbol type",
+                );
+                ctx.primitive(crate::PrimitiveType::Never)
+            }),
+        ),
         HirFieldInit::Shorthand { .. } => {
             super::enum_variant::invalid(ctx, field_span(field), "unresolved shorthand field");
-            ctx.primitive(crate::PrimitiveType::Never)
+            Ok(ctx.primitive(crate::PrimitiveType::Never))
         }
     }
 }
@@ -218,8 +167,8 @@ fn field_span(field: &HirFieldInit) -> etas_core::Span {
     }
 }
 
-fn record_fields(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn record_fields<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: TypeId,
     span: etas_core::Span,
 ) -> Option<RecordType> {
@@ -241,6 +190,6 @@ fn record_fields(
     }
 }
 
-fn is_direct_record_type(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -> bool {
+fn is_direct_record_type<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: TypeId) -> bool {
     matches!(ctx.ctx.interner.store().get(ty), Some(Type::Record(_)))
 }

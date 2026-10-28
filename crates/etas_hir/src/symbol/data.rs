@@ -5,7 +5,7 @@ use crate::{
     Visibility,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct Symbol {
     pub id: SymbolId,
     pub name: String,
@@ -18,7 +18,7 @@ pub struct Symbol {
     pub definition_span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct SymbolData {
     pub name: String,
     pub kind: SymbolKind,
@@ -30,7 +30,7 @@ pub struct SymbolData {
     pub definition_span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum SymbolKind {
     Module,
     TypeAlias,
@@ -54,7 +54,7 @@ pub enum SymbolKind {
     StdPreludeAlias,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum SymbolDef {
     Module {
         module: HirModuleId,
@@ -109,6 +109,10 @@ pub enum SymbolDef {
         enum_item: HirItemId,
         variant_index: u32,
     },
+    ExternalEnumVariant {
+        enum_path: Vec<String>,
+        variant_index: u32,
+    },
     ImportAlias {
         path: Vec<String>,
         origin: ImportAliasOrigin,
@@ -119,20 +123,22 @@ pub enum SymbolDef {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ImportAliasOrigin {
     SourceImport,
     StdPrelude,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum PatternBindingOwner {
     MatchArm { expr: HirExprId },
     Handler { expr: HirExprId },
     For { stmt: HirStmtId },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum TopLevelLetClassification {
     Unknown,
     Const,
@@ -141,14 +147,16 @@ pub enum TopLevelLetClassification {
     Invalid,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ResourceKind {
     MemoryRegion,
     ExternalTool,
     Other,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum SyntheticSymbolReason {
     ImportAlias,
     QualifiedEffectAction,

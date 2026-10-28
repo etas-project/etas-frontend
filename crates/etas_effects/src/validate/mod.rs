@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+mod callable_specs;
 
 use etas_core::{Diagnostic, EffectDiagnosticCode};
 use etas_hir::{
@@ -35,6 +36,7 @@ impl EffectContractValidator {
             reachable_items,
         };
         validator.validate_items();
+        validator.validate_callable_specs();
         validator.validate_latent_effect_bounds()?;
         validator.materialize_public_contracts();
         Ok(())
@@ -328,6 +330,10 @@ impl ContractValidator<'_, '_> {
                 );
                 continue;
             };
+            if matches!(&signature, etas_types::ItemSignature::Agent(signature) if signature.default_entry.is_none())
+            {
+                continue;
+            }
             let Some(summary) = self.effects.facts.item_effects.get(&item).cloned() else {
                 self.reject_item(
                     item,
@@ -373,20 +379,34 @@ impl ContractValidator<'_, '_> {
                 })
                 .collect::<Vec<_>>();
             let mut inferred = summary.escaping_effects.clone();
-            for latent in &latent_flows {
-                inferred.union_assign(&latent.inferred);
+            if matches!(signature, etas_types::ItemSignature::TopLevelLet(_)) {
+                for latent in &latent_flows {
+                    inferred.union_assign(&latent.inferred);
+                }
             }
             let mut public_row = declared.clone().unwrap_or_else(|| inferred.clone());
-            for latent in &latent_flows {
-                public_row.union_assign(&latent.inferred);
+            if matches!(signature, etas_types::ItemSignature::TopLevelLet(_)) {
+                for latent in &latent_flows {
+                    public_row.union_assign(&latent.inferred);
+                }
             }
-            let high_impact_ack = if public_row_requires_high_impact_ack(self.registry, &public_row)
-                || public_row_requires_high_impact_ack(self.registry, &summary.requested_actions)
-            {
+            // Exporting deferred behavior still requires acknowledgement, but
+            // creating a callable does not execute that behavior.
+            let mut acknowledgement_row = public_row.clone();
+            for latent in &latent_flows {
+                acknowledgement_row.union_assign(&latent.inferred);
+            }
+            let high_impact_ack = if public_row_requires_high_impact_ack(
+                self.registry,
+                &acknowledgement_row,
+            ) || public_row_requires_high_impact_ack(
+                self.registry,
+                &summary.requested_actions,
+            ) {
                 match source {
                     PublicEffectContractSource::ExplicitSourceAnnotation => {
                         Some(EffectAcknowledgement {
-                            effects: public_row.clone(),
+                            effects: acknowledgement_row,
                         })
                     }
                     PublicEffectContractSource::GeneratedCheckedMetadata => {
@@ -487,7 +507,9 @@ fn declared_row(
     };
     let row = match signature {
         etas_types::ItemSignature::Flow(sig) => sig.effects.as_ref(),
-        etas_types::ItemSignature::Agent(sig) => sig.effects.as_ref(),
+        etas_types::ItemSignature::Agent(sig) => {
+            sig.callable().and_then(|entry| entry.effects.as_ref())
+        }
         etas_types::ItemSignature::Tool(sig) => sig.effects.as_ref(),
         etas_types::ItemSignature::TopLevelLet(_) => {
             return Ok(Some(crate::EffectRow::empty()));
@@ -496,12 +518,44 @@ fn declared_row(
     let Some(row) = row else {
         return Ok(None);
     };
+    lower_checked_row(types, registry, row, span, effects).map(Some)
+}
+
+fn lower_checked_row(
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    row: &etas_types::EffectRowRef,
+    span: etas_core::Span,
+    effects: &mut EffectOutput,
+) -> Result<crate::EffectRow, DeclaredRowError> {
+    lower_type_row(&types.store, registry, row, |name| {
+        effect_name(registry, &types.store, name, span, effects)
+    })
+}
+
+pub fn resolve_checked_type_row(
+    types: &etas_types::TypeStore,
+    registry: &EffectRegistry,
+    row: &etas_types::EffectRowRef,
+) -> Result<crate::EffectRow, String> {
+    lower_type_row(types, registry, row, |name| {
+        resolved_effect_name(registry, name)
+    })
+    .map_err(|error| error.message.to_owned())
+}
+
+fn lower_type_row(
+    types: &etas_types::TypeStore,
+    registry: &EffectRegistry,
+    row: &etas_types::EffectRowRef,
+    mut name: impl FnMut(&str) -> Result<crate::Effect, DeclaredRowError>,
+) -> Result<crate::EffectRow, DeclaredRowError> {
     let mut output = crate::EffectRow::empty();
     for effect in &row.effects {
         let summary = if effect.args.is_empty() {
-            effect_name(registry, &types.store, &effect.name, span, effects)?
+            name(&effect.name)?
         } else if let Some(action) = registry.action_by_name(&effect.name) {
-            declared_action_effect(registry, &types.store, action, &effect.args)?
+            declared_action_effect(registry, types, action, &effect.args)?
         } else if is_core_error_effect_name(registry, &effect.name) {
             let args = effect_args_as_types(&effect.args)?;
             let [error] = args.as_slice() else {
@@ -519,7 +573,7 @@ fn declared_row(
     }
     output.open = row.tail.as_deref().map(crate::effect_var_id_from_name);
     validate_declared_effect_row(registry, &output)?;
-    Ok(Some(output))
+    Ok(output)
 }
 
 fn is_core_error_effect_name(registry: &EffectRegistry, name: &str) -> bool {
@@ -715,17 +769,28 @@ fn effect_name(
     span: etas_core::Span,
     effects: &mut EffectOutput,
 ) -> Result<crate::Effect, DeclaredRowError> {
-    if let Some(action) = registry.action_by_name(name) {
-        return Ok(crate::Effect::Action(action));
-    }
-    if let Some(tag) = registry.tag_by_name(name) {
-        return Ok(crate::Effect::Tag(tag));
+    let result = resolved_effect_name(registry, name);
+    if result.is_ok() {
+        return result;
     }
     effects.diagnostics.push(Diagnostic::effect_check(
         EffectDiagnosticCode::UnknownEffectTag,
         span,
         "effect tag is not known to the current effect registry",
     ));
+    result
+}
+
+fn resolved_effect_name(
+    registry: &EffectRegistry,
+    name: &str,
+) -> Result<crate::Effect, DeclaredRowError> {
+    if let Some(action) = registry.action_by_name(name) {
+        return Ok(crate::Effect::Action(action));
+    }
+    if let Some(tag) = registry.tag_by_name(name) {
+        return Ok(crate::Effect::Tag(tag));
+    }
     Err(DeclaredRowError::unknown_effect())
 }
 
@@ -823,6 +888,9 @@ fn item_symbol(item: &HirItem) -> Option<SymbolId> {
 }
 
 fn exported_name(hir: &etas_hir::HirProgram, symbol: SymbolId) -> QualifiedName {
+    if let Some(path) = hir.declaration_path(symbol) {
+        return QualifiedName { segments: path };
+    }
     let Some(symbol_data) = hir.symbols.get(symbol) else {
         return QualifiedName {
             segments: vec!["<missing>".to_owned()],

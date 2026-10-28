@@ -2,7 +2,7 @@ use crate::{Span, ast::name::Path};
 
 use super::{Literal, Name};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum Pattern {
     Ident(Name),
     Wildcard(Span),
@@ -25,21 +25,21 @@ impl Pattern {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct RecordPattern {
     pub path: Option<Path>,
     pub fields: Vec<PatternField>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct PatternField {
     pub name: Name,
     pub pattern: Option<Pattern>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct VariantPattern {
     pub path: Path,
     pub patterns: Vec<Pattern>,

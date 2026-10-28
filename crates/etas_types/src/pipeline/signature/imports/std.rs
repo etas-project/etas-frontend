@@ -63,6 +63,121 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
     for symbol in registry.symbols() {
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
+            && !declaration.projected_fields.is_empty()
+        {
+            let fields = declaration
+                .projected_fields
+                .iter()
+                .map(|field| crate::FieldType {
+                    name: field.name.clone(),
+                    ty: crate::lower::std::lower_std_type(ctx, registry, &field.ty),
+                })
+                .collect::<Vec<_>>();
+            let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
+            ctx.signature_facts
+                .known_std_types
+                .projected_fields
+                .insert(local, fields.clone());
+            if let Some(canonical) = lower_std_type_symbol(ctx, registry, symbol) {
+                ctx.signature_facts
+                    .known_std_types
+                    .projected_fields
+                    .insert(canonical, fields);
+            }
+        }
+        if let etas_std::StdDecl::Type(declaration) = &symbol.decl
+            && declaration.construction == etas_std::StdTypeConstruction::IntrinsicOnly
+        {
+            let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
+            ctx.signature_facts
+                .known_std_types
+                .intrinsic_only_constructors
+                .insert(local);
+            if let Some(canonical) = lower_std_type_symbol(ctx, registry, symbol) {
+                ctx.signature_facts
+                    .known_std_types
+                    .intrinsic_only_constructors
+                    .insert(canonical);
+            }
+        }
+        if let etas_std::StdDecl::Type(declaration) = &symbol.decl
+            && declaration.kind == etas_std::TypeDeclKind::Support
+            && !declaration.derivable
+        {
+            let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
+            ctx.signature_facts
+                .known_std_types
+                .opaque_values
+                .insert(local);
+            if let Some(canonical) = lower_std_type_symbol(ctx, registry, symbol) {
+                ctx.signature_facts
+                    .known_std_types
+                    .opaque_values
+                    .insert(canonical);
+            }
+        }
+        if let etas_std::StdDecl::Type(declaration) = &symbol.decl
+            && let Some(role) = declaration.code_role
+            && let Some(ty) = lower_std_type_symbol(ctx, registry, symbol)
+        {
+            match role {
+                etas_std::CodeTypeRole::AgentId => {
+                    ctx.signature_facts.known_std_types.code.agent_id = Some(ty)
+                }
+                etas_std::CodeTypeRole::TypeInfo => {
+                    ctx.signature_facts.known_std_types.code.type_info = Some(ty)
+                }
+                etas_std::CodeTypeRole::GenericOwnerInfo => {
+                    ctx.signature_facts.known_std_types.code.generic_owner_info = Some(ty)
+                }
+                etas_std::CodeTypeRole::ToolRef => {
+                    ctx.signature_facts.known_std_types.code.tool_ref = Some(ty)
+                }
+                etas_std::CodeTypeRole::StaticValueInfo => {
+                    ctx.signature_facts.known_std_types.code.static_value_info = Some(ty)
+                }
+                etas_std::CodeTypeRole::TraceConstraintInfo => {
+                    ctx.signature_facts
+                        .known_std_types
+                        .code
+                        .trace_constraint_info = Some(ty)
+                }
+                etas_std::CodeTypeRole::AgentDefinition => {
+                    ctx.signature_facts.known_std_types.code.agent_definition = Some(ty)
+                }
+                etas_std::CodeTypeRole::CallableDefinition => {
+                    ctx.signature_facts.known_std_types.code.callable_definition = Some(ty)
+                }
+                etas_std::CodeTypeRole::SyntaxBlock => {
+                    ctx.signature_facts.known_std_types.code.syntax_block = Some(ty)
+                }
+                etas_std::CodeTypeRole::DefinitionId => {
+                    ctx.signature_facts.known_std_types.code.definition_id = Some(ty)
+                }
+                etas_std::CodeTypeRole::CallableId => {
+                    ctx.signature_facts.known_std_types.code.callable_id = Some(ty)
+                }
+                etas_std::CodeTypeRole::EffectRowInfo => {
+                    ctx.signature_facts.known_std_types.code.effect_row_info = Some(ty)
+                }
+                etas_std::CodeTypeRole::ActionSummary => {
+                    ctx.signature_facts.known_std_types.code.action_summary = Some(ty)
+                }
+                etas_std::CodeTypeRole::TraceSummary => {
+                    ctx.signature_facts.known_std_types.code.trace_summary = Some(ty)
+                }
+                etas_std::CodeTypeRole::Determinism => {
+                    ctx.signature_facts.known_std_types.code.determinism = Some(ty)
+                }
+                etas_std::CodeTypeRole::DescriptorDetail => {
+                    ctx.signature_facts.known_std_types.code.descriptor_detail = Some(ty)
+                }
+                etas_std::CodeTypeRole::TraceWitness => {
+                    ctx.signature_facts.known_std_types.code.trace_witness = Some(ty)
+                }
+            }
+        }
+        if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && let Some(element_parameter) = declaration.iterable_element_param
             && let Some(constructor) = lower_std_type_symbol(ctx, registry, symbol)
         {

@@ -115,12 +115,46 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                         .push(item_unit);
                     by_target.insert(UnitTarget::AstItem(item.clone()), item_unit);
 
+                    let mut bodies = Vec::new();
                     if item_has_body(item.kind) {
                         let body = AstBodyRef {
                             source: item.source,
                             item: item.clone(),
+                            impl_member: None,
                             span: item.span,
                         };
+                        bodies.push(body);
+                    } else if item.kind == AstItemKind::Impl {
+                        let Some(parsed) = context
+                            .parsed_sources
+                            .iter()
+                            .find(|parsed| parsed.source == item.source)
+                        else {
+                            return PassResult::failed("impl body unit requires its parsed source");
+                        };
+                        let Some(etas_syntax::ast::AnnotatedItem {
+                            item: etas_syntax::ast::Item::Impl(decl),
+                            ..
+                        }) = parsed.parse.value.items.get(item.index)
+                        else {
+                            return PassResult::failed(
+                                "impl body unit requires its AST declaration",
+                            );
+                        };
+                        if matches!(decl.target, etas_syntax::ast::ImplTarget::Agent { .. }) {
+                            for (index, member) in decl.items.iter().enumerate() {
+                                if let etas_syntax::ast::ImplItem::Flow(flow) = member {
+                                    bodies.push(AstBodyRef {
+                                        source: item.source,
+                                        item: item.clone(),
+                                        impl_member: Some(index),
+                                        span: flow.span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    for body in bodies {
                         let body_unit = nodes.alloc_with_id(|id| UnitNode {
                             id,
                             kind: UnitKind::Body,
@@ -128,7 +162,7 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                             children: Vec::new(),
                             target: UnitTarget::AstBody(body.clone()),
                             source: Some(item.source),
-                            span: Some(item.span),
+                            span: Some(body.span),
                         });
                         nodes
                             .get_mut(item_unit)

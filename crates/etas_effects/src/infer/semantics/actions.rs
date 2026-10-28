@@ -55,16 +55,115 @@ impl EffectSemantics<'_> {
             return state;
         };
 
-        self.apply_effect_to_summary_with_source(
-            &mut state.summary,
-            effect.clone(),
-            span,
-            ActionEventSource::Perform,
-        );
+        let mut performed = crate::EffectSummary::local();
+        let request_instance = if effect.is_action() {
+            let parameters = match action.action_symbol {
+                ResolveResult::Resolved(symbol) => self
+                    .type_symbols
+                    .symbol_fact(self.hir, &self.types.facts, symbol)
+                    .and_then(|fact| match fact {
+                        SymbolTypeFact::EffectAction { signature } => Some(signature),
+                        _ => None,
+                    }),
+                _ => None,
+            };
+            let Some(signature) = parameters else {
+                return self.incomplete_at(
+                    span,
+                    "performed request has no checked generic action signature",
+                    state,
+                );
+            };
+            Some(
+                match self.checked_request_instance(
+                    expr,
+                    effect.clone(),
+                    &signature.generic_params,
+                    &signature.params,
+                    signature.output,
+                ) {
+                    Ok(request) => request,
+                    Err(error) => return self.incomplete_at(span, error.to_string(), state),
+                },
+            )
+        } else {
+            None
+        };
+        let has_default = match &effect {
+            Effect::Action(action)
+            | Effect::AppliedAction(crate::ActionInstanceRef { action, .. }) => self
+                .registry
+                .action_signature(action)
+                .is_some_and(|signature| signature.has_default_handler),
+            _ => false,
+        };
+        if has_default {
+            let ResolveResult::Resolved(symbol) = action.action_symbol else {
+                return self.incomplete_at(
+                    span,
+                    "default handler requires a resolved action",
+                    state,
+                );
+            };
+            let Some(SymbolTypeFact::EffectAction { signature }) =
+                self.type_symbols
+                    .symbol_fact(self.hir, &self.types.facts, symbol)
+            else {
+                return self.incomplete_at(
+                    span,
+                    "default handler requires a checked action signature",
+                    state,
+                );
+            };
+            let Some(row) = &signature.default_handler_effects else {
+                return self.incomplete_at(
+                    span,
+                    "default handler has no checked produced-effect row",
+                    state,
+                );
+            };
+            let Some(effects) = row
+                .effects
+                .iter()
+                .map(|effect| self.effect_from_type_ref(effect))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return self.incomplete_at(
+                    span,
+                    "default handler produced-effect row contains an unresolved effect",
+                    state,
+                );
+            };
+            let row = crate::EffectRow {
+                effects: effects.into_iter().collect(),
+                open: row.tail.as_deref().map(crate::effect_var_id_from_name),
+            };
+            self.apply_requested_action_to_summary_with_source(
+                &mut performed,
+                effect.clone(),
+                span,
+                ActionEventSource::Perform,
+            );
+            if let Err(reason) = performed.record_default_handler_effects(effect.clone(), row) {
+                return self.incomplete_at(span, reason, state);
+            }
+        } else {
+            self.apply_effect_to_summary_with_source(
+                &mut performed,
+                effect.clone(),
+                span,
+                ActionEventSource::Perform,
+            );
+        }
+        if let Some(request) = request_instance {
+            performed.handler_requests = request;
+        }
+        state.summary.seq_assign(&performed);
         self.inputs.performed_actions.insert(
             expr,
             PerformedActionFact {
                 expr,
+                invocation: effect,
                 effect_segments: action
                     .effect
                     .path
@@ -84,7 +183,7 @@ impl EffectSemantics<'_> {
                     })
                     .collect(),
                 span,
-                summary: EffectSummaryForFact::one(effect, span, self),
+                summary: performed,
             },
         );
         state
@@ -311,6 +410,7 @@ impl EffectSemantics<'_> {
         })?;
         let symbol = self.hir.symbols.get(type_param)?;
         let expected = Type::Named(NamedTypeRef {
+            source_parameter: Some(type_param),
             name: symbol.name.clone(),
         });
         self.types
@@ -423,6 +523,7 @@ impl EffectSemantics<'_> {
             && let SymbolDef::TypeParam { .. } = symbol_data.def
         {
             let expected = Type::Named(NamedTypeRef {
+                source_parameter: Some(symbol),
                 name: symbol_data.name.clone(),
             });
             return self
@@ -534,10 +635,16 @@ impl EffectSemantics<'_> {
                 let ResolveResult::Resolved(symbol) = path.resolution else {
                     return None;
                 };
+                let data = self.hir.symbols.get(symbol)?;
                 match self
                     .type_symbols
                     .symbol_fact(self.hir, &self.types.facts, symbol)?
                 {
+                    SymbolTypeFact::Param { ty }
+                        if matches!(data.def, SymbolDef::TypeParam { .. }) =>
+                    {
+                        Some(*ty)
+                    }
                     SymbolTypeFact::Type { constructor }
                     | SymbolTypeFact::NominalType { constructor, .. } => {
                         Some(TypeId(constructor.0))
@@ -668,26 +775,4 @@ fn external_action_path(
     let mut path = path.clone();
     path.push(action.action.clone());
     Some(path)
-}
-
-struct EffectSummaryForFact;
-
-impl EffectSummaryForFact {
-    fn one(effect: Effect, span: Span, _semantics: &EffectSemantics<'_>) -> crate::EffectSummary {
-        let mut summary = crate::EffectSummary::local();
-        match &effect {
-            Effect::Action(_) => {
-                summary.record_requested_action(effect.clone());
-                summary.record_escaping_effect(effect.clone());
-                summary.record_action_trace_event(effect.clone(), span, ActionEventSource::Perform);
-            }
-            Effect::AppliedAction(_) => {
-                summary.record_requested_action(effect.clone());
-                summary.record_escaping_effect(effect.clone());
-                summary.record_action_trace_event(effect.clone(), span, ActionEventSource::Perform);
-            }
-            _ => summary.record_escaping_effect(effect),
-        }
-        summary
-    }
 }

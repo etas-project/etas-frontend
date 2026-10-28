@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use etas_core::SourceFile;
 use etas_syntax::{ast, parse_program};
@@ -24,6 +27,26 @@ pub fn lower_program(program: &ast::Program) -> HirProgram {
 #[derive(Clone, Copy)]
 pub struct HirProjectModule<'a> {
     pub parts: &'a [&'a ast::Program],
+    pub namespace: Option<HirProjectNamespace<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct HirProjectNamespace<'a> {
+    pub path: &'a [String],
+    pub group: u32,
+}
+
+impl HirProjectModule<'_> {
+    fn qualified_name(&self) -> Option<String> {
+        match self.namespace {
+            Some(namespace) => Some(namespace.path.join(".")),
+            None => self
+                .parts
+                .first()
+                .and_then(|part| part.module.as_ref())
+                .map(|module| crate::path_text(&module.path)),
+        }
+    }
 }
 
 pub fn lower_project(modules: &[HirProjectModule<'_>]) -> HirProgram {
@@ -34,12 +57,13 @@ pub fn lower_project(modules: &[HirProjectModule<'_>]) -> HirProgram {
             lowering.lower_part(module_index, part);
         }
     }
-    lowering.finish()
+    lowering.ctx.finish()
 }
 
 pub struct HirProjectLowering {
     ctx: LowerCtx,
     modules: Vec<HirProjectLoweringModule>,
+    body_slots: HashSet<SyntaxKey>,
 }
 
 #[derive(Clone)]
@@ -101,11 +125,7 @@ impl HirProjectLowering {
             let shell = &shells[module_index];
             ctx.current_module = shell.module_id;
             ctx.current_module_scope = Some(shell.scope);
-            let module_qualified_prefix = module
-                .parts
-                .first()
-                .and_then(|part| part.module.as_ref())
-                .map(|module| crate::path_text(&module.path));
+            let module_qualified_prefix = module.qualified_name();
             for part in module.parts {
                 ctx.predeclare_items(&part.items, shell.scope, module_qualified_prefix.as_deref());
             }
@@ -117,16 +137,35 @@ impl HirProjectLowering {
                 .parts
                 .first()
                 .expect("project HIR module should contain at least one part");
-            let module_name = first_part.module.as_ref().map(|module| ResolvedPath {
-                syntax_path: module.path.clone(),
-                segments: crate::path_segments(&module.path),
+            let module_name = first_part.module.as_ref().map(|declaration| ResolvedPath {
+                syntax_path: declaration.path.clone(),
+                segments: match module.namespace {
+                    Some(namespace) => namespace
+                        .path
+                        .iter()
+                        .map(|name| crate::PathSegment {
+                            name: name.clone(),
+                            span: declaration.span,
+                        })
+                        .collect(),
+                    None => crate::path_segments(&declaration.path),
+                },
                 resolution: ResolveResult::Unresolved,
-                span: module.span,
+                span: declaration.span,
             });
             let hir_module = ctx.hir.modules_arena.get_mut(shell.module_id).unwrap();
             hir_module.name = module_name;
             hir_module.scope = shell.scope;
             ctx.hir.modules.push(shell.module_id);
+        }
+
+        for (module_index, module) in modules.iter().enumerate() {
+            let shell = &shells[module_index];
+            ctx.current_module = shell.module_id;
+            ctx.current_module_scope = Some(shell.scope);
+            for part in module.parts {
+                ctx.predeclare_agent_methods(&part.items, shell.scope);
+            }
         }
 
         for (target_index, module) in modules.iter().enumerate() {
@@ -137,7 +176,9 @@ impl HirProjectLowering {
             let target = &shells[target_index];
             ctx.current_module = target.module_id;
             ctx.current_module_scope = Some(target.scope);
-            let name = crate::path_text(&module_decl.path);
+            let Some(name) = module.qualified_name() else {
+                continue;
+            };
             let symbol = ctx.alloc_symbol_with_def(SymbolData {
                 name: name.clone(),
                 kind: SymbolKind::Module,
@@ -153,12 +194,62 @@ impl HirProjectLowering {
             for shell in &shells {
                 ctx.insert_module_symbol(shell.scope, &name, symbol, module_decl.span);
             }
+            if let Some(namespace) = module.namespace {
+                let canonical_name = crate::path_text(&module_decl.path);
+                if canonical_name != name {
+                    for (owner, shell) in modules.iter().zip(&shells) {
+                        if owner
+                            .namespace
+                            .is_some_and(|owner| owner.group == namespace.group)
+                        {
+                            ctx.insert_module_symbol(
+                                shell.scope,
+                                &canonical_name,
+                                symbol,
+                                module_decl.span,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
+        let mut body_slots = HashSet::new();
+        for module in modules {
+            for part in module.parts {
+                super::body_overlay::callable_slots(part, &mut body_slots);
+            }
+        }
         Self {
             ctx,
             modules: shells,
+            body_slots,
         }
+    }
+
+    /// Installs structured syntax into an existing callable's authoritative
+    /// slot. Declaration headers, imports, and lexical owners stay unchanged.
+    pub fn replace_body(
+        &mut self,
+        callable: etas_core::Span,
+        body: Arc<etas_syntax::RelocatedBodySyntax>,
+    ) -> Result<(), super::BodyOverlayError> {
+        let key = super::body_overlay::key(callable);
+        if !self.body_slots.contains(&key) {
+            return Err(super::BodyOverlayError::MissingCallable(callable));
+        }
+        if self.ctx.body_overlays.contains_key(&key) {
+            return Err(super::BodyOverlayError::DuplicateCallable(callable));
+        }
+        if !self
+            .ctx
+            .source_map
+            .bind_lexical_source(body.source().id, callable.source)
+        {
+            return Err(super::BodyOverlayError::ConflictingLexicalSource(callable));
+        }
+        self.ctx.body_overlays.insert(key, body);
+        Ok(())
     }
 
     pub fn normalize_part(&mut self, module_index: usize, part: &ast::Program) {
@@ -212,12 +303,29 @@ impl HirProjectLowering {
         item_ids
     }
 
-    pub fn finish(self) -> HirProgram {
-        self.ctx.finish()
+    pub fn finish(self) -> Result<HirProgram, super::BodyOverlayError> {
+        if let Some(key) = self
+            .ctx
+            .body_overlays
+            .keys()
+            .min_by_key(|key| (key.source.0, key.start, key.end))
+        {
+            return Err(super::BodyOverlayError::UnappliedCallable(
+                etas_core::Span::new(
+                    key.source,
+                    etas_core::TextRange::new(
+                        etas_core::TextSize(key.start),
+                        etas_core::TextSize(key.end),
+                    ),
+                ),
+            ));
+        }
+        Ok(self.ctx.finish())
     }
 }
 
 pub(super) struct LowerCtx {
+    pub(super) body_overlays: HashMap<SyntaxKey, Arc<etas_syntax::RelocatedBodySyntax>>,
     pub(super) hir: HirProgram,
     pub(super) diagnostics: HirDiagnostics,
     pub(super) current_module: HirModuleId,
@@ -227,11 +335,12 @@ pub(super) struct LowerCtx {
     pub(super) source_map: SourceMapBuilder,
     pub(super) top_item_symbols: HashMap<SyntaxKey, SymbolId>,
     pub(super) action_symbols: HashMap<SyntaxKey, SymbolId>,
+    pub(super) method_symbols: HashMap<SyntaxKey, SymbolId>,
     pub(super) local_binding: Option<LocalBindingContext>,
     pub(super) pattern_binding: Option<PatternBindingContext>,
     pub(super) std_prelude_aliases: HashMap<(HirModuleId, String), SymbolId>,
     pub(super) std_qualified_aliases: HashMap<(HirModuleId, Vec<String>), SymbolId>,
-    pub(super) std_action_aliases: HashMap<(HirModuleId, String), SymbolId>,
+    pub(super) std_action_aliases: HashMap<etas_std::StdSymbolId, SymbolId>,
     pub(super) std_registry: Arc<etas_std::StdRegistry>,
 }
 
@@ -263,6 +372,7 @@ impl LowerCtx {
 
     pub(super) fn new_with_std_registry(std_registry: Arc<etas_std::StdRegistry>) -> Self {
         Self {
+            body_overlays: HashMap::new(),
             hir: HirProgram::default(),
             diagnostics: HirDiagnostics::default(),
             current_module: HirModuleId(0),
@@ -272,6 +382,7 @@ impl LowerCtx {
             source_map: SourceMapBuilder::default(),
             top_item_symbols: HashMap::new(),
             action_symbols: HashMap::new(),
+            method_symbols: HashMap::new(),
             local_binding: None,
             pattern_binding: None,
             std_prelude_aliases: HashMap::new(),
@@ -316,6 +427,7 @@ impl LowerCtx {
             module_scope,
             module_qualified_prefix.as_deref(),
         );
+        self.predeclare_agent_methods(&program.items, module_scope);
 
         let mut item_ids = Vec::new();
         for item in &program.items {
@@ -326,7 +438,7 @@ impl LowerCtx {
         let module = self.hir.modules_arena.get_mut(module_id).unwrap();
         module.name = module_name;
         module.imports = imports;
-        module.items = item_ids;
+        module.items.extend(item_ids);
         module.scope = module_scope;
         self.hir.modules.push(module_id);
 

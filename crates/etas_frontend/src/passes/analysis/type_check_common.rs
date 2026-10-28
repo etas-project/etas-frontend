@@ -16,11 +16,11 @@ pub(crate) fn hir_item_for_body_unit(
         )));
     };
     context
-        .hir_item_bindings
+        .hir_body_bindings
         .as_ref()
-        .expect("HIR item bindings should exist")
-        .ast_to_hir
-        .get(&body.item)
+        .expect("HIR body bindings should exist")
+        .body_items
+        .get(body)
         .copied()
         .ok_or_else(|| PassFailure::new("body AST item is missing its explicit HIR item binding"))
 }

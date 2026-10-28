@@ -1,12 +1,12 @@
 use crate::{SourceId, Span, Trivia, TriviaKind};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct TokenStream {
     pub source: SourceId,
     pub tokens: Vec<Token>,
@@ -27,7 +27,7 @@ impl TokenStream {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum TokenKind {
     Ident,
     IntLit,
@@ -61,13 +61,13 @@ impl TokenKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum CommentKind {
     Line,
     Block,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum Keyword {
     Module,
     Import,
@@ -171,7 +171,7 @@ impl Keyword {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum Punct {
     LParen,
     RParen,
@@ -208,4 +208,5 @@ pub enum Punct {
     Question,
     Hash,
     At,
+    Caret,
 }

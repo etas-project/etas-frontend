@@ -1,7 +1,16 @@
+mod callable_graph;
+mod checked_reachability;
+pub(crate) use callable_graph::{lower_callable_graph, lower_callable_graph_in_scope};
 mod context;
+mod dependency_namespaces;
+mod external_anchors;
+pub use checked_reachability::{CheckedCallableRoot, CheckedReachabilityError};
+pub(crate) use dependency_namespaces::DependencyModuleNamespaces;
+pub(crate) use external_anchors::ExternalImportAnchorIndex;
 mod hir_bindings;
 mod import_graph;
 mod incremental;
+pub(crate) mod instantiation;
 mod loader;
 mod module_catalog;
 mod module_index;
@@ -12,8 +21,8 @@ mod source;
 mod unit_tree;
 
 pub use context::ProjectContext;
-pub(crate) use context::{ENTRY_REACHABLE_UNIT_FILTER, ProjectHirLoweringState};
-pub use hir_bindings::{HirBodyBindings, HirItemBindings};
+pub(crate) use context::{ANALYZED_BODY_UNIT_FILTER, ProjectHirLoweringState};
+pub use hir_bindings::{HirBodyBindings, HirExternalImportMember, HirItemBindings};
 pub use import_graph::{ImportEdge, ImportGraph, ModuleTopoOrder};
 pub use incremental::AffectedModuleSet;
 pub use loader::{

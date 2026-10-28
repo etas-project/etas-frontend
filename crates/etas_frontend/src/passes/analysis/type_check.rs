@@ -32,7 +32,12 @@ impl Pass<ProjectContext> for BuildSignatureFactsPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let hir = context.hir.as_ref().expect("HIR output should exist");
-        let (input, input_diagnostics) = build_signature_pipeline_input(context, &hir.hir);
+        let (input, input_diagnostics) = match build_signature_pipeline_input(context, &hir.hir) {
+            Ok(input) => input,
+            Err(error) => {
+                return PassResult::failed(format!("signature reflection identities: {error}"));
+            }
+        };
         let mut output = etas_types::run_signature_pipeline(input);
         output.diagnostics.extend(input_diagnostics);
         context

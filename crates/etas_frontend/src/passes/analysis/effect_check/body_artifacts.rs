@@ -3,17 +3,19 @@ use etas_utils::UnitKey;
 use crate::incremental::{BodyArtifactIdentity, dependency_fingerprints_match};
 use crate::{BODY_UNIT_KIND, ProjectContext};
 
-pub(super) fn record_reused_effect_body_artifacts(context: &mut ProjectContext) {
+pub(super) fn record_reused_effect_body_artifacts(
+    context: &mut ProjectContext,
+) -> Result<(), String> {
     if !context.incremental || context.body_artifact_reuse.effect_outputs.is_empty() {
-        return;
+        return Ok(());
     }
     let Some(units) = context.units.as_ref() else {
-        return;
+        return Ok(());
     };
     let Some(sources) = context.sources.as_ref() else {
-        return;
+        return Ok(());
     };
-    let current_manifest = context.current_artifact_manifest();
+    let current_manifest = context.current_artifact_manifest()?;
     let mut reused = context.body_artifact_reuse.effect_outputs.clone();
     reused.sort_by_key(|artifact| artifact.unit.0);
 
@@ -46,4 +48,5 @@ pub(super) fn record_reused_effect_body_artifacts(context: &mut ProjectContext) 
             context.reused_cache_artifacts.push(artifact.cache_key);
         }
     }
+    Ok(())
 }

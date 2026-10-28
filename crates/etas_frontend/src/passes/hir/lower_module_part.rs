@@ -42,7 +42,9 @@ impl Pass<ProjectContext> for NormalizeModuleImportsPass {
             .module_part_to_module_index
             .get(&part_id)
             .expect("module part should have a HIR module index");
-        lowering.lowering.normalize_part(module_index, &parsed);
+        lowering
+            .lowering
+            .normalize_part(module_index, &parsed.value);
         lowering.normalized_parts.insert(part_id);
         PassResult::changed(
             PreservedArtifacts::All,
@@ -104,7 +106,7 @@ impl Pass<ProjectContext> for LowerModuleItemsPass {
             .module_part_to_module_index
             .get(&part_id)
             .expect("module part should have a HIR module index");
-        let item_ids = lowering.lowering.lower_part(module_index, &parsed);
+        let item_ids = lowering.lowering.lower_part(module_index, &parsed.value);
         for (ast_item, hir_item) in part_items.into_iter().zip(item_ids) {
             lowering
                 .item_bindings

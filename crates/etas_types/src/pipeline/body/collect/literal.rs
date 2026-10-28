@@ -5,8 +5,8 @@ use crate::{
     pipeline::context::BodyCollectContext,
 };
 
-pub fn collect_literal(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_literal<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: Option<etas_hir::HirExprId>,
     literal: &HirLiteral,
     expected: Option<TypeId>,
@@ -42,8 +42,8 @@ pub fn collect_literal(
     }
 }
 
-pub fn collect_negated_numeric_literal(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_negated_numeric_literal<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     literal: &HirLiteral,
     expected: Option<TypeId>,
@@ -65,8 +65,8 @@ pub fn collect_negated_numeric_literal(
     Some(ctx.record_expr_type(expr, ty))
 }
 
-fn numeric_expected(
-    ctx: &BodyCollectContext<'_, '_>,
+fn numeric_expected<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     expected: Option<TypeId>,
     kind: NumericLiteralKind,
 ) -> Option<TypeId> {

@@ -1,25 +1,51 @@
 use crate::{Keyword, Punct, Token, TokenKind};
 
-#[derive(Clone, Debug)]
-pub struct Cursor {
+#[derive(Clone)]
+pub struct Cursor<'a> {
     tokens: Vec<Token>,
     position: usize,
+    checkpoint: Option<&'a dyn Fn() -> bool>,
+    halted: std::cell::Cell<bool>,
 }
 
-impl Cursor {
+impl<'a> Cursor<'a> {
     pub fn new(tokens: impl IntoIterator<Item = Token>) -> Self {
         Self {
             tokens: tokens.into_iter().collect(),
             position: 0,
+            checkpoint: None,
+            halted: std::cell::Cell::new(false),
         }
     }
 
+    pub fn with_checkpoint(
+        tokens: impl IntoIterator<Item = Token>,
+        checkpoint: &'a dyn Fn() -> bool,
+    ) -> Self {
+        Self {
+            checkpoint: Some(checkpoint),
+            ..Self::new(tokens)
+        }
+    }
+
+    fn index(&self, offset: usize) -> usize {
+        let last = self.tokens.len().saturating_sub(1);
+        if self.halted.get() {
+            return last;
+        }
+        if self.checkpoint.is_some_and(|checkpoint| !checkpoint()) {
+            self.halted.set(true);
+            return last;
+        }
+        self.position.saturating_add(offset).min(last)
+    }
+
     pub fn peek(&self) -> &Token {
-        &self.tokens[self.position.min(self.tokens.len().saturating_sub(1))]
+        &self.tokens[self.index(0)]
     }
 
     pub fn nth(&self, n: usize) -> &Token {
-        &self.tokens[(self.position + n).min(self.tokens.len().saturating_sub(1))]
+        &self.tokens[self.index(n)]
     }
 
     pub fn bump(&mut self) -> Token {

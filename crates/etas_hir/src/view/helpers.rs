@@ -405,6 +405,7 @@ pub(super) fn expr_children(program: &HirProgram, expr: HirExprId) -> HirTreeChi
     match expr {
         HirExpr::Literal(_)
         | HirExpr::Path(_)
+        | HirExpr::Reflect(_)
         | HirExpr::EmptyRecordOrMap { .. }
         | HirExpr::EmptySequence { .. }
         | HirExpr::Error { .. } => HirTreeChildren::empty(),
@@ -463,7 +464,7 @@ pub(super) fn expr_children(program: &HirProgram, expr: HirExprId) -> HirTreeChi
                 index: 0,
             },
         },
-        HirExpr::Perform { args, .. } => HirTreeChildren {
+        HirExpr::Perform { args, .. } | HirExpr::Infer { args, .. } => HirTreeChildren {
             state: HirTreeChildIterState::Args {
                 first: None,
                 args,

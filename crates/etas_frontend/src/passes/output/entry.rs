@@ -9,7 +9,8 @@ use etas_utils::{
 use crate::{EntryPolicy, ModulePath, ProjectContext, ProjectEntryFact, ProjectEntryResolution};
 
 use crate::passes::artifacts::{
-    HIR_OUTPUT, MODULE_INDEX, PROJECT_ENTRY, TYPE_OUTPUT, global_with_diagnostics,
+    HIR_OUTPUT, MODULE_INDEX, PROJECT_ANALYSIS_ROOTS, PROJECT_ENTRY, TYPE_OUTPUT,
+    global_with_diagnostics,
 };
 
 pub struct ResolveEntryItemPass;
@@ -18,7 +19,10 @@ impl Pass<ProjectContext> for ResolveEntryItemPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("ResolveEntryItemPass", PassKind::Analysis)
             .requires(ArtifactSet::from([MODULE_INDEX, HIR_OUTPUT]))
-            .produces(global_with_diagnostics([PROJECT_ENTRY]))
+            .produces(global_with_diagnostics([
+                PROJECT_ENTRY,
+                PROJECT_ANALYSIS_ROOTS,
+            ]))
     }
 
     fn run(
@@ -30,11 +34,19 @@ impl Pass<ProjectContext> for ResolveEntryItemPass {
         let requested = context.input.entry.clone();
         let (resolved, diagnostics) = resolve_entry(context, &requested.module, &requested.flow);
         context.diagnostics.extend(diagnostics);
+        context.analysis_roots = resolved
+            .as_ref()
+            .map(|entry| entry.item)
+            .into_iter()
+            .collect();
         context.entry = Some(ProjectEntryFact {
             requested,
             resolved,
         });
-        PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(PROJECT_ENTRY))
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::from([PROJECT_ENTRY, PROJECT_ANALYSIS_ROOTS]),
+        )
     }
 }
 

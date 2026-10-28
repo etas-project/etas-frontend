@@ -9,11 +9,7 @@ use etas_package_metadata::{
     ActionArgKind as MetadataActionArgKind, ActionSignature as MetadataActionSignature,
     ActionTrace as MetadataActionTrace, ActionTraceEvent as MetadataActionTraceEvent,
     ActionTraceEventSource as MetadataActionTraceEventSource,
-    AnnotationArgMetadata as MetadataAnnotationArg,
-    AnnotationFieldMetadata as MetadataAnnotationField, AnnotationMetadata as MetadataAnnotation,
-    AnnotationValueKind as MetadataAnnotationValueKind,
-    AnnotationValueMetadata as MetadataAnnotationValue,
-    CallableSignature as MetadataCallableSignature,
+    AnnotationMetadata as MetadataAnnotation, CallableSignature as MetadataCallableSignature,
     CallableSpecSatisfaction as MetadataCallableSpecSatisfaction, EffectArg as MetadataEffectArg,
     EffectArgKind as MetadataEffectArgKind, EffectExtension as MetadataEffectExtension,
     EffectMetadata as MetadataEffectMetadata, EffectRef as MetadataEffectRef,
@@ -33,7 +29,6 @@ use etas_package_metadata::{
     TypeSpecSatisfaction as MetadataTypeSpecSatisfaction, Visibility as MetadataVisibility,
     blake3_hash, package_metadata_to_sections,
 };
-use etas_std::{RequirementSemantics, StdDecl};
 use etas_types::{
     AgentSignature, EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FlowSignature,
     ItemSignature, PrimitiveType, ResourceHandleType, ToolSignature, TrustWrapper, Type, TypeId,
@@ -45,24 +40,23 @@ use crate::{AstItemKind, CheckedProject, ModuleOrigin};
 
 use super::{PackageMetadataBuildInput, PackageMetadataError, PackageMetadataHeader};
 
+mod callable_returns;
+mod re_exports;
+mod request_templates;
+mod type_projection;
+use callable_returns::invalid;
+use type_projection::{metadata_effect_arg, metadata_effect_row_ref, metadata_type};
+
 pub(super) struct ProjectMetadataProjection<'a> {
-    checked: &'a CheckedProject,
-    hir_items_by_origin: BTreeMap<(u32, u32, u32), HirItemId>,
+    pub(super) checked: &'a CheckedProject,
     canonical_type_paths: BTreeMap<String, Option<Vec<String>>>,
     effect_registry: &'a EffectRegistry,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
     pub(super) fn new(checked: &'a CheckedProject) -> Self {
-        let mut hir_items_by_origin = BTreeMap::new();
-        for (item, origin) in &checked.source_map.item_sources {
-            let span = origin.span();
-            hir_items_by_origin
-                .insert((span.source.0, span.range.start.0, span.range.end.0), *item);
-        }
         Self {
             checked,
-            hir_items_by_origin,
             canonical_type_paths: build_canonical_type_paths(checked),
             effect_registry: &checked.effect_registry,
         }
@@ -73,14 +67,47 @@ impl<'a> ProjectMetadataProjection<'a> {
         input: &PackageMetadataBuildInput,
         header: &PackageMetadataHeader,
     ) -> Result<Vec<EncodedMetadataSection>, PackageMetadataError> {
-        let external_modules = self.external_modules();
+        if input.definition_origin.is_none()
+            && self.checked.types.agent_methods.values().any(|method| {
+                method.private_to.is_none()
+                    && matches!(self.checked.items.get(method.body), Some(HirItem::Flow(_)))
+            })
+        {
+            return Err(PackageMetadataError::InvalidMetadataType {
+                reason: "agent method metadata requires a canonical package definition origin"
+                    .into(),
+            });
+        }
+        let external_modules = self.external_modules()?;
         let mut public_metadata = self.public_metadata(&external_modules)?;
+        if let Some(package) = input.definition_origin {
+            let (origins, identities) = self.definition_identity_input(package)?;
+            public_metadata.definition_origins =
+                Some(self.definition_origins(package, &origins, &identities)?);
+            public_metadata.definition_descriptors =
+                Some(self.definition_descriptors(&origins, identities)?);
+        }
         let effect_metadata = self.effect_metadata(&public_metadata)?;
+        let mut re_exports = public_metadata
+            .re_exports
+            .iter()
+            .map(|export| (&export.exported, &export.from))
+            .collect::<Vec<_>>();
+        re_exports.sort();
         public_metadata.fingerprint = Some(blake3_hash(
             format!(
-                "{:?}{:?}",
+                "{:?}{:?}{:?}{:?}{:?}",
                 public_symbols(&public_metadata),
-                effect_metadata
+                effect_metadata,
+                re_exports,
+                public_metadata
+                    .definition_origins
+                    .as_ref()
+                    .map(|origins| origins.fingerprint()),
+                public_metadata
+                    .definition_descriptors
+                    .as_ref()
+                    .map(etas_package_metadata::definition_descriptors_fingerprint)
             )
             .as_bytes(),
         ));
@@ -101,24 +128,37 @@ impl<'a> ProjectMetadataProjection<'a> {
         Ok(package_metadata_to_sections(&package_metadata)?)
     }
 
-    fn external_modules(&self) -> Vec<MetadataExternalModule> {
+    fn external_modules(&self) -> Result<Vec<MetadataExternalModule>, PackageMetadataError> {
         let mut modules = Vec::new();
+        let forwarded = self.external_re_exports()?;
         for (module_id, module) in self.checked.module_index.modules.iter() {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            let mut exports = module
+            let mut declarations = module
                 .visibility_exports
                 .items
                 .values()
+                .map(|export| (export.name.clone(), visibility_name(export.visibility)))
+                .collect::<BTreeMap<_, _>>();
+            for export in forwarded.iter().filter(|export| export.module == module_id) {
+                declarations.insert(export.name.clone(), MetadataVisibility::Public);
+            }
+            let exports = declarations
+                .into_iter()
                 .enumerate()
-                .map(|(index, export)| MetadataExternalExport {
-                    id: index.min(u32::MAX as usize) as u32,
-                    name: export.name.clone(),
-                    visibility: visibility_name(export.visibility),
+                .map(|(index, (name, visibility))| {
+                    Ok(MetadataExternalExport {
+                        id: u32::try_from(index).map_err(|_| {
+                            PackageMetadataError::InvalidMetadataType {
+                                reason: "too many module exports".into(),
+                            }
+                        })?,
+                        name,
+                        visibility,
+                    })
                 })
-                .collect::<Vec<_>>();
-            exports.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+                .collect::<Result<Vec<_>, PackageMetadataError>>()?;
             modules.push(MetadataExternalModule {
                 package: None,
                 id: module_id.0,
@@ -127,7 +167,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             });
         }
         modules.sort_by(|left, right| left.path.cmp(&right.path).then(left.id.cmp(&right.id)));
-        modules
+        Ok(modules)
     }
 
     fn public_metadata(
@@ -155,9 +195,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                     AstItemKind::Type | AstItemKind::TypeAlias => metadata
                         .types
                         .push(self.type_signature(path, visibility, export)?),
-                    AstItemKind::Enum | AstItemKind::Error => {
-                        metadata.enums.push(named_signature(path, visibility))
-                    }
+                    AstItemKind::Enum | AstItemKind::Error => metadata
+                        .enums
+                        .push(self.type_signature(path, visibility, export)?),
                     AstItemKind::Effect => metadata.effects.push(named_signature(path, visibility)),
                     AstItemKind::Protocol => {
                         metadata.protocols.push(named_signature(path, visibility))
@@ -217,6 +257,65 @@ impl<'a> ProjectMetadataProjection<'a> {
         metadata.trace_spec_conformances = self.trace_spec_conformances()?;
         metadata.effect_summaries = self.effect_summaries()?;
         metadata.trace_spec_summaries = self.trace_spec_summaries()?;
+        for (_, module) in self.checked.module_index.modules.iter() {
+            if !matches!(module.origin, ModuleOrigin::Source) {
+                continue;
+            }
+            for export in module.visibility_exports.items.values() {
+                let item = self.hir_item_for_export(export)?;
+                let symbol = self
+                    .checked
+                    .items
+                    .get(item)
+                    .and_then(HirItem::symbol)
+                    .ok_or_else(|| PackageMetadataError::MissingExportSignature {
+                        path: module.path.segments.clone(),
+                    })?;
+                let from = self.symbol_canonical_path(symbol).ok_or_else(|| {
+                    PackageMetadataError::MissingExportSignature {
+                        path: module.path.segments.clone(),
+                    }
+                })?;
+                let mut exported = module.path.segments.clone();
+                exported.push(export.name.clone());
+                if from != exported {
+                    if let Some(summary) = metadata
+                        .effect_summaries
+                        .iter()
+                        .find(|summary| summary.item == from)
+                        .cloned()
+                    {
+                        let mut summary = summary;
+                        summary.item = exported.clone();
+                        metadata.effect_summaries.push(summary);
+                    } else if self.checked.types.item_signatures.get(&item).is_some_and(
+                        |signature| match signature {
+                            ItemSignature::Flow(_) | ItemSignature::Tool(_) => true,
+                            ItemSignature::Agent(agent) => agent.default_entry.is_some(),
+                            ItemSignature::TopLevelLet(_) => false,
+                        },
+                    ) {
+                        return Err(PackageMetadataError::InvalidMetadataType {
+                            reason: "re-exported callable has no solved effect summary".into(),
+                        });
+                    }
+                    metadata
+                        .re_exports
+                        .push(etas_package_metadata::ReExport { from, exported });
+                }
+            }
+        }
+        metadata
+            .re_exports
+            .extend(self.external_re_exports()?.into_iter().map(|export| {
+                etas_package_metadata::ReExport {
+                    exported: export.exported,
+                    from: export.from,
+                }
+            }));
+        metadata
+            .re_exports
+            .sort_by(|a, b| a.exported.cmp(&b.exported));
         metadata.annotations.sort_by(|left, right| {
             left.item
                 .cmp(&right.item)
@@ -238,383 +337,35 @@ impl<'a> ProjectMetadataProjection<'a> {
         item_path: Vec<String>,
         item: HirItemId,
     ) -> Result<Vec<MetadataAnnotation>, PackageMetadataError> {
-        let Some(annotations) = self.checked.hir.item_annotations.get(&item) else {
-            return Ok(Vec::new());
-        };
-        annotations
-            .iter()
-            .map(|annotation| {
-                Ok(MetadataAnnotation {
-                    item: item_path.clone(),
-                    path: path_segments(&annotation.path),
-                    args: annotation
-                        .args
-                        .iter()
-                        .map(|arg| self.annotation_arg_metadata(arg))
-                        .collect::<Result<Vec<_>, _>>()?,
+        let projector = crate::static_annotation::AnnotationProjection::new(
+            self.checked,
+            |symbol| {
+                self.symbol_canonical_path(symbol).ok_or_else(|| {
+                    "annotation reference has no canonical package metadata identity".to_owned()
                 })
+            },
+            etas_code::descriptor::DescriptorLimits {
+                max_expansion_depth: etas_package_metadata::MAX_METADATA_GRAPH_DEPTH + 1,
+                max_nodes: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+                max_text_bytes: etas_package_metadata::MAX_METADATA_UNCOMPRESSED_SECTION_SIZE,
+                ..Default::default()
+            },
+        );
+        self.checked
+            .hir
+            .item_annotations
+            .get(&item)
+            .into_iter()
+            .flatten()
+            .map(|annotation| {
+                let value = projector.project(annotation).map_err(|error| {
+                    PackageMetadataError::InvalidMetadataType {
+                        reason: error.to_string(),
+                    }
+                })?;
+                crate::static_annotation::package::annotation(item_path.clone(), &value)
             })
             .collect()
-    }
-
-    fn annotation_arg_metadata(
-        &self,
-        arg: &etas_hir::HirAnnotationArg,
-    ) -> Result<MetadataAnnotationArg, PackageMetadataError> {
-        match arg {
-            etas_hir::HirAnnotationArg::Positional { value, .. } => Ok(MetadataAnnotationArg {
-                name: String::new(),
-                value: self.annotation_value_metadata(*value)?,
-            }),
-            etas_hir::HirAnnotationArg::Named { name, value, .. } => Ok(MetadataAnnotationArg {
-                name: name.clone(),
-                value: self.annotation_value_metadata(*value)?,
-            }),
-        }
-    }
-
-    fn annotation_value_metadata(
-        &self,
-        expr: etas_hir::HirExprId,
-    ) -> Result<MetadataAnnotationValue, PackageMetadataError> {
-        let Some(expr_data) = self.checked.hir.exprs.get(expr) else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation expression is missing from checked HIR".to_owned(),
-            });
-        };
-        match expr_data {
-            etas_hir::HirExpr::Literal(literal) => Ok(self.annotation_literal_metadata(literal)),
-            etas_hir::HirExpr::Path(path) => Ok(MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Path,
-                path: self.annotation_path_metadata(path)?,
-                ..Default::default()
-            }),
-            etas_hir::HirExpr::Array { elems, .. } => {
-                self.annotation_sequence_metadata(MetadataAnnotationValueKind::Array, elems)
-            }
-            etas_hir::HirExpr::List { elems, .. } => {
-                self.annotation_sequence_metadata(MetadataAnnotationValueKind::List, elems)
-            }
-            etas_hir::HirExpr::Set { elems, .. } => {
-                self.annotation_sequence_metadata(MetadataAnnotationValueKind::Set, elems)
-            }
-            etas_hir::HirExpr::Tuple { elems, .. } => {
-                self.annotation_sequence_metadata(MetadataAnnotationValueKind::Tuple, elems)
-            }
-            etas_hir::HirExpr::EmptySequence { .. } => Ok(MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Array,
-                ..Default::default()
-            }),
-            etas_hir::HirExpr::EmptyRecordOrMap { .. } => Ok(MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Record,
-                ..Default::default()
-            }),
-            etas_hir::HirExpr::Record(record) => self.annotation_record_metadata(record),
-            etas_hir::HirExpr::Call {
-                callee,
-                generic_args,
-                args,
-                ..
-            } if generic_args.is_empty() => self.annotation_call_metadata(*callee, args),
-            _ => Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation argument cannot be represented as static package metadata"
-                    .to_owned(),
-            }),
-        }
-    }
-
-    fn annotation_literal_metadata(
-        &self,
-        literal: &etas_hir::HirLiteral,
-    ) -> MetadataAnnotationValue {
-        match literal {
-            etas_hir::HirLiteral::Bool { value, .. } => MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Bool,
-                value: value.to_string(),
-                ..Default::default()
-            },
-            etas_hir::HirLiteral::Int { text, .. } => MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Int,
-                value: text.clone(),
-                ..Default::default()
-            },
-            etas_hir::HirLiteral::Float { text, .. } => MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Float,
-                value: text.clone(),
-                ..Default::default()
-            },
-            etas_hir::HirLiteral::String { value, .. } => MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::String,
-                value: value.clone(),
-                ..Default::default()
-            },
-            etas_hir::HirLiteral::Char { value, .. } => MetadataAnnotationValue {
-                kind: MetadataAnnotationValueKind::Char,
-                value: value.to_string(),
-                ..Default::default()
-            },
-        }
-    }
-
-    fn annotation_sequence_metadata(
-        &self,
-        kind: MetadataAnnotationValueKind,
-        elems: &[etas_hir::HirExprId],
-    ) -> Result<MetadataAnnotationValue, PackageMetadataError> {
-        Ok(MetadataAnnotationValue {
-            kind,
-            elements: elems
-                .iter()
-                .copied()
-                .map(|elem| self.annotation_value_metadata(elem))
-                .collect::<Result<Vec<_>, _>>()?,
-            ..Default::default()
-        })
-    }
-
-    fn annotation_record_metadata(
-        &self,
-        record: &etas_hir::HirRecordExpr,
-    ) -> Result<MetadataAnnotationValue, PackageMetadataError> {
-        if record.path.is_some() || !record.generic_args.is_empty() {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation record metadata must be an anonymous static record".to_owned(),
-            });
-        }
-        Ok(MetadataAnnotationValue {
-            kind: MetadataAnnotationValueKind::Record,
-            fields: record
-                .fields
-                .iter()
-                .map(|field| self.annotation_record_field_metadata(field))
-                .collect::<Result<Vec<_>, _>>()?,
-            ..Default::default()
-        })
-    }
-
-    fn annotation_record_field_metadata(
-        &self,
-        field: &etas_hir::HirFieldInit,
-    ) -> Result<MetadataAnnotationField, PackageMetadataError> {
-        match field {
-            etas_hir::HirFieldInit::Named { name, value, .. } => Ok(MetadataAnnotationField {
-                name: name.clone(),
-                value: self.annotation_value_metadata(*value)?,
-            }),
-            etas_hir::HirFieldInit::Shorthand {
-                name, resolution, ..
-            } => {
-                let path =
-                    self.annotation_resolution_path(resolution, name, "annotation record field")?;
-                Ok(MetadataAnnotationField {
-                    name: name.clone(),
-                    value: MetadataAnnotationValue {
-                        kind: MetadataAnnotationValueKind::Path,
-                        path,
-                        ..Default::default()
-                    },
-                })
-            }
-        }
-    }
-
-    fn annotation_call_metadata(
-        &self,
-        callee: etas_hir::HirExprId,
-        args: &[etas_hir::HirArg],
-    ) -> Result<MetadataAnnotationValue, PackageMetadataError> {
-        let Some(etas_hir::HirExpr::Path(path)) = self.checked.hir.exprs.get(callee) else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation constructor metadata requires a static constructor path"
-                    .to_owned(),
-            });
-        };
-        if let Ok((name, canonical_path)) = self.annotation_limit_constructor_metadata(path) {
-            return self.annotation_call_metadata_with_kind(
-                MetadataAnnotationValueKind::Limit,
-                name,
-                canonical_path,
-                args,
-            );
-        }
-        let (name, canonical_path) = self.annotation_trace_constructor_metadata(path)?;
-        self.annotation_call_metadata_with_kind(
-            MetadataAnnotationValueKind::Constructor,
-            name,
-            canonical_path,
-            args,
-        )
-    }
-
-    fn annotation_call_metadata_with_kind(
-        &self,
-        kind: MetadataAnnotationValueKind,
-        name: String,
-        canonical_path: Vec<String>,
-        args: &[etas_hir::HirArg],
-    ) -> Result<MetadataAnnotationValue, PackageMetadataError> {
-        let mut elements = Vec::new();
-        let mut fields = Vec::new();
-        for arg in args {
-            match arg {
-                etas_hir::HirArg::Positional(value) => {
-                    elements.push(self.annotation_value_metadata(*value)?);
-                }
-                etas_hir::HirArg::Named { name, value, .. } => {
-                    fields.push(MetadataAnnotationField {
-                        name: name.clone(),
-                        value: self.annotation_value_metadata(*value)?,
-                    });
-                }
-            }
-        }
-        Ok(MetadataAnnotationValue {
-            kind,
-            value: name,
-            path: canonical_path,
-            elements,
-            fields,
-        })
-    }
-
-    fn annotation_limit_constructor_metadata(
-        &self,
-        path: &etas_hir::ResolvedPath,
-    ) -> Result<(String, Vec<String>), PackageMetadataError> {
-        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation limit constructor must resolve to a std requirement".to_owned(),
-            });
-        };
-        let Some(symbol) = self.checked.hir.symbols.get(symbol) else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation limit constructor symbol is missing from checked HIR"
-                    .to_owned(),
-            });
-        };
-        let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation limit constructor must be imported from std".to_owned(),
-            });
-        };
-        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation limit constructor is not present in the std registry"
-                    .to_owned(),
-            });
-        };
-        let StdDecl::Requirement(requirement) = &std_symbol.decl else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation limit constructor is not a std requirement".to_owned(),
-            });
-        };
-        let RequirementSemantics::Limit(_) = requirement.semantics else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "std requirement is not a runtime limit".to_owned(),
-            });
-        };
-        Ok((std_symbol.name.clone(), std_symbol.qualified_path.clone()))
-    }
-
-    fn annotation_trace_constructor_metadata(
-        &self,
-        path: &etas_hir::ResolvedPath,
-    ) -> Result<(String, Vec<String>), PackageMetadataError> {
-        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor must resolve to a checked std symbol"
-                    .to_owned(),
-            });
-        };
-        let Some(symbol) = self.checked.hir.symbols.get(symbol) else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor symbol is missing from checked HIR"
-                    .to_owned(),
-            });
-        };
-        let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor must reference std.runtime.trace".to_owned(),
-            });
-        };
-        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor is not present in the std registry"
-                    .to_owned(),
-            });
-        };
-        if std_symbol.qualified_path.as_slice()
-            != ["std", "runtime", "trace", std_symbol.name.as_str()]
-        {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor must be in std.runtime.trace".to_owned(),
-            });
-        }
-        let StdDecl::Flow(flow) = &std_symbol.decl else {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor must be a pure std flow".to_owned(),
-            });
-        };
-        if !flow.public_effects.is_empty() || !flow.requested_actions.is_empty() {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "annotation trace constructor must be pure".to_owned(),
-            });
-        }
-        Ok((flow.name.clone(), std_symbol.qualified_path.clone()))
-    }
-
-    fn annotation_path_metadata(
-        &self,
-        path: &etas_hir::ResolvedPath,
-    ) -> Result<Vec<String>, PackageMetadataError> {
-        match &path.resolution {
-            etas_hir::ResolveResult::Resolved(symbol) => self
-                .symbol_canonical_path(*symbol)
-                .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
-                    reason: format!(
-                        "annotation path `{}` has no canonical metadata identity",
-                        path_segments(path).join(".")
-                    ),
-                }),
-            etas_hir::ResolveResult::Unresolved | etas_hir::ResolveResult::PartiallyResolved(_) => {
-                Err(PackageMetadataError::InvalidMetadataType {
-                    reason: format!(
-                        "annotation path `{}` has no resolved canonical metadata identity",
-                        path_segments(path).join(".")
-                    ),
-                })
-            }
-            etas_hir::ResolveResult::Ambiguous(_) => {
-                Err(PackageMetadataError::InvalidMetadataType {
-                    reason: format!(
-                        "ambiguous annotation path `{}` cannot be emitted in metadata",
-                        path_segments(path).join(".")
-                    ),
-                })
-            }
-        }
-    }
-
-    fn annotation_resolution_path(
-        &self,
-        resolution: &etas_hir::ResolveResult,
-        fallback: &str,
-        context: &str,
-    ) -> Result<Vec<String>, PackageMetadataError> {
-        match resolution {
-            etas_hir::ResolveResult::Resolved(symbol) => self
-                .symbol_canonical_path(*symbol)
-                .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
-                    reason: format!("{context} `{fallback}` has no canonical metadata identity"),
-                }),
-            etas_hir::ResolveResult::Unresolved
-            | etas_hir::ResolveResult::PartiallyResolved(_)
-            | etas_hir::ResolveResult::Ambiguous(_) => {
-                Err(PackageMetadataError::InvalidMetadataType {
-                    reason: format!("{context} `{fallback}` is not resolved"),
-                })
-            }
-        }
     }
 
     fn action_signatures(&self) -> Result<Vec<MetadataActionSignature>, PackageMetadataError> {
@@ -643,29 +394,125 @@ impl<'a> ProjectMetadataProjection<'a> {
         export: &crate::ExportedItem,
     ) -> Result<MetadataNamedSignature, PackageMetadataError> {
         let item = self.hir_item_for_export(export)?;
-        let symbol = match self.checked.hir.items.get(item) {
-            Some(HirItem::Type(decl)) => decl.symbol,
-            Some(HirItem::TypeAlias(decl)) => decl.symbol,
+        let (symbol, params) = match self.checked.hir.items.get(item) {
+            Some(HirItem::Type(decl)) => (decl.symbol, &decl.type_params),
+            Some(HirItem::TypeAlias(decl)) => (decl.symbol, &decl.type_params),
+            Some(HirItem::Enum(decl)) => (decl.symbol, &decl.type_params),
             _ => return Err(PackageMetadataError::MissingExportSignature { path }),
         };
+        let names = params
+            .iter()
+            .map(|param| {
+                self.checked
+                    .symbols
+                    .get(*param)
+                    .map(|symbol| symbol.name.clone())
+                    .ok_or_else(|| PackageMetadataError::MissingExportSignature {
+                        path: path.clone(),
+                    })
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let generic_params = params
+            .iter()
+            .map(|param| {
+                let symbol = self.checked.symbols.get(*param).ok_or_else(|| {
+                    PackageMetadataError::MissingExportSignature { path: path.clone() }
+                })?;
+                let bounds = self
+                    .checked
+                    .types
+                    .type_param_bounds
+                    .get(param)
+                    .into_iter()
+                    .flatten()
+                    .map(|bound| {
+                        self.checked_spec_bound_metadata(
+                            &etas_types::CheckedSpecBound {
+                                spec: etas_types::CheckedSpecRef::Source(bound.spec_symbol),
+                                args: bound.args.clone(),
+                            },
+                            &names,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(etas_package_metadata::GenericParam {
+                    name: symbol.name.clone(),
+                    kind: if symbol.kind == etas_hir::SymbolKind::EffectParam {
+                        etas_package_metadata::GenericParamKind::Effect
+                    } else {
+                        etas_package_metadata::GenericParamKind::Type
+                    },
+                    bounds,
+                })
+            })
+            .collect::<Result<Vec<_>, PackageMetadataError>>()?;
         let ty = match self.checked.types.symbol_types.get(&symbol) {
             Some(etas_types::SymbolTypeFact::Type { constructor }) => {
-                let mut ty = self.metadata_type(TypeId(constructor.0))?;
+                let id = TypeId(constructor.0);
+                let mut ty = self.metadata_type_in_generic_scope(id, &names)?;
+                if matches!(self.checked.type_store.get(id), Some(Type::Enum(_))) {
+                    let layout = self.checked.types.enum_layouts.get(&id).ok_or_else(|| {
+                        PackageMetadataError::MissingExportSignature { path: path.clone() }
+                    })?;
+                    ty.kind = MetadataTypeKind::Enum;
+                    ty.fields = layout
+                        .variants
+                        .iter()
+                        .map(|variant| {
+                            let fields = variant
+                                .fields
+                                .iter()
+                                .map(|field| self.metadata_type_in_generic_scope(*field, &names))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let payload = if let Some(names) = &variant.field_names {
+                                if names.len() != fields.len() {
+                                    return Err(PackageMetadataError::MissingExportSignature {
+                                        path: path.clone(),
+                                    });
+                                }
+                                MetadataType {
+                                    kind: MetadataTypeKind::Record,
+                                    fields: names
+                                        .iter()
+                                        .cloned()
+                                        .zip(fields)
+                                        .map(|(name, ty)| MetadataTypeField { name, ty })
+                                        .collect(),
+                                    ..Default::default()
+                                }
+                            } else {
+                                MetadataType {
+                                    kind: MetadataTypeKind::Tuple,
+                                    children: fields,
+                                    ..Default::default()
+                                }
+                            };
+                            Ok(MetadataTypeField {
+                                name: variant.name.clone(),
+                                ty: payload,
+                            })
+                        })
+                        .collect::<Result<_, PackageMetadataError>>()?;
+                }
                 canonicalize_declared_type_path(&mut ty, &path);
                 Some(ty)
             }
             Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => {
-                let mut ty = self.metadata_type(TypeId(constructor.0))?;
+                let mut ty = self.metadata_type_in_generic_scope(TypeId(constructor.0), &names)?;
                 canonicalize_declared_type_path(&mut ty, &path);
                 Some(ty)
             }
-            Some(etas_types::SymbolTypeFact::TypeAlias { target, .. }) => Some(
-                metadata_alias_type(&path, *target, &self.checked.type_store)?,
-            ),
+            Some(etas_types::SymbolTypeFact::TypeAlias { target, .. }) => Some(MetadataType {
+                kind: MetadataTypeKind::Alias,
+                path: path.clone(),
+                children: vec![self.metadata_type_in_generic_scope(*target, &names)?],
+                ..Default::default()
+            }),
             _ => None,
         };
         Ok(MetadataNamedSignature {
             path,
+            generic_params,
             visibility,
             ty,
         })
@@ -723,6 +570,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                     reason: "action generic spec bound has no canonical metadata path".to_owned(),
                 })?,
             etas_types::CheckedSpecRef::Std(path) => path.clone(),
+            etas_types::CheckedSpecRef::External(identity) => identity.path.clone(),
         };
         Ok(MetadataSpecBound {
             spec,
@@ -738,10 +586,16 @@ impl<'a> ProjectMetadataProjection<'a> {
         &self,
         params: &[etas_types::CallableGenericParam],
     ) -> Result<Vec<etas_package_metadata::GenericParam>, PackageMetadataError> {
-        let generic_names = params
-            .iter()
-            .map(|param| param.name.clone())
-            .collect::<BTreeSet<_>>();
+        self.callable_generic_params_in_scope(params, &BTreeSet::new())
+    }
+
+    fn callable_generic_params_in_scope(
+        &self,
+        params: &[etas_types::CallableGenericParam],
+        outer_names: &BTreeSet<String>,
+    ) -> Result<Vec<etas_package_metadata::GenericParam>, PackageMetadataError> {
+        let mut generic_names = outer_names.clone();
+        generic_names.extend(params.iter().map(|param| param.name.clone()));
         params
             .iter()
             .map(|param| {
@@ -816,6 +670,11 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &etas_types::SpecSignature,
     ) -> Result<MetadataSpecSignature, PackageMetadataError> {
+        let generic_names = signature
+            .param_names
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         Ok(MetadataSpecSignature {
             path: path.clone(),
             visibility,
@@ -833,18 +692,19 @@ impl<'a> ProjectMetadataProjection<'a> {
                         path.clone(),
                         visibility,
                         callable,
+                        &generic_names,
                     )
                 })
                 .transpose()?,
             methods: signature
                 .methods
                 .iter()
-                .map(|method| self.spec_method_metadata(method, visibility))
+                .map(|method| self.spec_method_metadata(method, visibility, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
             super_specs: signature
                 .super_specs
                 .iter()
-                .map(|bound| self.spec_bound_metadata(bound))
+                .map(|bound| self.spec_bound_metadata(bound, &generic_names))
                 .collect::<Result<Vec<_>, _>>()?,
         })
     }
@@ -912,6 +772,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .types
             .callable_spec_satisfactions
             .iter()
+            .filter(|fact| !self.is_named_agent_method_body(fact.item))
             .map(|fact| {
                 let item = self.item_path(fact.item).ok_or_else(|| {
                     PackageMetadataError::InvalidMetadataType {
@@ -945,6 +806,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .types
             .trace_spec_conformances
             .iter()
+            .filter(|fact| !self.is_named_agent_method_body(fact.item))
             .map(|fact| {
                 let item = self.item_path(fact.item).ok_or_else(|| {
                     PackageMetadataError::InvalidMetadataType {
@@ -978,10 +840,21 @@ impl<'a> ProjectMetadataProjection<'a> {
             .collect()
     }
 
+    fn is_named_agent_method_body(&self, item: HirItemId) -> bool {
+        matches!(self.checked.items.get(item), Some(HirItem::Flow(_)))
+            && self
+                .checked
+                .types
+                .agent_methods
+                .values()
+                .any(|method| method.body == item)
+    }
+
     fn spec_method_metadata(
         &self,
         method: &etas_types::SpecMethodFact,
         visibility: MetadataVisibility,
+        generic_names: &BTreeSet<String>,
     ) -> Result<MetadataSpecMethod, PackageMetadataError> {
         let Some(symbol) = method.source_symbol() else {
             return Err(PackageMetadataError::InvalidMetadataType {
@@ -1017,29 +890,27 @@ impl<'a> ProjectMetadataProjection<'a> {
         Ok(MetadataSpecMethod {
             name: method.name.clone(),
             path: path.clone(),
-            signature: Some(
-                self.metadata_callable_signature_from_callable(path, visibility, callable)?,
-            ),
+            signature: Some(self.metadata_callable_signature_from_callable(
+                path,
+                visibility,
+                callable,
+                generic_names,
+            )?),
         })
     }
 
     fn spec_bound_metadata(
         &self,
         bound: &etas_types::SpecSuperBoundFact,
+        generic_names: &BTreeSet<String>,
     ) -> Result<MetadataSpecBound, PackageMetadataError> {
-        let spec = self
-            .symbol_canonical_path(bound.super_spec_symbol)
-            .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
-                reason: "spec super bound has no canonical metadata path".to_owned(),
-            })?;
-        Ok(MetadataSpecBound {
-            spec,
-            args: bound
-                .args
-                .iter()
-                .map(|arg| self.metadata_type(*arg))
-                .collect::<Result<Vec<_>, _>>()?,
-        })
+        self.checked_spec_bound_metadata(
+            &etas_types::CheckedSpecBound {
+                spec: bound.super_spec.clone(),
+                args: bound.args.clone(),
+            },
+            generic_names,
+        )
     }
 
     fn metadata_callable_signature_from_callable(
@@ -1047,15 +918,19 @@ impl<'a> ProjectMetadataProjection<'a> {
         path: Vec<String>,
         visibility: MetadataVisibility,
         signature: &etas_types::CallableSignature,
+        outer_names: &BTreeSet<String>,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
-        let generic_names = signature
-            .generic_params
-            .iter()
-            .map(|param| param.name.clone())
-            .collect::<BTreeSet<_>>();
+        let mut generic_names = outer_names.clone();
+        generic_names.extend(
+            signature
+                .generic_params
+                .iter()
+                .map(|param| param.name.clone()),
+        );
         Ok(MetadataCallableSignature {
             path,
-            generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
+            generic_params: self
+                .callable_generic_params_in_scope(&signature.generic_params, outer_names)?,
             param_names: Vec::new(),
             input: signature
                 .params
@@ -1085,6 +960,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             path,
             visibility,
             ty: Some(self.metadata_type(signature.ty)?),
+            generic_params: Vec::new(),
         })
     }
 
@@ -1236,6 +1112,43 @@ impl<'a> ProjectMetadataProjection<'a> {
                 )?,
             };
             summaries.push(MetadataEffectSummary {
+                handler_requests: self.request_template_metadata(
+                    &summary.handler_requests,
+                    &type_generic_names,
+                    &self.trace_parameter_labels(*item)?,
+                )?,
+                returned_callables: self.returned_callables(*item, summary)?,
+                default_handler_effects: Some(etas_package_metadata::DefaultHandlerEffects {
+                    direct_effects: self.public_direct_effect_metadata(
+                        summary,
+                        &public_effects,
+                        &type_generic_names,
+                        &effect_generic_names,
+                    )?,
+                    default_actions: self.effect_row_metadata(
+                        &summary.default_actions,
+                        &type_generic_names,
+                        &effect_generic_names,
+                    )?,
+                    handlers: summary
+                        .default_handler_effects
+                        .iter()
+                        .flat_map(|effects| &effects.handlers)
+                        .map(|handler| {
+                            Ok(etas_package_metadata::DefaultHandlerContribution {
+                                action: self.summary_effect_ref_metadata(
+                                    &handler.action,
+                                    &type_generic_names,
+                                )?,
+                                produced: self.effect_row_metadata(
+                                    &handler.produced,
+                                    &type_generic_names,
+                                    &effect_generic_names,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, PackageMetadataError>>()?,
+                }),
                 item: path,
                 public_effects,
                 requested_actions: self.effect_row_metadata(
@@ -1253,8 +1166,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &type_generic_names,
                     &effect_generic_names,
                 )?,
-                action_trace: self
-                    .action_trace_metadata(&summary.action_trace, &type_generic_names)?,
+                action_trace: self.action_trace_metadata(
+                    &summary.action_trace,
+                    &type_generic_names,
+                    &self.trace_parameter_labels(*item)?,
+                )?,
             });
         }
         summaries.sort_by(|left, right| left.item.cmp(&right.item));
@@ -1492,6 +1408,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         &self,
         trace: &ActionTraceDomain,
         type_generic_names: &BTreeSet<String>,
+        parameters: &BTreeMap<etas_effects::ParameterCallTarget, String>,
     ) -> Result<MetadataActionTrace, PackageMetadataError> {
         Ok(match trace {
             ActionTraceDomain::Empty => MetadataActionTrace::Empty,
@@ -1512,25 +1429,25 @@ impl<'a> ProjectMetadataProjection<'a> {
                     },
                 })
             }
-            ActionTraceDomain::ParameterCall { parameter, .. } => {
-                MetadataActionTrace::ParameterCall {
-                    parameter: parameter.clone(),
-                }
-            }
+            ActionTraceDomain::ParameterCall { target, .. } => MetadataActionTrace::ParameterCall {
+                parameter: parameters.get(target).cloned().ok_or_else(|| {
+                    invalid("trace call has no checked parameter binding in its exported interface")
+                })?,
+            },
             ActionTraceDomain::Seq(children) => MetadataActionTrace::Seq(
                 children
                     .iter()
-                    .map(|child| self.action_trace_metadata(child, type_generic_names))
+                    .map(|child| self.action_trace_metadata(child, type_generic_names, parameters))
                     .collect::<Result<Vec<_>, _>>()?,
             ),
             ActionTraceDomain::Choice(children) => MetadataActionTrace::Choice(
                 children
                     .iter()
-                    .map(|child| self.action_trace_metadata(child, type_generic_names))
+                    .map(|child| self.action_trace_metadata(child, type_generic_names, parameters))
                     .collect::<Result<Vec<_>, _>>()?,
             ),
             ActionTraceDomain::Repeat(child) => MetadataActionTrace::Repeat(Box::new(
-                self.action_trace_metadata(child, type_generic_names)?,
+                self.action_trace_metadata(child, type_generic_names, parameters)?,
             )),
             ActionTraceDomain::UnknownOrder(actions) => MetadataActionTrace::UnknownOrder(
                 actions
@@ -1548,8 +1465,12 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .collect::<Result<Vec<_>, _>>()?,
                 parameter_calls: parameter_calls
                     .iter()
-                    .map(|call| call.parameter.clone())
-                    .collect::<BTreeSet<_>>()
+                    .map(|call| {
+                        parameters.get(&call.target).cloned().ok_or_else(|| {
+                            invalid("widened trace call has no checked exported parameter binding")
+                        })
+                    })
+                    .collect::<Result<BTreeSet<_>, _>>()?
                     .into_iter()
                     .collect(),
             },
@@ -1570,6 +1491,33 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .collect::<Result<Vec<_>, _>>()?,
             tail: self.effect_row_tail(row, effect_generic_names)?,
         })
+    }
+
+    fn public_direct_effect_metadata(
+        &self,
+        summary: &etas_effects::EffectSummary,
+        public: &MetadataEffectRow,
+        type_names: &BTreeSet<String>,
+        effect_names: &BTreeSet<String>,
+    ) -> Result<MetadataEffectRow, PackageMetadataError> {
+        let Some(defaults) = &summary.default_handler_effects else {
+            return Ok(public.clone());
+        };
+        let mut direct = self.effect_row_metadata(&defaults.direct, type_names, effect_names)?;
+        let mut conditional = Vec::new();
+        for handler in &defaults.handlers {
+            conditional.extend(
+                self.effect_row_metadata(&handler.produced, type_names, effect_names)?
+                    .effects,
+            );
+        }
+        for effect in &public.effects {
+            if !conditional.contains(effect) && !direct.effects.contains(effect) {
+                direct.effects.push(effect.clone());
+            }
+        }
+        direct.tail = public.tail.clone();
+        Ok(direct)
     }
 
     fn effect_row_tail(
@@ -1795,6 +1743,17 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &AgentSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let Some(signature) = signature.callable() else {
+            return Ok(MetadataCallableSignature {
+                path,
+                generic_params: Vec::new(),
+                param_names: Vec::new(),
+                input: Vec::new(),
+                output: None,
+                effects: None,
+                visibility,
+            });
+        };
         let generic_names = signature
             .generic_params
             .iter()
@@ -1851,13 +1810,7 @@ impl<'a> ProjectMetadataProjection<'a> {
     }
 
     fn callable_param_names(&self, item: HirItemId) -> Result<Vec<String>, PackageMetadataError> {
-        let params = match self.checked.hir.items.get(item) {
-            Some(HirItem::Flow(flow)) => &flow.params,
-            Some(HirItem::Agent(agent)) => &agent.params,
-            Some(HirItem::Tool(tool)) => &tool.params,
-            _ => return Ok(Vec::new()),
-        };
-        params
+        self.callable_param_symbols(item)
             .iter()
             .map(|symbol| {
                 self.checked
@@ -1865,10 +1818,28 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .symbols
                     .get(*symbol)
                     .map(|symbol| symbol.name.clone())
-                    .ok_or_else(|| PackageMetadataError::MissingExportSignature {
-                        path: vec!["<callable-params>".to_owned()],
-                    })
+                    .ok_or_else(|| invalid("callable parameter has no checked symbol"))
             })
+            .collect()
+    }
+
+    fn callable_param_symbols(&self, item: HirItemId) -> &[etas_hir::SymbolId] {
+        match self.checked.hir.items.get(item) {
+            Some(HirItem::Flow(flow)) => &flow.params,
+            Some(HirItem::Agent(agent)) => &agent.params,
+            Some(HirItem::Tool(tool)) => &tool.params,
+            _ => &[],
+        }
+    }
+
+    fn trace_parameter_labels(
+        &self,
+        item: HirItemId,
+    ) -> Result<BTreeMap<etas_effects::ParameterCallTarget, String>, PackageMetadataError> {
+        self.callable_param_symbols(item)
+            .iter()
+            .zip(self.callable_param_names(item)?)
+            .map(|(symbol, name)| Ok((etas_effects::ParameterCallTarget::Native(*symbol), name)))
             .collect()
     }
 
@@ -1916,71 +1887,34 @@ impl<'a> ProjectMetadataProjection<'a> {
         })
     }
 
-    fn hir_item_for_export(
+    pub(super) fn hir_item_for_export(
         &self,
         export: &crate::ExportedItem,
     ) -> Result<HirItemId, PackageMetadataError> {
-        let key = (
-            export.item.span.source.0,
-            export.item.span.range.start.0,
-            export.item.span.range.end.0,
-        );
-        if let Some(item) = self.hir_items_by_origin.get(&key).copied() {
-            return Ok(item);
-        }
-        for (item, origin) in &self.checked.source_map.item_sources {
-            let span = origin.span();
-            if span.source != export.item.span.source
-                || span.range.start < export.item.span.range.start
-                || span.range.end > export.item.span.range.end
-            {
-                continue;
-            }
-            if self.item_local_name(*item).as_deref() == Some(export.name.as_str()) {
-                return Ok(*item);
-            }
-        }
-        Err(PackageMetadataError::MissingExportSignature {
-            path: vec![export.name.clone()],
-        })
-    }
-
-    fn item_local_name(&self, item: HirItemId) -> Option<String> {
-        let symbol = match self.checked.hir.items.get(item)? {
-            HirItem::TypeAlias(decl) => decl.symbol,
-            HirItem::Type(decl) => decl.symbol,
-            HirItem::Enum(decl) => decl.symbol,
-            HirItem::Spec(decl) => decl.symbol,
-            HirItem::Effect(decl) => decl.symbol,
-            HirItem::TopLevelLet(decl) => decl.symbol,
-            HirItem::Tool(decl) => decl.symbol,
-            HirItem::Agent(decl) => decl.symbol,
-            HirItem::Protocol(decl) => decl.symbol,
-            HirItem::Flow(decl) => decl.symbol,
-            HirItem::Impl(_) | HirItem::Error { .. } => return None,
-        };
         self.checked
-            .hir
-            .symbols
-            .get(symbol)
-            .map(|symbol| local_symbol_name(&symbol.name).to_owned())
+            .hir_item_bindings
+            .ast_to_hir
+            .get(&export.item)
+            .copied()
+            .ok_or_else(|| PackageMetadataError::MissingExportSignature {
+                path: vec![export.name.clone()],
+            })
     }
 
     fn item_path(&self, item: HirItemId) -> Option<Vec<String>> {
-        let span = self.checked.source_map.item_sources.get(&item)?.span();
-        for (_, module) in self.checked.module_index.modules.iter() {
-            if !matches!(module.origin, ModuleOrigin::Source) {
-                continue;
-            }
-            for export in module.visibility_exports.items.values() {
-                if export.item.span == span {
-                    let mut path = module.path.segments.clone();
-                    path.push(export.name.clone());
-                    return Some(path);
-                }
-            }
+        let binding = self.checked.hir_item_bindings.hir_to_ast.get(&item)?;
+        let exported = self.checked.module_index.modules.iter().any(|(_, module)| {
+            matches!(module.origin, ModuleOrigin::Source)
+                && module
+                    .visibility_exports
+                    .items
+                    .values()
+                    .any(|export| &export.item == binding)
+        });
+        if !exported {
+            return None;
         }
-        None
+        self.symbol_canonical_path(self.checked.items.get(item)?.symbol()?)
     }
 
     fn action_path(&self, symbol: etas_hir::SymbolId) -> Option<Vec<String>> {
@@ -2021,6 +1955,14 @@ impl<'a> ProjectMetadataProjection<'a> {
         let symbol = self.checked.hir.symbols.get(symbol)?;
         if let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def {
             return Some(path.clone());
+        }
+        if let etas_hir::SymbolDef::EnumVariant { enum_item, .. } = symbol.def {
+            let HirItem::Enum(declaration) = self.checked.hir.items.get(enum_item)? else {
+                return None;
+            };
+            let mut path = self.symbol_canonical_path(declaration.symbol)?;
+            path.push(symbol.name.clone());
+            return Some(path);
         }
         let module = self.checked.hir.modules_arena.get(symbol.defining_module)?;
         let mut path = module.name.as_ref().map(path_segments)?;
@@ -2268,184 +2210,6 @@ fn json_schema_for_primitive(primitive: PrimitiveType) -> Value {
     }
 }
 
-fn metadata_type(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageMetadataError> {
-    super::type_graph::require_tree_representation(ty, store)?;
-    metadata_type_tree(ty, store)
-}
-
-fn metadata_type_tree(ty: TypeId, store: &TypeStore) -> Result<MetadataType, PackageMetadataError> {
-    let Some(ty_value) = store.get(ty) else {
-        return Err(PackageMetadataError::UnsupportedType {
-            ty,
-            reason: "type id is missing from type store".to_owned(),
-        });
-    };
-    let mut metadata = MetadataType::default();
-    match ty_value {
-        Type::Primitive(primitive) => {
-            metadata.kind = MetadataTypeKind::Primitive;
-            metadata.name = primitive_name(*primitive).to_owned();
-        }
-        Type::IntegerLiteral { text } => {
-            metadata.kind = MetadataTypeKind::Primitive;
-            metadata.name = text.clone();
-        }
-        Type::Var(var) => {
-            metadata.kind = MetadataTypeKind::Var;
-            metadata.name = format!("T{}", var.0);
-        }
-        Type::Array(element) => {
-            unary_type(MetadataTypeKind::Array, *element, store, &mut metadata)?
-        }
-        Type::List(element) => unary_type(MetadataTypeKind::List, *element, store, &mut metadata)?,
-        Type::Map { key, value } => {
-            metadata.kind = MetadataTypeKind::Map;
-            metadata.children.push(metadata_type_tree(*key, store)?);
-            metadata.children.push(metadata_type_tree(*value, store)?);
-        }
-        Type::Set(element) => unary_type(MetadataTypeKind::Set, *element, store, &mut metadata)?,
-        Type::Range { index } => unary_type(MetadataTypeKind::Range, *index, store, &mut metadata)?,
-        Type::Slice(element) => {
-            unary_type(MetadataTypeKind::Slice, *element, store, &mut metadata)?
-        }
-        Type::Option(inner) => unary_type(MetadataTypeKind::Option, *inner, store, &mut metadata)?,
-        Type::Result { ok, err } => {
-            metadata.kind = MetadataTypeKind::Result;
-            metadata.children.push(metadata_type_tree(*ok, store)?);
-            metadata.children.push(metadata_type_tree(*err, store)?);
-        }
-        Type::Tuple(elements) => {
-            metadata.kind = MetadataTypeKind::Tuple;
-            metadata.children = elements
-                .iter()
-                .map(|element| metadata_type_tree(*element, store))
-                .collect::<Result<Vec<_>, _>>()?;
-        }
-        Type::Function(flow) => {
-            metadata.kind = MetadataTypeKind::Function;
-            metadata.children = flow
-                .input
-                .iter()
-                .map(|input| metadata_type_tree(*input, store))
-                .collect::<Result<Vec<_>, _>>()?;
-            metadata
-                .children
-                .push(metadata_type_tree(flow.output, store)?);
-            metadata.effects = flow
-                .effects
-                .as_ref()
-                .map(|row| metadata_effect_row_ref(row, store))
-                .transpose()?;
-        }
-        Type::Handler(handler) => {
-            metadata.kind = MetadataTypeKind::Handler;
-            metadata.effects = Some(metadata_effect_row_ref(&handler.handled, store)?);
-            metadata.produced_effects = match &handler.produced {
-                etas_types::HandlerProducedEffects::Infer => None,
-                etas_types::HandlerProducedEffects::Explicit(row) => {
-                    Some(metadata_effect_row_ref(row, store)?)
-                }
-            };
-            if let Some(result) = handler.result {
-                metadata.children.push(metadata_type_tree(result, store)?);
-            }
-        }
-        Type::Enum(enum_ref) => {
-            metadata.kind = MetadataTypeKind::Named;
-            metadata.path = enum_ref.name.split('.').map(str::to_owned).collect();
-        }
-        Type::Named(named) => {
-            metadata.kind = MetadataTypeKind::Named;
-            metadata.path = named.name.split('.').map(str::to_owned).collect();
-        }
-        Type::Nominal(nominal) => {
-            metadata.kind = MetadataTypeKind::Nominal;
-            metadata.path = nominal.name.split('.').map(str::to_owned).collect();
-            if let Some(representation) = nominal.representation {
-                metadata
-                    .children
-                    .push(metadata_type_tree(representation, store)?);
-            }
-        }
-        Type::Applied { constructor, args } => {
-            metadata.kind = MetadataTypeKind::Applied;
-            metadata.path = applied_type_constructor_path(*constructor, store)?;
-            metadata.children = args
-                .iter()
-                .map(|arg| metadata_type_tree(*arg, store))
-                .collect::<Result<Vec<_>, _>>()?;
-        }
-        Type::Trust { wrapper, inner } => {
-            metadata.kind = trust_wrapper_kind(*wrapper);
-            metadata.children.push(metadata_type_tree(*inner, store)?);
-        }
-        Type::Prompt => metadata.kind = MetadataTypeKind::Prompt,
-        Type::PromptPart => metadata.kind = MetadataTypeKind::PromptPart,
-        Type::Message(inner) => {
-            unary_type(MetadataTypeKind::Message, *inner, store, &mut metadata)?
-        }
-        Type::MemorySelection(inner) => unary_type(
-            MetadataTypeKind::MemorySelection,
-            *inner,
-            store,
-            &mut metadata,
-        )?,
-        Type::Store { key, value } => {
-            metadata.kind = MetadataTypeKind::Store;
-            metadata.children.push(metadata_type_tree(*key, store)?);
-            metadata.children.push(metadata_type_tree(*value, store)?);
-        }
-        Type::MemoryRegion(schema) => unary_type(
-            MetadataTypeKind::MemoryRegion,
-            *schema,
-            store,
-            &mut metadata,
-        )?,
-        Type::ResourceHandle(handle) => {
-            metadata.kind = MetadataTypeKind::ResourceHandle;
-            match handle {
-                ResourceHandleType::MemoryRegion { schema } => {
-                    metadata.name = "MemoryRegion".to_owned();
-                    metadata.children.push(metadata_type_tree(*schema, store)?);
-                }
-                ResourceHandleType::ExternalTool { signature } => {
-                    metadata.name = "ExternalTool".to_owned();
-                    metadata
-                        .children
-                        .push(metadata_type_tree(*signature, store)?);
-                }
-                ResourceHandleType::Other { name, args } => {
-                    metadata.name = name.clone();
-                    metadata.children = args
-                        .iter()
-                        .map(|arg| metadata_type_tree(*arg, store))
-                        .collect::<Result<Vec<_>, _>>()?;
-                }
-            }
-        }
-        Type::Record(record) => {
-            metadata.kind = MetadataTypeKind::Record;
-            metadata.fields = record
-                .fields
-                .iter()
-                .map(|field| {
-                    Ok(MetadataTypeField {
-                        name: field.name.clone(),
-                        ty: metadata_type_tree(field.ty, store)?,
-                    })
-                })
-                .collect::<Result<Vec<_>, PackageMetadataError>>()?;
-        }
-        Type::Refined { .. } | Type::Schema(_) | Type::MemoryPlace(_) => {
-            return Err(PackageMetadataError::UnsupportedType {
-                ty,
-                reason: format!("{ty_value:?} has no published metadata schema yet"),
-            });
-        }
-    }
-    Ok(metadata)
-}
-
 fn applied_type_constructor_path(
     constructor: etas_types::TypeConstructorId,
     store: &TypeStore,
@@ -2471,112 +2235,27 @@ fn applied_type_constructor_path(
     Ok(path.split('.').map(str::to_owned).collect())
 }
 
-fn metadata_alias_type(
-    path: &[String],
-    target: TypeId,
-    store: &TypeStore,
-) -> Result<MetadataType, PackageMetadataError> {
-    Ok(MetadataType {
-        kind: MetadataTypeKind::Alias,
-        path: path.to_vec(),
-        children: vec![metadata_type(target, store)?],
-        ..Default::default()
-    })
-}
-
 fn canonicalize_declared_type_path(metadata: &mut MetadataType, path: &[String]) {
     match metadata.kind {
-        MetadataTypeKind::Named | MetadataTypeKind::Nominal => {
+        MetadataTypeKind::Named | MetadataTypeKind::Nominal | MetadataTypeKind::Enum => {
             metadata.path = path.to_vec();
         }
         _ => {}
     }
 }
 
-fn unary_type(
-    kind: MetadataTypeKind,
-    inner: TypeId,
-    store: &TypeStore,
-    metadata: &mut MetadataType,
-) -> Result<(), PackageMetadataError> {
-    metadata.kind = kind;
-    metadata.children.push(metadata_type_tree(inner, store)?);
-    Ok(())
-}
-
-fn metadata_effect_row_ref(
-    row: &EffectRowRef,
-    store: &TypeStore,
-) -> Result<MetadataEffectRow, PackageMetadataError> {
-    Ok(MetadataEffectRow {
-        effects: row
-            .effects
-            .iter()
-            .map(|effect| metadata_effect_ref(effect, store))
-            .collect::<Result<Vec<_>, _>>()?,
-        tail: row.tail.clone(),
-    })
-}
-
-fn metadata_effect_ref(
-    effect: &EffectRef,
-    store: &TypeStore,
-) -> Result<MetadataEffectRef, PackageMetadataError> {
-    Ok(MetadataEffectRef {
-        path: effect.name.split('.').map(str::to_owned).collect(),
-        args: effect
-            .args
-            .iter()
-            .map(|arg| metadata_effect_arg(arg, store))
-            .collect::<Result<Vec<_>, _>>()?,
-    })
-}
-
-fn metadata_effect_arg(
-    arg: &EffectArgRef,
-    store: &TypeStore,
-) -> Result<MetadataEffectArg, PackageMetadataError> {
-    match arg {
-        EffectArgRef::Type(ty) => Ok(MetadataEffectArg {
-            kind: MetadataEffectArgKind::Type,
-            ty: Some(metadata_type(*ty, store)?),
-            path: Vec::new(),
-            value: String::new(),
-        }),
-        EffectArgRef::Wildcard => Ok(MetadataEffectArg {
-            kind: MetadataEffectArgKind::Wildcard,
-            ty: None,
-            path: Vec::new(),
-            value: String::new(),
-        }),
-        EffectArgRef::String(value) => Ok(MetadataEffectArg {
-            kind: MetadataEffectArgKind::String,
-            ty: None,
-            path: Vec::new(),
-            value: value.clone(),
-        }),
-        EffectArgRef::Int(value) => Ok(MetadataEffectArg {
-            kind: MetadataEffectArgKind::Int,
-            ty: None,
-            path: Vec::new(),
-            value: value.clone(),
-        }),
-        EffectArgRef::Path(path) => Ok(MetadataEffectArg {
-            kind: MetadataEffectArgKind::Path,
-            ty: None,
-            path: path.clone(),
-            value: String::new(),
-        }),
-    }
-}
-
 fn callable_type_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
     match signature {
-        ItemSignature::Flow(signature)
-        | ItemSignature::Agent(signature)
-        | ItemSignature::Tool(signature) => signature
+        ItemSignature::Flow(signature) | ItemSignature::Tool(signature) => signature
             .generic_params
             .iter()
+            .filter(|param| param.kind == etas_types::CallableGenericParamKind::Type)
+            .map(|param| param.name.clone())
+            .collect(),
+        ItemSignature::Agent(signature) => signature
+            .callable()
+            .into_iter()
+            .flat_map(|entry| &entry.generic_params)
             .filter(|param| param.kind == etas_types::CallableGenericParamKind::Type)
             .map(|param| param.name.clone())
             .collect(),
@@ -2586,11 +2265,16 @@ fn callable_type_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
 
 fn callable_effect_generic_names(signature: &ItemSignature) -> BTreeSet<String> {
     match signature {
-        ItemSignature::Flow(signature)
-        | ItemSignature::Agent(signature)
-        | ItemSignature::Tool(signature) => signature
+        ItemSignature::Flow(signature) | ItemSignature::Tool(signature) => signature
             .generic_params
             .iter()
+            .filter(|param| param.kind == etas_types::CallableGenericParamKind::Effect)
+            .map(|param| param.name.clone())
+            .collect(),
+        ItemSignature::Agent(signature) => signature
+            .callable()
+            .into_iter()
+            .flat_map(|entry| &entry.generic_params)
             .filter(|param| param.kind == etas_types::CallableGenericParamKind::Effect)
             .map(|param| param.name.clone())
             .collect(),
@@ -2667,6 +2351,14 @@ fn public_symbols(metadata: &PublicMetadata) -> PublicSymbols {
     for symbol in &metadata.protocols {
         symbols.push(public_symbol("protocol", symbol));
     }
+    for export in &metadata.re_exports {
+        symbols.push(PublicSymbol {
+            kind: "re_export".into(),
+            path: export.exported.clone(),
+            visibility: MetadataVisibility::Public,
+        });
+    }
+    symbols.sort_by(|left, right| (&left.kind, &left.path).cmp(&(&right.kind, &right.path)));
     PublicSymbols { symbols }
 }
 
@@ -2681,6 +2373,7 @@ fn public_symbol(kind: &str, symbol: &MetadataNamedSignature) -> PublicSymbol {
 fn named_signature(path: Vec<String>, visibility: MetadataVisibility) -> MetadataNamedSignature {
     MetadataNamedSignature {
         path,
+        generic_params: Vec::new(),
         visibility,
         ty: None,
     }

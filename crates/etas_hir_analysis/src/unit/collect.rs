@@ -19,7 +19,13 @@ impl HirSemanticUnitCollector {
         for module in view.modules() {
             for item in module.items() {
                 match item.data() {
-                    HirItem::Flow(_) | HirItem::Agent(_) => {
+                    HirItem::Flow(_) => {
+                        units.push(HirSemanticUnit::Item(item.id()));
+                    }
+                    HirItem::Agent(agent) => {
+                        if !matches!(agent.body, etas_hir::HirAgentBody::Source { .. }) {
+                            continue;
+                        }
                         units.push(HirSemanticUnit::Item(item.id()));
                     }
                     HirItem::Tool(tool) => {

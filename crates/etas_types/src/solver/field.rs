@@ -9,13 +9,17 @@ use crate::{
 
 pub fn solve_field_access(
     store: &TypeStore,
+    known: &crate::KnownStdTypes,
     base: TypeId,
     field: &str,
     output: TypeId,
     origin: ConstraintOrigin,
 ) -> SolverReport {
     let mut report = SolverReport::default();
-    let record = match record_fields(store, base) {
+    let projected = projected_fields(store, known, base);
+    let record = match projected.and_then(|projected| {
+        projected.map_or_else(|| record_fields(store, base), |record| Ok(Some(record)))
+    }) {
         Ok(Some(record)) => record,
         Ok(None) => {
             report.push(SolverFailure {
@@ -57,6 +61,35 @@ pub fn solve_field_access(
         });
     }
     report
+}
+
+fn projected_fields(
+    store: &TypeStore,
+    known: &crate::KnownStdTypes,
+    base: TypeId,
+) -> Result<Option<crate::RecordType>, crate::TypeSubstitutionError> {
+    let Some(fields) = known.projected_field_templates(store, base) else {
+        return Ok(None);
+    };
+    let mut substitutions = std::collections::HashMap::new();
+    if let Some(Type::Applied { constructor, args }) = store.get(base) {
+        let Some(Type::Nominal(nominal)) = store.get(TypeId(constructor.0)) else {
+            return Err(crate::TypeSubstitutionError::MissingType(TypeId(
+                constructor.0,
+            )));
+        };
+        if nominal.params.len() != args.len() {
+            return Err(crate::TypeSubstitutionError::InvalidApplication(base));
+        }
+        substitutions.extend(nominal.params.iter().cloned().zip(args.iter().copied()));
+    }
+    let mut record = crate::RecordType {
+        fields: fields.to_vec(),
+    };
+    for field in &mut record.fields {
+        field.ty = crate::substitute_named_params_in_store(store, field.ty, &substitutions)?;
+    }
+    Ok(Some(record))
 }
 
 fn record_fields(

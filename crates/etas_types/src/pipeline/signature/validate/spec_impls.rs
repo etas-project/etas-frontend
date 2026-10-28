@@ -18,6 +18,19 @@ fn validate_impl_member_kinds(ctx: &mut TypePipelineContext<'_>) {
             continue;
         };
         match &decl.target {
+            HirImplTarget::Agent { target, .. } => {
+                let agent = match target.resolution {
+                    ResolveResult::Resolved(symbol) => ctx.symbol_fact(symbol),
+                    _ => None,
+                };
+                if !matches!(agent, Some(crate::SymbolTypeFact::Agent { .. })) {
+                    ctx.diagnostics.push(Diagnostic::type_check(
+                        TypeDiagnosticCode::InvalidImplTargetKind,
+                        target.span,
+                        "impl agent target must resolve to a nominal agent component",
+                    ));
+                }
+            }
             HirImplTarget::Inherent { target, .. } => {
                 let is_effect_impl = matches!(
                     target.resolution,

@@ -1,15 +1,13 @@
-use etas_hir::{
-    HirEffectArg, HirHandlerArmId, HirStmt, PartialResolutionReason, ResolveResult, SymbolDef,
-    TopLevelLetClassification,
-};
+use etas_hir::{HirHandlerArmId, HirStmt, ResolveResult, SymbolDef};
 
 use crate::{
-    EffectArgRef, EffectRef, EffectRowRef, HandlerProducedEffects, HandlerType, SymbolTypeFact,
-    Type, TypeId,
+    EffectRef, EffectRowRef, HandlerProducedEffects, HandlerType, SymbolTypeFact, Type, TypeId,
     pipeline::{
         body::collect::{
             action_selector::{
-                specialize_action_signature, validate_action_selector_arity_and_kinds,
+                checked_selector_arguments, specialize_action_signature,
+                specialize_action_signature_from_generic_args,
+                validate_action_selector_arity_and_kinds,
             },
             block::collect_block,
             pattern::collect_pattern,
@@ -18,12 +16,24 @@ use crate::{
     },
 };
 
-pub fn collect_handler(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_handler<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     handlers: &[HirHandlerArmId],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    collect_handler_for_requests(ctx, handlers, span, expected, &[], None)
+}
+
+pub(super) fn collect_handler_for_requests<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    handlers: &[HirHandlerArmId],
+    span: etas_core::Span,
+    expected: Option<TypeId>,
+    requests: &[super::handler_request::ActionRequest],
+    request_body: Option<etas_hir::HirExprId>,
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let mut handled = Vec::new();
     if handlers.is_empty() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -49,6 +59,7 @@ pub fn collect_handler(
         }
     });
     for handler in handlers {
+        ctx.checkpoint()?;
         let arm = ctx.ctx.hir.handler_arms[*handler].clone();
         let action_signature = match arm.action.action_symbol {
             etas_hir::ResolveResult::Resolved(symbol) => ctx
@@ -61,8 +72,28 @@ pub fn collect_handler(
                     SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
                     _ => None,
                 })
-                .map(|signature| {
-                    specialize_action_signature(ctx, signature, &arm.action.effect.args)
+                .and_then(|signature| {
+                    let signature = specialize_action_signature(
+                        ctx,
+                        signature,
+                        &arm.action.effect.args,
+                        arm.span,
+                    )?;
+                    let signature = specialize_action_signature_from_generic_args(
+                        ctx,
+                        signature,
+                        &arm.generic_args,
+                        arm.span,
+                    )?;
+                    let action = super::handler_request::action_identity(ctx, symbol);
+                    super::handler_request::instantiate(
+                        ctx,
+                        signature,
+                        action,
+                        requests,
+                        request_body.map(|body| (*handler, body)),
+                        arm.span,
+                    )
                 }),
             _ => None,
         };
@@ -75,26 +106,61 @@ pub fn collect_handler(
                 "handler action",
             );
         }
-        if let Some(args) = arm
-            .action
-            .effect
-            .args
-            .iter()
-            .map(|arg| handler_effect_arg(ctx, arg))
-            .collect::<Option<Vec<_>>>()
+        if let (Some(signature), ResolveResult::Resolved(action_symbol)) =
+            (&action_signature, &arm.action.action_symbol)
         {
-            handled.push(EffectRef {
-                name: arm
-                    .action
-                    .effect
-                    .path
-                    .segments
-                    .iter()
-                    .map(|segment| segment.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join("."),
-                args,
-            });
+            let explicit_count = arm.generic_args.len();
+            if let Some(selectors) = checked_selector_arguments(signature, explicit_count) {
+                let Some(symbol) = ctx.ctx.hir.symbols.get(*action_symbol) else {
+                    ctx.validate(crate::ValidationRequest::Diagnostic {
+                        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        span: arm.span,
+                        message: "checked handler action has no declaration symbol".into(),
+                    });
+                    continue;
+                };
+                let mut name = if matches!(symbol.def, SymbolDef::EffectAction { .. }) {
+                    let Some(path) = ctx.ctx.hir.declaration_path(*action_symbol) else {
+                        ctx.validate(crate::ValidationRequest::Diagnostic {
+                            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                            span: arm.span,
+                            message: "source handler action has no canonical declaration path"
+                                .into(),
+                        });
+                        continue;
+                    };
+                    path.join(".")
+                } else {
+                    symbol.name.clone()
+                };
+                if let ResolveResult::Resolved(owner) = arm.action.effect.path.resolution
+                    && let Some(SymbolDef::ImportAlias { path, .. }) =
+                        ctx.ctx.hir.symbols.get(owner).map(|symbol| &symbol.def)
+                    && matches!(ctx.ctx.std_registry.lookup_qualified(path).map(|symbol| &symbol.decl),
+                        Some(etas_std::StdDecl::Effect(effect)) if effect.core && effect.name == "Error")
+                {
+                    name = "Error".into();
+                }
+                handled.push(EffectRef {
+                    name,
+                    args: selectors.clone(),
+                });
+                ctx.state.provisional.handler_actions.insert(
+                    *handler,
+                    crate::CheckedHandlerActionFact {
+                        action_symbol: *action_symbol,
+                        selectors,
+                        params: signature.params.clone(),
+                        output: signature.output,
+                    },
+                );
+            } else {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::InvalidEffectArgument,
+                    span: arm.span,
+                    message: "handler selector must be a checked static argument; runtime values belong in the action payload".into(),
+                });
+            }
         }
         if let Some(signature) = &action_signature {
             for (pat, expected) in arm
@@ -103,7 +169,7 @@ pub fn collect_handler(
                 .copied()
                 .zip(signature.params.iter().copied())
             {
-                collect_pattern(ctx, pat, expected);
+                collect_pattern(ctx, pat, expected)?;
             }
             if arm.patterns.len() != signature.params.len() {
                 ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -116,10 +182,10 @@ pub fn collect_handler(
         } else {
             for pat in arm.patterns.iter().copied() {
                 let ty = ctx.fresh_type_var();
-                collect_pattern(ctx, pat, ty);
+                collect_pattern(ctx, pat, ty)?;
             }
         }
-        validate_handler_arm_completion(ctx, arm.body);
+        validate_handler_arm_completion(ctx, arm.body)?;
         let resume_ty = action_signature
             .as_ref()
             .map(|signature| signature.output)
@@ -129,134 +195,29 @@ pub fn collect_handler(
             ctx.state.handler_finish_stack.push(result);
         }
         ctx.state.handler_depth += 1;
-        collect_block(ctx, arm.body, None);
+        let collected = collect_block(ctx, arm.body, None);
         ctx.state.handler_depth -= 1;
         if expected_result.is_some() {
             ctx.state.handler_finish_stack.pop();
         }
         ctx.state.handler_resume_stack.pop();
+        collected?;
     }
-    ctx.ctx.interner.intern(Type::Handler(HandlerType {
+    Ok(ctx.ctx.interner.intern(Type::Handler(HandlerType {
         handled: expected_handled.unwrap_or(EffectRowRef {
             effects: handled,
             tail: None,
         }),
         produced: expected_produced,
         result: expected_result,
-    }))
+    })))
 }
 
-fn handler_effect_arg(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    arg: &HirEffectArg,
-) -> Option<EffectArgRef> {
-    match arg {
-        HirEffectArg::Type(ty) => {
-            let lowered = crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty);
-            if lowered.is_none()
-                && let Some(span) = ctx.ctx.hir.types.get(*ty).map(|ty| ty.span())
-            {
-                invalid_static_handler_effect_arg(ctx, span);
-            }
-            lowered.map(EffectArgRef::Type)
-        }
-        HirEffectArg::Path(path) => {
-            let (symbol, remaining) = match &path.resolution {
-                ResolveResult::Resolved(symbol) => (*symbol, Vec::new()),
-                ResolveResult::PartiallyResolved(partial)
-                    if partial.reason == PartialResolutionReason::MemberRequiresTypeChecking =>
-                {
-                    match partial.resolved_prefix {
-                        Some(symbol) => (symbol, partial.remaining.clone()),
-                        None => {
-                            invalid_static_handler_effect_arg(ctx, path.span);
-                            return None;
-                        }
-                    }
-                }
-                _ => {
-                    invalid_static_handler_effect_arg(ctx, path.span);
-                    return None;
-                }
-            };
-            match ctx.ctx.type_fact_as_type_id(symbol) {
-                Some(ty) => Some(EffectArgRef::Type(ty)),
-                None => match static_resource_path_segments(ctx, symbol, remaining) {
-                    Some(segments) => Some(EffectArgRef::Path(segments)),
-                    None => {
-                        invalid_static_handler_effect_arg(ctx, path.span);
-                        None
-                    }
-                },
-            }
-        }
-        HirEffectArg::Wildcard { .. } => Some(EffectArgRef::Wildcard),
-        HirEffectArg::String { value, .. } => Some(EffectArgRef::String(value.clone())),
-        HirEffectArg::Int { text, .. } => Some(EffectArgRef::Int(text.clone())),
-    }
-}
-
-fn static_resource_path_segments(
-    ctx: &BodyCollectContext<'_, '_>,
-    symbol: etas_hir::SymbolId,
-    remaining: Vec<String>,
-) -> Option<Vec<String>> {
-    let symbol = ctx
-        .ctx
-        .symbols
-        .canonical_symbol(ctx.ctx.hir, symbol)
-        .unwrap_or(symbol);
-    let symbol = ctx.ctx.hir.symbols.get(symbol)?;
-    if let SymbolDef::ImportAlias { path, .. } = &symbol.def {
-        let mut path = path.clone();
-        path.extend(remaining);
-        return Some(path);
-    }
-    let static_symbol = match &symbol.def {
-        SymbolDef::Item { .. } | SymbolDef::EnumVariant { .. } | SymbolDef::Synthetic { .. } => {
-            true
-        }
-        SymbolDef::TopLevelLet { classification, .. } => matches!(
-            classification,
-            TopLevelLetClassification::Unknown
-                | TopLevelLetClassification::Const
-                | TopLevelLetClassification::ResourceHandle(_)
-                | TopLevelLetClassification::Handler
-        ),
-        _ => false,
-    };
-    if !static_symbol {
-        return None;
-    }
-    let module = ctx.ctx.hir.modules_arena.get(symbol.defining_module)?;
-    let mut segments = module
-        .name
-        .as_ref()
-        .map(|module_name| {
-            module_name
-                .segments
-                .iter()
-                .map(|segment| segment.name.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    segments.push(symbol.name.clone());
-    segments.extend(remaining);
-    Some(segments)
-}
-
-fn invalid_static_handler_effect_arg(ctx: &mut BodyCollectContext<'_, '_>, span: etas_core::Span) {
-    ctx.validate(crate::ValidationRequest::Diagnostic {
-        code: etas_core::TypeDiagnosticCode::InvalidEffectArgument,
-        span,
-        message: "handler effect argument must be a static selector, literal, type argument, or `_`; runtime values belong in the action payload".to_owned(),
-    });
-}
-
-fn validate_handler_arm_completion(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn validate_handler_arm_completion<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     block: etas_hir::HirBlockId,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     let block_data = ctx.ctx.hir.blocks[block].clone();
     if let Some(final_expr) = block_data.final_expr {
         let span = ctx.ctx.hir.exprs[final_expr].span(&ctx.ctx.hir.blocks);
@@ -266,7 +227,7 @@ fn validate_handler_arm_completion(
             message: "handler arm must explicitly resume, finish, or terminate with never"
                 .to_owned(),
         });
-        return;
+        return Ok(());
     }
     let Some(last_stmt) = block_data.stmts.last().copied() else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -275,7 +236,7 @@ fn validate_handler_arm_completion(
             message: "handler arm must explicitly resume, finish, or terminate with never"
                 .to_owned(),
         });
-        return;
+        return Ok(());
     };
     match ctx.ctx.hir.stmts[last_stmt].clone() {
         HirStmt::Resume { .. } | HirStmt::Finish { .. } => {}
@@ -305,9 +266,13 @@ fn validate_handler_arm_completion(
             });
         }
     }
+    Ok(())
 }
 
-fn is_obvious_never_expr(ctx: &BodyCollectContext<'_, '_>, expr: etas_hir::HirExprId) -> bool {
+fn is_obvious_never_expr<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
+    expr: etas_hir::HirExprId,
+) -> bool {
     let etas_hir::HirExpr::Call { callee, .. } = &ctx.ctx.hir.exprs[expr] else {
         return false;
     };

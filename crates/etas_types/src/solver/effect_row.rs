@@ -26,11 +26,40 @@ pub fn infer_bindings_from_types(
     params: &[String],
     bindings: &mut HashMap<String, EffectRowRef>,
 ) -> EffectRowInference {
+    infer_scoped_bindings_from_types(
+        store,
+        expected,
+        actual,
+        type_bindings,
+        substitutions,
+        EffectRowParameterScopes {
+            inferred: params,
+            lexical: &[],
+        },
+        bindings,
+    )
+}
+
+pub(super) struct EffectRowParameterScopes<'a> {
+    pub inferred: &'a [String],
+    pub lexical: &'a [String],
+}
+
+pub(super) fn infer_scoped_bindings_from_types(
+    store: &TypeStore,
+    expected: TypeId,
+    actual: TypeId,
+    type_bindings: &HashMap<String, TypeId>,
+    substitutions: &Substitution,
+    scopes: EffectRowParameterScopes<'_>,
+    bindings: &mut HashMap<String, EffectRowRef>,
+) -> EffectRowInference {
     let inputs = InferenceInputs {
         store,
         type_bindings,
         substitutions,
-        params,
+        params: scopes.inferred,
+        lexical_params: scopes.lexical,
     };
     let mut state = InferenceState {
         bindings,
@@ -49,6 +78,7 @@ struct InferenceInputs<'a> {
     type_bindings: &'a HashMap<String, TypeId>,
     substitutions: &'a Substitution,
     params: &'a [String],
+    lexical_params: &'a [String],
 }
 
 struct InferenceState<'a> {
@@ -304,7 +334,9 @@ fn infer_row_binding(
         );
         return;
     }
-    if actual.tail.as_deref() == Some(tail) {
+    // The signature being instantiated and the enclosing declaration are
+    // separate binders, even when both spell their row parameter `E`.
+    if actual.tail.as_deref() == Some(tail) && !inputs.lexical_params.contains(tail) {
         if residual_effects.is_empty() {
             state.result.deferred.insert(tail.clone());
         } else {
@@ -583,3 +615,6 @@ fn empty_row() -> EffectRowRef {
         tail: None,
     }
 }
+
+#[cfg(test)]
+mod tests;

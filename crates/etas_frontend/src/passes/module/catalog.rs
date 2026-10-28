@@ -27,7 +27,10 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let modules = context.modules.as_ref().expect("module index should exist");
-        let mut catalog = ModuleCatalog::default();
+        let mut catalog = ModuleCatalog {
+            dependency_namespaces: modules.dependency_namespaces.clone(),
+            ..ModuleCatalog::default()
+        };
 
         for (module_id, module) in modules.modules.iter() {
             let exports = ModuleExportTable {

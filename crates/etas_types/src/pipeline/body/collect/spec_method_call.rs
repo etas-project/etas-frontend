@@ -17,10 +17,11 @@ pub struct SpecMethodCallInput<'a> {
     pub expected: Option<TypeId>,
 }
 
-pub fn collect_spec_method_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_spec_method_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     input: SpecMethodCallInput<'_>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let SpecMethodCallInput {
         receiver,
         spec_path,
@@ -30,14 +31,14 @@ pub fn collect_spec_method_call(
         span,
         expected,
     } = input;
-    let receiver_ty = collect_expr(ctx, receiver, None);
+    let receiver_ty = collect_expr(ctx, receiver, None)?;
     let explicit_arg_tys = args
         .iter()
         .map(|arg| match arg {
             HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
             HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, E>>()?;
 
     let Some(spec_symbol) = resolved_spec_symbol(ctx, spec_path) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -45,7 +46,7 @@ pub fn collect_spec_method_call(
             span,
             message: "spec method selection must name a resolved spec".to_owned(),
         });
-        return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
 
     let Some(signature) = ctx.ctx.spec_signature(spec_symbol).cloned() else {
@@ -54,11 +55,11 @@ pub fn collect_spec_method_call(
             span,
             message: "spec method selection is missing checked spec signature facts".to_owned(),
         });
-        return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
 
     let Some(spec_arg_tys) = lower_spec_args(ctx, spec_args, span) else {
-        return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
     if spec_arg_tys.len() != signature.params.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -71,7 +72,7 @@ pub fn collect_spec_method_call(
                 spec_arg_tys.len()
             ),
         });
-        return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     }
 
     let Some(method_fact) = signature
@@ -87,7 +88,7 @@ pub fn collect_spec_method_call(
                 signature.name
             ),
         });
-        return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
 
     let Some(callee_ty) = method_callable_type(ctx, method_fact) else {
@@ -96,7 +97,7 @@ pub fn collect_spec_method_call(
             span,
             message: format!("spec method `{method}` is missing callable signature facts"),
         });
-        return expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never));
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
 
     ctx.state.spec_obligations.push(SpecObligation {
@@ -140,10 +141,13 @@ pub fn collect_spec_method_call(
         output,
         origin: ConstraintOrigin { span },
     });
-    output
+    Ok(output)
 }
 
-fn resolved_spec_symbol(ctx: &BodyCollectContext<'_, '_>, path: &ResolvedPath) -> Option<SymbolId> {
+fn resolved_spec_symbol<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
+    path: &ResolvedPath,
+) -> Option<SymbolId> {
     let ResolveResult::Resolved(symbol) = path.resolution else {
         return None;
     };
@@ -155,8 +159,8 @@ fn resolved_spec_symbol(ctx: &BodyCollectContext<'_, '_>, path: &ResolvedPath) -
     ctx.ctx.spec_signature(symbol).is_some().then_some(symbol)
 }
 
-fn lower_spec_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn lower_spec_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     spec_args: &[etas_hir::HirTypeId],
     span: etas_core::Span,
 ) -> Option<Vec<TypeId>> {
@@ -175,8 +179,8 @@ fn lower_spec_args(
     Some(lowered)
 }
 
-fn method_callable_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn method_callable_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     method: &crate::SpecMethodFact,
 ) -> Option<TypeId> {
     let signature = if let Some(signature) = &method.signature {

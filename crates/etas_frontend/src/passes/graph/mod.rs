@@ -40,35 +40,49 @@ impl Pass<ProjectContext> for BuildImportGraphPass {
         let mut graph = ImportGraph::default();
 
         for import in &resolved_imports.imports {
-            let Some((candidate, resolved)) = source_edge_target(modules, &import.target) else {
-                continue;
-            };
-            push_source_edge(
-                &mut graph,
-                import.from,
-                import.from_part,
-                candidate,
-                resolved,
-                import.import.clone(),
-                import.span,
-            );
+            let mut targets = vec![&import.target];
+            if let ImportTarget::Module(module) = &import.target
+                && let Some(members) = resolved_imports.module_members.get(&module.key())
+            {
+                targets.extend(members.values());
+            }
+            let mut seen = HashSet::new();
+            for target in targets {
+                if let Some((candidate, resolved)) = source_edge_target(modules, target)
+                    && seen.insert(resolved)
+                {
+                    push_source_edge(
+                        &mut graph,
+                        import.from,
+                        import.from_part,
+                        candidate,
+                        resolved,
+                        import.import.clone(),
+                        import.span,
+                    );
+                }
+            }
         }
 
         for import in &resolved_imports.wildcard_imports {
-            let Some((candidate, resolved)) =
-                source_module_edge_target(modules, &import.target_module)
-            else {
-                continue;
-            };
-            push_source_edge(
-                &mut graph,
-                import.from,
-                import.from_part,
-                candidate,
-                resolved,
-                import.import.clone(),
-                import.span,
-            );
+            let mut seen = HashSet::new();
+            let targets = std::iter::once(ImportTarget::Module(import.target_module.clone()))
+                .chain(import.targets.values().cloned());
+            for target in targets {
+                if let Some((candidate, resolved)) = source_edge_target(modules, &target)
+                    && seen.insert(resolved)
+                {
+                    push_source_edge(
+                        &mut graph,
+                        import.from,
+                        import.from_part,
+                        candidate,
+                        resolved,
+                        import.import.clone(),
+                        import.span,
+                    );
+                }
+            }
         }
 
         context.import_graph = Some(std::sync::Arc::new(graph));

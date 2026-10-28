@@ -24,7 +24,10 @@ use project::FrontendProjectState;
 
 pub use delta::{DiagnosticDelta, ProjectSemanticDelta};
 pub(crate) use memory::MemoryInstrumentation;
-pub use memory::{AllocationSnapshot, CheckMemoryReport, FrontendMemoryProbe, PassMemorySample};
+pub use memory::{
+    AllocationSnapshot, CheckMemoryReport, FrontendMemoryProbe, PassMemorySample,
+    ProjectMemoryUsage,
+};
 pub use options::{FrontendCacheConfig, FrontendSessionOptions};
 pub use snapshot::{DefinitionTarget, ProjectSemanticSnapshot, SnapshotDefinitionTargets};
 pub use store::{FrontendArtifactStore, FrontendSessionStore};
@@ -88,6 +91,16 @@ impl Default for FrontendSession<MemoryArtifactStore> {
 impl FrontendSession<MemoryArtifactStore> {
     pub fn new() -> Self {
         Self::with_store_factory(MemoryArtifactStore::new)
+    }
+
+    pub fn with_std_registry(std_registry: Arc<etas_std::StdRegistry>) -> Self {
+        Self {
+            next_project: 0,
+            projects: HashMap::new(),
+            new_store: Box::new(|| Ok(MemoryArtifactStore::new())),
+            std_registry,
+            memory_probe: None,
+        }
     }
 }
 
@@ -165,10 +178,66 @@ where
         self.memory_probe = probe;
     }
 
+    pub fn analyze_body_overlay(
+        &mut self,
+        overlay: crate::code::draft::DefaultBodyOverlay,
+    ) -> Result<
+        crate::code::service::CandidateBodyAnalysis,
+        crate::code::service::CandidateAnalysisError,
+    > {
+        crate::code::pipeline::analyze_body(overlay, self.memory_probe)
+    }
+
+    pub fn analyze_body_overlay_controlled(
+        &mut self,
+        overlay: crate::code::draft::DefaultBodyOverlay,
+        control: Arc<dyn etas_utils::PipelineExecutionControl>,
+    ) -> Result<
+        crate::code::service::CandidateBodyAnalysis,
+        crate::code::service::CandidateAnalysisError,
+    > {
+        crate::code::pipeline::analyze_controlled_body(overlay, self.memory_probe, Some(control))
+    }
+
+    pub fn compile_body_overlay(
+        &mut self,
+        overlay: crate::code::draft::DefaultBodyOverlay,
+    ) -> Result<crate::code::service::CheckedCandidate, crate::code::service::CandidateCompileError>
+    {
+        self.analyze_body_overlay(overlay)
+            .map_err(crate::code::service::CandidateCompileError::Analysis)?
+            .into_checked_candidate(Default::default())
+    }
+
+    pub fn analyze_body_overlay_with_dependencies(
+        &mut self,
+        overlay: crate::code::draft::DefaultBodyOverlay,
+        dependency_sources: Vec<crate::SourceInput>,
+        descriptor_limits: etas_code::descriptor::DescriptorLimits,
+        control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
+    ) -> Result<
+        crate::code::service::CandidateBodyAnalysis,
+        crate::code::service::CandidateAnalysisError,
+    > {
+        crate::code::pipeline::analyze_body_with_dependencies(
+            overlay,
+            dependency_sources,
+            descriptor_limits,
+            self.memory_probe,
+            control,
+        )
+    }
+
     pub fn snapshot(&self, project: ProjectSessionId) -> Option<ProjectSemanticSnapshot> {
         self.projects
             .get(&project)
             .and_then(|state| state.last_good_snapshot.clone())
+    }
+
+    pub fn memory_usage(&self, project: ProjectSessionId) -> Option<ProjectMemoryUsage> {
+        self.projects
+            .get(&project)
+            .map(|state| state.memory_usage())
     }
 
     pub fn close_project(&mut self, project: ProjectSessionId) -> Result<(), FrontendSessionError> {

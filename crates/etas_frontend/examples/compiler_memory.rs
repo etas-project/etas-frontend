@@ -1,79 +1,22 @@
 //! Run serially: cargo run -p etas_frontend --example compiler_memory -- 128
 //! An optional second argument `one-shot` selects non-retaining checks.
+//! A source-root path instead of a helper count measures a real source tree;
+//! arguments 3/4/5 select the RAM budget, entry module and entry flow.
 //! This allocator probe measures requested heap bytes, not RSS or native allocations.
 
-use std::{
-    alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicU64, Ordering::Relaxed},
-};
+#[path = "support/allocation_probe.rs"]
+mod allocation_probe;
+use allocation_probe::{reset_peak, sample};
 
 use etas_cache::ProjectRevision;
 use etas_core::SourceId;
 use etas_frontend::{
-    AllocationSnapshot, CheckRequest, DiskCacheAccess, FrontendMemoryProbe, FrontendSession,
-    ProjectChangeSet, ProjectInput, SnapshotDetailLevel, SourceChange, SourceInput, SourceVersion,
+    CheckRequest, DiskCacheAccess, FrontendMemoryProbe, FrontendSession, FrontendSessionOptions,
+    ModulePath, ProjectChangeSet, ProjectEntry, ProjectInput, ProjectSourceLoadOptions,
+    ProjectSourceLoadScope, ProjectSourceLoader, SnapshotDetailLevel, SourceChange, SourceInput,
+    SourceVersion,
 };
 use serde_json::json;
-
-struct CountingAllocator;
-static LIVE: AtomicU64 = AtomicU64::new(0);
-static TOTAL: AtomicU64 = AtomicU64::new(0);
-static COUNT: AtomicU64 = AtomicU64::new(0);
-static PEAK: AtomicU64 = AtomicU64::new(0);
-
-fn allocated(size: usize) {
-    let bytes = size as u64;
-    TOTAL.fetch_add(bytes, Relaxed);
-    COUNT.fetch_add(1, Relaxed);
-    let live = LIVE.fetch_add(bytes, Relaxed) + bytes;
-    PEAK.fetch_max(live, Relaxed);
-}
-
-// Safety: every operation forwards its original allocation/layout to System;
-// counters do not allocate or change ownership of the returned allocation.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc(layout) };
-        if !ptr.is_null() {
-            allocated(layout.size());
-        }
-        ptr
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc_zeroed(layout) };
-        if !ptr.is_null() {
-            allocated(layout.size());
-        }
-        ptr
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size() as u64, Relaxed);
-        unsafe { System.dealloc(ptr, layout) };
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, old: Layout, size: usize) -> *mut u8 {
-        let next = unsafe { System.realloc(ptr, old, size) };
-        if !next.is_null() {
-            LIVE.fetch_sub(old.size() as u64, Relaxed);
-            allocated(size);
-        }
-        next
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-fn sample() -> AllocationSnapshot {
-    AllocationSnapshot {
-        live_bytes: LIVE.load(Relaxed),
-        allocated_bytes: TOTAL.load(Relaxed),
-        allocations: COUNT.load(Relaxed),
-        peak_live_bytes: PEAK.load(Relaxed),
-    }
-}
 
 fn source(helpers: usize) -> String {
     use std::fmt::Write;
@@ -91,33 +34,62 @@ fn source(helpers: usize) -> String {
 }
 
 fn main() {
-    let helpers: usize = std::env::args()
-        .nth(1)
-        .unwrap_or("128".to_owned())
-        .parse()
-        .unwrap();
-    assert!(helpers > 0);
+    let target = std::env::args().nth(1).unwrap_or("128".to_owned());
+    let helpers = target.parse::<usize>().ok();
     let one_shot = std::env::args().nth(2).as_deref() == Some("one-shot");
-    let text = source(helpers);
-    let body_edit = text.replacen("x + 0", "x + 9", 1);
-    let signature_edit = body_edit
-        .replacen("f_0000(x: i32)", "f_0000(x: i32, extra: i32)", 1)
-        .replace("f_0000(1)", "f_0000(1, 2)");
-    let failed_edit = signature_edit.replacen("return y;", "return true;", 1);
-    let mut session = FrontendSession::new();
+    let (input, stages) = if let Some(helpers) = helpers {
+        assert!(helpers > 0);
+        let text = source(helpers);
+        let body_edit = text.replacen("x + 0", "x + 9", 1);
+        let signature_edit = body_edit
+            .replacen("f_0000(x: i32)", "f_0000(x: i32, extra: i32)", 1)
+            .replace("f_0000(1)", "f_0000(1, 2)");
+        let failed_edit = signature_edit.replacen("return y;", "return true;", 1);
+        (
+            ProjectInput::single_source(SourceInput::anonymous(text)),
+            vec![
+                ("cold", None),
+                ("warm", None),
+                ("body-edit", Some(body_edit)),
+                ("signature-edit", Some(signature_edit)),
+                ("failed-edit", Some(failed_edit)),
+            ],
+        )
+    } else {
+        let root = std::path::PathBuf::from(&target).canonicalize().unwrap();
+        let input = ProjectSourceLoader::default()
+            .load(ProjectSourceLoadOptions {
+                project_root: root.clone(),
+                roots: vec![root],
+                entry: ProjectEntry {
+                    module: std::env::args().nth(4).map(|module| ModulePath {
+                        segments: module.split('.').map(str::to_owned).collect(),
+                    }),
+                    flow: std::env::args().nth(5).unwrap_or("main".to_owned()),
+                },
+                scope: ProjectSourceLoadScope::FullSourceTree,
+                source_kind: None,
+                import_search_roots: vec![],
+                external_module_roots: vec![],
+            })
+            .unwrap()
+            .input;
+        (input, vec![("cold", None), ("warm", None)])
+    };
+    let budget = std::env::args()
+        .nth(3)
+        .map(|text| text.parse::<u64>().unwrap())
+        .unwrap_or(etas_cache::DEFAULT_MEMORY_CACHE_BYTES);
+    let mut session = FrontendSession::with_options(
+        FrontendSessionOptions::memory_only().with_memory_cache_byte_budget(budget),
+    )
+    .unwrap();
     session.set_memory_probe(Some(FrontendMemoryProbe(sample)));
-    let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(text)));
+    let project = session.open_project(input);
     let mut revision = 0;
-    let stages = [
-        ("cold", None),
-        ("warm", None),
-        ("body-edit", Some(body_edit)),
-        ("signature-edit", Some(signature_edit)),
-        ("failed-edit", Some(failed_edit)),
-    ];
     for (stage, edit) in stages {
         let before = sample();
-        PEAK.store(before.live_bytes, Relaxed);
+        reset_peak();
         let started = std::time::Instant::now();
         if let Some(text) = edit {
             revision += 1;
@@ -145,7 +117,7 @@ fn main() {
         } else {
             CheckRequest::incremental()
         };
-        let response = session
+        let mut response = session
             .check(
                 project,
                 request
@@ -193,6 +165,8 @@ fn main() {
             .map(|e| e.facts.expr_effects.len());
         let reused = response.cache.reused_artifacts.len();
         let index_builds = response.memory.hir_index_builds;
+        let retained_revision_estimated_bytes = response.memory.retained_revision_estimated_bytes;
+        let cache = response.memory.cache_after.take();
         // Detailed pass samples are printed only on request, after measurement.
         if std::env::var_os("ETAS_MEMORY_PASSES").is_some() {
             for p in &response.memory.passes {
@@ -218,7 +192,22 @@ fn main() {
             "live_after_response_drop": disposed.live_bytes,
             "hir_index_builds": index_builds, "reused_artifacts": reused,
             "body_type_entries": body_types, "body_signatures": body_signatures,
-            "body_effect_exprs": body_effect_exprs, "project_effect_exprs": project_effect_exprs})
+            "body_effect_exprs": body_effect_exprs, "project_effect_exprs": project_effect_exprs,
+            "retained_revision_estimated_bytes": retained_revision_estimated_bytes,
+            "cache": cache.map(|cache| json!({
+                "budget_bytes": cache.budget_bytes,
+                "estimated_retained_bytes": cache.estimated_retained_bytes,
+                "payload_estimated_bytes": cache.payload_estimated_bytes,
+                "bookkeeping_estimated_bytes": cache.bookkeeping_estimated_bytes,
+                "entries": cache.entries,
+                "evicted_artifacts": cache.evicted_artifacts,
+                "rejected_insertions": cache.rejected_insertions,
+                "by_kind": cache.by_kind.into_iter().map(|kind| json!({
+                    "namespace": kind.namespace, "kind": kind.kind, "entries": kind.entries,
+                    "referenced_payload_estimated_bytes": kind.referenced_payload_estimated_bytes,
+                    "entry_bookkeeping_estimated_bytes": kind.entry_bookkeeping_estimated_bytes,
+                })).collect::<Vec<_>>()
+            }))})
         );
     }
     session.close_project(project).unwrap();

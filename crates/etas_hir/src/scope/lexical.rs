@@ -12,7 +12,7 @@ use etas_core::Span;
 
 use crate::{HirBlockId, HirExprId, HirItemId, HirModuleId, ResolveResult, ScopeId, SymbolId};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ScopeTree {
     scopes: Vec<Scope>,
 }
@@ -118,7 +118,7 @@ impl ScopeTree {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct Scope {
     pub id: ScopeId,
     pub parent: Option<ScopeId>,
@@ -128,13 +128,13 @@ pub struct Scope {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ScopeNamespace {
     Item,
     Module,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ScopeOwner {
     Module(HirModuleId),
     Item(HirItemId),

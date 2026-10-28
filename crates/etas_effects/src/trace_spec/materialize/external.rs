@@ -1,5 +1,5 @@
 use etas_core::Span;
-use etas_hir::{HirItem, HirItemId, HirSpecKind, ResolveResult, SymbolDef};
+use etas_hir::{HirItem, HirSpecKind, SymbolDef, SymbolId};
 
 use crate::trace_spec::model::{
     TraceSpecClause, TraceSpecClauseAlternatives, TraceSpecModelStore, TraceSpecPattern,
@@ -13,30 +13,37 @@ use crate::{
 use super::{TraceSpecMaterializer, external_row_label};
 
 impl TraceSpecMaterializer<'_> {
-    pub(super) fn trace_spec_clauses_for_ref(
+    pub(super) fn trace_spec_clauses_for_symbol(
         &mut self,
-        spec_ref: &etas_hir::HirSpecRef,
+        symbol: SymbolId,
+        span: Span,
         store: &TraceSpecModelStore,
     ) -> Option<(String, TraceSpecClauseAlternatives)> {
-        if let Some(spec_item) = self.trace_spec_item_for_ref(spec_ref) {
+        let Some(declaration) = self.hir.symbols.get(symbol) else {
+            self.diagnostic(span, "trace spec conformance is missing its checked symbol");
+            return None;
+        };
+        if let Some(spec_item) = declaration.defining_item.filter(|item| matches!(self.hir.items.get(*item), Some(HirItem::Spec(spec)) if matches!(spec.kind, HirSpecKind::TraceSpec))) {
             let Some(clauses) = store.clauses_by_item.get(&spec_item).cloned() else {
                 self.diagnostic(
-                    spec_ref.span,
+                    span,
                     "trace spec conformance requires materialized trace spec clauses",
                 );
                 return None;
             };
-            let name = store
+            let Some(name) = store
                 .trace_spec_names
                 .get(&spec_item)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_owned());
+                .cloned() else {
+                    self.diagnostic(span, "trace spec declaration identity is missing");
+                    return None;
+                };
             return Some((name, clauses));
         }
 
-        let Some(path) = self.external_trace_spec_path(spec_ref) else {
+        let SymbolDef::ImportAlias { path, .. } = &declaration.def else {
             self.diagnostic(
-                spec_ref.span,
+                span,
                 "trace spec conformance must resolve to a source or external trace spec",
             );
             return None;
@@ -44,10 +51,10 @@ impl TraceSpecMaterializer<'_> {
         let Some(summary) = self
             .external_trace_specs
             .iter()
-            .find(|summary| summary.trace_spec == path)
+            .find(|summary| summary.trace_spec.as_slice() == path.as_slice())
         else {
             self.diagnostic(
-                spec_ref.span,
+                span,
                 format!(
                     "external trace spec `{}` requires package metadata trace clauses",
                     path.join(".")
@@ -56,37 +63,8 @@ impl TraceSpecMaterializer<'_> {
             return None;
         };
         let summary = summary.metadata.clone();
-        let clauses = self.clauses_from_external_summary(&summary, spec_ref.span)?;
+        let clauses = self.clauses_from_external_summary(&summary, span)?;
         Some((path.join("."), clauses))
-    }
-
-    fn external_trace_spec_path(&self, spec_ref: &etas_hir::HirSpecRef) -> Option<Vec<String>> {
-        let ResolveResult::Resolved(symbol) = spec_ref.spec_path.resolution else {
-            return None;
-        };
-        let symbol = self.hir.symbols.get(symbol)?;
-        let SymbolDef::ImportAlias { path, origin: _ } = &symbol.def else {
-            return None;
-        };
-        Some(path.clone())
-    }
-
-    fn trace_spec_item_for_ref(&mut self, spec_ref: &etas_hir::HirSpecRef) -> Option<HirItemId> {
-        let ResolveResult::Resolved(symbol) = spec_ref.spec_path.resolution else {
-            return None;
-        };
-        let Some(symbol) = self.hir.symbols.get(symbol) else {
-            self.diagnostic(
-                spec_ref.span,
-                "trace spec conformance is missing symbol facts",
-            );
-            return None;
-        };
-        let item = symbol.defining_item?;
-        match self.hir.items.get(item) {
-            Some(HirItem::Spec(spec)) if matches!(spec.kind, HirSpecKind::TraceSpec) => Some(item),
-            _ => None,
-        }
     }
 
     pub(super) fn clauses_from_external_summary(

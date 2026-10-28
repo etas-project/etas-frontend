@@ -43,7 +43,10 @@ impl Pass<ProjectContext> for ReuseTypeBodyFactsPass {
             return PassResult::failed("body reuse requires prepared signature environment");
         };
 
-        let current_manifest = context.current_artifact_manifest();
+        let current_manifest = match context.current_artifact_manifest() {
+            Ok(manifest) => manifest,
+            Err(error) => return PassResult::failed(error),
+        };
         let mut produced = ArtifactSet::new();
         let mut reused = context.body_artifact_reuse.type_outputs.clone();
         reused.sort_by_key(|artifact| artifact.unit.0);

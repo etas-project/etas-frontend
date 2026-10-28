@@ -1,26 +1,43 @@
 use crate::{EffectRowRef, TypeId};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct CheckedStdMethodFact {
+    pub qualified_path: Vec<String>,
+    pub intrinsic: u32,
+    pub signature: TypeId,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct FieldProjectionFact {
     pub receiver: TypeId,
     pub field: String,
     pub output: TypeId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct DeferredEffectRowObligation {
     pub param: String,
     pub source: etas_hir::HirExprId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct GenericInstantiationFact {
     pub type_bindings: Vec<(String, TypeId)>,
     pub effect_row_bindings: Vec<(String, EffectRowRef)>,
     pub deferred_effect_row_obligations: Vec<DeferredEffectRowObligation>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum CheckedIndexKind {
     Sequence {
         base: TypeId,
@@ -33,7 +50,9 @@ pub enum CheckedIndexKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum CheckedSliceKind {
     Sequence {
         base: TypeId,
@@ -49,7 +68,9 @@ pub enum CheckedSliceKind {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct TryExprTypeFact {
     pub operand: etas_hir::HirExprId,
     pub value_type: TypeId,

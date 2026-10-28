@@ -10,7 +10,7 @@ use crate::{
 
 use super::kind::{FRONTEND_CACHE_NAMESPACE, FrontendArtifactKind};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum FrontendUnitKey {
     Project,
     Source(SourceId),
@@ -36,7 +36,7 @@ impl FrontendUnitKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub struct FrontendArtifactKey {
     pub kind: FrontendArtifactKind,
     pub unit: FrontendUnitKey,

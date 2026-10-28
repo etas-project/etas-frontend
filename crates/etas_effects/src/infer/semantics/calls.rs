@@ -13,27 +13,79 @@ impl EffectSemantics<'_> {
         callee: HirExprId,
         state: &EffectState,
     ) -> CallTarget<EffectUnit> {
-        let owner = match context.unit {
-            EffectUnit::Item(owner)
-            | EffectUnit::HandlerArm { owner, .. }
-            | EffectUnit::AnonymousFlow { owner, .. }
-            | EffectUnit::FirstClassFlowCall { owner, .. } => owner,
-        };
-        if context.unit == (EffectUnit::FirstClassFlowCall { owner, call }) {
-            return CallTarget::Dynamic;
+        let target = self.source_call_target_for(context, call, callee, state);
+        if let CallTarget::Direct(unit) = target {
+            self.inputs
+                .native_call_targets
+                .entry(call)
+                .or_default()
+                .insert(unit);
         }
+        if matches!(target, CallTarget::Dynamic)
+            && let Some(sources) = self.latent_sources_for_expr(state, callee)
+        {
+            for source in sources {
+                match source {
+                    super::state::LatentSource::Unit(unit)
+                    | super::state::LatentSource::Reference { unit, .. }
+                    | super::state::LatentSource::Captured { unit, .. } => {
+                        self.inputs
+                            .native_call_targets
+                            .entry(call)
+                            .or_default()
+                            .insert(unit);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let CallTarget::Direct(EffectUnit::Item(item)) = target
+            && self
+                .frozen_calls
+                .get(&item)
+                .is_some_and(crate::FrozenCallableSummary::uses_snapshot)
+        {
+            self.frozen_call_targets.insert(call, item);
+            return CallTarget::External;
+        }
+        target
+    }
 
+    fn source_call_target_for(
+        &mut self,
+        context: UnitContext<EffectUnit>,
+        call: HirExprId,
+        callee: HirExprId,
+        state: &EffectState,
+    ) -> CallTarget<EffectUnit> {
+        if let Some(symbol) = self.types.facts.agent_method_calls.get(&call) {
+            if let Some(HirExpr::Path(path)) = self.hir.exprs.get(callee) {
+                let resolved = match &path.resolution {
+                    ResolveResult::Resolved(symbol) => {
+                        self.types.facts.symbol_types.contains_key(symbol)
+                    }
+                    ResolveResult::PartiallyResolved(partial) => partial
+                        .resolved_prefix
+                        .is_some_and(|symbol| self.types.facts.symbol_types.contains_key(&symbol)),
+                    _ => false,
+                };
+                if !resolved {
+                    return CallTarget::Incomplete;
+                }
+            }
+            return self
+                .types
+                .facts
+                .agent_methods
+                .get(symbol)
+                .map(|method| CallTarget::Direct(EffectUnit::Item(method.body)))
+                .unwrap_or(CallTarget::Incomplete);
+        }
         let Some(callee_expr) = self.hir.exprs.get(callee) else {
             return CallTarget::Incomplete;
         };
         let HirExpr::Path(path) = callee_expr else {
-            return if state
-                .local_latent_values
-                .value_sources(callee)
-                .is_some_and(|sources| !sources.is_empty())
-            {
-                CallTarget::Direct(EffectUnit::FirstClassFlowCall { owner, call })
-            } else if self.is_typed_flow_expr(callee) {
+            return if self.is_typed_flow_expr(callee) {
                 CallTarget::Dynamic
             } else {
                 CallTarget::External
@@ -46,14 +98,22 @@ impl EffectSemantics<'_> {
         let Some(symbol_data) = self.hir.symbols.get(symbol) else {
             return CallTarget::Incomplete;
         };
+        if self.is_typed_flow_expr(callee)
+            && let Some(sources) = state.local_latent_values.symbol_sources(symbol)
+            && !sources.is_empty()
+        {
+            return match sources.first().filter(|_| sources.len() == 1) {
+                Some(super::state::LatentSource::Unit(unit)) => CallTarget::Direct(*unit),
+                _ => CallTarget::Dynamic,
+            };
+        }
         match (&symbol_data.kind, &symbol_data.def) {
             (_, SymbolDef::Item { item }) => match self.hir.items.get(*item) {
-                Some(HirItem::Flow(_) | HirItem::Agent(_))
-                    if self.types.facts.symbol_types.contains_key(&symbol) =>
-                {
+                Some(HirItem::Agent(_)) => self.agent_default_call_target(*item),
+                Some(HirItem::Flow(_)) if self.types.facts.symbol_types.contains_key(&symbol) => {
                     CallTarget::Direct(EffectUnit::Item(*item))
                 }
-                Some(HirItem::Flow(_) | HirItem::Agent(_)) => CallTarget::Incomplete,
+                Some(HirItem::Flow(_)) => CallTarget::Incomplete,
                 Some(HirItem::Tool(tool)) => match tool.body {
                     etas_hir::HirToolBody::Source(_)
                         if self.types.facts.symbol_types.contains_key(&symbol) =>
@@ -136,9 +196,8 @@ impl EffectSemantics<'_> {
 impl EffectSemantics<'_> {
     fn source_import_target(&self, item: etas_hir::HirItemId) -> CallTarget<EffectUnit> {
         match self.hir.items.get(item) {
-            Some(HirItem::Flow(_) | HirItem::Agent(_)) => {
-                CallTarget::Direct(EffectUnit::Item(item))
-            }
+            Some(HirItem::Agent(_)) => self.agent_default_call_target(item),
+            Some(HirItem::Flow(_)) => CallTarget::Direct(EffectUnit::Item(item)),
             Some(HirItem::Tool(tool)) => match tool.body {
                 etas_hir::HirToolBody::Source(_) => CallTarget::Direct(EffectUnit::Item(item)),
                 etas_hir::HirToolBody::Decl { .. } => CallTarget::External,
@@ -157,6 +216,26 @@ impl EffectSemantics<'_> {
             Some(_) => CallTarget::External,
             None => CallTarget::Incomplete,
         }
+    }
+
+    pub(crate) fn agent_default_call_target(
+        &self,
+        item: etas_hir::HirItemId,
+    ) -> CallTarget<EffectUnit> {
+        let Some(etas_types::ItemSignature::Agent(signature)) =
+            self.types.facts.item_signatures.get(&item)
+        else {
+            return CallTarget::Incomplete;
+        };
+        let Some(method) = signature
+            .default_entry
+            .as_ref()
+            .and_then(|entry| entry.method)
+            .and_then(|method| self.types.facts.agent_methods.get(&method))
+        else {
+            return CallTarget::Incomplete;
+        };
+        CallTarget::Direct(EffectUnit::Item(method.body))
     }
 
     fn item_symbol_has_flow_type(&self, item: etas_hir::HirItemId) -> bool {

@@ -4,7 +4,7 @@ use crate::parser::Parser;
 
 impl Parser<'_> {
     pub(crate) fn expr(&mut self) -> Expr {
-        self.lambda_or_pipeline()
+        self.with_body_recursion(Expr::Error, Self::lambda_or_pipeline)
     }
 
     pub(crate) fn expr_before_block(&mut self) -> Expr {
@@ -73,6 +73,10 @@ impl Parser<'_> {
     }
 
     pub(crate) fn list_cons_expr(&mut self) -> Expr {
+        self.with_body_recursion(Expr::Error, Self::list_cons_expr_inner)
+    }
+
+    fn list_cons_expr_inner(&mut self) -> Expr {
         let head = self.stage_compose_expr();
         if self.looks_like_spec_method_selection() {
             return self.spec_method_call_expr(head);
@@ -160,7 +164,7 @@ impl Parser<'_> {
         let mut span = expr.span();
         let mut limits = Vec::new();
         while self.cursor.eat_keyword(Keyword::Limit).is_some() {
-            limits.extend(self.limit_list());
+            limits.extend(self.limit_list_using(|parser| parser.binary_expr(0)));
             if let Some(limit) = limits.last() {
                 span = span.cover(limit.span());
             }
@@ -173,9 +177,17 @@ impl Parser<'_> {
     }
 
     pub(crate) fn binary_expr(&mut self, min_prec: u8) -> Expr {
+        self.with_body_recursion(Expr::Error, |parser| parser.binary_expr_inner(min_prec))
+    }
+
+    fn binary_expr_inner(&mut self, min_prec: u8) -> Expr {
         let mut lhs = self.unary_expr();
+        let mut chain = 0;
         while let Some((op, prec)) = self.binary_op() {
             if prec < min_prec {
+                break;
+            }
+            if !self.body_chain_step(&mut chain) {
                 break;
             }
             self.cursor.bump();
@@ -192,6 +204,13 @@ impl Parser<'_> {
     }
 
     pub(crate) fn unary_expr(&mut self) -> Expr {
+        self.with_body_recursion(Expr::Error, Self::unary_expr_inner)
+    }
+
+    fn unary_expr_inner(&mut self) -> Expr {
+        if self.cursor.at_punct(Punct::Caret) {
+            return self.reflect_expr();
+        }
         let op = if self.cursor.eat_punct(Punct::Bang).is_some() {
             Some(UnaryOp::Not)
         } else if self.cursor.eat_punct(Punct::Minus).is_some() {
@@ -215,7 +234,11 @@ impl Parser<'_> {
     pub(crate) fn postfix_expr(&mut self) -> Expr {
         let suppress_handler_with = std::mem::take(&mut self.suppress_next_handler_with);
         let mut expr = self.primary_expr();
+        let mut chain = 0;
         loop {
+            if !self.body_chain_step(&mut chain) {
+                break;
+            }
             let generic_args = if self.cursor.at_punct(Punct::Lt)
                 && self.bracket_group_followed_by(Punct::LParen)
             {
@@ -514,13 +537,31 @@ impl Parser<'_> {
         if self.looks_like_handler_arm_block_body() {
             return false;
         }
+        if matches!(
+            self.cursor.nth(1).kind,
+            TokenKind::Keyword(
+                Keyword::Let
+                    | Keyword::Var
+                    | Keyword::Return
+                    | Keyword::Resume
+                    | Keyword::Finish
+                    | Keyword::Break
+                    | Keyword::Continue
+                    | Keyword::For
+                    | Keyword::While
+            )
+        ) {
+            return false;
+        }
         let mut depth = 0usize;
         let mut idx = 1usize;
         loop {
             match self.cursor.nth(idx).kind {
                 TokenKind::Eof => return false,
                 TokenKind::Punct(Punct::FatArrow) if depth == 0 => return true,
-                TokenKind::Punct(Punct::Comma | Punct::RBrace) if depth == 0 => return false,
+                TokenKind::Punct(Punct::Comma | Punct::Semi | Punct::RBrace) if depth == 0 => {
+                    return false;
+                }
                 TokenKind::Punct(Punct::LParen | Punct::LBracket | Punct::LBrace) => depth += 1,
                 TokenKind::Punct(Punct::RParen | Punct::RBracket | Punct::RBrace) => {
                     if depth == 0 {
@@ -761,6 +802,22 @@ impl Parser<'_> {
 
     pub(crate) fn perform_expr(&mut self) -> Expr {
         let start = self.expect_keyword(Keyword::Perform, "expected `perform`");
+        if self.cursor.at_ident_like()
+            && self.slice(self.cursor.peek().span) == "infer"
+            && matches!(
+                self.cursor.nth(1).kind,
+                TokenKind::Punct(Punct::Lt | Punct::LParen)
+            )
+        {
+            self.cursor.bump();
+            let generic_args = self.generic_args();
+            let args = self.arg_list();
+            return Expr::Infer(InferExpr {
+                generic_args,
+                args,
+                span: start.cover(self.previous_span()),
+            });
+        }
         let (effect, action) = self.effect_action_ref("expected effect action path");
         let generic_args = self.generic_args();
         let args = self.arg_list();

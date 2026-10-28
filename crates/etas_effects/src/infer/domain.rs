@@ -5,8 +5,22 @@ use etas_utils::{JoinSemiLattice, PartialOrder};
 
 use crate::{Effect, EffectRow, EffectSet, RequirementSet};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct EffectSummary {
+    pub handler_requests: super::RequestInstantiationSummary,
+    #[serde(default)]
+    pub default_handler_effects: Option<super::DefaultHandlerEffects>,
+    #[serde(default)]
+    pub exits: Option<super::CallableExitSummary>,
     pub escaping_effects: EffectRow,
     pub requested_actions: EffectRow,
     pub default_actions: EffectRow,
@@ -35,13 +49,19 @@ impl EffectSummary {
     }
 
     pub fn record_escaping_effect_row(&mut self, row: EffectRow) {
-        self.escaping_effects.union_assign(&row);
+        if let Some(effects) = &mut self.default_handler_effects {
+            effects.direct.union_assign(&row);
+            self.refresh_escaping_effects();
+        } else {
+            self.escaping_effects.union_assign(&row);
+        }
     }
 
     pub fn record_requested_action(&mut self, action: Effect) {
         if !action.is_action() {
             return;
         }
+        self.handler_requests.record_untyped(action.clone());
         let row = EffectRow::closed(EffectSet::one(action));
         self.requested_actions.union_assign(&row);
     }
@@ -76,7 +96,8 @@ impl EffectSummary {
     }
 
     pub fn seq_assign(&mut self, other: &Self) -> bool {
-        let mut changed = self.escaping_effects.union_assign(&other.escaping_effects);
+        let mut changed = self.join_escaping_effects(other);
+        changed |= self.handler_requests.union_assign(&other.handler_requests);
         changed |= self
             .requested_actions
             .union_assign(&other.requested_actions);
@@ -94,7 +115,17 @@ impl EffectSummary {
     }
 
     pub fn join_branch(&mut self, other: &Self) -> bool {
-        let mut changed = self.escaping_effects.union_assign(&other.escaping_effects);
+        let exits_changed = match (&mut self.exits, &other.exits) {
+            (Some(current), Some(other)) => current.join_assign(other),
+            (None, Some(other)) => {
+                self.exits = Some(other.clone());
+                true
+            }
+            _ => false,
+        };
+        let mut changed = self.join_escaping_effects(other);
+        changed |= self.handler_requests.union_assign(&other.handler_requests);
+        changed |= exits_changed;
         changed |= self
             .requested_actions
             .union_assign(&other.requested_actions);
@@ -117,6 +148,9 @@ impl EffectSummary {
     }
 
     pub fn stabilize_for_fixpoint(&mut self, current: Option<&Self>) {
+        if let Some(exits) = &mut self.exits {
+            exits.stabilize(current.and_then(|current| current.exits.as_ref()));
+        }
         self.action_trace = self
             .action_trace
             .clone()
@@ -124,13 +158,39 @@ impl EffectSummary {
     }
 
     pub fn join_summary(&mut self, other: &Self) -> bool {
+        if self == &Self::default() {
+            let changed = self != other;
+            *self = other.clone();
+            return changed;
+        }
+        if other == &Self::default() {
+            return false;
+        }
         self.join_branch(other)
     }
 
-    pub fn merge_possible_handler_footprint_without_trace(&mut self, other: &Self) -> bool {
+    pub fn merge_request_footprint_without_escaping_or_trace(&mut self, other: &Self) -> bool {
+        let mut default_changed = false;
+        // Escaping effects and trace placement belong to the enclosing checked
+        // transfer. Do not reintroduce effects removed by its local handlers.
+        if let Some(defaults) = &other.default_handler_effects {
+            for handler in &defaults.handlers {
+                default_changed |= self.default_handler_effects.is_none();
+                let effects = self.default_handler_effects.get_or_insert_with(|| {
+                    super::DefaultHandlerEffects {
+                        direct: self.escaping_effects.clone(),
+                        handlers: vec![],
+                    }
+                });
+                default_changed |=
+                    effects.union_handler(handler.action.clone(), &EffectRow::empty());
+            }
+        }
         let mut changed = self
             .requested_actions
             .union_assign(&other.requested_actions);
+        changed |= self.handler_requests.union_assign(&other.handler_requests);
+        changed |= default_changed;
         changed |= self.default_actions.union_assign(&other.default_actions);
         changed |= self.handled_actions.union_assign(&other.handled_actions);
         changed |= self.residual_checks.union_assign(&other.residual_checks);
@@ -144,12 +204,22 @@ impl EffectSummary {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub enum ActionTraceDomain {
     #[default]
     Empty,
     Event(ActionEvent),
     ParameterCall {
+        target: ParameterCallTarget,
         parameter: String,
         span: Span,
     },
@@ -163,10 +233,35 @@ pub enum ActionTraceDomain {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ParameterCallRef {
+    pub target: ParameterCallTarget,
     pub parameter: String,
     pub span: Span,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub enum ParameterCallTarget {
+    Native(etas_hir::SymbolId),
+    Interface(u32),
+    Graph {
+        graph: etas_code::CodeFingerprint,
+        parameter: etas_package_metadata::CallableValueParameter,
+    },
 }
 
 impl ActionTraceDomain {
@@ -264,18 +359,18 @@ impl ActionTraceDomain {
 
     fn collect_parameter_calls(
         &self,
-        calls: &mut BTreeMap<(String, u32, u32, u32), ParameterCallRef>,
+        calls: &mut BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>,
     ) {
         match self {
-            Self::ParameterCall { parameter, span } => {
+            Self::ParameterCall {
+                target,
+                parameter,
+                span,
+            } => {
                 calls.insert(
-                    (
-                        parameter.clone(),
-                        span.source.0,
-                        span.range.start.0,
-                        span.range.end.0,
-                    ),
+                    (*target, span.source.0, span.range.start.0, span.range.end.0),
                     ParameterCallRef {
+                        target: *target,
                         parameter: parameter.clone(),
                         span: *span,
                     },
@@ -287,7 +382,7 @@ impl ActionTraceDomain {
                 for call in parameter_calls {
                     calls.insert(
                         (
-                            call.parameter.clone(),
+                            call.target,
                             call.span.source.0,
                             call.span.range.start.0,
                             call.span.range.end.0,
@@ -379,8 +474,6 @@ impl ActionTraceDomain {
 
     fn choice(self, other: Self) -> Self {
         let trace = match (self, other) {
-            (Self::Empty, right) => right,
-            (left, Self::Empty) => left,
             (left, right) if left == right => left,
             (Self::UnknownOrder(mut left), Self::UnknownOrder(right)) => {
                 left.union_assign(&right);
@@ -434,14 +527,18 @@ impl ActionTraceDomain {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ActionEvent {
     pub action: Effect,
     pub span: Span,
     pub source: ActionEventSource,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ActionEventSource {
     Perform,
     StdIntrinsic,
@@ -451,7 +548,16 @@ pub enum ActionEventSource {
     Unknown,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct ResidualCheckSet {
     pub checks: BTreeSet<String>,
 }
@@ -466,7 +572,23 @@ impl ResidualCheckSet {
 
 impl PartialOrder for EffectSummary {
     fn less_equal(&self, other: &Self) -> bool {
-        row_less_equal(&self.escaping_effects, &other.escaping_effects)
+        (self.exits.is_none() || self.exits == other.exits)
+            && self.handler_requests.less_equal(&other.handler_requests)
+            && row_less_equal(&self.escaping_effects, &other.escaping_effects)
+            && row_less_equal(
+                self.direct_escaping_effects(),
+                other.direct_escaping_effects(),
+            )
+            && self.default_handler_effects.as_ref().is_none_or(|effects| {
+                effects.handlers.iter().all(|handler| {
+                    other.default_handler_effects.as_ref().is_some_and(|other| {
+                        other.handlers.iter().any(|candidate| {
+                            candidate.action == handler.action
+                                && row_less_equal(&handler.produced, &candidate.produced)
+                        })
+                    })
+                })
+            })
             && row_less_equal(&self.requested_actions, &other.requested_actions)
             && row_less_equal(&self.default_actions, &other.default_actions)
             && row_less_equal(&self.handled_actions, &other.handled_actions)
@@ -531,6 +653,7 @@ impl JoinSemiLattice for EffectSummary {
     Ord,
     serde::Serialize,
     serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum Determinism {
     #[default]
@@ -548,7 +671,16 @@ impl Determinism {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub enum InterpreterSupport {
     #[default]
     LocalOnly,
@@ -608,6 +740,9 @@ impl From<RuntimeRequirementReason> for InterpreterSupport {
             RuntimeRequirementReason::SecretAccess => {
                 Self::RequiresHost(HostRequirementSet::one(HostRequirementKind::SecretAccess))
             }
+            RuntimeRequirementReason::Compiler => {
+                Self::RequiresHost(HostRequirementSet::one(HostRequirementKind::Compiler))
+            }
             RuntimeRequirementReason::RuntimeHandler => Self::RequiresInterpreterOrchestration(
                 InterpreterOrchestrationRequirementSet::feature(
                     InterpreterFeatureKind::EffectHandler,
@@ -635,13 +770,14 @@ impl RuntimeRequirementReason {
             Self::FileIO => Some(HostRequirementKind::FileIO),
             Self::Command => Some(HostRequirementKind::Command),
             Self::SecretAccess => Some(HostRequirementKind::SecretAccess),
+            Self::Compiler => Some(HostRequirementKind::Compiler),
             Self::Checkpoint | Self::RuntimeHandler => None,
         }
     }
 }
 
 impl InterpreterSupport {
-    fn less_equal(&self, other: &Self) -> bool {
+    pub(crate) fn less_equal(&self, other: &Self) -> bool {
         match (self, other) {
             (left, right) if left == right => true,
             (Self::LocalOnly, _) => true,
@@ -724,7 +860,16 @@ impl InterpreterSupport {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct HostRequirementSet {
     pub kinds: BTreeSet<HostRequirementKind>,
 }
@@ -743,7 +888,16 @@ impl HostRequirementSet {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct InterpreterFeatureSet {
     pub kinds: BTreeSet<InterpreterFeatureKind>,
 }
@@ -762,7 +916,16 @@ impl InterpreterFeatureSet {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct InterpreterOrchestrationRequirementSet {
     pub host: HostRequirementSet,
     pub features: InterpreterFeatureSet,
@@ -792,7 +955,16 @@ impl InterpreterOrchestrationRequirementSet {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum HostRequirementKind {
     Agentic,
@@ -811,10 +983,20 @@ pub enum HostRequirementKind {
     FileIO,
     Command,
     SecretAccess,
+    Compiler,
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum InterpreterFeatureKind {
     EffectHandler,
@@ -824,7 +1006,9 @@ pub enum InterpreterFeatureKind {
     WorkflowOrchestration,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum RuntimeRequirementReason {
     Agentic,
     ToolCall,
@@ -842,10 +1026,13 @@ pub enum RuntimeRequirementReason {
     FileIO,
     Command,
     SecretAccess,
+    Compiler,
     RuntimeHandler,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum FrontendRejectionReason {
     UnresolvedEffect,
     UnsupportedHandler,
@@ -860,8 +1047,27 @@ mod tests {
     use super::ActionTraceDomain;
 
     #[test]
+    fn widening_keeps_distinct_parameter_identities_with_the_same_name_and_span() {
+        let call = |symbol| ActionTraceDomain::ParameterCall {
+            target: super::ParameterCallTarget::Native(etas_hir::SymbolId(symbol)),
+            parameter: "f".into(),
+            span: Span::empty(SourceId(7), TextSize(11)),
+        };
+        let trace = ActionTraceDomain::Seq(vec![call(1), call(2), call(1)]).widened();
+        let ActionTraceDomain::Widened {
+            parameter_calls, ..
+        } = trace
+        else {
+            panic!("widened parameter trace expected");
+        };
+        assert_eq!(parameter_calls.len(), 2);
+        assert_ne!(parameter_calls[0].target, parameter_calls[1].target);
+    }
+
+    #[test]
     fn widening_preserves_parameter_call_placeholders() {
         let trace = ActionTraceDomain::Repeat(Box::new(ActionTraceDomain::ParameterCall {
+            target: super::ParameterCallTarget::Native(etas_hir::SymbolId(3)),
             parameter: "f".to_owned(),
             span: Span::empty(SourceId(7), TextSize(11)),
         }));

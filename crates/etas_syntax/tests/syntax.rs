@@ -1019,6 +1019,7 @@ flow main() {
         (x => x) => 40, key => x => x, key => { nested => 50 }, };
     let ordinary_lambda = x => x;
 }
+
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -1042,6 +1043,35 @@ flow main() {
         panic!("lambda binding");
     };
     assert!(matches!(binding.value, Expr::Lambda(_)));
+}
+
+#[test]
+fn handle_body_with_a_lambda_binding_is_a_block_not_a_map_literal() {
+    let parsed = parse_program(source(
+        r#"
+effect Echo { action echo<T>(value: T) -> T; }
+flow main() -> i32 {
+    return handle {
+        let deferred = () => perform Echo.echo("unused");
+        perform Echo.echo(42)
+    } with { Echo.echo(_) => { resume 42; } };
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let Item::Flow(flow) = &parsed.value.items[1].item else {
+        panic!("flow");
+    };
+    let FlowBody::Block(block) = &flow.body else {
+        panic!("block");
+    };
+    let Stmt::Return(return_stmt) = &block.stmts[0] else {
+        panic!("return");
+    };
+    let Expr::Handle(handle) = return_stmt.value.as_ref().unwrap() else {
+        panic!("handle");
+    };
+    assert!(matches!(handle.body.as_ref(), Expr::Block(_)));
 }
 
 #[test]

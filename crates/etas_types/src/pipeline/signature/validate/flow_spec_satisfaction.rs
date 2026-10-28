@@ -16,6 +16,18 @@ pub fn validate_flow_spec_satisfaction(
     validate_flow_specs(ctx, state);
     validate_conformance_target_kinds(ctx, state);
     collect_declaration_spec_satisfactions(ctx, state);
+    validate_callable_signatures(ctx, state);
+}
+
+pub(crate) fn validate_materialized_callable_signatures(ctx: &mut TypePipelineContext<'_>) {
+    let mut state = SignaturePipelineState {
+        callable_spec_satisfactions: std::mem::take(
+            &mut ctx.signature_facts.callable_spec_satisfactions,
+        ),
+        ..SignaturePipelineState::default()
+    };
+    validate_callable_signatures(ctx, &mut state);
+    ctx.signature_facts.callable_spec_satisfactions = state.callable_spec_satisfactions;
 }
 
 fn validate_type_param_bounds(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipelineState) {
@@ -152,6 +164,7 @@ fn collect_declaration_spec_satisfactions(
                                     symbol,
                                     spec_symbol,
                                     args,
+                                    effect_bound: None,
                                     span: spec_ref.span,
                                 });
                         }
@@ -182,6 +195,87 @@ fn collect_declaration_spec_satisfactions(
             }
         }
     }
+}
+
+fn validate_callable_signatures(
+    ctx: &mut TypePipelineContext<'_>,
+    state: &mut SignaturePipelineState,
+) {
+    let mut checked = Vec::new();
+    for mut fact in std::mem::take(&mut state.callable_spec_satisfactions) {
+        let signature = state
+            .spec_signatures
+            .get(&fact.spec_symbol)
+            .or_else(|| ctx.signature_facts.spec_signatures.get(&fact.spec_symbol));
+        let Some(signature) = signature else {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                fact.span,
+                "callable spec conformance has no checked spec signature",
+            ));
+            continue;
+        };
+        let Some(expected) = &signature.callable else {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                fact.span,
+                "callable spec has no callable contract",
+            ));
+            continue;
+        };
+        let actual = match state
+            .item_signatures
+            .get(&fact.item)
+            .or_else(|| ctx.signature_facts.item_signatures.get(&fact.item))
+        {
+            Some(crate::ItemSignature::Flow(signature)) => Some(signature),
+            Some(crate::ItemSignature::Agent(signature)) => signature.callable(),
+            Some(crate::ItemSignature::Tool(signature)) => Some(signature),
+            _ => None,
+        };
+        let Some(actual) = actual else {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                fact.span,
+                "callable spec implementation has no checked callable signature",
+            ));
+            continue;
+        };
+        let parameters = signature
+            .params
+            .iter()
+            .zip(&signature.param_names)
+            .map(|(symbol, name)| {
+                (
+                    name.clone(),
+                    ctx.hir
+                        .symbols
+                        .get(*symbol)
+                        .is_some_and(|symbol| symbol.kind == SymbolKind::EffectParam),
+                )
+            })
+            .collect::<Vec<_>>();
+        match crate::solver::callable_spec::solve(
+            &mut ctx.interner,
+            &parameters,
+            &fact.args,
+            expected,
+            actual,
+            fact.span,
+        ) {
+            Ok(binding) => {
+                fact.args = binding.args;
+                fact.effect_bound = binding.effect_bound;
+                checked.push(fact);
+            }
+            Err(failure) => ctx.diagnostics.push(Diagnostic::type_check(
+                failure.code,
+                failure.span,
+                failure.message,
+            )),
+        }
+    }
+    state.callable_spec_satisfactions = checked;
 }
 
 fn spec_kind_name(kind: SpecKind) -> &'static str {
@@ -227,7 +321,11 @@ fn validate_conformance_target_kinds(
         if spec_signature(ctx, state, symbol).is_some() {
             continue;
         }
-        let Some(symbol_data) = ctx.hir.symbols.get(symbol) else {
+        let Some(symbol_data) = ctx
+            .symbols
+            .canonical_symbol(ctx.hir, symbol)
+            .and_then(|symbol| ctx.hir.symbols.get(symbol))
+        else {
             continue;
         };
         if matches!(symbol_data.kind, SymbolKind::Protocol) {
@@ -246,6 +344,7 @@ fn spec_signature<'a>(
     state: &'a SignaturePipelineState,
     symbol: etas_hir::SymbolId,
 ) -> Option<&'a SpecSignature> {
+    let symbol = ctx.symbols.canonical_symbol(ctx.hir, symbol)?;
     state
         .spec_signatures
         .get(&symbol)

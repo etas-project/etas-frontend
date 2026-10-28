@@ -4,6 +4,11 @@ use etas_hir_analysis::{HirAnalysisContext, interprocedural::HirAnalysisBody};
 use super::{EffectAnonymousFlowBody, EffectUnit};
 
 impl EffectUnit {
+    pub fn collect(hir: &etas_hir::HirRevision) -> Vec<Self> {
+        let context = HirAnalysisContext::new(hir);
+        super::collect::EffectUnitCollector::collect_with_context(&context)
+    }
+
     pub fn analysis_body(self, hir: &etas_hir::HirRevision) -> HirAnalysisBody {
         let context = HirAnalysisContext::new(hir);
         self.analysis_body_with_context(&context)
@@ -18,7 +23,6 @@ impl EffectUnit {
                 EffectAnonymousFlowBody::Expr(expr) => HirAnalysisBody::Expr(expr),
                 EffectAnonymousFlowBody::Block(block) => HirAnalysisBody::Block(block),
             },
-            EffectUnit::FirstClassFlowCall { call, .. } => HirAnalysisBody::Expr(call),
         }
     }
 }

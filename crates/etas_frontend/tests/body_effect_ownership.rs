@@ -27,6 +27,8 @@ fn assert_partition(output: &ProjectOutput) -> usize {
     let mut statements = HashSet::new();
     let mut units = HashSet::new();
     let mut contracts = HashSet::new();
+    let mut environments = HashSet::new();
+    let mut captures = HashSet::new();
     let owners = output
         .effect_body_outputs
         .values()
@@ -35,6 +37,25 @@ fn assert_partition(output: &ProjectOutput) -> usize {
     let mut encoded_bytes = 0;
     for body in output.effect_body_outputs.values() {
         let facts = &body.facts;
+        for (id, snapshot) in &facts.callable_environments {
+            assert_eq!(snapshot.owner, body.owner);
+            assert!(
+                environments.insert(*id),
+                "captured environment duplicated across bodies"
+            );
+            assert_eq!(snapshot, &global.callable_environments[id]);
+        }
+        for (id, analysis) in &facts.captured_callables {
+            assert_eq!(
+                global.callable_environments[&id.environment].owner,
+                body.owner
+            );
+            assert!(
+                captures.insert(*id),
+                "capture descriptor duplicated across bodies"
+            );
+            assert_eq!(analysis, &global.captured_callables[id]);
+        }
         assert!(facts.interpreter_support.entry.is_none());
         assert!(facts.item_effects.keys().all(|item| *item == body.owner));
         for expr in facts.expr_effects.keys() {
@@ -55,9 +76,9 @@ fn assert_partition(output: &ProjectOutput) -> usize {
         for unit in facts.unit_effects.keys() {
             let owner = match unit {
                 EffectUnit::Item(item) => *item,
-                EffectUnit::AnonymousFlow { owner, .. }
-                | EffectUnit::HandlerArm { owner, .. }
-                | EffectUnit::FirstClassFlowCall { owner, .. } => *owner,
+                EffectUnit::AnonymousFlow { owner, .. } | EffectUnit::HandlerArm { owner, .. } => {
+                    *owner
+                }
             };
             assert_eq!(owner, body.owner);
             assert!(
@@ -118,8 +139,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
                 let owner = match unit {
                     EffectUnit::Item(item) => item,
                     EffectUnit::AnonymousFlow { owner, .. }
-                    | EffectUnit::HandlerArm { owner, .. }
-                    | EffectUnit::FirstClassFlowCall { owner, .. } => owner,
+                    | EffectUnit::HandlerArm { owner, .. } => owner,
                 };
                 owners.contains(owner)
             })
@@ -134,7 +154,79 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             .filter(|item| owners.contains(item))
             .collect()
     );
+    assert_eq!(
+        environments,
+        global
+            .callable_environments
+            .iter()
+            .filter(|(_, snapshot)| owners.contains(&snapshot.owner))
+            .map(|(id, _)| *id)
+            .collect()
+    );
+    assert_eq!(
+        captures,
+        global
+            .captured_callables
+            .keys()
+            .filter(|id| owners.contains(&global.callable_environments[&id.environment].owner))
+            .copied()
+            .collect()
+    );
     encoded_bytes
+}
+
+#[test]
+fn captured_callable_environments_are_owned_and_survive_body_codec_roundtrip() {
+    for (source, generic) in [
+        (
+            r#"module main;
+flow make(f: () -> unit ![]) -> (() -> unit ![]) ![] { return () => { f(); return; }; }
+flow first() -> unit ![] { return; }
+flow second() -> unit ![] { return; }
+flow main() -> unit ![] { let a = make(first); let b = make(second); a(); b(); return; }
+"#,
+            false,
+        ),
+        (
+            r#"module main;
+flow make<T, effect E>(f: (T) -> T ![E]) -> ((T) -> T ![E]) ![] { return (value: T) => { return f(value); }; }
+flow first(value: i32) -> i32 ![] { return value; }
+flow second(value: string) -> string ![] { return value; }
+flow main() -> unit ![] {
+    let a = make<i32, ![]>(first); let b = make<string, ![]>(second);
+    a(1); b("second"); return;
+}
+"#,
+            true,
+        ),
+    ] {
+        let output = check(source.into());
+        assert_partition(&output);
+        let facts = &output.effects.as_ref().unwrap().facts;
+        assert!(!facts.callable_environments.is_empty());
+        assert!(!facts.captured_callables.is_empty());
+        assert_eq!(
+            facts
+                .callable_environments
+                .values()
+                .any(|snapshot| !snapshot.generics.is_empty()),
+            generic
+        );
+        for body in output.effect_body_outputs.values() {
+            let bytes = bincode::serde::encode_to_vec(body, bincode::config::standard()).unwrap();
+            let (decoded, consumed): (etas_effects::BodyEffectOutput, _) =
+                bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+            assert_eq!(consumed, bytes.len());
+            assert_eq!(
+                decoded.facts.callable_environments,
+                body.facts.callable_environments
+            );
+            assert_eq!(
+                decoded.facts.captured_callables,
+                body.facts.captured_callables
+            );
+        }
+    }
 }
 
 #[test]
@@ -214,6 +306,7 @@ fn all_effect_stages_share_the_finalized_hir_index() {
     assert!(std::ptr::eq(view.index(), other.view().index()));
     let before = etas_hir::HirTreeIndex::thread_build_count();
     let result = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        frozen_calls: None,
         hir: &hir.hir,
         types: output.types.as_ref().unwrap(),
         std_registry: &etas_std::standard_registry(),

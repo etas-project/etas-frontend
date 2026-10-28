@@ -22,16 +22,60 @@ use crate::{
     solver::TypeUnifier,
 };
 
-pub fn collect_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     call: etas_hir::HirExprId,
     callee: etas_hir::HirExprId,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    let output = collect_call_inner(ctx, call, callee, generic_args, args, span, expected)?;
+    super::handler_request::record_forwarded_call(ctx, call, callee);
+    Ok(output)
+}
+
+fn collect_call_inner<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    call: etas_hir::HirExprId,
+    callee: etas_hir::HirExprId,
+    generic_args: &[HirGenericArg],
+    args: &[HirArg],
+    span: etas_core::Span,
+    expected: Option<TypeId>,
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    super::agent_method::validate_default_call_access(ctx, callee, span);
+    if let Some(output) = super::agent_method::collect_agent_path_call(
+        ctx,
+        call,
+        callee,
+        generic_args,
+        args,
+        expected,
+    )? {
+        return Ok(output);
+    }
     if let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] {
+        if let ResolveResult::Resolved(symbol) = path.resolution {
+            let symbol = ctx
+                .ctx
+                .symbols
+                .canonical_symbol(ctx.ctx.hir, symbol)
+                .unwrap_or(symbol);
+            let facts = ctx
+                .ctx
+                .signature_base
+                .map_or(&ctx.ctx.signature_facts, |base| &base.facts);
+            if facts.agent_methods.contains_key(&symbol) {
+                super::agent_method::validate_method_access(ctx, symbol, span);
+                ctx.state
+                    .provisional
+                    .agent_method_calls
+                    .insert(call, symbol);
+            }
+        }
         if super::enum_variant::declaration(ctx, path)
             .is_some_and(|variant| variant.field_names.is_some())
         {
@@ -48,8 +92,7 @@ pub fn collect_call(
         ctx,
         callable_signature
             .as_ref()
-            .map(|signature| signature.generic_params.as_slice())
-            .unwrap_or_default(),
+            .map(|signature| signature.generic_params.as_slice()),
         generic_args,
         span,
     );
@@ -60,21 +103,27 @@ pub fn collect_call(
             HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
         })
         .collect::<Vec<_>>();
-    if let Some(output) =
-        collect_std_qualified_call(ctx, call, callee, &type_generic_args, args, span, expected)
-    {
-        return output;
+    if let Some(output) = collect_std_qualified_call(
+        ctx,
+        call,
+        callee,
+        &checked_generic_args,
+        args,
+        span,
+        expected,
+    )? {
+        return Ok(output);
     }
     if let Some(output) = collect_partially_resolved_method_call(
         ctx,
         call,
         callee,
-        &type_generic_args,
+        &checked_generic_args,
         args,
         span,
         expected,
-    ) {
-        return output;
+    )? {
+        return Ok(output);
     }
     if let Some(output) = collect_standard_variant_constructor_call(
         ctx,
@@ -83,33 +132,60 @@ pub fn collect_call(
         args,
         span,
         expected,
-    ) {
-        return output;
+    )? {
+        if generic_args
+            .iter()
+            .any(|arg| matches!(arg, HirGenericArg::EffectRow(_)))
+        {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                span,
+                message: "variant constructors require type arguments, not effect-row arguments"
+                    .into(),
+            });
+        }
+        return Ok(output);
     }
-    let callable_candidate = collect_callable_callee(
-        ctx,
-        callee,
-        callable_signature.is_some() && type_generic_args.is_empty(),
-    );
+    let callable_candidate = collect_callable_callee(ctx, callee, callable_signature.is_some())?;
     let generic_params = callable_candidate
         .as_ref()
         .map(|candidate| candidate.generic_params.clone())
         .unwrap_or_default();
-    let callee_ty =
-        if let Some(ty) = collect_type_constructor_callee(ctx, callee, &type_generic_args, span) {
-            ctx.record_expr_type(callee, ty)
-        } else if let Some(candidate) = callable_candidate {
-            candidate.ty
-        } else {
-            collect_expr(ctx, callee, None)
-        };
-    let expected_inputs = callable_input_types(ctx, callee_ty, &type_generic_args, span);
-    let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
-    let output = expected.unwrap_or_else(|| {
-        infer_imported_std_call_output_from_args(ctx, callee, &arg_tys)
-            .or_else(|| callable_output_for_expression(ctx, callee_ty))
-            .unwrap_or_else(|| ctx.fresh_type_var())
-    });
+    let constructor = collect_type_constructor_callee(ctx, callee, &type_generic_args, span);
+    let checked_generic_args = if constructor.is_some() {
+        if generic_args
+            .iter()
+            .any(|arg| matches!(arg, HirGenericArg::EffectRow(_)))
+        {
+            super::enum_variant::invalid(
+                ctx,
+                span,
+                "type constructors require type arguments, not effect-row arguments",
+            );
+        }
+        Vec::new()
+    } else {
+        checked_generic_args
+    };
+    let callee_ty = if let Some(ty) = constructor {
+        ctx.record_expr_type(callee, ty)
+    } else if let Some(candidate) = callable_candidate {
+        candidate.ty
+    } else {
+        collect_expr(ctx, callee, None)?
+    };
+    let expected_inputs = super::callable_instantiation::argument_hints(
+        ctx,
+        callee_ty,
+        &generic_params,
+        &checked_generic_args,
+        span,
+    );
+    let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref())?;
+    let inferred = infer_imported_std_call_output_from_args(ctx, callee, &arg_tys)
+        .or_else(|| callable_output_for_expression(ctx, callee_ty));
+    let inferred = expected.filter(|_| !generic_params.is_empty()).or(inferred);
+    let output = select_call_output(ctx, inferred, expected, span);
     ctx.validate(crate::ValidationRequest::CallableArity {
         callee_ty,
         arg_count: arg_tys.len(),
@@ -125,45 +201,59 @@ pub fn collect_call(
         output,
         origin: ConstraintOrigin { span },
     });
-    output
+    Ok(output)
 }
 
-fn collect_std_qualified_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_std_qualified_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     call: etas_hir::HirExprId,
     callee: etas_hir::HirExprId,
-    type_generic_args: &[TypeId],
+    checked_generic_args: &[CallableGenericArg],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> Option<TypeId> {
+) -> Result<Option<TypeId>, E> {
+    ctx.checkpoint()?;
+    let type_generic_args = checked_generic_args
+        .iter()
+        .filter_map(|arg| match arg {
+            CallableGenericArg::Type(ty) => Some(*ty),
+            CallableGenericArg::EffectRow(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let type_generic_args = type_generic_args.as_slice();
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
-        return None;
+        return Ok(None);
     };
-    let candidate = std_qualified_path_callable_candidate(ctx, path, type_generic_args.is_empty());
+    let candidate = std_qualified_path_callable_candidate(ctx, path, true);
     let (callee_ty, generic_params) = if let Some(candidate) = candidate {
         (candidate.ty, candidate.generic_params)
-    } else if type_generic_args.is_empty() {
-        (std_qualified_path_value_type(ctx, path)?, Vec::new())
     } else {
-        (raw_std_qualified_path_value_type(ctx, path)?, Vec::new())
+        let ty = if type_generic_args.is_empty() {
+            std_qualified_path_value_type(ctx, path)
+        } else {
+            raw_std_qualified_path_value_type(ctx, path)
+        };
+        let Some(ty) = ty else {
+            return Ok(None);
+        };
+        (ty, Vec::new())
     };
-    let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args, span);
-    let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
-    let output = expected.unwrap_or_else(|| {
-        infer_std_call_output_from_args(ctx, path, &arg_tys)
-            .or_else(|| {
-                specialized_callable_output_for_args(
-                    ctx,
-                    callee_ty,
-                    type_generic_args,
-                    &arg_tys,
-                    span,
-                )
-            })
-            .or_else(|| callable_output_for_expression(ctx, callee_ty))
-            .unwrap_or_else(|| ctx.fresh_type_var())
-    });
+    let expected_inputs = super::callable_instantiation::argument_hints(
+        ctx,
+        callee_ty,
+        &generic_params,
+        checked_generic_args,
+        span,
+    );
+    let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref())?;
+    let inferred = infer_std_call_output_from_args(ctx, path, &arg_tys)
+        .or_else(|| {
+            specialized_callable_output_for_args(ctx, callee_ty, type_generic_args, &arg_tys, span)
+        })
+        .or_else(|| callable_output_for_expression(ctx, callee_ty));
+    let inferred = expected.filter(|_| !generic_params.is_empty()).or(inferred);
+    let output = select_call_output(ctx, inferred, expected, span);
     ctx.validate(crate::ValidationRequest::CallableArity {
         callee_ty,
         arg_count: arg_tys.len(),
@@ -173,21 +263,17 @@ fn collect_std_qualified_call(
         call: Some(call),
         callee: callee_ty,
         generic_params,
-        generic_args: type_generic_args
-            .iter()
-            .copied()
-            .map(CallableGenericArg::Type)
-            .collect(),
+        generic_args: checked_generic_args.to_vec(),
         arg_exprs: call_arg_exprs(args),
         args: arg_tys,
         output,
         origin: ConstraintOrigin { span },
     });
-    Some(output)
+    Ok(Some(output))
 }
 
-fn infer_std_call_output_from_args(
-    ctx: &BodyCollectContext<'_, '_>,
+fn infer_std_call_output_from_args<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
     args: &[TypeId],
 ) -> Option<TypeId> {
@@ -202,8 +288,8 @@ fn infer_std_call_output_from_args(
     }
 }
 
-fn infer_imported_std_call_output_from_args(
-    ctx: &BodyCollectContext<'_, '_>,
+fn infer_imported_std_call_output_from_args<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
     args: &[TypeId],
 ) -> Option<TypeId> {
@@ -231,8 +317,8 @@ fn infer_imported_std_call_output_from_args(
     }
 }
 
-fn infer_unwrap_output_from_args(
-    ctx: &BodyCollectContext<'_, '_>,
+fn infer_unwrap_output_from_args<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     args: &[TypeId],
 ) -> Option<TypeId> {
     let [arg] = args else {
@@ -245,23 +331,34 @@ fn infer_unwrap_output_from_args(
     }
 }
 
-fn collect_callable_callee(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_callable_callee<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
     instantiate_schematics: bool,
-) -> Option<crate::CallableCandidate> {
+) -> Result<Option<crate::CallableCandidate>, E> {
+    ctx.checkpoint()?;
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
-        return None;
+        return Ok(None);
     };
-    let symbol = resolved_callee_symbol(path)?;
-    let fact = ctx.ctx.symbol_fact(symbol)?.clone();
-    let candidate = callable_candidate_from_fact(ctx, fact, instantiate_schematics)?;
-    ctx.record_expr_type(callee, candidate.ty);
-    Some(candidate)
+    let Some(symbol) = resolved_callee_symbol(path) else {
+        return Ok(None);
+    };
+    let Some(fact) = ctx.ctx.symbol_fact(symbol).cloned() else {
+        return Ok(None);
+    };
+    let value_type = match &fact {
+        SymbolTypeFact::Agent { signature } => Some(signature.component),
+        _ => None,
+    };
+    let Some(candidate) = callable_candidate_from_fact(ctx, fact, instantiate_schematics) else {
+        return Ok(None);
+    };
+    ctx.record_expr_type(callee, value_type.unwrap_or(candidate.ty));
+    Ok(Some(candidate))
 }
 
-fn callee_callable_signature(
-    ctx: &BodyCollectContext<'_, '_>,
+fn callee_callable_signature<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
 ) -> Option<crate::CallableSignature> {
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
@@ -275,15 +372,16 @@ fn callee_callable_signature(
         .get(&symbol)
         .or_else(|| ctx.ctx.symbol_fact(symbol))?;
     match fact {
-        SymbolTypeFact::Flow { signature }
-        | SymbolTypeFact::Agent { signature }
-        | SymbolTypeFact::Tool { signature } => Some(signature.clone()),
+        SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => {
+            Some(signature.clone())
+        }
+        SymbolTypeFact::Agent { signature } => signature.callable().cloned(),
         _ => None,
     }
 }
 
-fn collect_type_constructor_callee(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_type_constructor_callee<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
     type_generic_args: &[TypeId],
     span: etas_core::Span,
@@ -293,59 +391,30 @@ fn collect_type_constructor_callee(
     };
     let symbol = resolved_callee_symbol(path)?;
     let fact = ctx.ctx.symbol_fact(symbol)?.clone();
-    match fact {
-        SymbolTypeFact::NominalType { constructor, .. } => {
-            if type_generic_args.is_empty() {
-                Some(TypeId(constructor.0))
-            } else {
-                Some(ctx.ctx.interner.intern(Type::Applied {
-                    constructor,
-                    args: type_generic_args.to_vec(),
-                }))
-            }
-        }
-        SymbolTypeFact::TypeAlias { target, params } => {
-            let target = apply_alias_type_args(ctx, target, params, type_generic_args, span);
-            Some(ctx.ctx.interner.intern(Type::Function(FlowType {
-                input: vec![target],
-                output: target,
-                effects: None,
-            })))
-        }
-        _ => None,
-    }
-}
-
-fn apply_alias_type_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    target: TypeId,
-    params: Vec<String>,
-    args: &[TypeId],
-    span: etas_core::Span,
-) -> TypeId {
-    if params.len() != args.len() {
-        ctx.validate(crate::ValidationRequest::Diagnostic {
-            code: etas_core::TypeDiagnosticCode::ArityMismatch,
-            span,
-            message: "type alias constructor was given the wrong number of type arguments"
-                .to_owned(),
+    let alias = matches!(fact, SymbolTypeFact::TypeAlias { .. });
+    let target = super::nominal_constructor::target(ctx, fact, type_generic_args, span)?;
+    if alias {
+        ctx.emit(TypeConstraint::Constructible {
+            target,
+            origin: ConstraintOrigin { span },
         });
-        return ctx.primitive(crate::PrimitiveType::Never);
-    }
-    if params.is_empty() {
-        return target;
-    }
-    let substitutions = params.iter().cloned().zip(args.iter().copied()).collect();
-    match crate::substitute_named_params(&mut ctx.ctx.interner, target, &substitutions) {
-        Ok(ty) => ty,
-        Err(error) => {
-            ctx.validate(crate::ValidationRequest::Diagnostic {
-                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                span,
-                message: format!("callable alias substitution failed: {error}"),
-            });
-            ctx.primitive(crate::PrimitiveType::Never)
+        let constructor = match ctx.ctx.interner.store().get(target) {
+            Some(Type::Applied { constructor, .. }) => TypeId(constructor.0),
+            _ => target,
+        };
+        if matches!(
+            ctx.ctx.interner.store().get(constructor),
+            Some(Type::Nominal(_))
+        ) {
+            return Some(target);
         }
+        Some(ctx.ctx.interner.intern(Type::Function(FlowType {
+            input: vec![target],
+            output: target,
+            effects: None,
+        })))
+    } else {
+        Some(target)
     }
 }
 
@@ -363,24 +432,35 @@ fn resolved_callee_symbol(path: &etas_hir::ResolvedPath) -> Option<etas_hir::Sym
     }
 }
 
-fn collect_partially_resolved_method_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_partially_resolved_method_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     call: etas_hir::HirExprId,
     callee: etas_hir::HirExprId,
-    type_generic_args: &[TypeId],
+    checked_generic_args: &[CallableGenericArg],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> Option<TypeId> {
+) -> Result<Option<TypeId>, E> {
+    ctx.checkpoint()?;
+    let type_generic_args = checked_generic_args
+        .iter()
+        .filter_map(|arg| match arg {
+            CallableGenericArg::Type(ty) => Some(*ty),
+            CallableGenericArg::EffectRow(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let type_generic_args = type_generic_args.as_slice();
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
-        return None;
+        return Ok(None);
     };
     let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
-        return None;
+        return Ok(None);
     };
-    let receiver_symbol = partial.resolved_prefix?;
+    let Some(receiver_symbol) = partial.resolved_prefix else {
+        return Ok(None);
+    };
     let [method] = partial.remaining.as_slice() else {
-        return None;
+        return Ok(None);
     };
     let generic_params = std_member_callable_signature_for_symbol(ctx, receiver_symbol, method)
         .map(|signature| signature.generic_params)
@@ -392,12 +472,12 @@ fn collect_partially_resolved_method_call(
     };
     if let Some(callee_ty) = std_member {
         let expected_inputs = callable_input_types(ctx, callee_ty, type_generic_args, span);
-        let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref());
-        let output = expected.unwrap_or_else(|| {
+        let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref())?;
+        let inferred =
             specialized_callable_output_for_args(ctx, callee_ty, type_generic_args, &arg_tys, span)
-                .or_else(|| callable_output_for_expression(ctx, callee_ty))
-                .unwrap_or_else(|| ctx.fresh_type_var())
-        });
+                .or_else(|| callable_output_for_expression(ctx, callee_ty));
+        let inferred = expected.filter(|_| !generic_params.is_empty()).or(inferred);
+        let output = select_call_output(ctx, inferred, expected, span);
         ctx.validate(crate::ValidationRequest::CallableArity {
             callee_ty,
             arg_count: arg_tys.len(),
@@ -407,58 +487,95 @@ fn collect_partially_resolved_method_call(
             call: Some(call),
             callee: callee_ty,
             generic_params,
-            generic_args: type_generic_args
-                .iter()
-                .copied()
-                .map(CallableGenericArg::Type)
-                .collect(),
+            generic_args: checked_generic_args.to_vec(),
             arg_exprs: call_arg_exprs(args),
             args: arg_tys,
             output,
             origin: ConstraintOrigin { span },
         });
-        return Some(output);
+        return Ok(Some(output));
     }
-    let candidates = std_method_candidates(ctx, method);
-    if candidates.is_empty() {
-        return None;
+    let mut candidates = std_method_candidates(ctx, method);
+    candidates.extend(super::agent_method::deferred_candidates(
+        ctx,
+        method,
+        checked_generic_args,
+        span,
+    ));
+    if candidates.is_empty() && !super::agent_method::has_method_name(ctx, method) {
+        return Ok(None);
     }
-    let receiver_fact = ctx
+    let Some(receiver_fact) = ctx
         .state
         .provisional
         .symbol_types
         .get(&receiver_symbol)
         .or_else(|| ctx.ctx.symbol_fact(receiver_symbol))
-        .cloned()?;
-    let receiver_ty = value_type_from_fact(ctx, receiver_fact)?;
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let Some(receiver_ty) = value_type_from_fact(ctx, receiver_fact) else {
+        return Ok(None);
+    };
     let mut arg_tys = Vec::with_capacity(args.len() + 1);
     arg_tys.push(receiver_ty);
-    arg_tys.extend(args.iter().map(|arg| match arg {
-        HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
-        HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
-    }));
-    let output = expected.unwrap_or_else(|| {
-        specialized_method_output_for_args(ctx, &candidates, type_generic_args, &arg_tys, span)
-            .unwrap_or_else(|| ctx.fresh_type_var())
-    });
+    let actual = args
+        .iter()
+        .map(|arg| match arg {
+            HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
+            HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
+        })
+        .collect::<Result<Vec<_>, E>>()?;
+    arg_tys.extend(actual);
+    let inferred =
+        specialized_method_output_for_args(ctx, &candidates, type_generic_args, &arg_tys, span);
+    // Overload outputs are contextual hints until the method solver selects a
+    // checked candidate, unlike the result of a resolved callable signature.
+    let output = expected
+        .or(inferred)
+        .unwrap_or_else(|| ctx.fresh_type_var());
     ctx.emit(TypeConstraint::MethodCall {
         expr: call,
         method: method.clone(),
+        access_module: ctx.ctx.hir.item_module(ctx.state.item),
         candidates,
-        generic_args: type_generic_args
-            .iter()
-            .copied()
-            .map(CallableGenericArg::Type)
-            .collect(),
+        generic_args: checked_generic_args.to_vec(),
+        arg_exprs: std::iter::once(None).chain(call_arg_exprs(args)).collect(),
         args: arg_tys,
         output,
         origin: ConstraintOrigin { span },
     });
-    Some(output)
+    Ok(Some(output))
 }
 
-pub fn specialized_callable_output_for_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn select_call_output<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    inferred: Option<TypeId>,
+    expected: Option<TypeId>,
+    span: etas_core::Span,
+) -> TypeId {
+    let output = match inferred {
+        Some(ty) if !matches!(ctx.ctx.interner.store().get(ty), Some(Type::Var(_))) => ty,
+        _ => expected
+            .or(inferred)
+            .unwrap_or_else(|| ctx.fresh_type_var()),
+    };
+    if let Some(expected) = expected
+        && expected != output
+    {
+        ctx.emit(TypeConstraint::Assignable {
+            from: output,
+            to: expected,
+            origin: ConstraintOrigin { span },
+            reason: AssignabilityReason::Other,
+        });
+    }
+    output
+}
+
+pub fn specialized_callable_output_for_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     callee_ty: TypeId,
     explicit_generic_args: &[TypeId],
     arg_tys: &[TypeId],
@@ -502,8 +619,8 @@ pub fn specialized_callable_output_for_args(
     Some(apply_type_var_substitution(ctx, output, &substitution))
 }
 
-pub fn specialized_method_output_for_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn specialized_method_output_for_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     candidates: &[crate::CallableCandidate],
     explicit_generic_args: &[TypeId],
     arg_tys: &[TypeId],
@@ -529,8 +646,8 @@ pub fn specialized_method_output_for_args(
     selected
 }
 
-fn explicit_generic_substitutions(
-    ctx: &BodyCollectContext<'_, '_>,
+fn explicit_generic_substitutions<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     types: &[TypeId],
     explicit_generic_args: &[TypeId],
 ) -> HashMap<String, TypeId> {
@@ -544,8 +661,8 @@ fn explicit_generic_substitutions(
         .collect()
 }
 
-fn collect_schematic_type_names(
-    ctx: &BodyCollectContext<'_, '_>,
+fn collect_schematic_type_names<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     ty: TypeId,
     out: &mut Vec<String>,
 ) {
@@ -604,8 +721,8 @@ fn is_schematic_type_variable_name(name: &str) -> bool {
     matches!(chars.next(), Some(ch) if ch.is_ascii_uppercase()) && chars.next().is_none()
 }
 
-fn apply_type_var_substitution(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn apply_type_var_substitution<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: TypeId,
     substitution: &crate::Substitution,
 ) -> TypeId {
@@ -764,22 +881,25 @@ fn apply_type_var_substitution(
     }
 }
 
-fn collect_standard_variant_constructor_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_standard_variant_constructor_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
     type_generic_args: &[TypeId],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> Option<TypeId> {
+) -> Result<Option<TypeId>, E> {
+    ctx.checkpoint()?;
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
-        return None;
+        return Ok(None);
     };
     if super::enum_variant::declaration(ctx, path).is_some() {
-        return None;
+        return Ok(None);
     }
-    let name = path.segments.last()?.name.as_str();
-    match name {
+    let Some(name) = path.segments.last().map(|segment| segment.name.as_str()) else {
+        return Ok(None);
+    };
+    Ok(match name {
         "Ok" => Some(collect_result_constructor_call(
             ctx,
             "Ok",
@@ -788,7 +908,7 @@ fn collect_standard_variant_constructor_call(
             args,
             span,
             expected,
-        )),
+        )?),
         "Err" => Some(collect_result_constructor_call(
             ctx,
             "Err",
@@ -797,7 +917,7 @@ fn collect_standard_variant_constructor_call(
             args,
             span,
             expected,
-        )),
+        )?),
         "Some" => Some(collect_option_constructor_call(
             ctx,
             "Some",
@@ -806,7 +926,7 @@ fn collect_standard_variant_constructor_call(
             args,
             span,
             expected,
-        )),
+        )?),
         "None" => Some(collect_option_constructor_call(
             ctx,
             "None",
@@ -815,9 +935,9 @@ fn collect_standard_variant_constructor_call(
             args,
             span,
             expected,
-        )),
+        )?),
         _ => None,
-    }
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -826,15 +946,16 @@ enum ResultConstructor {
     Err,
 }
 
-fn collect_result_constructor_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_result_constructor_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     name: &str,
     constructor: ResultConstructor,
     type_generic_args: &[TypeId],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     if !type_generic_args.is_empty() && type_generic_args.len() != 2 {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
@@ -882,8 +1003,8 @@ fn collect_result_constructor_call(
         ResultConstructor::Ok => ok,
         ResultConstructor::Err => err,
     };
-    collect_constructor_call_args(ctx, name, args, &[payload], span);
-    output
+    collect_constructor_call_args(ctx, name, args, &[payload], span)?;
+    Ok(output)
 }
 
 #[derive(Clone, Copy)]
@@ -892,15 +1013,16 @@ enum OptionConstructor {
     None,
 }
 
-fn collect_option_constructor_call(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_option_constructor_call<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     name: &str,
     constructor: OptionConstructor,
     type_generic_args: &[TypeId],
     args: &[HirArg],
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     if !type_generic_args.is_empty() && type_generic_args.len() != 1 {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
@@ -932,17 +1054,18 @@ fn collect_option_constructor_call(
     match constructor {
         OptionConstructor::Some => collect_constructor_call_args(ctx, name, args, &[inner], span),
         OptionConstructor::None => collect_constructor_call_args(ctx, name, args, &[], span),
-    }
-    output
+    }?;
+    Ok(output)
 }
 
-fn collect_constructor_call_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_constructor_call_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     name: &str,
     args: &[HirArg],
     expected: &[TypeId],
     span: etas_core::Span,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     if args.len() != expected.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
@@ -959,7 +1082,7 @@ fn collect_constructor_call_args(
         let actual = match arg {
             HirArg::Positional(expr) => collect_expr(ctx, *expr, Some(expected)),
             HirArg::Named { value, .. } => collect_expr(ctx, *value, Some(expected)),
-        };
+        }?;
         ctx.emit(TypeConstraint::Assignable {
             from: actual,
             to: expected,
@@ -970,28 +1093,37 @@ fn collect_constructor_call_args(
     for arg in args.iter().skip(expected.len()) {
         match arg {
             HirArg::Positional(expr) => {
-                collect_expr(ctx, *expr, None);
+                collect_expr(ctx, *expr, None)?;
             }
             HirArg::Named { value, .. } => {
-                collect_expr(ctx, *value, None);
+                collect_expr(ctx, *value, None)?;
             }
         }
     }
+    Ok(())
 }
 
-pub fn callable_output(ctx: &BodyCollectContext<'_, '_>, callee_ty: TypeId) -> Option<TypeId> {
+pub fn callable_output<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
+    callee_ty: TypeId,
+) -> Option<TypeId> {
     match ctx.ctx.interner.store().get(callee_ty) {
         Some(crate::Type::Function(flow)) => Some(flow.output),
         _ => None,
     }
 }
 
-pub(super) fn callable_input_types(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn callable_input_types<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     callee_ty: TypeId,
     explicit_generic_args: &[TypeId],
     span: etas_core::Span,
 ) -> Option<Vec<TypeId>> {
+    let callee_ty = ctx
+        .ctx
+        .agent_signature(callee_ty)
+        .and_then(|agent| agent.default_entry.as_ref())
+        .map_or(callee_ty, |entry| entry.callable_type);
     let Type::Function(flow) = ctx.ctx.interner.store().get(callee_ty).cloned()? else {
         return None;
     };
@@ -1020,8 +1152,8 @@ pub(super) fn callable_input_types(
     )
 }
 
-fn substitute_named_or_report(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn substitute_named_or_report<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     ty: TypeId,
     substitutions: &HashMap<String, TypeId>,
     span: etas_core::Span,
@@ -1039,11 +1171,12 @@ fn substitute_named_or_report(
     }
 }
 
-fn collect_call_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_call_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     args: &[HirArg],
     expected: Option<&[TypeId]>,
-) -> Vec<TypeId> {
+) -> Result<Vec<TypeId>, E> {
+    ctx.checkpoint()?;
     args.iter()
         .enumerate()
         .map(|(index, arg)| {
@@ -1067,10 +1200,15 @@ fn call_arg_exprs(args: &[HirArg]) -> Vec<Option<etas_hir::HirExprId>> {
         .collect()
 }
 
-pub fn callable_output_for_expression(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn callable_output_for_expression<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     callee_ty: TypeId,
 ) -> Option<TypeId> {
+    let callee_ty = ctx
+        .ctx
+        .agent_signature(callee_ty)
+        .and_then(|agent| agent.default_entry.as_ref())
+        .map_or(callee_ty, |entry| entry.callable_type);
     let output = callable_output(ctx, callee_ty)?;
     if contains_callable_generic_var(ctx, output) {
         Some(ctx.fresh_type_var())
@@ -1079,7 +1217,7 @@ pub fn callable_output_for_expression(
     }
 }
 
-fn contains_callable_generic_var(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -> bool {
+fn contains_callable_generic_var<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: TypeId) -> bool {
     match ctx.ctx.interner.store().get(ty) {
         Some(Type::Var(_)) => true,
         Some(Type::Named(name)) => {
@@ -1116,9 +1254,9 @@ fn contains_callable_generic_var(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -
     }
 }
 
-fn validate_generic_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    generic_params: &[crate::CallableGenericParam],
+fn validate_generic_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    generic_params: Option<&[crate::CallableGenericParam]>,
     generic_args: &[HirGenericArg],
     span: etas_core::Span,
 ) {
@@ -1151,6 +1289,11 @@ fn validate_generic_args(
         }
     }
 
+    let Some(generic_params) = generic_params else {
+        // Receiver-based calls resolve their declaration in the solver. An
+        // absent signature here is not evidence of zero generic parameters.
+        return;
+    };
     let effect_param_count = generic_params
         .iter()
         .filter(|param| matches!(param.kind, crate::CallableGenericParamKind::Effect))
@@ -1166,8 +1309,8 @@ fn validate_generic_args(
     }
 }
 
-fn lower_callable_generic_args(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn lower_callable_generic_args<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     generic_args: &[HirGenericArg],
 ) -> Vec<CallableGenericArg> {
     generic_args

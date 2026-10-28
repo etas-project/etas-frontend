@@ -412,6 +412,7 @@ impl HirTreeIndexBuilder<'_> {
                 });
             return false;
         }
+        self.index.owned_bodies.entry(owner).or_default().push(body);
         if let Some(scope) = scope {
             self.insert_scope_owner(HirOwner::Body(body), scope);
         }

@@ -24,7 +24,7 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
         &mut self,
         context: &mut ProjectContext,
         pass_context: &PassContext<ProjectContext>,
-        _manager: &mut PassManager<ProjectContext>,
+        manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let unit = match body_unit_id(pass_context) {
             Ok(unit) => unit,
@@ -54,8 +54,21 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
         let (Some(hir), Some(base)) = (&context.hir, &context.type_environment) else {
             return PassResult::failed("body type check requires prepared signature environment");
         };
-        let output =
-            etas_types::check_body_delta(&hir.hir, base, item, context.std_registry.clone());
+        let output = match manager.execution_control() {
+            Some(control) => match etas_types::check_body_delta_controlled(
+                &hir.hir,
+                base,
+                item,
+                context.std_registry.clone(),
+                control,
+            ) {
+                Ok(output) => output,
+                Err(interruption) => return PassResult::interrupted(interruption),
+            },
+            None => {
+                etas_types::check_body_delta(&hir.hir, base, item, context.std_registry.clone())
+            }
+        };
         context
             .diagnostics
             .extend(output.diagnostics.iter().cloned());

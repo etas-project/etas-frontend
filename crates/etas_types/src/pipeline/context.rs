@@ -13,15 +13,21 @@ pub struct TypePipelineContext<'a> {
     pub(crate) signature_base: Option<&'a crate::SignatureEnvironment>,
     pub diagnostics: Vec<Diagnostic>,
     pub lowering_type_stack: Vec<etas_hir::SymbolId>,
+    pub(crate) type_applications: Vec<crate::lower::type_application::TypeApplication>,
     pub external_type_paths: HashMap<Vec<String>, crate::TypeId>,
 }
 
-pub struct BodyCollectContext<'a, 's> {
+pub struct BodyCollectContext<'a, 's, E = std::convert::Infallible> {
     pub ctx: &'s mut TypePipelineContext<'a>,
     pub state: &'s mut crate::pipeline::body::state::BodyPipelineState,
+    pub(crate) execution: &'s dyn Fn() -> Result<(), E>,
 }
 
-impl BodyCollectContext<'_, '_> {
+impl<E> BodyCollectContext<'_, '_, E> {
+    pub fn checkpoint(&self) -> Result<(), E> {
+        (self.execution)()
+    }
+
     pub fn fresh_type_var(&mut self) -> crate::TypeId {
         let id = crate::TypeVarId(self.ctx.interner.store().len() as u32);
         self.ctx.interner.intern(crate::Type::Var(id))
@@ -68,6 +74,39 @@ impl BodyCollectContext<'_, '_> {
     }
 
     pub fn emit(&mut self, constraint: crate::TypeConstraint) {
+        let request = match &constraint {
+            crate::TypeConstraint::Callable { call, .. } => Some(*call),
+            crate::TypeConstraint::MethodCall {
+                expr, candidates, ..
+            } => {
+                let pure = !candidates.is_empty()
+                    && candidates
+                        .iter()
+                        .all(|candidate| match &candidate.operation {
+                            crate::CallableCandidateOperation::StdIntrinsic {
+                                intrinsic, ..
+                            } => self
+                                .ctx
+                                .std_registry
+                                .intrinsic(etas_std::StdIntrinsicId(*intrinsic))
+                                .is_some_and(|descriptor| {
+                                    descriptor.purity == etas_std::IntrinsicPurity::Pure
+                                        && descriptor.latent_effect
+                                            == etas_std::IntrinsicLatentEffect::None
+                                }),
+                            _ => false,
+                        });
+                (!pure).then_some(Some(*expr))
+            }
+            _ => None,
+        };
+        if let Some(call) = request
+            && self.state.request_scope_depth != 0
+        {
+            self.state.action_requests.push(
+                crate::pipeline::body::collect::handler_request::ActionRequest::Opaque { call },
+            );
+        }
         self.state.constraints.push(constraint);
     }
 
@@ -94,6 +133,7 @@ impl<'a> TypePipelineContext<'a> {
             signature_base: None,
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
+            type_applications: Vec::new(),
             external_type_paths: HashMap::new(),
         }
     }
@@ -133,6 +173,7 @@ impl<'a> TypePipelineContext<'a> {
             signature_base: Some(base),
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
+            type_applications: Vec::new(),
             external_type_paths: HashMap::new(),
         }
     }
@@ -149,6 +190,21 @@ impl<'a> TypePipelineContext<'a> {
 
     pub(crate) fn symbol_type(&self, symbol: etas_hir::SymbolId) -> Option<&crate::SymbolTypeFact> {
         self.lookup(|facts| &facts.symbol_types, &symbol)
+    }
+
+    pub(crate) fn reflection_declaration_identity(
+        &self,
+        path: &[String],
+    ) -> Option<&etas_code::DefinitionKey> {
+        self.signature_facts
+            .reflection_declaration_identities
+            .get(path)
+            .or_else(|| {
+                self.signature_base?
+                    .facts
+                    .reflection_declaration_identities
+                    .get(path)
+            })
     }
 
     pub(crate) fn symbol_fact(&self, symbol: etas_hir::SymbolId) -> Option<&crate::SymbolTypeFact> {
@@ -169,6 +225,15 @@ impl<'a> TypePipelineContext<'a> {
         item: etas_hir::HirItemId,
     ) -> Option<&crate::ItemSignature> {
         self.lookup(|facts| &facts.item_signatures, &item)
+    }
+
+    pub(crate) fn agent_signature(
+        &self,
+        component: crate::TypeId,
+    ) -> Option<&crate::AgentSignature> {
+        self.signature_facts
+            .agent_signature(component)
+            .or_else(|| self.signature_base?.facts.agent_signature(component))
     }
 
     pub(crate) fn spec_signature(
@@ -194,6 +259,13 @@ impl<'a> TypePipelineContext<'a> {
 
     pub(crate) fn enum_layout(&self, ty: crate::TypeId) -> Option<&crate::EnumLayoutFact> {
         self.lookup(|facts| &facts.enum_layouts, &ty)
+    }
+
+    pub(crate) fn type_generics(
+        &self,
+        ty: crate::TypeId,
+    ) -> Option<&Vec<crate::CallableGenericParam>> {
+        self.lookup(|facts| &facts.type_generics, &ty)
     }
 
     pub(crate) fn type_ref(&self, ty: etas_hir::HirTypeId) -> Option<crate::TypeId> {

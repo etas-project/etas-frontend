@@ -25,13 +25,7 @@ pub fn lower_effect_row(ctx: &mut TypePipelineContext<'_>, row: &HirEffectRow) -
 }
 
 fn lower_effect_ref(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -> Option<EffectRef> {
-    let name = effect
-        .path
-        .segments
-        .iter()
-        .map(|segment| segment.name.as_str())
-        .collect::<Vec<_>>()
-        .join(".");
+    let name = lower_effect_name(ctx, effect)?;
     let action_arg_kinds = action_arg_kinds_for_effect_ref(ctx, effect);
     let is_error_effect = name == "Error"
         || name.rsplit('.').next() == Some("Error")
@@ -50,6 +44,126 @@ fn lower_effect_ref(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) ->
         })
         .collect::<Option<Vec<_>>>()?;
     Some(EffectRef { name, args })
+}
+
+fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -> Option<String> {
+    let imported = match &effect.path.resolution {
+        ResolveResult::Resolved(symbol) => Some((*symbol, None)),
+        ResolveResult::PartiallyResolved(partial) if partial.remaining.len() == 1 => partial
+            .resolved_prefix
+            .map(|symbol| (symbol, Some(partial.remaining[0].as_str()))),
+        _ => None,
+    };
+    let source = imported.and_then(|(alias, member)| {
+        let source = ctx
+            .hir
+            .source_import_targets
+            .get(&alias)
+            .copied()
+            .or_else(|| {
+                matches!(
+                    ctx.hir.symbols.get(alias).map(|symbol| &symbol.def),
+                    Some(SymbolDef::Item { .. } | SymbolDef::EffectAction { .. })
+                )
+                .then_some(alias)
+            });
+        source.map(|owner| (owner, member))
+    });
+    let Some((owner, member)) = source else {
+        if let Some((alias, member)) = imported
+            && let Some(SymbolDef::ImportAlias { path, .. }) =
+                ctx.hir.symbols.get(alias).map(|symbol| &symbol.def)
+        {
+            if let Some(member) = member
+                && let Some(etas_std::StdSymbol { decl: etas_std::StdDecl::Effect(owner), .. }) = ctx.std_registry.lookup_qualified(path)
+                && ctx.std_registry.symbols().any(|symbol| matches!(&symbol.decl,
+                    etas_std::StdDecl::EffectAction(action) if action.owner == owner.name && action.name == member))
+            {
+                return Some(format!("{}.{member}", owner.name));
+            }
+            let mut path = path.clone();
+            if let Some(member) = member {
+                path.push(member.to_owned());
+            }
+            if let Some(symbol) = ctx.std_registry.lookup_qualified(&path) {
+                match &symbol.decl {
+                    etas_std::StdDecl::Effect(effect) => return Some(effect.name.clone()),
+                    etas_std::StdDecl::EffectAction(action) => {
+                        return Some(format!("{}.{}", action.owner, action.name));
+                    }
+                    _ => {}
+                }
+            }
+            return Some(path.join("."));
+        }
+        return Some(
+            effect
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.name.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
+        );
+    };
+    if member.is_none()
+        && matches!(
+            ctx.hir.symbols.get(owner).map(|symbol| &symbol.def),
+            Some(SymbolDef::EffectAction { .. })
+        )
+    {
+        return ctx.hir.declaration_path(owner).map(|path| path.join("."));
+    }
+    let Some(SymbolDef::Item { item }) = ctx.hir.symbols.get(owner).map(|symbol| &symbol.def)
+    else {
+        return invalid_source_effect_name(
+            ctx,
+            effect,
+            "source effect import has no declaration identity",
+        );
+    };
+    if !matches!(ctx.hir.items.get(*item), Some(HirItem::Effect(_))) {
+        return invalid_source_effect_name(
+            ctx,
+            effect,
+            "source effect import does not name an effect declaration",
+        );
+    }
+    let symbol = match member {
+        None => owner,
+        Some(member) => {
+            let ResolveResult::Resolved(symbol) = ctx.hir.symbols.resolve_member(owner, member)
+            else {
+                return invalid_source_effect_name(
+                    ctx,
+                    effect,
+                    "source effect import has no resolved action member",
+                );
+            };
+            symbol
+        }
+    };
+    match ctx.hir.declaration_path(symbol) {
+        Some(path) => Some(path.join(".")),
+        None => invalid_source_effect_name(
+            ctx,
+            effect,
+            "source effect import has no canonical declaration path",
+        ),
+    }
+}
+
+fn invalid_source_effect_name(
+    ctx: &mut TypePipelineContext<'_>,
+    effect: &HirEffectRef,
+    message: &str,
+) -> Option<String> {
+    ctx.diagnostics.push(Diagnostic::type_check(
+        TypeDiagnosticCode::IncompleteTypeFacts,
+        effect.span,
+        message,
+    ));
+    None
 }
 
 fn lower_effect_arg(
@@ -238,6 +352,7 @@ fn type_arg_from_path(
         && let SymbolDef::TypeParam { .. } = symbol_data.def
     {
         return Some(ctx.interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(symbol),
             name: symbol_data.name.clone(),
         })));
     }

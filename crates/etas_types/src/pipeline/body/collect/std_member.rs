@@ -4,7 +4,7 @@ use etas_hir::{HirExpr, ImportAliasOrigin, ResolveResult, SymbolDef};
 use etas_std::{FlowSourceMethodKind, StdDecl, StdRegistry, StdSymbol, StdType};
 
 use crate::{
-    CallableCandidate, CallableSignature, FlowType, SymbolTypeFact, Type, TypeId,
+    CallableCandidate, CallableSignature, SymbolTypeFact, Type, TypeId,
     lower::std::{lower_std_symbol, lower_std_type},
     pipeline::{
         body::collect::expr::{
@@ -15,22 +15,22 @@ use crate::{
     substitute_named_params,
 };
 
-pub fn std_qualified_path_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_qualified_path_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<TypeId> {
     std_qualified_path_value_type_with_instantiation(ctx, path, true)
 }
 
-pub fn raw_std_qualified_path_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn raw_std_qualified_path_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<TypeId> {
     std_qualified_path_value_type_with_instantiation(ctx, path, false)
 }
 
-fn std_qualified_path_value_type_with_instantiation(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_qualified_path_value_type_with_instantiation<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
     instantiate_schematics: bool,
 ) -> Option<TypeId> {
@@ -52,8 +52,8 @@ fn std_qualified_path_value_type_with_instantiation(
     }
 }
 
-pub fn std_member_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_member_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base: etas_hir::HirExprId,
     member: &str,
 ) -> Option<TypeId> {
@@ -76,16 +76,16 @@ pub fn std_member_value_type(
     value_type_from_fact(ctx, fact)
 }
 
-fn std_qualified_member_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_qualified_member_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
     member: &str,
 ) -> Option<TypeId> {
     std_qualified_member_value_type_with_instantiation(ctx, path, member, true)
 }
 
-fn std_qualified_member_value_type_with_instantiation(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_qualified_member_value_type_with_instantiation<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
     member: &str,
     instantiate_schematics: bool,
@@ -109,8 +109,8 @@ fn std_qualified_member_value_type_with_instantiation(
     }
 }
 
-pub fn std_member_value_type_for_symbol(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_member_value_type_for_symbol<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base_symbol: etas_hir::SymbolId,
     member: &str,
 ) -> Option<TypeId> {
@@ -121,8 +121,8 @@ pub fn std_member_value_type_for_symbol(
     value_type_from_fact(ctx, fact)
 }
 
-pub fn raw_std_member_value_type_for_symbol(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn raw_std_member_value_type_for_symbol<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base_symbol: etas_hir::SymbolId,
     member: &str,
 ) -> Option<TypeId> {
@@ -134,8 +134,8 @@ pub fn raw_std_member_value_type_for_symbol(
     raw_value_type_from_fact(ctx, fact)
 }
 
-pub fn std_method_candidates(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_method_candidates<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     method: &str,
 ) -> Vec<CallableCandidate> {
     let registry = ctx.ctx.std_registry.clone();
@@ -146,8 +146,8 @@ pub fn std_method_candidates(
         .collect()
 }
 
-pub fn raw_std_method_candidates(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn raw_std_method_candidates<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     method: &str,
 ) -> Vec<CallableCandidate> {
     let registry = ctx.ctx.std_registry.clone();
@@ -158,8 +158,8 @@ pub fn raw_std_method_candidates(
         .collect()
 }
 
-fn std_method_candidate(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_method_candidate<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     registry: &StdRegistry,
     symbol: &StdSymbol,
     instantiate: bool,
@@ -175,11 +175,22 @@ fn std_method_candidate(
             error: ctx.ctx.known_std_types().index_error,
         };
     }
+    if let StdDecl::Flow(flow) = &symbol.decl
+        && flow.source_method.as_ref().is_some_and(|method| {
+            method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
+        })
+    {
+        let descriptor = symbol.intrinsic.as_ref()?;
+        candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
+            qualified_path: symbol.qualified_path.clone(),
+            intrinsic: descriptor.id.0,
+        };
+    }
     Some(candidate)
 }
 
-pub fn std_qualified_path_callable_signature(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_qualified_path_callable_signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<CallableSignature> {
     let segments = path
@@ -195,8 +206,8 @@ pub fn std_qualified_path_callable_signature(
     std_symbol_callable_signature(ctx, &registry, symbol)
 }
 
-pub fn std_qualified_path_callable_candidate(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_qualified_path_callable_candidate<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &etas_hir::ResolvedPath,
     instantiate_schematics: bool,
 ) -> Option<CallableCandidate> {
@@ -214,8 +225,8 @@ pub fn std_qualified_path_callable_candidate(
     callable_candidate_from_fact(ctx, fact, instantiate_schematics)
 }
 
-pub fn std_member_callable_signature_for_symbol(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_member_callable_signature_for_symbol<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base_symbol: etas_hir::SymbolId,
     member: &str,
 ) -> Option<CallableSignature> {
@@ -228,8 +239,8 @@ pub fn std_member_callable_signature_for_symbol(
     std_symbol_callable_signature(ctx, &registry, member_symbol)
 }
 
-pub fn std_member_callable_signature(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_member_callable_signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base: etas_hir::HirExprId,
     member: &str,
 ) -> Option<CallableSignature> {
@@ -255,21 +266,19 @@ pub fn std_member_callable_signature(
     std_symbol_callable_signature(ctx, &registry, symbol)
 }
 
-fn std_symbol_callable_signature(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_symbol_callable_signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     registry: &StdRegistry,
     symbol: &StdSymbol,
 ) -> Option<CallableSignature> {
     match lower_std_symbol(ctx.ctx, registry, etas_hir::SymbolId(0), symbol) {
-        SymbolTypeFact::Flow { signature }
-        | SymbolTypeFact::Agent { signature }
-        | SymbolTypeFact::Tool { signature } => Some(signature),
+        SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => Some(signature),
         _ => None,
     }
 }
 
-pub fn raw_std_member_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn raw_std_member_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base: etas_hir::HirExprId,
     member: &str,
 ) -> Option<TypeId> {
@@ -285,8 +294,8 @@ pub fn raw_std_member_value_type(
     std_member_value_type(ctx, base, member)
 }
 
-pub fn std_declared_field_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn std_declared_field_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base: TypeId,
     field: &str,
     span: etas_core::Span,
@@ -302,8 +311,8 @@ pub fn std_declared_field_type(
     }
 }
 
-fn std_declared_message_field_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_declared_message_field_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     inner: TypeId,
     field: &str,
     span: etas_core::Span,
@@ -336,8 +345,8 @@ fn std_declared_message_field_type(
     }
 }
 
-fn is_std_message_constructor(
-    ctx: &BodyCollectContext<'_, '_>,
+fn is_std_message_constructor<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     constructor: crate::TypeConstructorId,
 ) -> bool {
     matches!(
@@ -346,8 +355,8 @@ fn is_std_message_constructor(
     )
 }
 
-fn std_source_type_member_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_source_type_member_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base: etas_hir::HirExprId,
     member: &str,
     instantiate_schematics: bool,
@@ -361,8 +370,8 @@ fn std_source_type_member_value_type(
     std_source_type_member_value_type_for_symbol(ctx, symbol, member, instantiate_schematics)
 }
 
-fn std_source_type_member_value_type_for_symbol(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_source_type_member_value_type_for_symbol<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base_symbol: etas_hir::SymbolId,
     member: &str,
     instantiate_schematics: bool,
@@ -427,8 +436,8 @@ fn std_type_constructor_name(ty: &StdType) -> Option<&str> {
     }
 }
 
-fn std_type_symbol_for_hir_symbol<'a>(
-    ctx: &BodyCollectContext<'_, '_>,
+fn std_type_symbol_for_hir_symbol<'a, E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     registry: &'a StdRegistry,
     symbol: etas_hir::SymbolId,
 ) -> Option<&'a StdSymbol> {
@@ -445,8 +454,8 @@ fn std_type_symbol_for_hir_symbol<'a>(
     matches!(std_symbol.decl, StdDecl::Type(_)).then_some(std_symbol)
 }
 
-fn std_member_fact(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn std_member_fact<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     base_symbol: etas_hir::SymbolId,
     member: &str,
 ) -> Option<SymbolTypeFact> {
@@ -459,12 +468,9 @@ fn std_member_fact(
             .or_else(|| ctx.ctx.symbol_fact(base_symbol))
             .cloned()
     {
-        let ty = ctx.ctx.interner.intern(Type::Function(FlowType {
-            input: signature.params,
-            output: signature.output,
-            effects: signature.effects,
-        }));
-        return Some(SymbolTypeFact::Value { ty });
+        return signature.default_entry.map(|entry| SymbolTypeFact::Value {
+            ty: entry.callable_type,
+        });
     }
 
     let symbol = ctx.ctx.hir.symbols.get(base_symbol)?;

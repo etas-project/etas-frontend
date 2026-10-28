@@ -18,6 +18,14 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
+    if let Err(error) = materialize_callable_references(ctx, &mut state) {
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            ctx.hir.items[state.item].span(),
+            format!("callable value instantiation failed: {error}"),
+        ));
+        return;
+    }
     state
         .provisional
         .expr_types
@@ -51,6 +59,27 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .expr_types
         .extend(state.provisional.expr_types);
+    ctx.signature_facts
+        .agent_method_calls
+        .extend(state.provisional.agent_method_calls);
+    ctx.signature_facts
+        .agent_method_calls
+        .extend(state.solver_report.agent_method_calls);
+    ctx.signature_facts
+        .reflections
+        .extend(state.solver_report.reflections);
+    ctx.signature_facts
+        .agent_inferences
+        .extend(state.solver_report.agent_inferences);
+    ctx.signature_facts
+        .std_method_calls
+        .extend(state.solver_report.std_method_calls);
+    ctx.signature_facts
+        .handler_actions
+        .extend(state.provisional.handler_actions);
+    ctx.signature_facts
+        .deferred_handler_instantiations
+        .extend(state.solver_report.deferred_handler_instantiations);
     ctx.signature_facts
         .expr_memory_places
         .extend(state.provisional.expr_memory_places);
@@ -92,6 +121,41 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .extend(state.provisional.item_signatures);
 }
 
+fn materialize_callable_references(
+    ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
+    state: &mut BodyPipelineState,
+) -> Result<(), String> {
+    for constraint in &state.constraints {
+        let crate::TypeConstraint::CallableReference { expr, .. } = constraint else {
+            continue;
+        };
+        let Some(fact) = state.solver_report.generic_instantiations.get(expr) else {
+            if !state.solver_report.failures.is_empty() {
+                continue;
+            }
+            return Err(format!(
+                "callable reference {expr:?} has no solved instantiation"
+            ));
+        };
+        let ty = state
+            .provisional
+            .expr_types
+            .get_mut(expr)
+            .ok_or_else(|| format!("callable reference {expr:?} has no provisional type"))?;
+        let types = fact.type_bindings.iter().cloned().collect();
+        let rows = fact.effect_row_bindings.iter().cloned().collect();
+        *ty = crate::TypeSubstitutionEngine::materializing(
+            &mut ctx.interner,
+            &types,
+            Some(&state.solver_report.substitutions),
+        )
+        .with_effect_arguments(&rows)
+        .substitute(*ty)
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn apply_solver_substitutions(
     ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
     state: &mut BodyPipelineState,
@@ -100,6 +164,11 @@ fn apply_solver_substitutions(
     let named_substitutions = state.solver_report.named_substitutions.clone();
     if substitutions.iter().next().is_none() && named_substitutions.is_empty() {
         return Ok(());
+    }
+
+    for fact in state.solver_report.std_method_calls.values_mut() {
+        fact.signature =
+            substitute_type(ctx, &substitutions, &named_substitutions, fact.signature)?;
     }
 
     for ty in state.provisional.expr_types.values_mut() {
@@ -152,6 +221,37 @@ fn apply_solver_substitutions(
     for error in state.solver_report.checked_index_errors.values_mut() {
         *error = substitute_type(ctx, &substitutions, &named_substitutions, *error)?;
     }
+    for fact in state.solver_report.agent_inferences.values_mut() {
+        fact.output = substitute_type(ctx, &substitutions, &named_substitutions, fact.output)?;
+        fact.schema = substitute_type(ctx, &substitutions, &named_substitutions, fact.schema)?;
+    }
+    for fact in state.provisional.handler_actions.values_mut() {
+        fact.output = substitute_type(ctx, &substitutions, &named_substitutions, fact.output)?;
+        for ty in &mut fact.params {
+            *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
+        }
+        for arg in &mut fact.selectors {
+            if let crate::EffectArgRef::Type(ty) = arg {
+                *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
+            }
+        }
+    }
+    for fact in state
+        .solver_report
+        .deferred_handler_instantiations
+        .values_mut()
+    {
+        for parameter in &mut fact.parameters {
+            parameter.candidate = substitute_type(
+                ctx,
+                &substitutions,
+                &named_substitutions,
+                parameter.candidate,
+            )?;
+            parameter.rigid =
+                substitute_type(ctx, &substitutions, &named_substitutions, parameter.rigid)?;
+        }
+    }
     for fact in state.solver_report.generic_instantiations.values_mut() {
         for (_, ty) in &mut fact.type_bindings {
             *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
@@ -182,10 +282,11 @@ fn substitute_symbol_fact(
         | crate::SymbolTypeFact::TopLevelLet { ty, .. } => {
             *ty = substitute_type(ctx, substitutions, named, *ty)?;
         }
-        crate::SymbolTypeFact::Flow { signature }
-        | crate::SymbolTypeFact::Agent { signature }
-        | crate::SymbolTypeFact::Tool { signature } => {
+        crate::SymbolTypeFact::Flow { signature } | crate::SymbolTypeFact::Tool { signature } => {
             substitute_callable_signature(ctx, substitutions, named, signature)?;
+        }
+        crate::SymbolTypeFact::Agent { signature } => {
+            substitute_agent_signature(ctx, substitutions, named, signature)?
         }
         _ => {}
     }
@@ -199,14 +300,34 @@ fn substitute_item_signature(
     signature: &mut crate::ItemSignature,
 ) -> Result<(), crate::TypeSubstitutionError> {
     match signature {
-        crate::ItemSignature::Flow(signature)
-        | crate::ItemSignature::Agent(signature)
-        | crate::ItemSignature::Tool(signature) => {
+        crate::ItemSignature::Flow(signature) | crate::ItemSignature::Tool(signature) => {
             substitute_callable_signature(ctx, substitutions, named, signature)?;
+        }
+        crate::ItemSignature::Agent(signature) => {
+            substitute_agent_signature(ctx, substitutions, named, signature)?
         }
         crate::ItemSignature::TopLevelLet(signature) => {
             signature.ty = substitute_type(ctx, substitutions, named, signature.ty)?;
         }
+    }
+    Ok(())
+}
+
+fn substitute_agent_signature(
+    ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
+    substitutions: &crate::Substitution,
+    named: &std::collections::HashMap<String, crate::TypeId>,
+    signature: &mut crate::AgentSignature,
+) -> Result<(), crate::TypeSubstitutionError> {
+    signature.component = substitute_type(ctx, substitutions, named, signature.component)?;
+    signature.definition_type = signature
+        .definition_type
+        .map(|ty| substitute_type(ctx, substitutions, named, ty))
+        .transpose()?;
+    if let Some(entry) = &mut signature.default_entry {
+        let entry = std::sync::Arc::make_mut(entry);
+        entry.callable_type = substitute_type(ctx, substitutions, named, entry.callable_type)?;
+        substitute_callable_signature(ctx, substitutions, named, &mut entry.callable)?;
     }
     Ok(())
 }

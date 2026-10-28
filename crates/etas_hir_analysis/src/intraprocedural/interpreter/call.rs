@@ -2,20 +2,22 @@ use etas_core::Span;
 use etas_hir::{HirBlockId, HirExprId};
 use etas_utils::{FixpointEngine, JoinSemiLattice};
 
-use crate::intraprocedural::{Control, HirAbstractInterpreter, HirAnalysisSemantics};
+use super::Traversal;
+use crate::intraprocedural::{Control, HirAnalysisSemantics};
 
-impl<S> HirAbstractInterpreter<S>
+impl<S, F, E> Traversal<'_, S, F>
 where
     S: HirAnalysisSemantics,
+    F: Fn() -> Result<(), E>,
 {
     pub(crate) fn loop_block_control(
         &mut self,
         body: HirBlockId,
         initial: S::Domain,
-    ) -> Control<S::Domain> {
+    ) -> Result<Control<S::Domain>, E> {
         let fixed = FixpointEngine::default()
-            .solve(initial, |state| {
-                let body_control = self.block_control(body, state.clone());
+            .try_solve(initial, |state| {
+                let body_control = self.block_control(body, state.clone())?;
                 let mut back_edge = S::Domain::bottom();
                 if let Some(normal) = body_control.normal_state() {
                     back_edge.join_assign(normal);
@@ -23,11 +25,11 @@ where
                 if let Some(continued) = body_control.continue_state() {
                     back_edge.join_assign(continued);
                 }
-                state.join_assign(&back_edge)
-            })
+                Ok(state.join_assign(&back_edge))
+            })?
             .value;
 
-        let body_control = self.block_control(body, fixed.clone());
+        let body_control = self.block_control(body, fixed.clone())?;
         let mut result = Control::normal(fixed);
         if let Some(broken) = body_control.break_state() {
             result.join_normal(broken.clone());
@@ -44,7 +46,7 @@ where
         if let Some(errored) = body_control.error_state() {
             result.join_error(errored.clone());
         }
-        result
+        Ok(result)
     }
 
     pub(crate) fn direct_call_control(
@@ -53,8 +55,9 @@ where
         callee: HirExprId,
         span: Span,
         state: S::Domain,
-    ) -> Control<S::Domain> {
+    ) -> Result<Control<S::Domain>, E> {
+        (self.checkpoint)()?;
         let step = self.semantics.direct_call(call, callee, span, state);
-        Control::normal(self.require_handled(step))
+        Ok(Control::normal(self.require_handled(step)))
     }
 }

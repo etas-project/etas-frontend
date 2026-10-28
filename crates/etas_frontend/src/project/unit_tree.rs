@@ -5,14 +5,14 @@ use etas_hir::{HirBlockId, HirExprId, HirItemId, HirModuleId};
 
 use crate::{AstBodyRef, AstItemRef, ModuleId, ModulePartId, ProjectId, UnitId};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct UnitTree {
     pub root: UnitId,
     pub nodes: Arena<UnitId, UnitNode>,
     pub by_target: HashMap<UnitTarget, UnitId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct UnitNode {
     pub id: UnitId,
     pub kind: UnitKind,
@@ -23,7 +23,7 @@ pub struct UnitNode {
     pub span: Option<Span>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum UnitKind {
     Project,
     SourceFile,
@@ -35,7 +35,7 @@ pub enum UnitKind {
     Expression,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum UnitTarget {
     Project(ProjectId),
     Source(SourceId),

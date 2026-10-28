@@ -8,6 +8,8 @@ use crate::artifact::{DiskCacheAccess, FRONTEND_CACHE_NAMESPACE};
 pub struct FrontendSessionOptions {
     pub cache: FrontendCacheConfig,
     pub cache_namespace: CacheNamespace,
+    /// Capacity-based byte budget for derived RAM artifacts, not live snapshots.
+    pub memory_cache_byte_budget: u64,
 }
 
 impl FrontendSessionOptions {
@@ -15,6 +17,7 @@ impl FrontendSessionOptions {
         Self {
             cache: FrontendCacheConfig::MemoryOnly,
             cache_namespace: CacheNamespace::new(FRONTEND_CACHE_NAMESPACE),
+            memory_cache_byte_budget: etas_cache::DEFAULT_MEMORY_CACHE_BYTES,
         }
     }
 
@@ -26,11 +29,17 @@ impl FrontendSessionOptions {
                 policy: DiskArtifactStorePolicy::default(),
             },
             cache_namespace: CacheNamespace::new(FRONTEND_CACHE_NAMESPACE),
+            memory_cache_byte_budget: etas_cache::DEFAULT_MEMORY_CACHE_BYTES,
         }
     }
 
     pub fn with_cache(mut self, cache: FrontendCacheConfig) -> Self {
         self.cache = cache;
+        self
+    }
+
+    pub fn with_memory_cache_byte_budget(mut self, bytes: u64) -> Self {
+        self.memory_cache_byte_budget = bytes;
         self
     }
 

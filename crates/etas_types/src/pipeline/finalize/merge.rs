@@ -19,13 +19,26 @@ pub fn merge_body_deltas<'a>(
 }
 
 fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
+    facts.type_generics.extend(body.type_generics);
+    facts
+        .reflection_type_identities
+        .extend(body.reflection_type_identities);
     facts.expr_types.extend(body.expr_types);
+    facts.agent_method_calls.extend(body.agent_method_calls);
+    facts.reflections.extend(body.reflections);
+    facts.agent_inferences.extend(body.agent_inferences);
+    facts.std_method_calls.extend(body.std_method_calls);
+    facts.handler_actions.extend(body.handler_actions);
+    facts
+        .deferred_handler_instantiations
+        .extend(body.deferred_handler_instantiations);
     facts.expr_memory_places.extend(body.expr_memory_places);
     facts.stmt_types.extend(body.stmt_types);
     facts.pattern_types.extend(body.pattern_types);
     facts.type_refs.extend(body.type_refs);
     facts.enum_layouts.extend(body.enum_layouts);
     facts.symbol_types.extend(body.symbol_types);
+    facts.agent_components.extend(body.agent_components);
     if facts.known_std_types.index_error.is_none() {
         facts.known_std_types.index_error = body.known_std_types.index_error;
     }

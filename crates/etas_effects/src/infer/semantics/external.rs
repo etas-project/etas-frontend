@@ -2,6 +2,17 @@ use super::engine::EffectSemantics;
 use super::shared::*;
 use crate::{ActionEvent, infer::domain::ParameterCallRef, pipeline::ExternalActionTraceMetadata};
 
+fn parameter_target(
+    parameters: &[(String, crate::ParameterCallTarget)],
+    label: &str,
+) -> Option<crate::ParameterCallTarget> {
+    let mut matches = parameters.iter().filter(|(name, _)| name == label);
+    match (matches.next(), matches.next()) {
+        (Some((_, target)), None) => Some(*target),
+        _ => None,
+    }
+}
+
 impl EffectSemantics<'_> {
     pub(crate) fn source_import_target_missing(&self, callee: HirExprId) -> bool {
         let Some(HirExpr::Path(path)) = self.hir.exprs.get(callee) else {
@@ -44,57 +55,28 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn external_call_summary_for_path(
-        &mut self,
+        &self,
         path: &[String],
         site: &CallSite<EffectUnit>,
-        state: &EffectState,
+        state: &mut EffectState,
     ) -> Result<Option<EffectSummary>, super::specialize::EffectSpecializationError> {
         let Some(metadata) = self
             .external_summaries
             .iter()
             .find(|summary| external_summary_matches_path(summary, path))
-            .cloned()
         else {
             return Ok(None);
         };
-        let Some(mut summary) = self.external_summary_from_metadata(&metadata, site.span) else {
+        let Some(mut summary) = self.external_summary_from_metadata(metadata, site.span) else {
             return Ok(None);
         };
         let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
-        let (type_bindings, explicit_effect_row_bindings, deferred_effect_row_obligations) = self
-            .types
-            .facts
-            .generic_instantiations
-            .get(&site.call)
-            .map(|fact| {
-                let deferred = fact
-                    .deferred_effect_row_obligations
-                    .iter()
-                    .filter(|obligation| metadata.effect_param_names.contains(&obligation.param))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                (
-                    fact.type_bindings
-                        .iter()
-                        .filter(|(name, _)| metadata.type_param_names.contains(name))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                    fact.effect_row_bindings
-                        .iter()
-                        .filter(|(name, _)| metadata.effect_param_names.contains(name))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                    deferred,
-                )
-            })
-            .unwrap_or_default();
-        let mut effect_row_bindings = explicit_effect_row_bindings
-            .iter()
-            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+        let parameter_targets = (0..metadata.param_names.len())
+            .map(|position| crate::ParameterCallTarget::Interface(position as u32))
             .collect::<Vec<_>>();
-        let deferred_effect_rows =
-            self.solve_deferred_effect_row_obligations(state, &deferred_effect_row_obligations)?;
-        effect_row_bindings.extend(deferred_effect_rows);
+        let trace_bindings = self.call_trace_bindings(site, &parameter_targets)?;
+        let (type_bindings, effect_row_bindings) =
+            self.checked_call_generic_values(site.call, state)?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
             &summary,
@@ -112,22 +94,39 @@ impl EffectSemantics<'_> {
             &type_bindings,
             &effect_row_bindings,
         )?;
-        self.merge_parameter_call_summaries(&mut summary, &parameter_trace, &bindings, state)?;
-        if self
-            .apply_external_function_parameter_effects(
-                &mut summary,
-                site,
-                state,
-                &type_bindings,
-                &effect_row_bindings,
-                &deferred_effect_row_obligations,
-            )?
-            .is_none()
-        {
-            return Ok(None);
-        }
+        let signature = self
+            .checked_callable_type_for_expr(site.callee_expr)
+            .ok_or(
+                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+            )?;
+        let inferred_parameters =
+            self.inferred_callback_parameters(&parameter_targets, &signature.input)?;
+        self.merge_parameter_call_summaries(
+            &mut summary,
+            &parameter_trace,
+            &trace_bindings,
+            state,
+            &inferred_parameters,
+        )?;
         summary.action_trace =
-            self.specialize_parameter_call_trace(&summary.action_trace, &bindings, state)?;
+            self.specialize_parameter_call_trace(&summary.action_trace, &trace_bindings, state)?;
+        if let Some(graph) = &metadata.returned_callables {
+            let arguments = self.call_arguments(site, metadata.param_names.len())?;
+            self.record_metadata_sources(
+                super::metadata_callable::MetadataCallBindings {
+                    key: metadata.callable_graph_key,
+                    scope: etas_package_metadata::CallableValueScope::Root,
+                    environment: None,
+                    arguments: &arguments,
+                    generics: &metadata.generic_params,
+                    type_bindings: &type_bindings,
+                    effect_row_bindings: &effect_row_bindings,
+                },
+                &graph.sources,
+                state,
+                site.call,
+            )?;
+        }
         Ok(Some(summary))
     }
 
@@ -136,27 +135,155 @@ impl EffectSemantics<'_> {
         metadata: &crate::ExternalEffectSummaryMetadata,
         span: Span,
     ) -> Option<EffectSummary> {
+        let parameter_targets = metadata
+            .param_names
+            .iter()
+            .enumerate()
+            .map(|(position, name)| {
+                (
+                    name.clone(),
+                    crate::ParameterCallTarget::Interface(position as u32),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.external_callable_summary(
+            crate::pipeline::ExternalCallableEffectView {
+                handler_requests: metadata.handler_requests.as_ref(),
+                parameter_targets: &parameter_targets,
+                public_effects: &metadata.public_effects,
+                requested_actions: &metadata.requested_actions,
+                handled_requested_actions: &metadata.handled_requested_actions,
+                default_handler_effects: metadata.default_handler_effects.as_ref(),
+                action_trace: &metadata.action_trace,
+            },
+            span,
+        )
+    }
+
+    pub(crate) fn external_callable_summary(
+        &self,
+        metadata: crate::pipeline::ExternalCallableEffectView<'_>,
+        span: Span,
+    ) -> Option<EffectSummary> {
         let mut summary = EffectSummary::local();
-        for effect in &metadata.public_effects.effects {
-            let effect = self.external_effect_from_metadata(effect)?;
-            self.apply_effect_to_summary(&mut summary, effect, span);
-        }
+        let handler_requests = match metadata.handler_requests {
+            None => crate::RequestInstantiationSummary::Unavailable,
+            Some(requests) => crate::RequestInstantiationSummary::Available {
+                actions: requests
+                    .actions
+                    .iter()
+                    .map(|instance| {
+                        Some(crate::ActionRequestInstance {
+                            action: self.external_effect_from_metadata(&instance.action)?,
+                            type_bindings: instance.type_bindings.clone(),
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+                parameters: requests
+                    .parameters
+                    .iter()
+                    .map(|parameter| {
+                        Some(crate::ParameterRequest {
+                            target: parameter_target(
+                                metadata.parameter_targets,
+                                &parameter.parameter,
+                            )?,
+                            parameter: parameter.parameter.clone(),
+                            span,
+                            excluded: parameter
+                                .excluded
+                                .iter()
+                                .map(|effect| self.external_effect_from_metadata(effect))
+                                .collect::<Option<_>>()?,
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+            },
+        };
+        let public = self.external_effect_row_from_metadata(metadata.public_effects)?;
+        let direct = match metadata.default_handler_effects {
+            Some(defaults) => self.external_effect_row_from_metadata(&defaults.direct_effects)?,
+            None => public.clone(),
+        };
+        summary.record_escaping_effect_row(direct.clone());
+        self.apply_runtime_support_for_row(&mut summary, &direct);
         let handled_effects = metadata
             .handled_requested_actions
             .effects
             .iter()
-            .filter_map(|handled| self.external_effect_from_metadata(handled))
-            .collect::<BTreeSet<_>>();
+            .map(|handled| self.external_effect_from_metadata(handled))
+            .collect::<Option<BTreeSet<_>>>()?;
+        let defaults = match metadata.default_handler_effects {
+            Some(defaults) => {
+                Some(self.external_effect_row_from_metadata(&defaults.default_actions)?)
+            }
+            None => None,
+        };
         for action in &metadata.requested_actions.effects {
             let effect = self.external_effect_from_metadata(action)?;
             let handled = handled_effects.contains(&effect);
-            self.record_external_summary_requested_action(&mut summary, effect, handled, span);
+            let default = defaults
+                .as_ref()
+                .map_or(handled, |defaults| defaults.effects.contains(&effect));
+            if metadata.default_handler_effects.is_none()
+                && self.effect_has_default_handler(&effect)
+            {
+                return None;
+            }
+            self.record_external_summary_requested_action(
+                &mut summary,
+                effect.clone(),
+                handled,
+                default,
+                span,
+            );
+            if handled && !default {
+                summary.record_handled_action_row(EffectRow::closed(crate::EffectSet::one(effect)));
+                summary.require_runtime(crate::RuntimeRequirementReason::RuntimeHandler);
+            }
         }
-        summary.escaping_effects.open = metadata
-            .public_effects
-            .tail
-            .as_deref()
-            .map(effect_var_id_from_name);
+        if let Some(metadata) = metadata.default_handler_effects {
+            if defaults.as_ref().is_some_and(|defaults| {
+                defaults.effects.iter().any(|action| {
+                    !action.is_action()
+                        || !summary.requested_actions.effects.contains(action)
+                        || !handled_effects.contains(action)
+                })
+            }) {
+                return None;
+            }
+            let coverage = crate::EffectCoverage {
+                registry: self.registry,
+                types: &self.types.store,
+            };
+            let mut seen = BTreeSet::new();
+            for handler in &metadata.handlers {
+                let action = self.external_effect_from_metadata(&handler.action)?;
+                if !self.effect_has_default_handler(&action)
+                    || !seen.insert(action.clone())
+                    || !summary.default_actions.effects.contains(&action)
+                    || !summary.requested_actions.effects.contains(&action)
+                {
+                    return None;
+                }
+                let row = self.external_effect_row_from_metadata(&handler.produced)?;
+                summary.record_default_handler_effects(action, row).ok()?;
+            }
+            if summary
+                .default_actions
+                .effects
+                .iter()
+                .any(|action| self.effect_has_default_handler(action) && !seen.contains(action))
+            {
+                return None;
+            }
+            if summary.escaping_effects.open != public.open
+                || !coverage.row_covers(&public, &summary.escaping_effects)
+                || !coverage.row_covers(&summary.escaping_effects, &public)
+            {
+                return None;
+            }
+        }
         summary.requested_actions.open = metadata
             .requested_actions
             .tail
@@ -167,14 +294,45 @@ impl EffectSemantics<'_> {
             .tail
             .as_deref()
             .map(effect_var_id_from_name);
-        summary.action_trace =
-            self.external_action_trace_from_metadata(&metadata.action_trace, span)?;
+        summary.default_actions.open = defaults.as_ref().and_then(|row| row.open);
+        summary.action_trace = self.external_action_trace_from_metadata(
+            metadata.action_trace,
+            metadata.parameter_targets,
+            span,
+        )?;
+        summary.handler_requests = handler_requests;
         Some(summary)
+    }
+
+    fn external_effect_row_from_metadata(
+        &self,
+        row: &crate::ExternalEffectRowMetadata,
+    ) -> Option<EffectRow> {
+        Some(EffectRow {
+            effects: row
+                .effects
+                .iter()
+                .map(|effect| self.external_effect_from_metadata(effect))
+                .collect::<Option<crate::EffectSet>>()?,
+            open: row.tail.as_deref().map(effect_var_id_from_name),
+        })
+    }
+
+    fn effect_has_default_handler(&self, effect: &Effect) -> bool {
+        match effect {
+            Effect::Action(action)
+            | Effect::AppliedAction(crate::ActionInstanceRef { action, .. }) => self
+                .registry
+                .action_signature(action)
+                .is_some_and(|signature| signature.has_default_handler),
+            _ => false,
+        }
     }
 
     fn external_action_trace_from_metadata(
         &self,
         trace: &ExternalActionTraceMetadata,
+        parameters: &[(String, crate::ParameterCallTarget)],
         span: Span,
     ) -> Option<ActionTraceDomain> {
         Some(match trace {
@@ -188,6 +346,7 @@ impl EffectSemantics<'_> {
             }
             ExternalActionTraceMetadata::ParameterCall { parameter } => {
                 ActionTraceDomain::ParameterCall {
+                    target: parameter_target(parameters, parameter)?,
                     parameter: parameter.clone(),
                     span,
                 }
@@ -195,17 +354,17 @@ impl EffectSemantics<'_> {
             ExternalActionTraceMetadata::Seq(children) => ActionTraceDomain::Seq(
                 children
                     .iter()
-                    .map(|child| self.external_action_trace_from_metadata(child, span))
+                    .map(|child| self.external_action_trace_from_metadata(child, parameters, span))
                     .collect::<Option<Vec<_>>>()?,
             ),
             ExternalActionTraceMetadata::Choice(children) => ActionTraceDomain::Choice(
                 children
                     .iter()
-                    .map(|child| self.external_action_trace_from_metadata(child, span))
+                    .map(|child| self.external_action_trace_from_metadata(child, parameters, span))
                     .collect::<Option<Vec<_>>>()?,
             ),
             ExternalActionTraceMetadata::Repeat(child) => ActionTraceDomain::Repeat(Box::new(
-                self.external_action_trace_from_metadata(child, span)?,
+                self.external_action_trace_from_metadata(child, parameters, span)?,
             )),
             ExternalActionTraceMetadata::UnknownOrder(actions) => {
                 ActionTraceDomain::UnknownOrder(EffectSet::from_iter(
@@ -227,11 +386,14 @@ impl EffectSemantics<'_> {
                 ),
                 parameter_calls: parameter_calls
                     .iter()
-                    .map(|parameter| ParameterCallRef {
-                        parameter: parameter.clone(),
-                        span,
+                    .map(|parameter| {
+                        Some(ParameterCallRef {
+                            target: parameter_target(parameters, parameter)?,
+                            parameter: parameter.clone(),
+                            span,
+                        })
                     })
-                    .collect(),
+                    .collect::<Option<Vec<_>>>()?,
             },
         })
     }
@@ -285,6 +447,7 @@ impl EffectSemantics<'_> {
         summary: &mut EffectSummary,
         effect: Effect,
         handled: bool,
+        default: bool,
         span: Span,
     ) {
         if !effect.is_action() {
@@ -294,7 +457,7 @@ impl EffectSemantics<'_> {
         match &effect {
             Effect::Action(action) => {
                 summary.record_requested_action(effect.clone());
-                if handled {
+                if default {
                     summary.record_default_handled_action(effect.clone());
                 }
                 summary.record_action_trace_event(
@@ -302,16 +465,17 @@ impl EffectSemantics<'_> {
                     span,
                     crate::ActionEventSource::ExternalMetadata,
                 );
-                if let Some(reason) = self
-                    .registry
-                    .runtime_requirement_reason_for_action_ref(action)
+                if (!handled || default)
+                    && let Some(reason) = self
+                        .registry
+                        .runtime_requirement_reason_for_action_ref(action)
                 {
                     summary.require_runtime(reason);
                 }
             }
             Effect::AppliedAction(action) => {
                 summary.record_requested_action(effect.clone());
-                if handled {
+                if default {
                     summary.record_default_handled_action(effect.clone());
                 }
                 summary.record_action_trace_event(
@@ -319,70 +483,15 @@ impl EffectSemantics<'_> {
                     span,
                     crate::ActionEventSource::ExternalMetadata,
                 );
-                if let Some(reason) = self
-                    .registry
-                    .runtime_requirement_reason_for_action_ref(&action.action)
+                if (!handled || default)
+                    && let Some(reason) = self
+                        .registry
+                        .runtime_requirement_reason_for_action_ref(&action.action)
                 {
                     summary.require_runtime(reason);
                 }
             }
             _ => {}
         }
-    }
-
-    pub(crate) fn apply_external_function_parameter_effects(
-        &mut self,
-        summary: &mut EffectSummary,
-        site: &CallSite<EffectUnit>,
-        state: &EffectState,
-        type_bindings: &[(String, TypeId)],
-        effect_row_bindings: &[(String, EffectRow)],
-        deferred_effect_row_obligations: &[etas_types::DeferredEffectRowObligation],
-    ) -> Result<Option<()>, super::specialize::EffectSpecializationError> {
-        let Some(callee_input) = self
-            .flow_type_for_expr(site.callee_expr)
-            .map(|flow| flow.input.clone())
-        else {
-            return Ok(Some(()));
-        };
-        let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(site.call) else {
-            return Ok(Some(()));
-        };
-        for (index, param_ty) in callee_input.iter().enumerate() {
-            let Some(arg) = args.get(index).and_then(arg_expr) else {
-                continue;
-            };
-            let Some(Type::Function(flow)) = self.types.store.get(*param_ty) else {
-                continue;
-            };
-            if let Some(row) = &flow.effects {
-                if row.tail.as_ref().is_some_and(|tail| {
-                    deferred_effect_row_obligations
-                        .iter()
-                        .any(|obligation| obligation.param == *tail && obligation.source == arg)
-                }) {
-                    continue;
-                }
-                let row = self.specialize_effect_row(
-                    &self.row_from_type_ref(row),
-                    &[],
-                    type_bindings,
-                    effect_row_bindings,
-                )?;
-                summary.seq_assign(&self.summary_for_invoked_flow_row(row, site.span));
-                continue;
-            }
-            let Some(sources) = self.latent_sources_for_expr(state, arg) else {
-                return Ok(None);
-            };
-            for source in sources {
-                let Some(source_summary) = self.inputs.unit_effects.get(&source).cloned() else {
-                    return Ok(None);
-                };
-                summary.seq_assign(&source_summary);
-                self.record_latent_realization(source, site.call);
-            }
-        }
-        Ok(Some(()))
     }
 }

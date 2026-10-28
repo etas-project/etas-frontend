@@ -1,12 +1,24 @@
 use super::engine::EffectSemantics;
 use super::shared::*;
+use crate::ParameterCallTarget;
 use std::collections::BTreeMap;
+
+mod completion;
+mod parameter_calls;
+mod trace;
+pub(crate) use parameter_calls::{TraceArgumentBinding, TraceArgumentBindings};
+pub(crate) use trace::{ParameterCallSubstitution, substitute_parameter_calls};
 
 #[derive(Debug)]
 pub(crate) enum EffectSpecializationError {
+    Interrupted(etas_utils::PipelineInterruption),
     StaticString(etas_hir_analysis::static_string::StaticStringEvaluationError),
     MemoryProvenance(String),
     InvalidActionSignature(crate::ActionRef),
+    InvalidDefaultHandlerAction,
+    InvalidCallableReturnSources,
+    InvalidCallableParameterInterface,
+    InvalidCallableEnvironment { reason: String },
     Type(etas_types::TypeSubstitutionError),
     MissingTypeBinding { param: String },
     MissingEffectRowBinding { param: String },
@@ -17,6 +29,8 @@ pub(crate) enum EffectSpecializationError {
 impl std::fmt::Display for EffectSpecializationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Interrupted(error) => f.write_str(&error.reason),
+            Self::InvalidCallableEnvironment { reason } => write!(f, "invalid callable environment: {reason}"),
             Self::StaticString(error) => error.fmt(f),
             Self::MemoryProvenance(error) => f.write_str(error),
             Self::InvalidActionSignature(action) => write!(
@@ -24,6 +38,15 @@ impl std::fmt::Display for EffectSpecializationError {
                 "action specialization requires a matching checked selector signature for {action:?}"
             ),
             Self::Type(error) => error.fmt(f),
+            Self::InvalidDefaultHandlerAction => f.write_str(
+                "default handler specialization must preserve one closed checked action",
+            ),
+            Self::InvalidCallableReturnSources => f.write_str(
+                "returned callable sources require a matching checked callee parameter interface",
+            ),
+            Self::InvalidCallableParameterInterface => f.write_str(
+                "callback effect specialization requires a matching checked callable parameter interface",
+            ),
             Self::MissingTypeBinding { param } => {
                 write!(f, "checked generic instantiation is missing `{param}`")
             }
@@ -35,7 +58,7 @@ impl std::fmt::Display for EffectSpecializationError {
             }
             Self::MissingLatentEffectBinding { param } => write!(
                 f,
-                "checked latent flow summary is missing for `effect {param}`"
+                "checked latent flow summary is missing for parameter `{param}`"
             ),
             Self::IncompatibleLatentEffectBindings { param } => write!(
                 f,
@@ -103,13 +126,26 @@ impl EffectSemantics<'_> {
                 param: param.to_owned(),
             });
         };
+        let span = self
+            .hir
+            .exprs
+            .get(expr)
+            .ok_or_else(|| EffectSpecializationError::MissingLatentEffectBinding {
+                param: param.to_owned(),
+            })?
+            .span(&self.hir.blocks);
+        self.latent_summary_for_origins(sources, span, param)
+    }
+
+    pub(crate) fn latent_summary_for_origins(
+        &self,
+        sources: impl IntoIterator<Item = LatentSource>,
+        span: Span,
+        param: &str,
+    ) -> Result<EffectSummary, EffectSpecializationError> {
         let mut source_summary: Option<EffectSummary> = None;
         for source in sources {
-            let Some(summary) = self.inputs.unit_effects.get(&source).cloned() else {
-                return Err(EffectSpecializationError::MissingLatentEffectBinding {
-                    param: param.to_owned(),
-                });
-            };
+            let summary = self.latent_source_summary(source, span)?;
             match &mut source_summary {
                 Some(combined) => {
                     combined.join_branch(&summary);
@@ -122,148 +158,62 @@ impl EffectSemantics<'_> {
         })
     }
 
-    pub(crate) fn specialize_parameter_call_trace(
-        &self,
-        trace: &ActionTraceDomain,
-        bindings: &[(String, HirExprId)],
-        state: &EffectState,
-    ) -> Result<ActionTraceDomain, EffectSpecializationError> {
-        match trace {
-            ActionTraceDomain::ParameterCall { parameter, .. } => {
-                let Some((_, expr)) = bindings.iter().find(|(name, _)| name == parameter) else {
-                    return Err(EffectSpecializationError::MissingLatentEffectBinding {
-                        param: parameter.clone(),
-                    });
-                };
-                Ok(self
-                    .latent_summary_for_expr(state, *expr, parameter)?
-                    .action_trace)
-            }
-            ActionTraceDomain::Seq(items) => Ok(ActionTraceDomain::Seq(
-                items
-                    .iter()
-                    .map(|item| self.specialize_parameter_call_trace(item, bindings, state))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            ActionTraceDomain::Choice(items) => Ok(ActionTraceDomain::Choice(
-                items
-                    .iter()
-                    .map(|item| self.specialize_parameter_call_trace(item, bindings, state))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            ActionTraceDomain::Repeat(item) => Ok(ActionTraceDomain::Repeat(Box::new(
-                self.specialize_parameter_call_trace(item, bindings, state)?,
-            ))),
-            ActionTraceDomain::Widened {
-                actions,
-                parameter_calls,
-            } => {
-                let mut trace = ActionTraceDomain::UnknownOrder(actions.clone());
-                for call in parameter_calls {
-                    let Some((_, expr)) = bindings.iter().find(|(name, _)| name == &call.parameter)
-                    else {
-                        return Err(EffectSpecializationError::MissingLatentEffectBinding {
-                            param: call.parameter.clone(),
-                        });
-                    };
-                    trace.seq_assign(
-                        self.latent_summary_for_expr(state, *expr, &call.parameter)?
-                            .action_trace,
-                    );
-                }
-                Ok(trace.widened())
-            }
-            ActionTraceDomain::Empty
-            | ActionTraceDomain::Event(_)
-            | ActionTraceDomain::UnknownOrder(_) => Ok(trace.clone()),
-        }
-    }
-
-    pub(crate) fn merge_parameter_call_summaries(
-        &self,
-        target: &mut EffectSummary,
-        trace: &ActionTraceDomain,
-        bindings: &[(String, HirExprId)],
-        state: &EffectState,
-    ) -> Result<(), EffectSpecializationError> {
-        match trace {
-            ActionTraceDomain::ParameterCall { parameter, .. } => {
-                let Some((_, expr)) = bindings.iter().find(|(name, _)| name == parameter) else {
-                    return Err(EffectSpecializationError::MissingLatentEffectBinding {
-                        param: parameter.clone(),
-                    });
-                };
-                let mut source_summary = self.latent_summary_for_expr(state, *expr, parameter)?;
-                source_summary.action_trace = ActionTraceDomain::Empty;
-                target.seq_assign(&source_summary);
-            }
-            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => {
-                for item in items {
-                    self.merge_parameter_call_summaries(target, item, bindings, state)?;
-                }
-            }
-            ActionTraceDomain::Repeat(item) => {
-                self.merge_parameter_call_summaries(target, item, bindings, state)?;
-            }
-            ActionTraceDomain::Widened {
-                parameter_calls, ..
-            } => {
-                for call in parameter_calls {
-                    let Some((_, expr)) = bindings.iter().find(|(name, _)| name == &call.parameter)
-                    else {
-                        return Err(EffectSpecializationError::MissingLatentEffectBinding {
-                            param: call.parameter.clone(),
-                        });
-                    };
-                    let mut source_summary =
-                        self.latent_summary_for_expr(state, *expr, &call.parameter)?;
-                    source_summary.action_trace = ActionTraceDomain::Empty;
-                    target.seq_assign(&source_summary);
-                }
-            }
-            ActionTraceDomain::Empty
-            | ActionTraceDomain::Event(_)
-            | ActionTraceDomain::UnknownOrder(_) => {}
-        }
-        Ok(())
-    }
-
     pub(crate) fn specialize_summary_for_call(
         &self,
         callee: EffectUnit,
         site: &CallSite<EffectUnit>,
         state: &EffectState,
         summary: &EffectSummary,
+        environment: Option<crate::facts::CallableEnvironmentId>,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         let Some(params) = self.unit_params(callee) else {
             return Ok(summary.clone());
         };
-        let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(site.call) else {
+        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
+            self.hir.exprs.get(site.call)
+        else {
             return Ok(summary.clone());
         };
         let mut bindings = Vec::new();
-        for (index, param) in params.iter().enumerate() {
-            let Some(arg) = args.get(index).and_then(arg_expr) else {
-                continue;
-            };
-            let Some(symbol) = self.hir.symbols.get(*param) else {
-                continue;
-            };
-            bindings.push((symbol.name.clone(), arg));
+        let mut trace_bindings = environment
+            .map(|id| self.native_environment_bindings(id))
+            .transpose()?
+            .unwrap_or_default();
+        if args.len() != params.len() {
+            return Err(EffectSpecializationError::InvalidCallableParameterInterface);
         }
-        let generic_bindings = self.call_generic_bindings(site.call);
-        let mut effect_row_bindings = generic_bindings
-            .effect_rows
-            .iter()
-            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
-            .collect::<Vec<_>>();
-        let deferred_effect_rows = self
-            .solve_deferred_effect_row_obligations(state, &generic_bindings.deferred_effect_rows)?;
-        effect_row_bindings.extend(deferred_effect_rows);
-        self.require_effect_type_bindings(callee, summary, &generic_bindings.types)?;
+        for (index, param) in params.iter().enumerate() {
+            let arg = args
+                .get(index)
+                .and_then(arg_expr)
+                .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
+            let symbol = self
+                .hir
+                .symbols
+                .get(*param)
+                .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
+            bindings.push((symbol.name.clone(), arg));
+            trace_bindings.insert(
+                ParameterCallTarget::Native(*param),
+                TraceArgumentBinding::Expression(arg),
+            );
+        }
+        let (mut type_bindings, mut effect_row_bindings) =
+            self.checked_call_generic_values(site.call, state)?;
+        if let Some(environment) = environment {
+            let snapshot = self.callable_environment(environment)?;
+            let owner = callee
+                .owner()
+                .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+            let (types, rows) = self.native_environment_generics(owner, &snapshot.generics)?;
+            type_bindings.extend(types);
+            effect_row_bindings.extend(rows);
+        }
+        self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
         if bindings.is_empty()
-            && generic_bindings.types.is_empty()
+            && trace_bindings.is_empty()
+            && type_bindings.is_empty()
             && effect_row_bindings.is_empty()
         {
             return Ok(summary.clone());
@@ -272,17 +222,56 @@ impl EffectSemantics<'_> {
         let mut specialized = self.specialize_summary_with_bindings(
             summary,
             &bindings,
-            &generic_bindings.types,
+            &type_bindings,
             &effect_row_bindings,
         )?;
+        let param_types = params
+            .iter()
+            .map(|param| {
+                self.symbol_value_type(*param)
+                    .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let param_targets = params
+            .iter()
+            .map(|param| ParameterCallTarget::Native(*param))
+            .collect::<Vec<_>>();
+        let inferred_parameters =
+            self.inferred_callback_parameters(&param_targets, &param_types)?;
         self.merge_parameter_call_summaries(
             &mut specialized,
             &summary.action_trace,
-            &bindings,
+            &trace_bindings,
+            state,
+            &inferred_parameters,
+        )?;
+        specialized.action_trace = self.specialize_parameter_call_trace(
+            &specialized.action_trace,
+            &trace_bindings,
             state,
         )?;
-        specialized.action_trace =
-            self.specialize_parameter_call_trace(&specialized.action_trace, &bindings, state)?;
+        if let Some(exits) = &mut specialized.exits {
+            for exit in &mut exits.exits {
+                exit.trace =
+                    self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
+                if let crate::CallableOutcome::Returned { observation, .. } = &mut exit.outcome
+                    && let crate::ReturnObservation::CallableSources(parameters) = observation
+                {
+                    let sources = self.returned_callable_bindings(
+                        parameters,
+                        &trace_bindings,
+                        state,
+                        site.call,
+                        environment,
+                    )?;
+                    *observation = self.returned_callable_sources(state, &sources).map_or(
+                        crate::ReturnObservation::Any,
+                        crate::ReturnObservation::CallableSources,
+                    );
+                }
+            }
+        }
+        self.solve_callback_completion(&mut specialized, &trace_bindings, &type_bindings, state)?;
         Ok(specialized)
     }
 
@@ -291,7 +280,9 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         param_names: &[String],
     ) -> Vec<(String, HirExprId)> {
-        let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(site.call) else {
+        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
+            self.hir.exprs.get(site.call)
+        else {
             return Vec::new();
         };
         param_names
@@ -343,12 +334,46 @@ impl EffectSemantics<'_> {
             return Ok(summary.clone());
         }
         let mut specialized = summary.clone();
+        specialized.handler_requests =
+            self.specialize_request_types(&summary.handler_requests, type_bindings)?;
         specialized.escaping_effects = self.specialize_effect_row(
             &summary.escaping_effects,
             bindings,
             type_bindings,
             effect_row_bindings,
         )?;
+        if let Some(defaults) = &mut specialized.default_handler_effects {
+            defaults.direct = self.specialize_effect_row(
+                &defaults.direct,
+                bindings,
+                type_bindings,
+                effect_row_bindings,
+            )?;
+            for handler in &mut defaults.handlers {
+                let row = self.specialize_effect_row(
+                    &EffectRow::closed(crate::EffectSet::one(handler.action.clone())),
+                    bindings,
+                    type_bindings,
+                    effect_row_bindings,
+                )?;
+                let mut actions = row.effects.iter();
+                handler.action = actions
+                    .next()
+                    .cloned()
+                    .filter(|effect| effect.is_action())
+                    .ok_or(EffectSpecializationError::InvalidDefaultHandlerAction)?;
+                if actions.next().is_some() || row.open.is_some() {
+                    return Err(EffectSpecializationError::InvalidDefaultHandlerAction);
+                }
+                handler.produced = self.specialize_effect_row(
+                    &handler.produced,
+                    bindings,
+                    type_bindings,
+                    effect_row_bindings,
+                )?;
+            }
+            specialized.refresh_escaping_effects();
+        }
         specialized.requested_actions = self.specialize_effect_row(
             &summary.requested_actions,
             bindings,
@@ -369,10 +394,39 @@ impl EffectSemantics<'_> {
         )?;
         specialized.action_trace =
             self.specialize_action_trace(&summary.action_trace, bindings, type_bindings)?;
+        if let Some(exits) = &mut specialized.exits {
+            let substitutions = type_bindings.iter().cloned().collect();
+            for exit in &mut exits.exits {
+                match &mut exit.outcome {
+                    crate::CallableOutcome::Returned { ty, .. } => {
+                        *ty = etas_types::substitute_named_params_in_store(
+                            &self.types.store,
+                            *ty,
+                            &substitutions,
+                        )?;
+                    }
+                    crate::CallableOutcome::Raised { error } => {
+                        *error = etas_types::substitute_named_params_in_store(
+                            &self.types.store,
+                            *error,
+                            &substitutions,
+                        )?;
+                    }
+                    crate::CallableOutcome::NonReturn => {}
+                }
+                exit.trace = self.specialize_action_trace(&exit.trace, bindings, type_bindings)?;
+            }
+        }
         Ok(specialized)
     }
 
     pub(crate) fn unit_params(&self, unit: EffectUnit) -> Option<Vec<etas_hir::SymbolId>> {
+        if let EffectUnit::AnonymousFlow { value, .. } = unit {
+            return match self.hir.exprs.get(value)? {
+                HirExpr::Lambda { params, .. } => Some(params.clone()),
+                _ => None,
+            };
+        }
         let EffectUnit::Item(item) = unit else {
             return None;
         };
@@ -566,7 +620,7 @@ impl EffectSemantics<'_> {
         evaluate_static_string(self, expr, path).map(EffectArgRef::String)
     }
 
-    fn require_effect_type_bindings(
+    pub(crate) fn require_effect_type_bindings(
         &self,
         callee: EffectUnit,
         summary: &EffectSummary,
@@ -582,7 +636,7 @@ impl EffectSemantics<'_> {
         self.require_named_effect_type_bindings(&params, summary, type_bindings)
     }
 
-    fn require_effect_row_bindings(
+    pub(crate) fn require_effect_row_bindings(
         &self,
         callee: EffectUnit,
         summary: &EffectSummary,

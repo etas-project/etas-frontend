@@ -1,7 +1,17 @@
 use etas_hir::{HirBlockId, HirExprId, HirHandlerArmId, HirItemId};
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum EffectUnit {
     Item(HirItemId),
@@ -14,14 +24,20 @@ pub enum EffectUnit {
         value: HirExprId,
         body: EffectAnonymousFlowBody,
     },
-    FirstClassFlowCall {
-        owner: HirItemId,
-        call: HirExprId,
-    },
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum EffectAnonymousFlowBody {
     Expr(HirExprId),

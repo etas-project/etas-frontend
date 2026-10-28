@@ -15,13 +15,15 @@ use crate::{
 
 use super::artifacts::{
     EFFECT_FACTS, EFFECT_OUTPUT, EFFECT_REGISTRY, EFFECT_SUMMARIES, EFFECT_UNITS,
-    MEMORY_PROVENANCE, TRACE_SPEC_ANALYSIS, TRACE_SPEC_MODELS, VALIDATED_EFFECT_FACTS,
-    VALIDATED_TRACE_SPEC_FACTS,
+    FROZEN_CALL_SUMMARIES, MEMORY_PROVENANCE, TRACE_SPEC_ANALYSIS, TRACE_SPEC_MODELS,
+    VALIDATED_EFFECT_FACTS, VALIDATED_TRACE_SPEC_FACTS,
 };
 use super::context::EffectPipelineContext;
 use super::{EffectPipelineArtifacts, ExternalArtifactAnchor};
 
+mod bind_frozen_calls;
 mod build_registry;
+pub(super) use bind_frozen_calls::BindFrozenCallsPass;
 pub(super) use build_registry::BuildRegistryPass;
 mod collect_units;
 pub(super) use collect_units::CollectUnitsPass;
@@ -45,6 +47,7 @@ pub(super) use emit_output::EmitOutputPass;
 pub(super) fn build_effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>> {
     Pipeline::new("effects.run")
         .pass(BuildRegistryPass)
+        .pass(BindFrozenCallsPass)
         .pass(CollectUnitsPass)
         .pass(AnalyzeMemoryProvenancePass)
         .pass(SolveSummariesPass)
@@ -70,9 +73,9 @@ fn effect_unit_owner_is_reachable(
 ) -> bool {
     match unit {
         EffectUnit::Item(item) => reachable_items.contains(item),
-        EffectUnit::HandlerArm { owner, .. }
-        | EffectUnit::AnonymousFlow { owner, .. }
-        | EffectUnit::FirstClassFlowCall { owner, .. } => reachable_items.contains(owner),
+        EffectUnit::HandlerArm { owner, .. } | EffectUnit::AnonymousFlow { owner, .. } => {
+            reachable_items.contains(owner)
+        }
     }
 }
 

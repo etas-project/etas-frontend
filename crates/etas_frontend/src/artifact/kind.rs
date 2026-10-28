@@ -1,8 +1,18 @@
 pub const FRONTEND_CACHE_NAMESPACE: &str = "frontend";
-pub const FRONTEND_ARTIFACT_SCHEMA_VERSION: u32 = 5;
+pub const FRONTEND_ARTIFACT_SCHEMA_VERSION: u32 = 68;
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum FrontendArtifactKind {
     SourceSet,
@@ -24,6 +34,7 @@ pub enum FrontendArtifactKind {
     ResolvedImports,
     ResolvedPaths,
     SignatureFacts,
+    TypeConstraintEnvironment,
     TopLevelLetFacts,
     TypeFacts,
     EffectPipelineArtifacts,
@@ -57,6 +68,7 @@ impl FrontendArtifactKind {
             Self::ResolvedImports => "resolved_imports",
             Self::ResolvedPaths => "resolved_paths",
             Self::SignatureFacts => "signature_facts",
+            Self::TypeConstraintEnvironment => "type_constraint_environment",
             Self::TopLevelLetFacts => "top_level_let_facts",
             Self::TypeFacts => "type_facts",
             Self::EffectPipelineArtifacts => "effect_pipeline_artifacts",
@@ -90,6 +102,7 @@ impl FrontendArtifactKind {
             "resolved_imports" => Self::ResolvedImports,
             "resolved_paths" => Self::ResolvedPaths,
             "signature_facts" => Self::SignatureFacts,
+            "type_constraint_environment" => Self::TypeConstraintEnvironment,
             "top_level_let_facts" => Self::TopLevelLetFacts,
             "type_facts" => Self::TypeFacts,
             "effect_pipeline_artifacts" => Self::EffectPipelineArtifacts,

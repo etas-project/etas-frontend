@@ -8,7 +8,7 @@ mod scheme;
 mod store;
 mod substitution;
 
-pub use store::{SharedTypeBase, TypeBaseId, TypeInterner, TypeStore};
+pub use store::{SharedTypeBase, TypeBaseId, TypeInterner, TypeLookupIndex, TypeStore};
 
 pub use display::display_type;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
@@ -17,12 +17,13 @@ pub use normalize::{
     type_contains_named_param,
 };
 pub use primitive::PrimitiveType;
-pub(crate) use representation::materialize_representations;
+pub use representation::{TypeRepresentationMaterializer, materialize_representations};
 pub use row::{EffectArgRef, EffectRef, EffectRowRef};
 pub use scheme::{TypeConstructorId, TypeScheme, TypeVarId};
 pub use substitution::{
-    TypeSubstitutionEngine, TypeSubstitutionError, substitute_effect_row_params,
-    substitute_named_params, substitute_named_params_in_store, substitute_type_params,
+    TypeRelocationInput, TypeRelocationMaterializationInput, TypeSubstitutionEngine,
+    TypeSubstitutionError, substitute_effect_row_params, substitute_named_params,
+    substitute_named_params_in_store, substitute_type_params,
 };
 
 #[derive(
@@ -37,10 +38,13 @@ pub use substitution::{
     Hash,
     serde::Serialize,
     serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct TypeId(pub u32);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum Type {
     Primitive(PrimitiveType),
     IntegerLiteral {
@@ -97,54 +101,87 @@ pub enum Type {
 }
 
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct RefinementId(pub u32);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct RecordType {
     pub fields: Vec<FieldType>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct FieldType {
     pub name: String,
     pub ty: TypeId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct FlowType {
     pub input: Vec<TypeId>,
     pub output: TypeId,
     pub effects: Option<EffectRowRef>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct HandlerType {
     pub handled: EffectRowRef,
     pub produced: HandlerProducedEffects,
     pub result: Option<TypeId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum HandlerProducedEffects {
     Infer,
     Explicit(EffectRowRef),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct MemoryPlaceType {
     pub segments: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ResourceHandleType {
     MemoryRegion { schema: TypeId },
     ExternalTool { signature: TypeId },
     Other { name: String, args: Vec<TypeId> },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub enum TrustWrapper {
     Trusted,
     Untrusted,

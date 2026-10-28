@@ -486,6 +486,23 @@ impl AstDump for ast::ImplDecl {
     fn dump(&self, f: &mut AstDumpWriter) {
         let mut fields = Vec::new();
         match &self.target {
+            ast::ImplTarget::Agent { target, specs, .. } => {
+                push_path_field(f, &mut fields, "target", target);
+                f.node("AgentImplDecl", self.span, fields, |f| {
+                    for spec in specs {
+                        let mut fields = Vec::new();
+                        push_path_field(f, &mut fields, "spec", &spec.spec_path);
+                        f.node("ImplSpecRef", spec.span, fields, |f| {
+                            for arg in &spec.spec_args {
+                                arg.dump(f);
+                            }
+                        });
+                    }
+                    for item in &self.items {
+                        item.dump(f);
+                    }
+                });
+            }
             ast::ImplTarget::Inherent {
                 target, type_args, ..
             } => {
@@ -1063,6 +1080,33 @@ impl AstDump for MatchArmBody {
     }
 }
 
+impl AstDump for ast::ReflectExpr {
+    fn dump(&self, f: &mut AstDumpWriter) {
+        match &self.target {
+            ast::ReflectTarget::Path(path) => f.line(
+                "ReflectExpr",
+                self.span,
+                path_field(f, "target", path).into_iter().collect(),
+            ),
+            ast::ReflectTarget::SpecMethod {
+                receiver,
+                spec,
+                spec_args,
+                method,
+            } => {
+                let mut fields = name_fields(f, method);
+                push_path_field(f, &mut fields, "receiver", receiver);
+                push_path_field(f, &mut fields, "spec", spec);
+                f.node("ReflectSpecMethodExpr", self.span, fields, |f| {
+                    for arg in spec_args {
+                        arg.dump(f);
+                    }
+                });
+            }
+        }
+    }
+}
+
 impl AstDump for Expr {
     fn dump(&self, f: &mut AstDumpWriter) {
         match self {
@@ -1072,6 +1116,7 @@ impl AstDump for Expr {
                 path.span,
                 path_field(f, "path", path).into_iter().collect(),
             ),
+            Self::Reflect(reflection) => reflection.dump(f),
             Self::Record(record) => f.node(
                 "RecordExpr",
                 record.span,
@@ -1190,6 +1235,14 @@ impl AstDump for Expr {
                     }
                 });
             }
+            Self::Infer(infer) => f.node("InferExpr", infer.span, Vec::new(), |f| {
+                for arg in &infer.generic_args {
+                    arg.dump(f);
+                }
+                for arg in &infer.args {
+                    arg.dump(f);
+                }
+            }),
             Self::Handle(handle) => f.node("HandleExpr", handle.span, Vec::new(), |f| {
                 f.node("Body", handle.body.span(), Vec::new(), |f| {
                     handle.body.dump(f)

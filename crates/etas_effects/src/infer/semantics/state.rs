@@ -5,42 +5,64 @@ use etas_utils::{JoinSemiLattice, PartialOrder};
 
 use crate::{EffectSummary, EffectUnit, FrontendRejectionReason, InterpreterSupport};
 
+pub(crate) use crate::facts::CallableValueOrigin as LatentSource;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LatentEnv {
-    pub(crate) values: BTreeMap<HirExprId, BTreeSet<EffectUnit>>,
-    pub(crate) symbols: BTreeMap<SymbolId, BTreeSet<EffectUnit>>,
+    pub(crate) values: BTreeMap<HirExprId, BTreeSet<LatentSource>>,
+    pub(crate) symbols: BTreeMap<SymbolId, BTreeSet<LatentSource>>,
 }
 
 impl LatentEnv {
+    pub(crate) fn record_value_sources(
+        &mut self,
+        value: HirExprId,
+        sources: impl IntoIterator<Item = LatentSource>,
+    ) {
+        self.values.entry(value).or_default().extend(sources);
+    }
     pub(crate) fn record_value(&mut self, value: HirExprId, unit: EffectUnit) {
-        self.values.entry(value).or_default().insert(unit);
+        self.values
+            .entry(value)
+            .or_default()
+            .insert(LatentSource::Unit(unit));
     }
 
     pub(crate) fn record_symbol_sources(
         &mut self,
         symbol: SymbolId,
-        sources: impl IntoIterator<Item = EffectUnit>,
+        sources: impl IntoIterator<Item = LatentSource>,
     ) {
         self.symbols.entry(symbol).or_default().extend(sources);
     }
 
-    pub(crate) fn value_sources(&self, value: HirExprId) -> Option<&BTreeSet<EffectUnit>> {
+    pub(crate) fn set_symbol_sources(
+        &mut self,
+        symbol: SymbolId,
+        sources: impl IntoIterator<Item = LatentSource>,
+    ) {
+        self.symbols.insert(symbol, sources.into_iter().collect());
+    }
+
+    pub(crate) fn value_sources(&self, value: HirExprId) -> Option<&BTreeSet<LatentSource>> {
         self.values.get(&value)
     }
 
-    pub(crate) fn symbol_sources(&self, symbol: SymbolId) -> Option<&BTreeSet<EffectUnit>> {
+    pub(crate) fn symbol_sources(&self, symbol: SymbolId) -> Option<&BTreeSet<LatentSource>> {
         self.symbols.get(&symbol)
     }
 
     pub(crate) fn join_assign(&mut self, other: &Self) -> bool {
         let mut changed = false;
         for (value, sources) in &other.values {
+            changed |= !self.values.contains_key(value);
             let entry = self.values.entry(*value).or_default();
             let old_len = entry.len();
             entry.extend(sources.iter().copied());
             changed |= entry.len() != old_len;
         }
         for (symbol, sources) in &other.symbols {
+            changed |= !self.symbols.contains_key(symbol);
             let entry = self.symbols.entry(*symbol).or_default();
             let old_len = entry.len();
             entry.extend(sources.iter().copied());
@@ -66,6 +88,7 @@ pub(crate) struct EffectState {
     pub(crate) latent_definition_depth: usize,
     pub(crate) resume_count: usize,
     pub(crate) incomplete: bool,
+    pub(crate) exits: crate::CallableExitSummary,
 }
 
 impl EffectState {
@@ -102,6 +125,7 @@ impl PartialOrder for EffectState {
             && self.latent_definition_depth == other.latent_definition_depth
             && self.resume_count == other.resume_count
             && (!self.incomplete || other.incomplete)
+            && self.exits == other.exits
     }
 }
 
@@ -120,6 +144,7 @@ impl JoinSemiLattice for EffectState {
             return false;
         }
         let mut changed = false;
+        changed |= self.exits.join_assign(&other.exits);
         let unit_conflict = option_conflict(self.unit, other.unit);
         let owner_conflict = option_conflict(self.owner, other.owner);
         changed |= join_option(&mut self.unit, other.unit);
@@ -164,6 +189,7 @@ impl EffectState {
             && self.latent_definition_depth == 0
             && self.resume_count == 0
             && !self.incomplete
+            && self.exits == crate::CallableExitSummary::default()
     }
 }
 
@@ -172,8 +198,7 @@ impl EffectUnit {
         match self {
             Self::Item(item)
             | Self::HandlerArm { owner: item, .. }
-            | Self::AnonymousFlow { owner: item, .. }
-            | Self::FirstClassFlowCall { owner: item, .. } => Some(item),
+            | Self::AnonymousFlow { owner: item, .. } => Some(item),
         }
     }
 }
@@ -217,3 +242,6 @@ where
     left.iter()
         .all(|(key, values)| right.get(key).is_some_and(|other| values.is_subset(other)))
 }
+
+#[cfg(test)]
+mod tests;

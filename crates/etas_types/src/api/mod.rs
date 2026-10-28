@@ -5,9 +5,9 @@ mod request;
 pub use body::{BodyTypeOutput, SignatureEnvironment};
 pub use output::TypeOutput;
 pub use request::{
-    CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest, ExternalActionArgKindInput,
-    ExternalActionBindingInput, ExternalActionGenericParamInput, ExternalActionSignatureInput,
-    ExternalAgentSignatureInput, ExternalCallableGenericParamInput,
+    AnnotationValidationMode, CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest,
+    ExternalActionArgKindInput, ExternalActionBindingInput, ExternalActionGenericParamInput,
+    ExternalActionSignatureInput, ExternalAgentSignatureInput, ExternalCallableGenericParamInput,
     ExternalCallableGenericParamKindInput, ExternalCallableSpecSatisfactionInput,
     ExternalEffectArgInput, ExternalEffectRefInput, ExternalEffectRowInput,
     ExternalFlowSignatureInput, ExternalNamedSignatureInput, ExternalPackageKey,
@@ -15,8 +15,8 @@ pub use request::{
     ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput, ExternalSpecMethodInput,
     ExternalSpecSignatureInput, ExternalSymbolBindingInput, ExternalToolSignatureInput,
     ExternalTraceSpecConformanceInput, ExternalTraceSpecConformanceTargetInput, ExternalTypeInput,
-    ExternalTypeSpecSatisfactionInput, SignaturePipelineInput, SourceSignatureInput,
-    SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput,
+    ExternalTypeSpecSatisfactionInput, ReflectionSignatureInput, SignaturePipelineInput,
+    SourceSignatureInput, SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput,
 };
 
 pub fn check_project(request: CheckProjectRequest<'_>) -> TypeOutput {

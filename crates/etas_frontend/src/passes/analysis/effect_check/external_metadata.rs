@@ -256,7 +256,13 @@ pub(super) fn external_effect_summaries(
             .flows
             .iter()
             .map(|signature| &signature.path)
-            .chain(metadata.agents.iter().map(|signature| &signature.path))
+            .chain(
+                metadata
+                    .agents
+                    .iter()
+                    .filter(|agent| agent.output.is_some())
+                    .map(|signature| &signature.path),
+            )
             .chain(metadata.tools.iter().map(|signature| &signature.path))
             .chain(metadata.values.iter().filter_map(|value| {
                 matches!(
@@ -305,12 +311,74 @@ fn external_effect_summary_metadata(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_effects::ExternalEffectSummaryMetadata {
+        handler_requests: summary.handler_requests.as_ref().map(|template| {
+            Ok::<_, String>(etas_effects::ExternalRequestInstantiationMetadata {
+                actions: template.actions.iter().map(|instance| Ok(etas_effects::ExternalActionRequestMetadata {
+                    action: lower_external_effect_metadata(&instance.action, types)?,
+                    type_bindings: instance.type_bindings.as_ref().map(|bindings| bindings.iter().map(|(name, ty)| {
+                        Ok((name.clone(), etas_types::lower::external::external_type_id_from_output(types, &super::super::type_check_bridge::convert_external_type(ty)).map_err(|error| error.message)?))
+                    }).collect::<Result<_, String>>()).transpose()?,
+                })).collect::<Result<_, String>>()?,
+                parameters: template.parameters.iter().map(|parameter| Ok(etas_effects::ExternalParameterRequestMetadata {
+                    parameter: parameter.parameter.clone(),
+                    excluded: parameter.excluded.iter().map(|effect| lower_external_effect_metadata(effect, types)).collect::<Result<_, _>>()?,
+                })).collect::<Result<_, String>>()?,
+            })
+        }).transpose()?,
+        callable_graph_key: summary
+            .returned_callables
+            .as_ref()
+            .map(|graph| {
+                let graph_key = etas_package_metadata::callable_value_graph_fingerprint(graph)
+                    .map_err(|error| error.to_string())?;
+                let package = package.as_deref().ok_or_else(|| {
+                    "returned callable metadata has no checked package identity".to_owned()
+                })?;
+                Ok::<_, String>(etas_code::CodeFingerprint::of_parts(
+                    "etas.effects.external-callable.v1",
+                    std::iter::once(package.as_bytes())
+                        .chain(summary.item.iter().map(|segment| segment.as_bytes()))
+                        .chain(std::iter::once(graph_key.as_bytes().as_slice())),
+                ))
+            })
+            .transpose()?,
+        returned_callables: summary.returned_callables.clone(),
+        callable_values: summary
+            .returned_callables
+            .as_ref()
+            .map(|graph| crate::project::lower_callable_graph(graph, types))
+            .transpose()?
+            .unwrap_or_default(),
+        default_handler_effects: summary
+            .default_handler_effects
+            .as_ref()
+            .map(|effects| {
+                Ok::<_, String>(etas_effects::ExternalDefaultHandlerEffectsMetadata {
+                    direct_effects: external_effect_row(&effects.direct_effects, types)?,
+                    default_actions: external_effect_row(&effects.default_actions, types)?,
+                    handlers: effects
+                        .handlers
+                        .iter()
+                        .map(|handler| {
+                            Ok(etas_effects::ExternalDefaultHandlerContributionMetadata {
+                                action: lower_external_effect_metadata(&handler.action, types)?,
+                                produced: external_effect_row(&handler.produced, types)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                })
+            })
+            .transpose()?,
         package,
         import_root,
         item: summary.item.clone(),
         param_names: param_names_by_item
             .get(&summary.item)
             .cloned()
+            .unwrap_or_default(),
+        generic_params: generic_params_by_item
+            .get(&summary.item)
+            .map(|params| params.ordered.clone())
             .unwrap_or_default(),
         type_param_names: generic_params_by_item
             .get(&summary.item)
@@ -575,6 +643,7 @@ fn external_param_names_by_item(
 
 #[derive(Clone, Debug, Default)]
 struct ExternalGenericParams {
+    ordered: Vec<(String, etas_types::CallableGenericParamKind)>,
     type_params: Vec<String>,
     effect_params: Vec<String>,
 }
@@ -613,9 +682,17 @@ fn split_external_generic_params(
     for param in params {
         match param.kind {
             ProjectExternalCallableGenericParamKindInput::Type => {
+                result.ordered.push((
+                    param.name.clone(),
+                    etas_types::CallableGenericParamKind::Type,
+                ));
                 result.type_params.push(param.name.clone());
             }
             ProjectExternalCallableGenericParamKindInput::Effect => {
+                result.ordered.push((
+                    param.name.clone(),
+                    etas_types::CallableGenericParamKind::Effect,
+                ));
                 result.effect_params.push(param.name.clone());
             }
         }

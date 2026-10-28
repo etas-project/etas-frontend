@@ -5,7 +5,10 @@ use etas_utils::{
 
 use crate::{
     ProjectContext,
-    passes::artifacts::{HIR_OUTPUT, SIGNATURE_FACTS, TOP_LEVEL_LET_FACTS, TYPE_ENVIRONMENT},
+    passes::artifacts::{
+        ANALYSIS_REACHABILITY_FACTS, CALLABLE_OUTPUT_FACTS, HIR_OUTPUT, SIGNATURE_FACTS,
+        TOP_LEVEL_LET_FACTS, TYPE_ENVIRONMENT, VALIDATED_ITEM_ANNOTATIONS,
+    },
 };
 
 pub struct PrepareBodyTypeEnvironmentPass;
@@ -17,6 +20,9 @@ impl Pass<ProjectContext> for PrepareBodyTypeEnvironmentPass {
                 HIR_OUTPUT,
                 SIGNATURE_FACTS,
                 TOP_LEVEL_LET_FACTS,
+                CALLABLE_OUTPUT_FACTS,
+                ANALYSIS_REACHABILITY_FACTS,
+                VALIDATED_ITEM_ANNOTATIONS,
             ]))
             .produces(ArtifactSet::one(TYPE_ENVIRONMENT))
     }

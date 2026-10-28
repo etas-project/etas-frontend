@@ -10,6 +10,7 @@ use crate::{
 pub struct BodyPipelineState {
     pub item: HirItemId,
     pub expected_return: Option<TypeId>,
+    pub inferred_returns: Option<Vec<(TypeId, crate::ConstraintOrigin)>>,
     pub provisional: ProvisionalFacts,
     pub constraints: Vec<TypeConstraint>,
     pub spec_obligations: Vec<SpecObligation>,
@@ -18,6 +19,8 @@ pub struct BodyPipelineState {
     pub handler_resume_stack: Vec<TypeId>,
     pub handler_finish_stack: Vec<TypeId>,
     pub handler_depth: usize,
+    pub(in crate::pipeline) action_requests: Vec<super::collect::handler_request::ActionRequest>,
+    pub(in crate::pipeline) request_scope_depth: usize,
 }
 
 impl BodyPipelineState {
@@ -25,6 +28,7 @@ impl BodyPipelineState {
         Self {
             item,
             expected_return: None,
+            inferred_returns: None,
             provisional: ProvisionalFacts::default(),
             constraints: Vec::new(),
             spec_obligations: Vec::new(),
@@ -33,12 +37,16 @@ impl BodyPipelineState {
             handler_resume_stack: Vec::new(),
             handler_finish_stack: Vec::new(),
             handler_depth: 0,
+            action_requests: Vec::new(),
+            request_scope_depth: 0,
         }
     }
 }
 
 #[derive(Default)]
 pub struct ProvisionalFacts {
+    pub agent_method_calls: HashMap<HirExprId, SymbolId>,
+    pub handler_actions: HashMap<etas_hir::HirHandlerArmId, crate::CheckedHandlerActionFact>,
     pub expr_types: HashMap<HirExprId, TypeId>,
     pub expr_memory_places: HashMap<HirExprId, TypeId>,
     pub field_projections: HashMap<HirExprId, Vec<crate::FieldProjectionFact>>,

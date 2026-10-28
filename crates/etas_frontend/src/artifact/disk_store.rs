@@ -114,6 +114,14 @@ impl FrontendDiskArtifactStore {
         telemetry
     }
 
+    pub fn memory_usage(&self) -> etas_cache::MemoryCacheUsage {
+        self.memory.memory_usage()
+    }
+
+    pub fn set_memory_byte_budget(&mut self, bytes: u64) -> CacheResult<()> {
+        self.memory.set_byte_budget(bytes)
+    }
+
     pub(crate) fn meta_with_disk_access(
         &self,
         key: &ArtifactKey,
@@ -141,11 +149,11 @@ impl FrontendDiskArtifactStore {
         self.memory.get(key)
     }
 
-    pub(crate) fn put_with_disk_access<T: Clone + 'static>(
+    pub(crate) fn put_with_disk_access<T: Clone + etas_core::memory::RetainedSize + 'static>(
         &mut self,
         artifact: CachedArtifact<T>,
         access: DiskCacheAccess,
-    ) -> CacheResult<()> {
+    ) -> CacheResult<etas_cache::ArtifactPutStatus> {
         if self.access.can_write() && access.can_write() {
             return self.put(artifact);
         }
@@ -205,7 +213,10 @@ impl TypedArtifactStore for FrontendDiskArtifactStore {
         self.memory.get(key)
     }
 
-    fn put<T: Clone + 'static>(&mut self, artifact: CachedArtifact<T>) -> CacheResult<()> {
+    fn put<T: Clone + etas_core::memory::RetainedSize + 'static>(
+        &mut self,
+        artifact: CachedArtifact<T>,
+    ) -> CacheResult<etas_cache::ArtifactPutStatus> {
         if !self.access.can_write() {
             return self.memory.put(artifact);
         }
@@ -239,7 +250,7 @@ impl TypedArtifactStore for FrontendDiskArtifactStore {
                         Ok(report) => match report.status {
                             DiskPutStatus::Stored(meta) => {
                                 debug_assert!(meta.payload_hash.is_some());
-                                return Ok(());
+                                return Ok(etas_cache::ArtifactPutStatus::Stored);
                             }
                             DiskPutStatus::Skipped(_) => return self.memory.put(artifact),
                         },
@@ -261,7 +272,8 @@ impl TypedArtifactStore for FrontendDiskArtifactStore {
                 match write {
                     Ok(meta) => {
                         debug_assert!(meta.payload_hash.is_none());
-                        return self.memory.put(artifact);
+                        self.memory.put(artifact)?;
+                        return Ok(etas_cache::ArtifactPutStatus::Stored);
                     }
                     Err(CacheError::Unavailable(_)) => {
                         self.telemetry
@@ -290,8 +302,8 @@ impl FrontendDiskArtifactStore {
         let options = DiskReadOptions {
             key: physical_key,
             fingerprint: meta.fingerprint,
-            compiler_version: meta.compiler_version.clone(),
-            cache_schema_version: meta.cache_schema_version,
+            compiler_version: FRONTEND_COMPILER_VERSION.to_owned(),
+            cache_schema_version: FRONTEND_ARTIFACT_SCHEMA_VERSION,
         };
         let stored = self.disk.borrow_mut().get_bytes(&options);
         let Some(stored) = (match stored {

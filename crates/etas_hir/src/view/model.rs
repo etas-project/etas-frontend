@@ -4,13 +4,14 @@ use crate::{
     HirBlockId, HirExprId, HirHandlerArmId, HirItemId, HirModuleId, HirPatId, HirStmtId, ScopeId,
 };
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct HirTreeIndex {
     pub module_items: HashMap<HirModuleId, Vec<HirItemId>>,
     pub item_module: HashMap<HirItemId, HirModuleId>,
     pub item_body: HashMap<HirItemId, HirBodyRef>,
     pub item_bodies: HashMap<HirItemId, Vec<HirBodyRef>>,
     pub body_owner: HashMap<HirBodyRef, HirOwner>,
+    pub owned_bodies: HashMap<HirOwner, Vec<HirBodyRef>>,
     pub body_blocks: HashMap<HirBodyRef, Vec<HirBlockId>>,
     pub body_exprs: HashMap<HirBodyRef, Vec<HirExprId>>,
     pub block_owner: HashMap<HirBlockId, HirOwner>,
@@ -24,7 +25,7 @@ pub struct HirTreeIndex {
     pub scope_by_owner: HashMap<HirOwner, Vec<ScopeId>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct HirTreeIndexError {
     pub diagnostics: Vec<HirTreeIndexDiagnostic>,
 }
@@ -41,7 +42,7 @@ impl std::fmt::Display for HirTreeIndexError {
 
 impl std::error::Error for HirTreeIndexError {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirTreeIndexDiagnostic {
     MissingNode {
         kind: HirTreeNodeKind,
@@ -64,7 +65,7 @@ pub enum HirTreeIndexDiagnostic {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum HirTreeNodeKind {
     Module,
     Item,
@@ -77,7 +78,7 @@ pub enum HirTreeNodeKind {
     Scope,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub struct HirBodyRef {
     pub item: HirItemId,
     pub kind: HirBodyKind,
@@ -89,7 +90,7 @@ impl HirBodyRef {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum HirBodyKind {
     Flow,
     Tool,
@@ -113,7 +114,7 @@ pub enum HirBodyKind {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum HirOwner {
     Module(HirModuleId),
     Item(HirItemId),
@@ -125,7 +126,7 @@ pub enum HirOwner {
     Pattern(HirPatId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum HirTreeChild {
     Expr(HirExprId),
     Block(HirBlockId),

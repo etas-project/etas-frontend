@@ -1,4 +1,12 @@
 mod body;
+mod callable_values;
+mod type_rows;
+pub use callable_values::{
+    CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
+    CallableReferenceAnalysis, CallableValueOrigin, CapturedCallableAnalysis, CapturedCallableId,
+    MetadataCallableAnalysis, MetadataCallableGraphFact, MetadataCallableTypeFact,
+};
+pub use type_rows::checked_type_effect_row;
 pub mod effect_facts;
 pub mod projector;
 pub mod requirement_facts;
@@ -12,7 +20,8 @@ pub use effect_facts::{
     HandlerCompletionSummary, HandlerValueFact, HandlerValueRef, LatentEffectBodyRef,
     LatentEffectContract, LatentEffectFact, PerformedActionFact, PublicEffectContract,
     PublicEffectContractSource, PublicEffectValue, QualifiedName, RequirementFactsForContract,
-    ResumeSummary, TraceSpecClauseFact, TraceSpecFacts, TryCaptureFact,
+    ResumeSummary, StdActionCallFact, StdCallableEffectFact, TraceSpecClauseFact,
+    TraceSpecConformanceModelFact, TraceSpecFacts, TryCaptureFact,
 };
 pub use projector::EffectFactProjector;
 pub use requirement_facts::RequirementFacts;

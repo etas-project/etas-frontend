@@ -47,15 +47,33 @@ where
         self
     }
 
-    pub fn solve(mut self) -> InterproceduralAnalysisResult<S::Unit, S::Summary, S> {
+    pub fn solve(self) -> InterproceduralAnalysisResult<S::Unit, S::Summary, S> {
+        self.solve_with_checkpoint(&|| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {})
+    }
+
+    pub fn solve_controlled(
+        self,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<
+        InterproceduralAnalysisResult<S::Unit, S::Summary, S>,
+        etas_utils::PipelineInterruption,
+    > {
+        self.solve_with_checkpoint(&|| control.checkpoint())
+    }
+
+    fn solve_with_checkpoint<E>(
+        mut self,
+        checkpoint: &impl Fn() -> Result<(), E>,
+    ) -> Result<InterproceduralAnalysisResult<S::Unit, S::Summary, S>, E> {
         let solver = SummarySolver::new(self.engine);
-        let result = solver.solve(self.units, &mut self.semantics);
-        InterproceduralAnalysisResult {
+        let result = solver.solve_with_checkpoint(self.units, &mut self.semantics, checkpoint)?;
+        Ok(InterproceduralAnalysisResult {
             semantics: self.semantics,
             summaries: result.summaries,
             call_graph: result.call_graph,
             convergence: result.convergence,
             diagnostics: result.diagnostics,
-        }
+        })
     }
 }

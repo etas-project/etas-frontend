@@ -157,6 +157,14 @@ impl<'a> TraceSpecSemantics<'a> {
                 state,
             );
         };
+        if matches!(summary.support, crate::InterpreterSupport::Rejected(_)) {
+            return self.reject_trace_spec_state(
+                state.owner,
+                span,
+                "trace spec analysis requires complete expression action facts",
+                state,
+            );
+        }
         self.apply_effect_summary(&mut state, summary);
         state
     }
@@ -257,6 +265,37 @@ impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
             "trace spec analysis is missing checked facts",
             state,
         )
+    }
+
+    fn after_expr_control(
+        &mut self,
+        expr: HirExprId,
+        control: etas_hir_analysis::intraprocedural::Control<Self::Domain>,
+    ) -> etas_hir_analysis::intraprocedural::Control<Self::Domain> {
+        let control = control.map_states(|state| self.after_expr(expr, state));
+        let terminal = self
+            .facts
+            .expr_effects
+            .get(&expr)
+            .and_then(|summary| summary.exits.as_ref())
+            .is_some_and(crate::CallableExitSummary::has_only_terminal_exits)
+            || self
+                .types
+                .facts
+                .expr_types
+                .get(&expr)
+                .and_then(|ty| self.types.store.get(*ty))
+                .is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        etas_types::Type::Primitive(etas_types::PrimitiveType::Never)
+                    )
+                });
+        if terminal {
+            control.with_normal_processed(etas_hir_analysis::intraprocedural::Control::error)
+        } else {
+            control
+        }
     }
 
     fn perform(
@@ -439,10 +478,19 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
     fn call_target(
         &mut self,
         context: UnitContext<Self::Unit>,
-        _call: HirExprId,
+        call: HirExprId,
         callee: HirExprId,
         _state: &Self::Domain,
     ) -> CallTarget<Self::Unit> {
+        if let Some(method) = self
+            .types
+            .facts
+            .agent_method_calls
+            .get(&call)
+            .and_then(|symbol| self.types.facts.agent_methods.get(symbol))
+        {
+            return CallTarget::Direct(EffectUnit::Item(method.body));
+        }
         let Some(callee_expr) = self.hir.exprs.get(callee) else {
             return CallTarget::Incomplete;
         };
@@ -461,7 +509,13 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
         };
         match (&symbol_data.kind, &symbol_data.def) {
             (_, SymbolDef::Item { item }) => match self.hir.items.get(*item) {
-                Some(HirItem::Flow(_) | HirItem::Agent(_))
+                Some(HirItem::Agent(_)) => self
+                    .types
+                    .facts
+                    .agent_default_method(*item)
+                    .map(|method| CallTarget::Direct(EffectUnit::Item(method.body)))
+                    .unwrap_or(CallTarget::Incomplete),
+                Some(HirItem::Flow(_))
                 | Some(HirItem::Tool(etas_hir::HirToolDecl {
                     body: etas_hir::HirToolBody::Source(_),
                     ..
@@ -497,8 +551,20 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
                 },
             ) => self
                 .source_item_for_path(path)
-                .map(|item| CallTarget::Direct(EffectUnit::Item(item)))
-                .unwrap_or(CallTarget::Incomplete),
+                .map(|item| {
+                    if matches!(self.hir.items.get(item), Some(HirItem::Agent(_))) {
+                        self.types
+                            .facts
+                            .agent_default_method(item)
+                            .map(|method| CallTarget::Direct(EffectUnit::Item(method.body)))
+                            .unwrap_or(CallTarget::Incomplete)
+                    } else {
+                        CallTarget::Direct(EffectUnit::Item(item))
+                    }
+                })
+                // Metadata-only imports have no source unit. Their checked,
+                // specialized expression summary is consumed by external_call.
+                .unwrap_or(CallTarget::External),
             (_, SymbolDef::ImportAlias { .. }) => CallTarget::External,
             (SymbolKind::Param, _) | (_, SymbolDef::Param { .. })
                 if self.is_typed_flow_expr(callee) || self.is_typed_flow_symbol(symbol) =>
@@ -509,6 +575,20 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
             _ if context.unit.owner().is_some() => CallTarget::Dynamic,
             _ => CallTarget::External,
         }
+    }
+
+    fn method_call_target(
+        &mut self,
+        _context: UnitContext<Self::Unit>,
+        call: HirExprId,
+        _state: &Self::Domain,
+    ) -> Option<Self::Unit> {
+        self.types
+            .facts
+            .agent_method_calls
+            .get(&call)
+            .and_then(|symbol| self.types.facts.agent_methods.get(symbol))
+            .map(|method| EffectUnit::Item(method.body))
     }
 
     fn handler_arm_dependency(

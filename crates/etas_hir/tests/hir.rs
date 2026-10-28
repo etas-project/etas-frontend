@@ -1844,6 +1844,31 @@ flow main() -> string {
 }
 
 #[test]
+fn expression_flow_trailing_handler_keeps_its_original_body_block_attached() {
+    let hir = lower(
+        "effect Probe { action request() -> i32; } flow main() -> i32 = perform Probe.request(); with { Probe.request() => finish 3; }",
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    HirTreeView::try_new(&hir)
+        .expect("wrapping an expression body must not orphan its lowered block");
+    let body = hir
+        .exprs
+        .iter()
+        .find_map(|(_, expr)| match expr {
+            HirExpr::Handle { body, .. } => Some(*body),
+            _ => None,
+        })
+        .unwrap();
+    let HirExpr::Block(block) = &hir.exprs[body] else {
+        panic!("the original body block must remain the handler body");
+    };
+    assert!(matches!(
+        hir.exprs[hir.blocks[*block].final_expr.unwrap()],
+        HirExpr::Perform { .. }
+    ));
+}
+
+#[test]
 fn lowers_top_level_handler_let_with_direct_origin() {
     let hir = lower(
         r#"

@@ -12,12 +12,17 @@ pub fn output_from_result(
     result: InterproceduralAnalysisResult<EffectUnit, EffectSummary, EffectSemantics<'_>>,
 ) -> Result<EffectAnalysisOutput, EffectPipelineError> {
     let InterproceduralAnalysisResult {
-        semantics,
+        mut semantics,
         summaries: summary_store,
         convergence: solver_convergence,
         diagnostics: solver_diagnostics,
         ..
     } = result;
+    for (unit, summary) in summary_store.iter() {
+        semantics.inputs.unit_effects.insert(*unit, summary.clone());
+    }
+    semantics.materialize_captured_callable_analyses()?;
+    semantics.materialize_metadata_callable_analyses()?;
     let hir = semantics.hir;
     let interprocedural_diagnostics = solver_diagnostics
         .into_iter()
@@ -61,7 +66,6 @@ pub fn output_from_result(
     let unresolved_deferred = inputs
         .deferred_first_class_calls
         .iter()
-        .filter(|(unit, _)| !inputs.solved_deferred_units.contains(unit))
         .map(|(unit, calls)| (*unit, calls.clone()))
         .collect::<Vec<_>>();
     for (unit, calls) in unresolved_deferred {
@@ -73,6 +77,18 @@ pub fn output_from_result(
                 etas_core::EffectDiagnosticCode::IncompleteEffectFacts,
                 DiagnosticAnchor::Expr(call),
                 "first-class flow call requires a checked latent effect fact",
+            )?);
+        }
+    }
+    for (unit, calls) in &inputs.unresolved_parameter_calls {
+        inputs.unit_effects.entry(*unit).or_default().support =
+            InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
+        for call in calls {
+            diagnostics.push(materialize_effect_diagnostic(
+                hir,
+                etas_core::EffectDiagnosticCode::IncompleteEffectFacts,
+                DiagnosticAnchor::Expr(*call),
+                "first-class flow call requires a checked latent effect fact; an escaping row does not describe requested actions",
             )?);
         }
     }

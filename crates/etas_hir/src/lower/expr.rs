@@ -45,6 +45,9 @@ impl LowerCtx {
                 },
             }),
             Expr::Path(path) => HirExpr::Path(self.resolve_path(path, scope, true)),
+            Expr::Reflect(reflection) => {
+                HirExpr::Reflect(Box::new(self.lower_reflection(reflection, scope, item_id)))
+            }
             Expr::Record(record) => HirExpr::Record(HirRecordExpr {
                 path: record
                     .path
@@ -178,6 +181,31 @@ impl LowerCtx {
                         .map(|arg| self.lower_arg(arg, scope, item_id))
                         .collect(),
                     span: perform.span,
+                }
+            }
+            Expr::Infer(infer) => {
+                if let Some(action) = self.resolve_compiler_action(
+                    etas_std::CompilerActionRole::AgentInference,
+                    infer.span,
+                ) {
+                    HirExpr::Infer {
+                        action,
+                        generic_args: infer
+                            .generic_args
+                            .iter()
+                            .map(|arg| self.lower_generic_arg(arg, scope, item_id))
+                            .collect(),
+                        args: infer
+                            .args
+                            .iter()
+                            .map(|arg| self.lower_arg(arg, scope, item_id))
+                            .collect(),
+                        span: infer.span,
+                    }
+                } else {
+                    self.diagnostics
+                        .unresolved_effect_action("agent inference compiler action", infer.span);
+                    HirExpr::Error { span: infer.span }
                 }
             }
             Expr::Handle(_) => {

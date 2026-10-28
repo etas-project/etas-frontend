@@ -24,21 +24,25 @@ use crate::{
     },
 };
 
-pub fn collect_expr(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_expr<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     // A support constraint checks an inferred value; it is not a value type hint.
     let expected =
         expected.filter(|ty| !ctx.ctx.known_std_types().support_constraints.contains(ty));
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
-        return ty;
+        return Ok(ty);
     }
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
+        HirExpr::Reflect(reflection) => {
+            super::reflection::collect_reflection(ctx, expr, &reflection)
+        }
         HirExpr::Path(path) => {
-            let ty = collect_path(ctx, expr, &path);
+            let ty = collect_path(ctx, expr, &path, expected);
             record_path_memory_place(ctx, expr, &path, ty);
             ty
         }
@@ -46,10 +50,10 @@ pub fn collect_expr(
             let elems = elems
                 .into_iter()
                 .map(|elem| collect_expr(ctx, elem, None))
-                .collect();
+                .collect::<Result<Vec<_>, E>>()?;
             ctx.ctx.interner.intern(Type::Tuple(elems))
         }
-        HirExpr::Record(record) => collect_record(ctx, &record, expected),
+        HirExpr::Record(record) => collect_record(ctx, &record, expected)?,
         HirExpr::EmptyRecordOrMap { span } => expected
             .map(|ty| {
                 if matches!(ctx.ctx.interner.store().get(ty), Some(Type::Map { .. })) {
@@ -70,10 +74,10 @@ pub fn collect_expr(
                 ctx.primitive(PrimitiveType::Never)
             }),
         HirExpr::Array { elems, span } => {
-            collect_sequence(ctx, elems, span, SequenceKind::Array, expected)
+            collect_sequence(ctx, elems, span, SequenceKind::Array, expected)?
         }
         HirExpr::List { elems, span } => {
-            collect_sequence(ctx, elems, span, SequenceKind::List, expected)
+            collect_sequence(ctx, elems, span, SequenceKind::List, expected)?
         }
         HirExpr::EmptySequence { span } => expected
             .filter(|ty| {
@@ -100,19 +104,19 @@ pub fn collect_expr(
             let (key, value) = match (expected_entries, entries.next()) {
                 (Some(types), first) => {
                     if let Some(first) = first {
-                        collect_map_entry(ctx, &first, types.0, types.1);
+                        collect_map_entry(ctx, &first, types.0, types.1)?;
                     }
                     types
                 }
                 (None, Some(first)) => {
-                    let key = collect_expr(ctx, first.key, None);
-                    let value = collect_expr(ctx, first.value, None);
+                    let key = collect_expr(ctx, first.key, None)?;
+                    let value = collect_expr(ctx, first.value, None)?;
                     (key, value)
                 }
                 (None, None) => (ctx.fresh_type_var(), ctx.fresh_type_var()),
             };
             for entry in entries {
-                collect_map_entry(ctx, &entry, key, value);
+                collect_map_entry(ctx, &entry, key, value)?;
             }
             ctx.ctx.interner.intern(Type::Map { key, value })
         }
@@ -142,7 +146,7 @@ pub fn collect_expr(
                 let inner = match (expected_inner, elems.next()) {
                     (Some(inner), first) => {
                         if let Some(first) = first {
-                            let actual = collect_expr(ctx, first, Some(inner));
+                            let actual = collect_expr(ctx, first, Some(inner))?;
                             ctx.emit(TypeConstraint::Assignable {
                                 from: actual,
                                 to: inner,
@@ -152,7 +156,7 @@ pub fn collect_expr(
                         }
                         inner
                     }
-                    (None, Some(first)) => collect_expr(ctx, first, None),
+                    (None, Some(first)) => collect_expr(ctx, first, None)?,
                     (None, None) => {
                         ctx.validate(crate::ValidationRequest::Diagnostic {
                             code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
@@ -163,7 +167,7 @@ pub fn collect_expr(
                     }
                 };
                 for elem in elems {
-                    let actual = collect_expr(ctx, elem, Some(inner));
+                    let actual = collect_expr(ctx, elem, Some(inner))?;
                     ctx.emit(TypeConstraint::Assignable {
                         from: actual,
                         to: inner,
@@ -181,8 +185,8 @@ pub fn collect_expr(
                 Some(Type::Range { index }) => Some(*index),
                 _ => None,
             });
-            let start_ty = collect_expr(ctx, start, expected_index);
-            let end_ty = collect_expr(ctx, end, Some(start_ty));
+            let start_ty = collect_expr(ctx, start, expected_index)?;
+            let end_ty = collect_expr(ctx, end, Some(start_ty))?;
             let index_spec = ctx.ctx.std_registry.lookup_prelude("Index")
                 .filter(|symbol| matches!(&symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec))
                 .map(|symbol| crate::CheckedSpecRef::Std(symbol.qualified_path.clone()));
@@ -210,18 +214,18 @@ pub fn collect_expr(
             });
             ctx.ctx.interner.intern(Type::Range { index: start_ty })
         }
-        HirExpr::Block(block) => collect_block(ctx, block, expected),
+        HirExpr::Block(block) => collect_block(ctx, block, expected)?,
         HirExpr::Call {
             callee,
             generic_args,
             args,
             span,
-        } => collect_call(ctx, expr, callee, &generic_args, &args, span, expected),
+        } => collect_call(ctx, expr, callee, &generic_args, &args, span, expected)?,
         HirExpr::Field { base, field, span } => {
             if let Some(ty) = std_member_value_type(ctx, base, &field) {
                 ty
             } else {
-                let base_ty = collect_expr(ctx, base, None);
+                let base_ty = collect_expr(ctx, base, None)?;
                 let hint = super::field::declared_field_hint(ctx, base_ty, &field, span);
                 let output = expected.or(hint).unwrap_or_else(|| ctx.fresh_type_var());
                 record_field_memory_place(ctx, expr, base, &field);
@@ -261,7 +265,7 @@ pub fn collect_expr(
             }
         }
         HirExpr::Index { base, index, span } => {
-            collect_index(ctx, expr, base, index, span, expected)
+            collect_index(ctx, expr, base, index, span, expected)?
         }
         HirExpr::Slice {
             base,
@@ -269,7 +273,7 @@ pub fn collect_expr(
             end,
             span,
             ..
-        } => collect_slice(ctx, expr, base, start, end, span, expected),
+        } => collect_slice(ctx, expr, base, start, end, span, expected)?,
         HirExpr::Try {
             expr: operand,
             span,
@@ -280,8 +284,9 @@ pub fn collect_expr(
                     _ => None,
                 })
                 .unwrap_or_else(|| (ctx.fresh_type_var(), ctx.fresh_type_var()));
-            let operand_ty = collect_expr(ctx, operand, Some(output));
+            let operand_ty = collect_expr(ctx, operand, Some(output))?;
             ctx.emit(TypeConstraint::TryOperand {
+                source: operand,
                 operand: operand_ty,
                 output,
                 error,
@@ -309,7 +314,7 @@ pub fn collect_expr(
             span,
         } => {
             let bool_ty = ctx.primitive(PrimitiveType::Bool);
-            let cond_ty = collect_expr(ctx, cond, Some(bool_ty));
+            let cond_ty = collect_expr(ctx, cond, Some(bool_ty))?;
             ctx.emit(TypeConstraint::Assignable {
                 from: cond_ty,
                 to: bool_ty,
@@ -317,10 +322,10 @@ pub fn collect_expr(
                 reason: AssignabilityReason::Other,
             });
             let branch_expected = expected;
-            let then_ty = collect_block(ctx, then_block, branch_expected);
+            let then_ty = collect_block(ctx, then_block, branch_expected)?;
             let else_ty = match else_branch {
-                Some(HirElseBranch::If(expr)) => collect_expr(ctx, expr, branch_expected),
-                Some(HirElseBranch::Block(block)) => collect_block(ctx, block, branch_expected),
+                Some(HirElseBranch::If(expr)) => collect_expr(ctx, expr, branch_expected)?,
+                Some(HirElseBranch::Block(block)) => collect_block(ctx, block, branch_expected)?,
                 None => ctx.primitive(PrimitiveType::Unit),
             };
             let result = branch_result_type(ctx, expected, [then_ty, else_ty]);
@@ -328,7 +333,7 @@ pub fn collect_expr(
             emit_branch_assignability(ctx, else_ty, result, span);
             result
         }
-        HirExpr::Binary { op, lhs, rhs, span } => collect_binary(ctx, op, lhs, rhs, span),
+        HirExpr::Binary { op, lhs, rhs, span } => collect_binary(ctx, op, lhs, rhs, span)?,
         HirExpr::Unary { op, expr, span } => {
             let operand_expected = match op {
                 etas_hir::HirUnaryOp::Not => Some(ctx.primitive(PrimitiveType::Bool)),
@@ -337,13 +342,21 @@ pub fn collect_expr(
             let operand = if op == etas_hir::HirUnaryOp::Neg {
                 match ctx.ctx.hir.exprs[expr].clone() {
                     HirExpr::Literal(literal) => {
-                        collect_negated_numeric_literal(ctx, expr, &literal, operand_expected, span)
-                            .unwrap_or_else(|| collect_expr(ctx, expr, operand_expected))
+                        match collect_negated_numeric_literal(
+                            ctx,
+                            expr,
+                            &literal,
+                            operand_expected,
+                            span,
+                        ) {
+                            Some(ty) => ty,
+                            None => collect_expr(ctx, expr, operand_expected)?,
+                        }
                     }
-                    _ => collect_expr(ctx, expr, operand_expected),
+                    _ => collect_expr(ctx, expr, operand_expected)?,
                 }
             } else {
-                collect_expr(ctx, expr, operand_expected)
+                collect_expr(ctx, expr, operand_expected)?
             };
             let output = match op {
                 etas_hir::HirUnaryOp::Not => ctx.primitive(PrimitiveType::Bool),
@@ -357,20 +370,34 @@ pub fn collect_expr(
             });
             output
         }
-        HirExpr::Handler { handlers, span } => collect_handler(ctx, &handlers, span, expected),
+        HirExpr::Handler { handlers, span } => collect_handler(ctx, &handlers, span, expected)?,
         HirExpr::Perform {
             action,
             generic_args,
             args,
             span,
-        } => collect_perform(ctx, expr, &action, &generic_args, &args, span, expected),
+        } => collect_perform(ctx, expr, &action, &generic_args, &args, span, expected)?,
+        HirExpr::Infer {
+            action,
+            generic_args,
+            args,
+            span,
+        } => super::inference::collect_inference(
+            ctx,
+            expr,
+            &action,
+            &generic_args,
+            &args,
+            span,
+            expected,
+        )?,
         HirExpr::MethodCall {
             receiver,
             method,
             generic_args,
             args,
             ..
-        } => collect_method_call(ctx, expr, receiver, &method, &generic_args, &args, expected),
+        } => collect_method_call(ctx, expr, receiver, &method, &generic_args, &args, expected)?,
         HirExpr::SpecMethodCall {
             receiver,
             spec_path,
@@ -389,44 +416,31 @@ pub fn collect_expr(
                 span,
                 expected,
             },
-        ),
+        )?,
         HirExpr::Handle {
             body,
             handler,
             span,
-        } => {
-            let handler_ty = collect_expr(ctx, handler, None);
-            if !matches!(
-                ctx.ctx.interner.store().get(handler_ty),
-                Some(Type::Handler(_))
-            ) {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
-                    span,
-                    message: "handle expects a handler value".to_owned(),
-                });
-            }
-            collect_expr(ctx, body, expected)
-        }
+        } => super::handler_request::collect_handle(ctx, body, handler, span, expected)?,
         HirExpr::StageCompose { stages, span } => {
-            collect_stage_composition(ctx, stages, span, expected)
+            collect_stage_composition(ctx, stages, span, expected)?
         }
         HirExpr::Pipeline {
             input,
             stages,
             span,
-        } => collect_pipeline(ctx, input, stages, span, expected),
+        } => collect_pipeline(ctx, input, stages, span, expected)?,
         HirExpr::Lambda {
             params, body, span, ..
-        } => collect_lambda(ctx, params, body, span, expected),
+        } => collect_lambda(ctx, params, body, span, expected)?,
         HirExpr::ListCons { head, tail, span } => {
-            collect_list_cons(ctx, head, tail, span, expected)
+            collect_list_cons(ctx, head, tail, span, expected)?
         }
         HirExpr::Match {
             scrutinee,
             arms,
             span,
-        } => collect_match(ctx, scrutinee, arms, span, expected),
+        } => collect_match(ctx, scrutinee, arms, span, expected)?,
         HirExpr::Error { span } => {
             ctx.validate(crate::ValidationRequest::Diagnostic {
                 code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
@@ -436,42 +450,45 @@ pub fn collect_expr(
             ctx.primitive(PrimitiveType::Never)
         }
     };
-    ctx.record_expr_type(expr, ty)
+    Ok(ctx.record_expr_type(expr, ty))
 }
 
-pub fn collect_if_statement(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_if_statement<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     cond: etas_hir::HirExprId,
     then_block: etas_hir::HirBlockId,
     else_branch: Option<HirElseBranch>,
     span: etas_core::Span,
-) {
+) -> Result<(), E> {
+    ctx.checkpoint()?;
     let bool_ty = ctx.primitive(PrimitiveType::Bool);
-    let cond_ty = collect_expr(ctx, cond, Some(bool_ty));
+    let cond_ty = collect_expr(ctx, cond, Some(bool_ty))?;
     ctx.emit(TypeConstraint::Assignable {
         from: cond_ty,
         to: bool_ty,
         origin: ConstraintOrigin { span },
         reason: AssignabilityReason::Other,
     });
-    collect_block(ctx, then_block, None);
+    collect_block(ctx, then_block, None)?;
     match else_branch {
         Some(HirElseBranch::If(expr)) => {
-            collect_expr(ctx, expr, None);
+            collect_expr(ctx, expr, None)?;
         }
         Some(HirElseBranch::Block(block)) => {
-            collect_block(ctx, block, None);
+            collect_block(ctx, block, None)?;
         }
         None => {}
     }
+    Ok(())
 }
 
-pub fn collect_match_statement(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn collect_match_statement<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     scrutinee: etas_hir::HirExprId,
     arms: Vec<etas_hir::HirMatchArm>,
-) {
-    let scrutinee_ty = collect_expr(ctx, scrutinee, None);
+) -> Result<(), E> {
+    ctx.checkpoint()?;
+    let scrutinee_ty = collect_expr(ctx, scrutinee, None)?;
     ctx.validate(crate::ValidationRequest::MatchCoverage {
         scrutinee: scrutinee_ty,
         arms: arms.iter().map(|arm| arm.pat).collect(),
@@ -479,26 +496,30 @@ pub fn collect_match_statement(
     });
     let mut arm_types = Vec::new();
     for arm in arms {
-        crate::pipeline::body::collect::pattern::collect_pattern(ctx, arm.pat, scrutinee_ty);
+        ctx.checkpoint()?;
+        crate::pipeline::body::collect::pattern::collect_pattern(ctx, arm.pat, scrutinee_ty)?;
         let arm_ty = match arm.body {
             etas_hir::HirMatchArmBody::Expr(expr) => collect_expr(ctx, expr, None),
             etas_hir::HirMatchArmBody::Block(block) => collect_block(ctx, block, None),
-        };
+        }?;
         arm_types.push((arm_ty, arm.span));
     }
     let result = branch_result_type(ctx, None, arm_types.iter().map(|(ty, _)| *ty));
     for (arm_ty, arm_span) in arm_types {
+        ctx.checkpoint()?;
         emit_branch_assignability(ctx, arm_ty, result, arm_span);
     }
+    Ok(())
 }
 
-fn collect_list_cons(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_list_cons<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     head: etas_hir::HirExprId,
     tail: etas_hir::HirExprId,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let inner = expected
         .and_then(|ty| match ctx.ctx.interner.store().get(ty) {
             Some(Type::List(inner)) => Some(*inner),
@@ -506,8 +527,8 @@ fn collect_list_cons(
         })
         .unwrap_or_else(|| ctx.fresh_type_var());
     let list = ctx.ctx.interner.intern(Type::List(inner));
-    let head_ty = collect_expr(ctx, head, Some(inner));
-    let tail_ty = collect_expr(ctx, tail, Some(list));
+    let head_ty = collect_expr(ctx, head, Some(inner))?;
+    let tail_ty = collect_expr(ctx, tail, Some(list))?;
     ctx.emit(TypeConstraint::Assignable {
         from: head_ty,
         to: inner,
@@ -520,17 +541,18 @@ fn collect_list_cons(
         origin: ConstraintOrigin { span },
         reason: AssignabilityReason::Other,
     });
-    list
+    Ok(list)
 }
 
-fn collect_match(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_match<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     scrutinee: etas_hir::HirExprId,
     arms: Vec<etas_hir::HirMatchArm>,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
-    let scrutinee_ty = collect_expr(ctx, scrutinee, None);
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    let scrutinee_ty = collect_expr(ctx, scrutinee, None)?;
     ctx.validate(crate::ValidationRequest::MatchCoverage {
         scrutinee: scrutinee_ty,
         arms: arms.iter().map(|arm| arm.pat).collect(),
@@ -539,15 +561,17 @@ fn collect_match(
     let branch_expected = expected;
     let mut arm_types = Vec::new();
     for arm in arms {
-        crate::pipeline::body::collect::pattern::collect_pattern(ctx, arm.pat, scrutinee_ty);
+        ctx.checkpoint()?;
+        crate::pipeline::body::collect::pattern::collect_pattern(ctx, arm.pat, scrutinee_ty)?;
         let arm_ty = match arm.body {
             etas_hir::HirMatchArmBody::Expr(expr) => collect_expr(ctx, expr, branch_expected),
             etas_hir::HirMatchArmBody::Block(block) => collect_block(ctx, block, branch_expected),
-        };
+        }?;
         arm_types.push((arm_ty, arm.span));
     }
     let result = branch_result_type(ctx, expected, arm_types.iter().map(|(ty, _)| *ty));
     for (arm_ty, arm_span) in arm_types {
+        ctx.checkpoint()?;
         emit_branch_assignability(ctx, arm_ty, result, arm_span);
     }
     if ctx.ctx.hir.exprs[scrutinee]
@@ -555,13 +579,13 @@ fn collect_match(
         .source
         != span.source
     {
-        return result;
+        return Ok(result);
     }
-    result
+    Ok(result)
 }
 
-fn branch_result_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn branch_result_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expected: Option<TypeId>,
     branch_types: impl IntoIterator<Item = TypeId>,
 ) -> TypeId {
@@ -574,8 +598,8 @@ fn branch_result_type(
         .unwrap_or_else(|| ctx.primitive(PrimitiveType::Never))
 }
 
-fn emit_branch_assignability(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn emit_branch_assignability<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     from: TypeId,
     to: TypeId,
     span: etas_core::Span,
@@ -588,19 +612,20 @@ fn emit_branch_assignability(
     });
 }
 
-fn is_never_type(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -> bool {
+fn is_never_type<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: TypeId) -> bool {
     matches!(
         ctx.ctx.interner.store().get(ty),
         Some(Type::Primitive(PrimitiveType::Never))
     )
 }
 
-fn collect_stage_composition(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_stage_composition<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     stages: Vec<etas_hir::HirStage>,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let expected_flow = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
         Some(Type::Function(flow)) => Some(flow.clone()),
         _ => None,
@@ -611,10 +636,11 @@ fn collect_stage_composition(
         .unwrap_or_else(|| ctx.fresh_type_var());
     let mut current = input;
     for stage in stages {
+        ctx.checkpoint()?;
         for limit in stage.limits {
-            collect_expr(ctx, limit, None);
+            collect_expr(ctx, limit, None)?;
         }
-        let stage_ty = collect_expr(ctx, stage.expr, None);
+        let stage_ty = collect_expr(ctx, stage.expr, None)?;
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
             call: None,
@@ -637,26 +663,28 @@ fn collect_stage_composition(
             reason: AssignabilityReason::Other,
         });
     }
-    ctx.ctx.interner.intern(Type::Function(FlowType {
+    Ok(ctx.ctx.interner.intern(Type::Function(FlowType {
         input: vec![input],
         output,
         effects: None,
-    }))
+    })))
 }
 
-fn collect_pipeline(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_pipeline<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     input: etas_hir::HirExprId,
     stages: Vec<etas_hir::HirStage>,
     span: etas_core::Span,
     expected: Option<TypeId>,
-) -> TypeId {
-    let mut current = collect_expr(ctx, input, None);
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    let mut current = collect_expr(ctx, input, None)?;
     for stage in stages {
+        ctx.checkpoint()?;
         for limit in stage.limits {
-            collect_expr(ctx, limit, None);
+            collect_expr(ctx, limit, None)?;
         }
-        let stage_ty = collect_expr(ctx, stage.expr, None);
+        let stage_ty = collect_expr(ctx, stage.expr, None)?;
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
             call: None,
@@ -677,23 +705,20 @@ fn collect_pipeline(
             origin: ConstraintOrigin { span },
             reason: AssignabilityReason::Other,
         });
-        expected
+        Ok(expected)
     } else {
-        current
+        Ok(current)
     }
 }
 
-fn collect_path(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_path<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     path: &etas_hir::ResolvedPath,
+    expected: Option<TypeId>,
 ) -> TypeId {
-    if let Some(variant) = super::enum_variant::declaration(ctx, path) {
-        if variant.fields.is_empty() && variant.field_names.is_none() {
-            if let Some(signature) = super::enum_variant::signature(ctx, path) {
-                return signature.output;
-            }
-        }
+    if let Some(output) = super::enum_variant::collect_nullary(ctx, path, expected) {
+        return output;
     }
     if let ResolveResult::Resolved(symbol) = path.resolution
         && let Some(etas_hir::SymbolDef::ImportAlias { path, .. }) =
@@ -703,7 +728,14 @@ fn collect_path(
         && let Some(SymbolTypeFact::Flow { signature }) = ctx.ctx.symbol_type(symbol)
         && signature.params.is_empty()
     {
-        return instantiate_callable_signature(ctx, signature.clone()).output;
+        return instantiate_callable_signature(ctx, signature.clone())
+            .map(|signature| signature.output)
+            .unwrap_or_else(|| ctx.primitive(PrimitiveType::Never));
+    }
+    if let ResolveResult::Resolved(symbol) = path.resolution
+        && let Some(ty) = super::callable_reference::collect(ctx, expr, symbol, path.span, expected)
+    {
+        return ty;
     }
     match path.resolution {
         ResolveResult::Resolved(symbol) => symbol_value_type(ctx, symbol).unwrap_or_else(|| {
@@ -788,8 +820,8 @@ fn collect_path(
     }
 }
 
-fn record_path_memory_place(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn record_path_memory_place<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     path: &etas_hir::ResolvedPath,
     ty: TypeId,
@@ -832,8 +864,8 @@ fn record_path_memory_place(
     }
 }
 
-fn canonical_symbol_path(
-    ctx: &BodyCollectContext<'_, '_>,
+fn canonical_symbol_path<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     symbol: etas_hir::SymbolId,
 ) -> Option<Vec<String>> {
     let symbol = ctx.ctx.hir.symbols.get(symbol)?;
@@ -856,8 +888,8 @@ fn canonical_symbol_path(
     Some(segments)
 }
 
-fn record_field_memory_place(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn record_field_memory_place<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: etas_hir::HirExprId,
     base: etas_hir::HirExprId,
     field: &str,
@@ -885,7 +917,7 @@ fn record_field_memory_place(
     ctx.record_expr_memory_place(expr, place);
 }
 
-fn is_memory_place_root_type(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -> bool {
+fn is_memory_place_root_type<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: TypeId) -> bool {
     matches!(
         ctx.ctx.interner.store().get(ty),
         Some(Type::MemoryRegion(_))
@@ -895,8 +927,8 @@ fn is_memory_place_root_type(ctx: &BodyCollectContext<'_, '_>, ty: TypeId) -> bo
     )
 }
 
-pub fn symbol_value_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn symbol_value_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     symbol: etas_hir::SymbolId,
 ) -> Option<TypeId> {
     let fact = ctx
@@ -909,33 +941,32 @@ pub fn symbol_value_type(
     value_type_from_fact(ctx, fact)
 }
 
-pub fn value_type_from_fact(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn value_type_from_fact<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     fact: SymbolTypeFact,
 ) -> Option<TypeId> {
     value_type_from_fact_with_instantiation(ctx, fact, true)
 }
 
-pub fn raw_value_type_from_fact(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn raw_value_type_from_fact<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     fact: SymbolTypeFact,
 ) -> Option<TypeId> {
     value_type_from_fact_with_instantiation(ctx, fact, false)
 }
 
-pub fn callable_candidate_from_fact(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub fn callable_candidate_from_fact<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     fact: SymbolTypeFact,
     instantiate_schematics: bool,
 ) -> Option<crate::CallableCandidate> {
     let signature = match fact {
-        SymbolTypeFact::Flow { signature }
-        | SymbolTypeFact::Agent { signature }
-        | SymbolTypeFact::Tool { signature } => signature,
+        SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => signature,
+        SymbolTypeFact::Agent { signature } => signature.callable()?.clone(),
         _ => return None,
     };
     let signature = if instantiate_schematics {
-        instantiate_callable_signature(ctx, signature)
+        instantiate_callable_signature(ctx, signature)?
     } else {
         signature
     };
@@ -951,55 +982,10 @@ pub fn callable_candidate_from_fact(
     })
 }
 
-pub(super) fn instantiate_callable_signature(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    signature: crate::CallableSignature,
-) -> crate::CallableSignature {
-    let mut schematic_vars = std::collections::HashMap::new();
-    for param in &signature.generic_params {
-        schematic_vars
-            .entry(param.name.clone())
-            .or_insert_with(|| ctx.fresh_type_var());
-    }
-    let params = signature
-        .params
-        .into_iter()
-        .map(|ty| instantiate_callable_schematic_type(ctx, ty, &mut schematic_vars))
-        .collect();
-    let output = instantiate_callable_schematic_type(ctx, signature.output, &mut schematic_vars);
-    let generic_params = signature
-        .generic_params
-        .into_iter()
-        .map(|param| crate::CallableGenericParam {
-            kind: param.kind,
-            name: param.name,
-            subject: instantiate_callable_schematic_type(ctx, param.subject, &mut schematic_vars),
-            bounds: param
-                .bounds
-                .into_iter()
-                .map(|bound| crate::CheckedSpecBound {
-                    spec: bound.spec,
-                    args: bound
-                        .args
-                        .into_iter()
-                        .map(|arg| {
-                            instantiate_callable_schematic_type(ctx, arg, &mut schematic_vars)
-                        })
-                        .collect(),
-                })
-                .collect(),
-        })
-        .collect();
-    crate::CallableSignature {
-        params,
-        output,
-        generic_params,
-        ..signature
-    }
-}
+pub(super) use super::callable_instantiation::instantiate_signature as instantiate_callable_signature;
 
-fn value_type_from_fact_with_instantiation(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn value_type_from_fact_with_instantiation<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     fact: SymbolTypeFact,
     instantiate_schematics: bool,
 ) -> Option<TypeId> {
@@ -1009,148 +995,16 @@ fn value_type_from_fact_with_instantiation(
         | SymbolTypeFact::Field { ty }
         | SymbolTypeFact::Value { ty }
         | SymbolTypeFact::TopLevelLet { ty, .. } => Some(ty),
-        SymbolTypeFact::Flow { signature }
-        | SymbolTypeFact::Agent { signature }
-        | SymbolTypeFact::Tool { signature } => callable_candidate_from_fact(
-            ctx,
-            SymbolTypeFact::Flow { signature },
-            instantiate_schematics,
-        )
-        .map(|candidate| candidate.ty),
+        SymbolTypeFact::Agent { signature } => Some(signature.component),
+        SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => {
+            callable_candidate_from_fact(
+                ctx,
+                SymbolTypeFact::Flow { signature },
+                instantiate_schematics,
+            )
+            .map(|candidate| candidate.ty)
+        }
         _ => None,
-    }
-}
-
-fn instantiate_callable_schematic_type(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    ty: TypeId,
-    schematic_vars: &mut std::collections::HashMap<String, TypeId>,
-) -> TypeId {
-    let Some(ty_data) = ctx.ctx.interner.store().get(ty).cloned() else {
-        return ty;
-    };
-    match ty_data {
-        Type::Named(name) => schematic_vars.get(&name.name).copied().unwrap_or(ty),
-        Type::Array(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Array(inner))
-        }
-        Type::List(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::List(inner))
-        }
-        Type::Set(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Set(inner))
-        }
-        Type::Slice(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Slice(inner))
-        }
-        Type::Option(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Option(inner))
-        }
-        Type::Result { ok, err } => {
-            let ok = instantiate_callable_schematic_type(ctx, ok, schematic_vars);
-            let err = instantiate_callable_schematic_type(ctx, err, schematic_vars);
-            ctx.ctx.interner.intern(Type::Result { ok, err })
-        }
-        Type::Map { key, value } => {
-            let key = instantiate_callable_schematic_type(ctx, key, schematic_vars);
-            let value = instantiate_callable_schematic_type(ctx, value, schematic_vars);
-            ctx.ctx.interner.intern(Type::Map { key, value })
-        }
-        Type::Range { index } => {
-            let index = instantiate_callable_schematic_type(ctx, index, schematic_vars);
-            ctx.ctx.interner.intern(Type::Range { index })
-        }
-        Type::Tuple(elements) => {
-            let elements = elements
-                .into_iter()
-                .map(|ty| instantiate_callable_schematic_type(ctx, ty, schematic_vars))
-                .collect();
-            ctx.ctx.interner.intern(Type::Tuple(elements))
-        }
-        Type::Record(record) => {
-            let fields = record
-                .fields
-                .into_iter()
-                .map(|field| crate::FieldType {
-                    name: field.name,
-                    ty: instantiate_callable_schematic_type(ctx, field.ty, schematic_vars),
-                })
-                .collect();
-            ctx.ctx
-                .interner
-                .intern(Type::Record(crate::RecordType { fields }))
-        }
-        Type::Trust { wrapper, inner } => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Trust { wrapper, inner })
-        }
-        Type::Schema(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Schema(inner))
-        }
-        Type::Message(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::Message(inner))
-        }
-        Type::MemorySelection(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::MemorySelection(inner))
-        }
-        Type::Store { key, value } => {
-            let key = instantiate_callable_schematic_type(ctx, key, schematic_vars);
-            let value = instantiate_callable_schematic_type(ctx, value, schematic_vars);
-            ctx.ctx.interner.intern(Type::Store { key, value })
-        }
-        Type::MemoryRegion(inner) => {
-            let inner = instantiate_callable_schematic_type(ctx, inner, schematic_vars);
-            ctx.ctx.interner.intern(Type::MemoryRegion(inner))
-        }
-        Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema }) => {
-            let schema = instantiate_callable_schematic_type(ctx, schema, schematic_vars);
-            ctx.ctx.interner.intern(Type::ResourceHandle(
-                crate::ResourceHandleType::MemoryRegion { schema },
-            ))
-        }
-        Type::ResourceHandle(crate::ResourceHandleType::ExternalTool { signature }) => {
-            let signature = instantiate_callable_schematic_type(ctx, signature, schematic_vars);
-            ctx.ctx.interner.intern(Type::ResourceHandle(
-                crate::ResourceHandleType::ExternalTool { signature },
-            ))
-        }
-        Type::ResourceHandle(crate::ResourceHandleType::Other { name, args }) => {
-            let args = args
-                .into_iter()
-                .map(|ty| instantiate_callable_schematic_type(ctx, ty, schematic_vars))
-                .collect();
-            ctx.ctx
-                .interner
-                .intern(Type::ResourceHandle(crate::ResourceHandleType::Other {
-                    name,
-                    args,
-                }))
-        }
-        Type::Applied { constructor, args } => {
-            let args = args
-                .into_iter()
-                .map(|ty| instantiate_callable_schematic_type(ctx, ty, schematic_vars))
-                .collect();
-            ctx.ctx.interner.intern(Type::Applied { constructor, args })
-        }
-        Type::Function(mut flow) => {
-            flow.input = flow
-                .input
-                .into_iter()
-                .map(|ty| instantiate_callable_schematic_type(ctx, ty, schematic_vars))
-                .collect();
-            flow.output = instantiate_callable_schematic_type(ctx, flow.output, schematic_vars);
-            ctx.ctx.interner.intern(Type::Function(flow))
-        }
-        _ => ty,
     }
 }
 
@@ -1160,13 +1014,14 @@ enum SequenceKind {
     List,
 }
 
-fn collect_sequence(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_sequence<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     elems: Vec<etas_hir::HirExprId>,
     span: etas_core::Span,
     kind: SequenceKind,
     expected: Option<TypeId>,
-) -> TypeId {
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
     let expected_inner = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
         Some(Type::Array(inner)) | Some(Type::List(inner)) => Some(*inner),
         _ => None,
@@ -1175,7 +1030,7 @@ fn collect_sequence(
     let inner = match (expected_inner, elems.next()) {
         (Some(inner), first) => {
             if let Some(first) = first {
-                let actual = collect_expr(ctx, first, Some(inner));
+                let actual = collect_expr(ctx, first, Some(inner))?;
                 ctx.emit(TypeConstraint::Assignable {
                     from: actual,
                     to: inner,
@@ -1185,7 +1040,7 @@ fn collect_sequence(
             }
             inner
         }
-        (None, Some(first)) => collect_expr(ctx, first, None),
+        (None, Some(first)) => collect_expr(ctx, first, None)?,
         (None, None) => {
             ctx.validate(crate::ValidationRequest::Diagnostic {
                 code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
@@ -1196,7 +1051,7 @@ fn collect_sequence(
         }
     };
     for elem in elems {
-        let actual = collect_expr(ctx, elem, Some(inner));
+        let actual = collect_expr(ctx, elem, Some(inner))?;
         ctx.emit(TypeConstraint::Assignable {
             from: actual,
             to: inner,
@@ -1204,20 +1059,21 @@ fn collect_sequence(
             reason: AssignabilityReason::Other,
         });
     }
-    match kind {
+    Ok(match kind {
         SequenceKind::Array => ctx.ctx.interner.intern(Type::Array(inner)),
         SequenceKind::List => ctx.ctx.interner.intern(Type::List(inner)),
-    }
+    })
 }
 
-fn collect_map_entry(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_map_entry<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     entry: &etas_hir::HirMapEntry,
     key: TypeId,
     value: TypeId,
-) {
-    let actual_key = collect_expr(ctx, entry.key, Some(key));
-    let actual_value = collect_expr(ctx, entry.value, Some(value));
+) -> Result<(), E> {
+    ctx.checkpoint()?;
+    let actual_key = collect_expr(ctx, entry.key, Some(key))?;
+    let actual_value = collect_expr(ctx, entry.value, Some(value))?;
     ctx.emit(TypeConstraint::Assignable {
         from: actual_key,
         to: key,
@@ -1230,24 +1086,26 @@ fn collect_map_entry(
         origin: ConstraintOrigin { span: entry.span },
         reason: AssignabilityReason::Other,
     });
+    Ok(())
 }
 
-fn collect_binary(
-    ctx: &mut BodyCollectContext<'_, '_>,
+fn collect_binary<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     op: HirBinaryOp,
     lhs: etas_hir::HirExprId,
     rhs: etas_hir::HirExprId,
     span: etas_core::Span,
-) -> TypeId {
-    let lhs_ty = collect_expr(ctx, lhs, None);
-    let rhs_ty = collect_expr(ctx, rhs, Some(lhs_ty));
+) -> Result<TypeId, E> {
+    ctx.checkpoint()?;
+    let lhs_ty = collect_expr(ctx, lhs, None)?;
+    let rhs_ty = collect_expr(ctx, rhs, Some(lhs_ty))?;
     ctx.emit(TypeConstraint::Assignable {
         from: rhs_ty,
         to: lhs_ty,
         origin: ConstraintOrigin { span },
         reason: AssignabilityReason::Other,
     });
-    match op {
+    Ok(match op {
         HirBinaryOp::AndAnd
         | HirBinaryOp::OrOr
         | HirBinaryOp::EqEq
@@ -1257,5 +1115,5 @@ fn collect_binary(
         | HirBinaryOp::Gt
         | HirBinaryOp::GtEq => ctx.primitive(PrimitiveType::Bool),
         _ => lhs_ty,
-    }
+    })
 }

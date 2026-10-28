@@ -123,7 +123,85 @@ fn lower_named_path(
     args: Vec<TypeId>,
     span: etas_core::Span,
 ) -> TypeId {
-    match (name, args.as_slice()) {
+    if let ResolveResult::Resolved(symbol) = path.resolution {
+        let canonical = ctx
+            .symbols
+            .canonical_symbol(ctx.hir, symbol)
+            .unwrap_or(symbol);
+        let is_source_type = ctx.hir.symbols.get(canonical).is_some_and(|symbol| {
+            matches!(symbol.def, SymbolDef::Item { .. })
+                && matches!(
+                    symbol.kind,
+                    etas_hir::SymbolKind::Type
+                        | etas_hir::SymbolKind::TypeAlias
+                        | etas_hir::SymbolKind::Enum
+                )
+        });
+        if is_source_type
+            || matches!(
+                ctx.symbol_fact(symbol),
+                Some(
+                    crate::SymbolTypeFact::TypeAlias { .. }
+                        | crate::SymbolTypeFact::NominalType { .. }
+                )
+            )
+        {
+            ctx.type_applications
+                .push(super::type_application::TypeApplication {
+                    symbol,
+                    arguments: args.clone(),
+                    span,
+                });
+        }
+    }
+    let standard_name = match path.resolution {
+        ResolveResult::Resolved(symbol) => ctx
+            .symbols
+            .canonical_symbol(ctx.hir, symbol)
+            .and_then(|symbol| ctx.hir.symbols.get(symbol))
+            .and_then(|symbol| match &symbol.def {
+                SymbolDef::ImportAlias { path, .. } => ctx.std_registry.lookup_qualified(path),
+                _ => None,
+            })
+            .and_then(|symbol| match &symbol.decl {
+                etas_std::StdDecl::Type(decl) => Some(decl.name.clone()),
+                _ => None,
+            }),
+        _ => None,
+    };
+    let resolved_declaration = match path.resolution {
+        ResolveResult::Resolved(symbol) => {
+            matches!(
+                ctx.symbol_fact(symbol),
+                Some(
+                    crate::SymbolTypeFact::TypeAlias { .. }
+                        | crate::SymbolTypeFact::NominalType { .. }
+                        | crate::SymbolTypeFact::Agent { .. }
+                        | crate::SymbolTypeFact::Spec { .. }
+                )
+            ) || ctx
+                .symbols
+                .canonical_symbol(ctx.hir, symbol)
+                .and_then(|symbol| ctx.hir.symbols.get(symbol))
+                .is_some_and(|symbol| {
+                    matches!(symbol.def, SymbolDef::TypeParam { .. })
+                        || (matches!(symbol.def, SymbolDef::Item { .. })
+                            && matches!(
+                                symbol.kind,
+                                etas_hir::SymbolKind::Type
+                                    | etas_hir::SymbolKind::TypeAlias
+                                    | etas_hir::SymbolKind::Enum
+                                    | etas_hir::SymbolKind::Agent
+                                    | etas_hir::SymbolKind::Spec
+                            ))
+                })
+        }
+        _ => false,
+    };
+    match (standard_name.as_deref().unwrap_or(name), args.as_slice()) {
+        _ if resolved_declaration && standard_name.is_none() => {
+            lower_declared_path(ctx, path, name, args, span)
+        }
         ("Array", [inner]) => ctx.interner.intern(Type::Array(*inner)),
         ("List", [inner]) => ctx.interner.intern(Type::List(*inner)),
         ("Set", [inner]) => ctx.interner.intern(Type::Set(*inner)),
@@ -164,84 +242,110 @@ fn lower_named_path(
             key: *key,
             value: *value,
         }),
-        _ => match path.resolution {
-            ResolveResult::Resolved(symbol) => {
-                let canonical_symbol = ctx
-                    .symbols
-                    .canonical_symbol(ctx.hir, symbol)
-                    .unwrap_or(symbol);
-                if ctx
+        _ => lower_declared_path(ctx, path, name, args, span),
+    }
+}
+
+fn lower_declared_path(
+    ctx: &mut TypePipelineContext<'_>,
+    path: &etas_hir::ResolvedPath,
+    name: &str,
+    args: Vec<TypeId>,
+    span: etas_core::Span,
+) -> TypeId {
+    match path.resolution {
+        ResolveResult::Resolved(symbol) => {
+            let canonical_symbol = ctx
+                .symbols
+                .canonical_symbol(ctx.hir, symbol)
+                .unwrap_or(symbol);
+            if ctx
+                .hir
+                .symbols
+                .get(canonical_symbol)
+                .is_some_and(|symbol| matches!(symbol.def, SymbolDef::TypeParam { .. }))
+            {
+                let parameter = ctx.interner.intern(Type::Named(NamedTypeRef {
+                    name: name.to_owned(),
+                    source_parameter: Some(canonical_symbol),
+                }));
+                return applied_or_constructor(ctx, parameter, args);
+            }
+            if ctx
+                .symbol_fact(symbol)
+                .is_some_and(|fact| matches!(fact, crate::SymbolTypeFact::Spec { .. }))
+                || ctx
                     .hir
                     .symbols
                     .get(canonical_symbol)
-                    .is_some_and(|symbol| matches!(symbol.def, SymbolDef::TypeParam { .. }))
-                {
-                    return named_or_applied(ctx, name, args);
-                }
-                if ctx
-                    .symbol_fact(symbol)
-                    .is_some_and(|fact| matches!(fact, crate::SymbolTypeFact::Spec { .. }))
-                    || ctx
-                        .hir
-                        .symbols
-                        .get(canonical_symbol)
-                        .is_some_and(|symbol| symbol.kind == etas_hir::SymbolKind::Spec)
-                {
-                    ctx.diagnostics.push(Diagnostic::type_check(
-                        TypeDiagnosticCode::TypeMismatch,
+                    .is_some_and(|symbol| symbol.kind == etas_hir::SymbolKind::Spec)
+            {
+                ctx.diagnostics.push(Diagnostic::type_check(
+                    TypeDiagnosticCode::TypeMismatch,
+                    span,
+                    "spec name cannot be used as a value type",
+                ));
+                return ctx.interner.primitive(PrimitiveType::Never);
+            }
+            let fact = ctx.symbol_fact(symbol).cloned();
+            if let Some(fact) = fact {
+                return match fact {
+                    crate::SymbolTypeFact::Agent { signature } => apply_declared_type_args(
+                        ctx,
+                        signature.component,
+                        Vec::new(),
+                        args,
                         span,
-                        "spec name cannot be used as a value type",
-                    ));
-                    return ctx.interner.primitive(PrimitiveType::Never);
-                }
-                let fact = ctx.symbol_fact(symbol).cloned();
-                if let Some(fact) = fact {
-                    return match fact {
-                        crate::SymbolTypeFact::TypeAlias { target, params } => {
-                            apply_alias_type(ctx, target, params, args, span)
-                        }
-                        crate::SymbolTypeFact::NominalType {
-                            constructor,
-                            params,
-                            ..
-                        } => apply_declared_type_args(
-                            ctx,
-                            TypeId(constructor.0),
-                            params,
-                            args,
-                            span,
-                            "nominal type was given the wrong number of type arguments",
-                        ),
-                        crate::SymbolTypeFact::Type { constructor } => {
-                            if let Some(symbol) = ctx.hir.symbols.get(canonical_symbol) {
-                                if let SymbolDef::Item { item } = symbol.def {
-                                    if let Some(HirItem::Enum(decl)) = ctx.hir.items.get(item) {
-                                        if args.len() != decl.type_params.len() {
-                                            ctx.diagnostics.push(Diagnostic::type_check(TypeDiagnosticCode::ArityMismatch, span, "enum type was given the wrong number of type arguments"));
-                                            return ctx.interner.primitive(PrimitiveType::Never);
-                                        }
+                        "agent component was given type arguments but declares none",
+                    ),
+                    crate::SymbolTypeFact::TypeAlias { target, params } => apply_alias_type(
+                        ctx,
+                        target,
+                        params.into_iter().map(|p| p.name).collect(),
+                        args,
+                        span,
+                    ),
+                    crate::SymbolTypeFact::NominalType {
+                        constructor,
+                        params,
+                        ..
+                    } => apply_declared_type_args(
+                        ctx,
+                        TypeId(constructor.0),
+                        params,
+                        args,
+                        span,
+                        "nominal type was given the wrong number of type arguments",
+                    ),
+                    crate::SymbolTypeFact::Type { constructor } => {
+                        if let Some(symbol) = ctx.hir.symbols.get(canonical_symbol) {
+                            if let SymbolDef::Item { item } = symbol.def {
+                                if let Some(HirItem::Enum(decl)) = ctx.hir.items.get(item) {
+                                    if args.len() != decl.type_params.len() {
+                                        ctx.diagnostics.push(Diagnostic::type_check(TypeDiagnosticCode::ArityMismatch, span, "enum type was given the wrong number of type arguments"));
+                                        return ctx.interner.primitive(PrimitiveType::Never);
                                     }
                                 }
                             }
-                            known_or_named_path(ctx, name, TypeId(constructor.0), args, span)
                         }
-                        _ => named_or_applied(ctx, name, args),
-                    };
-                }
-                if let Some(base_type) = ctx.type_fact_as_type_id(symbol) {
-                    applied_or_constructor(ctx, base_type, args)
-                } else if let Some(alias_type) =
-                    lower_source_declared_alias(ctx, canonical_symbol, args.clone(), span)
-                {
-                    alias_type
-                } else if let Some(base_type) = lower_source_declared_type(ctx, canonical_symbol) {
-                    applied_or_constructor(ctx, base_type, args)
-                } else {
-                    known_or_named_path(ctx, name, None, args, span)
-                }
+                        known_or_named_path(ctx, name, TypeId(constructor.0), args, span)
+                    }
+                    _ => named_or_applied(ctx, name, args),
+                };
             }
-            _ => known_or_named_path(ctx, name, None, args, span),
-        },
+            if let Some(base_type) = ctx.type_fact_as_type_id(symbol) {
+                applied_or_constructor(ctx, base_type, args)
+            } else if let Some(alias_type) =
+                lower_source_declared_alias(ctx, canonical_symbol, args.clone(), span)
+            {
+                alias_type
+            } else if let Some(base_type) = lower_source_declared_type(ctx, canonical_symbol) {
+                applied_or_constructor(ctx, base_type, args)
+            } else {
+                known_or_named_path(ctx, name, None, args, span)
+            }
+        }
+        _ => known_or_named_path(ctx, name, None, args, span),
     }
 }
 
@@ -439,6 +543,7 @@ pub(crate) fn canonical_source_type_name(
 
 fn named_or_applied(ctx: &mut TypePipelineContext<'_>, name: &str, args: Vec<TypeId>) -> TypeId {
     let base = ctx.interner.intern(Type::Named(NamedTypeRef {
+        source_parameter: None,
         name: name.to_owned(),
     }));
     applied_or_constructor(ctx, base, args)

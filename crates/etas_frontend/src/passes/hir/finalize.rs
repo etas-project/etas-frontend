@@ -40,7 +40,14 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
             .hir_lowering
             .take()
             .expect("project HIR lowering state should exist");
-        let hir = lowering.lowering.finish();
+        let hir = match lowering.lowering.finish() {
+            Ok(hir) => hir,
+            Err(error) => {
+                return PassResult::failed(format!(
+                    "cannot finalize unapplied HIR body overlay: {error:?}"
+                ));
+            }
+        };
         let hir = match etas_hir::HirRevision::try_new(hir) {
             Ok(revision) => revision,
             Err(error) => {
@@ -51,7 +58,13 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
         };
         let hir_view = hir.view();
         context.hir_item_bindings = Some(lowering.item_bindings);
-        context.hir_body_bindings = Some(build_hir_body_bindings(context, &hir_view));
+        let bodies = build_hir_body_bindings(context, &hir_view);
+        if let Some(bindings) = &mut context.hir_item_bindings {
+            for (body, item) in &bodies.body_items {
+                bindings.hir_to_ast.insert(*item, body.item.clone());
+            }
+        }
+        context.hir_body_bindings = Some(bodies);
         context.diagnostics.extend(hir.diagnostics.clone());
         attach_hir_units(context, &hir_view);
         context.hir = Some(HirOutput { hir });
@@ -74,9 +87,10 @@ fn build_hir_body_bindings(
         let UnitTarget::AstBody(body) = &node.target else {
             continue;
         };
-        let Some(item) = item_bindings.ast_to_hir.get(&body.item).copied() else {
+        let Some(item) = item_bindings.body_item(body, hir_view.program()) else {
             continue;
         };
+        bindings.body_items.insert(body.clone(), item);
         let Some(root_block) = item_body_block(hir_view, item) else {
             continue;
         };
@@ -116,7 +130,7 @@ fn attach_hir_units(context: &mut ProjectContext, hir_view: &HirTreeView<'_>) {
         .collect::<Vec<_>>();
 
     for (body_unit, ast_body) in body_units {
-        let Some(item) = item_bindings.ast_to_hir.get(&ast_body.item).copied() else {
+        let Some(item) = item_bindings.body_item(&ast_body, hir_view.program()) else {
             continue;
         };
         let item = hir_view

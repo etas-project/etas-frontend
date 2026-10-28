@@ -18,6 +18,53 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(crate) frozen_graphs: std::sync::Arc<
+        std::collections::BTreeMap<
+            etas_code::CodeFingerprint,
+            std::sync::Arc<crate::FrozenCallableGraph>,
+        >,
+    >,
+    pub(crate) generic_effect_rows:
+        std::cell::RefCell<std::collections::HashMap<HirExprId, Vec<(String, EffectRow)>>>,
+    pub(crate) symbol_lexical_scopes:
+        std::collections::HashMap<etas_hir::SymbolId, Option<etas_hir::ScopeId>>,
+    pub(crate) callable_summaries:
+        std::cell::RefCell<super::callable_summary::CallableSummaryCache>,
+    pub(crate) query_control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
+    pub(crate) callable_environments: std::cell::RefCell<
+        std::sync::Arc<
+            std::collections::BTreeMap<
+                crate::facts::CallableEnvironmentId,
+                crate::facts::CallableEnvironment,
+            >,
+        >,
+    >,
+    pub(crate) callable_environment_nodes: std::cell::Cell<usize>,
+    pub(crate) metadata_callables:
+        std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
+    pub(crate) callable_references:
+        std::collections::BTreeMap<crate::CallableReturnReference, super::state::LatentSource>,
+    pub(crate) global_values: std::sync::Arc<super::state::LatentEnv>,
+    pub(crate) call_results: std::sync::Arc<super::state::LatentEnv>,
+    pub(crate) discovered_call_results: std::cell::RefCell<super::state::LatentEnv>,
+    pub(crate) discovered_global_values: super::state::LatentEnv,
+    pub(crate) flow_type_presence: std::cell::RefCell<std::collections::HashMap<TypeId, bool>>,
+    pub(crate) lambda_capture_symbols: std::cell::RefCell<
+        std::collections::HashMap<HirExprId, std::collections::BTreeSet<etas_hir::SymbolId>>,
+    >,
+    pub(crate) captured_values:
+        std::sync::Arc<std::collections::HashMap<EffectUnit, super::state::LatentEnv>>,
+    pub(crate) discovered_value_captures:
+        std::collections::HashMap<EffectUnit, super::state::LatentEnv>,
+    pub(crate) frozen_calls:
+        std::sync::Arc<std::collections::HashMap<HirItemId, crate::FrozenCallableSummary>>,
+    pub(crate) parameter_effects:
+        std::sync::Arc<std::collections::HashMap<etas_hir::SymbolId, EffectSummary>>,
+    pub(crate) frozen_parameter_effects:
+        std::sync::Arc<std::collections::HashMap<etas_hir::SymbolId, EffectSummary>>,
+    pub(crate) frozen_call_targets: std::collections::HashMap<HirExprId, HirItemId>,
+    pub(crate) call_completion_exits:
+        std::collections::HashMap<(EffectUnit, HirExprId), crate::CallableExitSummary>,
     pub(crate) hir: &'a etas_hir::HirRevision,
     pub(crate) context: HirAnalysisContext,
     pub(crate) types: &'a TypeOutput,
@@ -54,6 +101,14 @@ impl<'a> EffectSemantics<'a> {
                 &context,
             ));
         Self::from_input(crate::infer::analysis::EffectAnalysisInput {
+            frozen_graphs: Default::default(),
+            callable_environments: Default::default(),
+            global_values: Default::default(),
+            call_results: Default::default(),
+            captured_values: Default::default(),
+            frozen_calls: Default::default(),
+            parameter_effects: Default::default(),
+            frozen_parameter_effects: Default::default(),
             hir,
             types,
             std_registry,
@@ -66,6 +121,14 @@ impl<'a> EffectSemantics<'a> {
 
     pub(crate) fn from_input(input: crate::infer::analysis::EffectAnalysisInput<'a>) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
+            frozen_graphs,
+            callable_environments,
+            global_values,
+            call_results,
+            captured_values,
+            frozen_calls,
+            parameter_effects,
+            frozen_parameter_effects,
             hir,
             types,
             std_registry,
@@ -74,7 +137,55 @@ impl<'a> EffectSemantics<'a> {
             external_summaries,
             memory_provenance,
         } = input;
-        Self {
+        let mut semantics = Self {
+            frozen_graphs,
+            generic_effect_rows: Default::default(),
+            symbol_lexical_scopes: {
+                let mut scopes = std::collections::HashMap::new();
+                for scope in hir.scopes.iter() {
+                    for symbol in &scope.symbols {
+                        scopes
+                            .entry(*symbol)
+                            .and_modify(|entry| {
+                                if *entry != Some(scope.id) {
+                                    *entry = None;
+                                }
+                            })
+                            .or_insert(Some(scope.id));
+                    }
+                }
+                scopes
+            },
+            callable_summaries: Default::default(),
+            query_control: None,
+            callable_environment_nodes: std::cell::Cell::new(
+                callable_environments
+                    .values()
+                    .map(|snapshot| {
+                        1 + snapshot
+                            .parameters
+                            .values()
+                            .map(|sources| 1 + sources.len())
+                            .sum::<usize>()
+                    })
+                    .sum(),
+            ),
+            callable_environments: std::cell::RefCell::new(callable_environments),
+            metadata_callables: Default::default(),
+            callable_references: Default::default(),
+            global_values,
+            call_results,
+            discovered_call_results: Default::default(),
+            discovered_global_values: Default::default(),
+            flow_type_presence: Default::default(),
+            lambda_capture_symbols: Default::default(),
+            captured_values,
+            discovered_value_captures: Default::default(),
+            frozen_calls,
+            parameter_effects,
+            frozen_parameter_effects,
+            frozen_call_targets: Default::default(),
+            call_completion_exits: Default::default(),
             hir,
             context: HirAnalysisContext::new(hir),
             types,
@@ -87,16 +198,36 @@ impl<'a> EffectSemantics<'a> {
             diagnostic_materialization_errors: Vec::new(),
             tool_bindings,
             external_summaries,
+        };
+        semantics.collect_std_callable_values();
+        semantics.collect_callable_references();
+        for (index, metadata) in semantics.external_summaries.iter().enumerate() {
+            if let Some(key) = metadata.callable_graph_key {
+                semantics
+                    .metadata_callables
+                    .entry(key)
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(index));
+            }
         }
+        semantics
     }
 
     pub(crate) fn into_parts(
-        self,
+        mut self,
     ) -> (
         EffectMaterializationInputs,
         Vec<Diagnostic>,
         Vec<crate::EffectPipelineError>,
     ) {
+        self.inputs.generic_effect_rows = self.generic_effect_rows.into_inner();
+        self.inputs.frozen_callable_graphs = self
+            .frozen_graphs
+            .iter()
+            .map(|(key, proof)| (*key, proof.identity.clone()))
+            .collect();
+        self.inputs.callable_environments =
+            std::sync::Arc::unwrap_or_clone(self.callable_environments.into_inner());
         (
             self.inputs,
             self.diagnostics,
@@ -207,7 +338,12 @@ impl<'a> EffectSemantics<'a> {
         for effect in row.effects.iter() {
             self.apply_effect_to_summary(summary, effect.clone(), span);
         }
-        summary.escaping_effects.open = row.open;
+        if row.open.is_some() {
+            summary.record_escaping_effect_row(EffectRow {
+                effects: EffectSet::new(),
+                open: row.open,
+            });
+        }
     }
 
     pub(crate) fn summary_for_invoked_flow_row(&self, row: EffectRow, span: Span) -> EffectSummary {
@@ -346,7 +482,7 @@ impl<'a> EffectSemantics<'a> {
         let signature = self.types.facts.item_signatures.get(&item)?;
         match signature {
             etas_types::ItemSignature::Flow(signature) => signature.effects.as_ref(),
-            etas_types::ItemSignature::Agent(signature) => signature.effects.as_ref(),
+            etas_types::ItemSignature::Agent(signature) => signature.callable()?.effects.as_ref(),
             etas_types::ItemSignature::Tool(signature) => signature.effects.as_ref(),
             etas_types::ItemSignature::TopLevelLet(_) => None,
         }
@@ -375,13 +511,17 @@ impl<'a> EffectSemantics<'a> {
         if !matches!(self.hir.items.get(item), Some(etas_hir::HirItem::Agent(_))) {
             return None;
         }
-        let mut summary = self
-            .summary_for_item_public_effects(item, span)
-            .unwrap_or_else(EffectSummary::local);
-        if let Some(declaration_summary) = self.inputs.unit_effects.get(&EffectUnit::Item(item)) {
+        let Some(etas_types::ItemSignature::Agent(signature)) =
+            self.types.facts.item_signatures.get(&item)
+        else {
+            return None;
+        };
+        let method = signature.default_entry.as_ref()?.method?;
+        let body = self.types.facts.agent_methods.get(&method)?.body;
+        let mut summary = self.summary_for_item_public_effects(body, span)?;
+        if let Some(declaration_summary) = self.inputs.unit_effects.get(&EffectUnit::Item(body)) {
             summary.seq_assign(declaration_summary);
         }
-        summary.seq_assign(&self.agent_infer_summary(item, span)?);
         self.apply_agent_annotation_requirements(item, &mut summary);
         Some(summary)
     }
@@ -470,16 +610,6 @@ impl<'a> EffectSemantics<'a> {
             .is_some_and(|ty| matches!(ty, Type::Function(_)))
     }
 
-    pub(crate) fn summary_for_flow_expr_type(
-        &self,
-        expr: HirExprId,
-        span: Span,
-    ) -> Option<EffectSummary> {
-        let flow = self.flow_type_for_expr(expr)?;
-        let row = flow.effects.as_ref()?;
-        Some(self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span))
-    }
-
     pub(crate) fn flow_type_for_expr(&self, expr: HirExprId) -> Option<&etas_types::FlowType> {
         let ty = self.types.facts.expr_types.get(&expr)?;
         let Type::Function(flow) = self.types.store.get(*ty)? else {
@@ -488,8 +618,33 @@ impl<'a> EffectSemantics<'a> {
         Some(flow)
     }
 
+    pub(crate) fn checked_callable_type_for_expr(
+        &self,
+        expr: HirExprId,
+    ) -> Option<&etas_types::FlowType> {
+        let ty = *self.types.facts.expr_types.get(&expr)?;
+        let callable = match self.types.store.get(ty)? {
+            Type::Function(flow) => return Some(flow),
+            _ => {
+                self.types
+                    .facts
+                    .agent_signature(ty)?
+                    .default_entry
+                    .as_ref()?
+                    .callable_type
+            }
+        };
+        match self.types.store.get(callable)? {
+            Type::Function(flow) => Some(flow),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_nominal_constructor_callee(&self, callee: HirExprId) -> bool {
         if let Some(ty) = self.types.facts.expr_types.get(&callee).copied() {
+            if self.types.facts.agent_signature(ty).is_some() {
+                return false;
+            }
             match self.types.store.get(ty) {
                 Some(Type::Nominal(_)) => return true,
                 Some(Type::Applied { constructor, .. }) => {
@@ -567,11 +722,6 @@ pub(super) fn annotation_name(annotation: &etas_hir::HirAnnotation) -> String {
         .join(".")
 }
 
-pub(crate) enum DeferredSpecialization {
-    Solved(Box<EffectSummary>),
-    Rejected { message: &'static str },
-}
-
 pub(super) fn arg_expr(arg: &HirArg) -> Option<HirExprId> {
     match arg {
         HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => Some(*expr),
@@ -588,6 +738,11 @@ mod tests {
     #[test]
     pub(crate) fn external_summary_import_root_matches_multi_segment_prefix() {
         let summary = crate::ExternalEffectSummaryMetadata {
+            handler_requests: None,
+            returned_callables: None,
+            callable_graph_key: None,
+            callable_values: vec![],
+            default_handler_effects: None,
             package: Some("company-agents@1.0.0#company.agents".to_owned()),
             import_root: Some("company.agents".to_owned()),
             item: vec![
@@ -597,6 +752,7 @@ mod tests {
                 "run".to_owned(),
             ],
             param_names: Vec::new(),
+            generic_params: Vec::new(),
             type_param_names: Vec::new(),
             effect_param_names: Vec::new(),
             public_effects: Default::default(),

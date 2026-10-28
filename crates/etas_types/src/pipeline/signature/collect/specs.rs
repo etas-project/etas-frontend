@@ -29,7 +29,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 .unwrap_or(super_spec_symbol);
                             Some(SpecSuperBoundFact {
                                 spec_symbol: decl.symbol,
-                                super_spec_symbol,
+                                super_spec: crate::CheckedSpecRef::Source(super_spec_symbol),
                                 args: bound
                                     .args
                                     .iter()
@@ -103,6 +103,13 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                             symbol: flow.symbol,
                             name: symbol_name(ctx, flow.symbol),
                         }),
+                        HirImplItem::Callable { item } => match ctx.hir.items.get(*item) {
+                            Some(HirItem::Flow(flow)) => Some(SpecImplMethodFact {
+                                symbol: flow.symbol,
+                                name: symbol_name(ctx, flow.symbol),
+                            }),
+                            _ => None,
+                        },
                         HirImplItem::Action(_) | HirImplItem::Error { .. } => None,
                     })
                     .collect::<Vec<_>>();
@@ -283,6 +290,13 @@ pub fn record_type_param_bounds(
 ) {
     for symbol in ctx.hir.symbols.iter() {
         if let etas_hir::SymbolDef::TypeParam { bounds, .. } = &symbol.def {
+            let ty = ctx.interner.intern(crate::Type::Named(crate::NamedTypeRef {
+                source_parameter: Some(symbol.id),
+                name: symbol.name.clone(),
+            }));
+            state
+                .symbol_types
+                .insert(symbol.id, SymbolTypeFact::Param { ty });
             let facts = bounds
                 .iter()
                 .filter_map(|bound| match bound.path.resolution {

@@ -64,7 +64,7 @@ impl Pass<ProjectContext> for ParseSourceFilePass {
         &mut self,
         context: &mut ProjectContext,
         pass_context: &PassContext<ProjectContext>,
-        _manager: &mut PassManager<ProjectContext>,
+        manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let unit = match current_source_file_unit(pass_context) {
             Ok(unit) => unit,
@@ -94,7 +94,32 @@ impl Pass<ProjectContext> for ParseSourceFilePass {
             )));
         };
         let source = source_file.to_core_source_file();
-        let parsed = etas_syntax::parse_program(source.clone());
+        let parsed = match manager.execution_control() {
+            None => etas_syntax::parse_program(source.clone()),
+            Some(control) => {
+                match etas_syntax::parse_program_bounded(&source, Default::default(), &|| {
+                    control.checkpoint()
+                }) {
+                    Ok(parsed) => parsed,
+                    Err(etas_syntax::BoundedBodyParseError::Interrupted(error)) => {
+                        return PassResult::interrupted(error);
+                    }
+                    Err(etas_syntax::BoundedBodyParseError::Resource(error)) => {
+                        return PassResult::interrupted(etas_utils::PipelineInterruption {
+                            kind: etas_utils::PipelineInterruptionKind::ResourceLimit,
+                            reason: format!(
+                                "source parser {:?} limit {} exceeded",
+                                error.kind, error.limit
+                            ),
+                        });
+                    }
+                    Err(etas_syntax::BoundedBodyParseError::Syntax(error)) => {
+                        context.diagnostics.extend(error.diagnostics);
+                        return PassResult::stop();
+                    }
+                }
+            }
+        };
         let diagnostics = parsed.diagnostics.clone();
         context.diagnostics.extend(diagnostics.iter().cloned());
 
@@ -131,7 +156,7 @@ impl Pass<ProjectContext> for ParseSourceFilePass {
 
         context.parsed_sources.push(ParsedSource {
             source: source.id,
-            source_file: source,
+            source_file: std::sync::Arc::new(source),
             parse: std::sync::Arc::new(parsed),
             declared_module,
             imports,

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+mod external;
 
 use crate::{
     CheckedSpecRef, NamedTypeRef, SpecFacts, SpecObligation, Type, TypeId, TypeStore, TypeUnifier,
@@ -26,6 +27,9 @@ pub fn solve_spec_obligations(
                 type_satisfies_spec(store, facts, ty, *spec_symbol, &args, &mut visited)
             }
             CheckedSpecRef::Std(path) => std_type_satisfies_spec(store, facts, ty, path, &args),
+            CheckedSpecRef::External(identity) => {
+                external::type_satisfies(store, facts, ty, identity, &args)
+            }
         };
         if !satisfied {
             report.push(SolverFailure {
@@ -60,6 +64,9 @@ fn type_satisfies_spec(
     args: &[TypeId],
     visited: &mut HashSet<(TypeId, etas_hir::SymbolId)>,
 ) -> bool {
+    if let Some(identity) = facts.external_aliases.get(&spec_symbol) {
+        return external::type_satisfies(store, facts, ty, identity, args);
+    }
     if !visited.insert((ty, spec_symbol)) {
         return false;
     }
@@ -73,14 +80,13 @@ fn type_satisfies_spec(
     }
     facts.impls.iter().any(|impl_fact| {
         type_same(store, impl_fact.self_type, ty)
-            && spec_entails(
+            && external::entails(
                 store,
                 facts,
-                impl_fact.spec_symbol,
+                CheckedSpecRef::Source(impl_fact.spec_symbol),
                 &impl_fact.args,
-                spec_symbol,
+                &CheckedSpecRef::Source(spec_symbol),
                 args,
-                &mut HashSet::new(),
             )
     })
 }
@@ -93,6 +99,9 @@ pub(crate) fn std_type_satisfies_spec(
     args: &[TypeId],
 ) -> bool {
     if std_type_param_bound_satisfies_spec(store, facts, ty, spec, args) {
+        return true;
+    }
+    if external::evidence_satisfies(store, facts, ty, &CheckedSpecRef::Std(spec.to_vec()), args) {
         return true;
     }
     facts.std_impls.iter().any(|implementation| {
@@ -116,14 +125,18 @@ fn std_type_param_bound_satisfies_spec(
     spec: &[String],
     args: &[TypeId],
 ) -> bool {
-    let Some(Type::Named(NamedTypeRef { name })) = store.get(ty) else {
+    let Some(Type::Named(NamedTypeRef {
+        source_parameter: Some(parameter),
+        ..
+    })) = store.get(ty)
+    else {
         return false;
     };
     facts
         .type_param_bounds
-        .values()
+        .get(parameter)
+        .into_iter()
         .flatten()
-        .filter(|bound| bound.param_name == *name)
         .any(|bound| {
             facts
                 .std_spec_aliases
@@ -139,70 +152,28 @@ fn type_param_bound_satisfies_spec(
     spec_symbol: etas_hir::SymbolId,
     args: &[TypeId],
 ) -> bool {
-    let Some(Type::Named(NamedTypeRef { name })) = store.get(ty) else {
+    let Some(Type::Named(NamedTypeRef {
+        source_parameter: Some(parameter),
+        ..
+    })) = store.get(ty)
+    else {
         return false;
     };
     facts
         .type_param_bounds
-        .values()
+        .get(parameter)
+        .into_iter()
         .flatten()
-        .filter(|bound| bound.param_name == *name)
         .any(|bound| {
-            spec_entails(
+            external::entails(
                 store,
                 facts,
-                bound.spec_symbol,
+                CheckedSpecRef::Source(bound.spec_symbol),
                 &bound.args,
-                spec_symbol,
+                &CheckedSpecRef::Source(spec_symbol),
                 args,
-                &mut HashSet::new(),
             )
         })
-}
-
-fn spec_entails(
-    store: &TypeStore,
-    facts: &SpecFacts,
-    current_spec: etas_hir::SymbolId,
-    current_args: &[TypeId],
-    target_spec: etas_hir::SymbolId,
-    target_args: &[TypeId],
-    visited: &mut HashSet<etas_hir::SymbolId>,
-) -> bool {
-    if !visited.insert(current_spec) {
-        return false;
-    }
-    if current_spec == target_spec && args_match(store, current_args, target_args) {
-        return true;
-    }
-
-    let Some(signature) = facts.signatures.get(&current_spec) else {
-        return false;
-    };
-    let param_substitutions = signature
-        .param_names
-        .iter()
-        .cloned()
-        .zip(current_args.iter().copied())
-        .collect::<HashMap<_, _>>();
-
-    signature.super_specs.iter().any(|super_spec| {
-        let super_args = super_spec
-            .args
-            .iter()
-            .copied()
-            .map(|arg| resolve_named(store, arg, &param_substitutions))
-            .collect::<Vec<_>>();
-        spec_entails(
-            store,
-            facts,
-            super_spec.super_spec_symbol,
-            &super_args,
-            target_spec,
-            target_args,
-            visited,
-        )
-    })
 }
 
 fn args_match(store: &TypeStore, actual: &[TypeId], expected: &[TypeId]) -> bool {
@@ -220,7 +191,7 @@ fn arg_matches(store: &TypeStore, actual: TypeId, expected: TypeId) -> bool {
     }
     matches!(
         store.get(expected),
-        Some(Type::Named(NamedTypeRef { name })) if is_schematic_type_param(name)
+        Some(Type::Named(NamedTypeRef { name, source_parameter: None })) if is_schematic_type_param(name)
     )
 }
 
@@ -234,7 +205,9 @@ fn type_same(store: &TypeStore, lhs: TypeId, rhs: TypeId) -> bool {
 
 fn resolve_named(store: &TypeStore, ty: TypeId, substitutions: &HashMap<String, TypeId>) -> TypeId {
     match store.get(ty) {
-        Some(Type::Named(NamedTypeRef { name })) => substitutions.get(name).copied().unwrap_or(ty),
+        Some(Type::Named(NamedTypeRef { name, .. })) => {
+            substitutions.get(name).copied().unwrap_or(ty)
+        }
         _ => ty,
     }
 }
@@ -251,6 +224,7 @@ fn checked_spec_name(facts: &SpecFacts, spec: &CheckedSpecRef) -> String {
     match spec {
         CheckedSpecRef::Source(symbol) => spec_name(facts, *symbol),
         CheckedSpecRef::Std(path) => path.join("."),
+        CheckedSpecRef::External(identity) => identity.path.join("."),
     }
 }
 

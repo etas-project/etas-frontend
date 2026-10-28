@@ -44,6 +44,17 @@ pub struct CheckMemoryReport {
     pub hir_index_builds: u64,
     /// Session-owned last-good revision. Caller-held revisions are not counted.
     pub retained_revision: Option<ProjectRevision>,
+    pub cache_before: Option<etas_cache::MemoryCacheUsage>,
+    pub cache_after: Option<etas_cache::MemoryCacheUsage>,
+    /// Graph referenced by the last-good revision; may overlap derived caches.
+    pub retained_revision_estimated_bytes: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectMemoryUsage {
+    pub cache: Option<etas_cache::MemoryCacheUsage>,
+    pub retained_revision: Option<ProjectRevision>,
+    pub retained_revision_estimated_bytes: u64,
 }
 
 #[derive(Clone)]

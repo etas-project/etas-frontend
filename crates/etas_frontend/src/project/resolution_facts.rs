@@ -8,14 +8,16 @@ use crate::{
 
 use super::module_index::{AstImportRef, AstItemRef, ReExport};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ResolvedImports {
     pub imports: Vec<ResolvedImport>,
     pub wildcard_imports: Vec<ResolvedWildcardImport>,
     pub re_exports: Vec<ReExport>,
+    pub module_members:
+        std::collections::BTreeMap<ModuleKey, std::collections::BTreeMap<String, ImportTarget>>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ResolvedImport {
     pub from: ModuleId,
     pub from_part: ModulePartId,
@@ -26,18 +28,19 @@ pub struct ResolvedImport {
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ResolvedWildcardImport {
     pub from: ModuleId,
     pub from_part: ModulePartId,
     pub import: AstImportRef,
     pub target_module: ResolvedModuleTarget,
     pub exported_names: Vec<String>,
+    pub targets: std::collections::BTreeMap<String, ImportTarget>,
     pub visibility: etas_hir::Visibility,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum ImportTarget {
     Module(ResolvedModuleTarget),
     SourceItem {
@@ -64,6 +67,22 @@ pub enum ImportTarget {
 }
 
 impl ImportTarget {
+    pub(crate) fn catalog_path(&self, catalog: &crate::ModuleCatalog) -> Option<Vec<String>> {
+        let mut path = catalog
+            .modules
+            .get(self.module_key())?
+            .path
+            .segments
+            .clone();
+        match self {
+            Self::Module(_) => {}
+            Self::SourceItem { name, .. }
+            | Self::StdItem { name, .. }
+            | Self::ExternalItem { name, .. } => path.push(name.clone()),
+        }
+        Some(path)
+    }
+
     pub fn module_key(&self) -> ModuleKey {
         match self {
             Self::Module(module) => module.key(),
@@ -74,7 +93,7 @@ impl ImportTarget {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ResolvedModuleTarget {
     Source {
         key: ModuleKey,
@@ -101,27 +120,27 @@ impl ResolvedModuleTarget {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct ResolvedPaths {
     pub module_names: Vec<ResolvedModulePath>,
     pub import_targets: Vec<etas_hir::ResolvedPath>,
     pub expr_paths: Vec<HirExprPathResolution>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct ResolvedModulePath {
     pub module: HirModuleId,
     pub path: etas_hir::ResolvedPath,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirExprPathResolution {
     pub expr: HirExprId,
     pub path: etas_hir::ResolvedPath,
     pub result: HirPathResolution,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum HirPathResolution {
     DirectSymbol(SymbolId),
     ExplicitImport {
@@ -135,6 +154,7 @@ pub enum HirPathResolution {
     },
     WildcardImport {
         target: ResolvedModuleTarget,
+        item: ImportTarget,
     },
     AmbiguousWildcard {
         targets: Vec<ResolvedModuleTarget>,

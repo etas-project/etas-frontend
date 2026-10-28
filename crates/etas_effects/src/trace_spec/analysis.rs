@@ -9,7 +9,7 @@ use super::semantics::TraceSpecSemantics;
 use super::validate::reject_item_for_trace_spec;
 use crate::diagnostic_anchor::{DiagnosticAnchor, materialize_effect_diagnostic};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct TraceSpecAnalysisOutput {
     pub summaries: SummaryStore<EffectUnit, super::domain::TraceSpecSummary>,
 }
@@ -22,12 +22,41 @@ pub fn analyze_trace_spec_monitors(
     models: &TraceSpecModelStore,
     units: &[EffectUnit],
 ) -> Result<TraceSpecAnalysisOutput, EffectPipelineError> {
+    analyze_with_control(hir, types, registry, effects, models, units, None)
+}
+
+pub fn analyze_trace_spec_monitors_controlled(
+    hir: &etas_hir::HirRevision,
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    effects: &mut EffectOutput,
+    models: &TraceSpecModelStore,
+    units: &[EffectUnit],
+    control: &dyn etas_utils::PipelineExecutionControl,
+) -> Result<TraceSpecAnalysisOutput, EffectPipelineError> {
+    analyze_with_control(hir, types, registry, effects, models, units, Some(control))
+}
+
+fn analyze_with_control(
+    hir: &etas_hir::HirRevision,
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    effects: &mut EffectOutput,
+    models: &TraceSpecModelStore,
+    units: &[EffectUnit],
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+) -> Result<TraceSpecAnalysisOutput, EffectPipelineError> {
     let trace_spec_items = models.referenced_by_item.keys().copied().collect();
-    let result = InterproceduralAnalysis::new(
+    let analysis = InterproceduralAnalysis::new(
         units.iter().copied(),
         TraceSpecSemantics::new(hir, types, registry, &effects.facts, trace_spec_items),
-    )
-    .solve();
+    );
+    let result = match control {
+        Some(control) => analysis
+            .solve_controlled(control)
+            .map_err(EffectPipelineError::Interrupted)?,
+        None => analysis.solve(),
+    };
     let InterproceduralAnalysisResult {
         semantics,
         summaries,

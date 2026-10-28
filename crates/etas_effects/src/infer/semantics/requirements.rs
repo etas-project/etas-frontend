@@ -73,6 +73,18 @@ impl EffectSemantics<'_> {
             }
             _ => Vec::new(),
         };
+        if let Some(unit) = state.unit {
+            let mut captured = super::state::LatentEnv::default();
+            for stage in &stages {
+                if let Some(sources) = self.latent_sources_for_expr(&state, stage.expr) {
+                    captured.record_value_sources(stage.expr, sources);
+                }
+            }
+            self.discovered_value_captures
+                .entry(unit)
+                .or_default()
+                .join_assign(&captured);
+        }
         for stage in stages {
             let mut parsed_limits = RequirementSet::new();
             for limit in stage.limits {
@@ -88,7 +100,7 @@ impl EffectSemantics<'_> {
             }
             state.summary.requirements.union_assign(&parsed_limits);
 
-            if let Some(summary) = self.summary_for_callable_expr(stage.expr, span) {
+            if let Some(summary) = self.summary_for_callable_expr(&state, stage.expr, span) {
                 state.summary.seq_assign(&summary);
             } else if self.is_typed_flow_expr(stage.expr) {
                 state = self.incomplete_at(
@@ -102,43 +114,31 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn summary_for_callable_expr(
-        &self,
+        &mut self,
+        state: &EffectState,
         expr: HirExprId,
         span: Span,
     ) -> Option<EffectSummary> {
-        let HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
-            return self.summary_for_flow_expr_type(expr, span);
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return self.summary_for_flow_expr_type(expr, span);
-        };
-        let symbol = self.hir.symbols.get(symbol)?;
-        match &symbol.def {
-            etas_hir::SymbolDef::Item { item } => {
-                if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Agent(_))) {
-                    return self.summary_for_agent_call(*item, span);
+        if let Some(sources) = self.latent_sources_for_expr(state, expr) {
+            let mut combined: Option<EffectSummary> = None;
+            for source in sources {
+                let summary = self.latent_source_summary(source, span).ok()?;
+                if let Some(existing) = &mut combined {
+                    existing.join_branch(&summary);
+                } else {
+                    combined = Some(summary);
                 }
-                self.inputs
-                    .unit_effects
-                    .get(&EffectUnit::Item(*item))
-                    .cloned()
-                    .or_else(|| self.summary_for_item_public_effects(*item, span))
             }
-            etas_hir::SymbolDef::ImportAlias {
-                path,
-                origin: etas_hir::ImportAliasOrigin::SourceImport,
-            } => self
-                .source_item_for_path(path)
-                .and_then(|item| {
-                    if matches!(self.hir.items.get(item), Some(etas_hir::HirItem::Agent(_))) {
-                        self.summary_for_agent_call(item, span)
-                    } else {
-                        self.summary_for_item_public_effects(item, span)
-                    }
-                })
-                .or_else(|| self.external_summary_for_path(path, span)),
-            _ => self.summary_for_flow_expr_type(expr, span),
+            return combined;
         }
+        if let Some(summary) = self.std_flow_summary(expr, expr, span) {
+            return Some(summary);
+        }
+        let symbol = self.callee_symbol(expr)?;
+        let SymbolDef::ImportAlias { path, .. } = &self.hir.symbols.get(symbol)?.def else {
+            return None;
+        };
+        self.external_summary_for_path(path, span)
     }
 
     pub(crate) fn source_item_for_path(&self, path: &[String]) -> Option<HirItemId> {
@@ -175,39 +175,6 @@ impl EffectSemantics<'_> {
             }
         }
         None
-    }
-
-    pub(crate) fn agent_infer_summary(&self, item: HirItemId, span: Span) -> Option<EffectSummary> {
-        let Some(etas_hir::HirItem::Agent(agent)) = self.hir.items.get(item) else {
-            return None;
-        };
-        let Some(etas_types::SymbolTypeFact::Agent { signature }) =
-            self.types.facts.symbol_types.get(&agent.symbol)
-        else {
-            return None;
-        };
-        let action = self
-            .registry
-            .core_action(CoreEffect::Agentic, AGENTIC_INFER_ACTION)?;
-        let path = self.item_effect_path(item)?;
-        let mut summary = EffectSummary::local();
-        let effect = Effect::AppliedAction(ActionInstanceRef {
-            action: action.clone(),
-            args: vec![
-                EffectArgRef::Path(path),
-                EffectArgRef::Type(signature.output),
-            ],
-        });
-        summary.record_requested_action(effect.clone());
-        summary.record_default_handled_action(effect.clone());
-        summary.record_action_trace_event(effect, span, crate::ActionEventSource::AgentCall);
-        if let Some(reason) = self
-            .registry
-            .runtime_requirement_reason_for_action_ref(&action)
-        {
-            summary.require_runtime(reason);
-        }
-        Some(summary)
     }
 
     pub(crate) fn item_effect_path(&self, item: HirItemId) -> Option<Vec<String>> {

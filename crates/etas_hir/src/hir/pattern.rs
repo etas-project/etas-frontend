@@ -4,7 +4,7 @@ use crate::{Arena, HirLiteral, HirPatId, ResolvedPath, SymbolId};
 
 pub type HirPatArena = Arena<HirPatId, HirPat>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirPat {
     Binding {
         symbol: SymbolId,
@@ -47,7 +47,7 @@ impl HirPat {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirRecordPatField {
     pub name: String,
     pub pat: Option<HirPatId>,

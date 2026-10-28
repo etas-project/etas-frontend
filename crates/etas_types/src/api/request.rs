@@ -24,6 +24,15 @@ pub struct SignaturePipelineInput<'a> {
     pub source: SourceSignatureInput,
     pub std: StdSignatureInput,
     pub external: ExternalSignatureInput,
+    pub reflection: ReflectionSignatureInput,
+    pub annotation_validation: AnnotationValidationMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnnotationValidationMode {
+    #[default]
+    Immediate,
+    AfterTopLevelClassification,
 }
 
 impl<'a> SignaturePipelineInput<'a> {
@@ -34,8 +43,16 @@ impl<'a> SignaturePipelineInput<'a> {
             source: SourceSignatureInput::default(),
             std: StdSignatureInput::default(),
             external: ExternalSignatureInput::default(),
+            reflection: ReflectionSignatureInput::default(),
+            annotation_validation: AnnotationValidationMode::Immediate,
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ReflectionSignatureInput {
+    pub declarations: Vec<(Vec<String>, etas_code::DefinitionKey)>,
+    pub effect_targets: Vec<(String, etas_code::descriptor::EffectTargetInfo)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -65,9 +82,15 @@ pub struct ExternalPackageKey(pub u32);
 
 #[derive(Clone, Debug, Default)]
 pub struct ExternalSignatureInput {
+    pub package_anchors: Vec<(ExternalPackageKey, etas_core::Span)>,
     pub metadata: Vec<ExternalPublicMetadataInput>,
     pub symbol_bindings: Vec<ExternalSymbolBindingInput>,
     pub action_bindings: Vec<ExternalActionBindingInput>,
+    pub definition_bindings: Vec<(SymbolId, etas_code::DefinitionKey)>,
+    pub agent_reflections: Vec<(
+        SymbolId,
+        crate::facts::reflection::ExternalAgentReflectionFact,
+    )>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +112,7 @@ pub struct ExternalActionBindingInput {
 #[derive(Clone, Debug)]
 pub struct ExternalPublicMetadataInput {
     pub package: ExternalPackageKey,
+    pub behavior_types: Vec<ExternalTypeInput>,
     pub types: Vec<ExternalNamedSignatureInput>,
     pub values: Vec<ExternalNamedSignatureInput>,
     pub enums: Vec<ExternalNamedSignatureInput>,
@@ -108,6 +132,7 @@ pub struct ExternalPublicMetadataInput {
 #[derive(Clone, Debug)]
 pub struct ExternalNamedSignatureInput {
     pub path: Vec<String>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub ty: Option<ExternalTypeInput>,
 }
 
@@ -125,7 +150,7 @@ pub struct ExternalAgentSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub input: Vec<ExternalTypeInput>,
-    pub output: ExternalTypeInput,
+    pub output: Option<ExternalTypeInput>,
     pub effects: Option<ExternalEffectRowInput>,
 }
 
@@ -272,6 +297,10 @@ pub enum ExternalTypeInput {
     Primitive(String),
     Var(String),
     Named(Vec<String>),
+    Enum {
+        path: Vec<String>,
+        variants: Vec<ExternalRecordFieldInput>,
+    },
     Applied {
         path: Vec<String>,
         args: Vec<ExternalTypeInput>,

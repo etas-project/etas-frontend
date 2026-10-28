@@ -3,44 +3,43 @@ use crate::{
     pipeline::context::BodyCollectContext,
 };
 use etas_core::{Span, TypeDiagnosticCode};
-use etas_hir::{
-    HirFieldInit, HirGenericArg, HirItem, HirRecordExpr, ResolveResult, ResolvedPath, SymbolDef,
-};
+use etas_hir::{HirFieldInit, HirGenericArg, HirRecordExpr, ResolveResult, ResolvedPath};
 
-pub(super) fn declaration(
-    ctx: &BodyCollectContext<'_, '_>,
+pub(super) fn declaration<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
     path: &ResolvedPath,
-) -> Option<etas_hir::HirEnumVariant> {
+) -> Option<crate::EnumVariantLayoutFact> {
     let ResolveResult::Resolved(symbol) = path.resolution else {
         return None;
     };
     let symbol = ctx.ctx.symbols.canonical_symbol(ctx.ctx.hir, symbol)?;
-    let SymbolDef::EnumVariant {
-        enum_item,
-        variant_index,
-    } = ctx.ctx.hir.symbols.get(symbol)?.def
-    else {
-        return None;
-    };
-    let HirItem::Enum(decl) = ctx.ctx.hir.items.get(enum_item)? else {
-        return None;
-    };
-    decl.variants.get(variant_index as usize).cloned()
+    let symbol = ctx.ctx.hir.symbols.get(symbol)?;
+    let (owner, variant_index) = crate::facts::enums::constructor_identity(
+        ctx.ctx.interner.store(),
+        symbol,
+        ctx.ctx.symbol_type(symbol.id)?,
+    )?;
+    let variant = ctx.ctx.enum_layout(owner)?.variants.get(variant_index)?;
+    (variant.name == symbol.name).then(|| variant.clone())
 }
 
-pub(super) fn signature(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &ResolvedPath,
 ) -> Option<CallableSignature> {
-    let variant = declaration(ctx, path)?;
-    let SymbolTypeFact::Flow { signature } = ctx.ctx.symbol_type(variant.symbol)?.clone() else {
+    declaration(ctx, path)?;
+    let ResolveResult::Resolved(symbol) = path.resolution else {
         return None;
     };
-    Some(super::expr::instantiate_callable_signature(ctx, signature))
+    let symbol = ctx.ctx.symbols.canonical_symbol(ctx.ctx.hir, symbol)?;
+    let SymbolTypeFact::Flow { signature } = ctx.ctx.symbol_type(symbol)?.clone() else {
+        return None;
+    };
+    super::expr::instantiate_callable_signature(ctx, signature)
 }
 
-pub(super) fn invalid(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn invalid<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     span: Span,
     message: impl Into<String>,
 ) {
@@ -51,21 +50,76 @@ pub(super) fn invalid(
     });
 }
 
-pub(super) fn collect_record(
-    ctx: &mut BodyCollectContext<'_, '_>,
-    record: &HirRecordExpr,
+pub(super) fn collect_nullary<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    path: &ResolvedPath,
     expected: Option<TypeId>,
 ) -> Option<TypeId> {
-    let path = record.path.as_ref()?;
     let variant = declaration(ctx, path)?;
+    if !variant.fields.is_empty() || variant.field_names.is_some() {
+        return None;
+    }
     let signature = signature(ctx, path)?;
+    let output = signature.output;
+    if let Some(expected) = expected {
+        ctx.emit(TypeConstraint::Equal {
+            lhs: output,
+            rhs: expected,
+            origin: ConstraintOrigin { span: path.span },
+        });
+    }
+    emit_constructor(ctx, signature, Vec::new(), path.span);
+    Some(output)
+}
+
+fn emit_constructor<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    signature: CallableSignature,
+    args: Vec<TypeId>,
+    span: Span,
+) {
+    let callee = ctx
+        .ctx
+        .interner
+        .intern(crate::Type::Function(crate::FlowType {
+            input: signature.params,
+            output: signature.output,
+            effects: signature.effects,
+        }));
+    ctx.emit(TypeConstraint::Callable {
+        call: None,
+        callee,
+        generic_params: signature.generic_params,
+        generic_args: Vec::new(),
+        arg_exprs: Vec::new(),
+        args,
+        output: signature.output,
+        origin: ConstraintOrigin { span },
+    });
+}
+
+pub(super) fn collect_record<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    record: &HirRecordExpr,
+    expected: Option<TypeId>,
+) -> Result<Option<TypeId>, E> {
+    ctx.checkpoint()?;
+    let Some(path) = record.path.as_ref() else {
+        return Ok(None);
+    };
+    let Some(variant) = declaration(ctx, path) else {
+        return Ok(None);
+    };
+    let Some(signature) = signature(ctx, path) else {
+        return Ok(None);
+    };
     let Some(names) = variant.field_names else {
         invalid(
             ctx,
             record.span,
             "positional or nullary variant cannot use named-field construction",
         );
-        return Some(signature.output);
+        return Ok(Some(signature.output));
     };
     if !record.generic_args.is_empty() {
         if record.generic_args.len() != signature.generic_params.len() {
@@ -76,6 +130,7 @@ pub(super) fn collect_record(
             );
         }
         for (param, arg) in signature.generic_params.iter().zip(&record.generic_args) {
+            ctx.checkpoint()?;
             if let HirGenericArg::Type(ty) = arg {
                 if let Some(ty) = crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty) {
                     ctx.emit(TypeConstraint::Equal {
@@ -99,6 +154,7 @@ pub(super) fn collect_record(
     let mut seen = std::collections::HashSet::new();
     let mut arguments = vec![None; names.len()];
     for field in &record.fields {
+        ctx.checkpoint()?;
         let (name, span) = match field {
             HirFieldInit::Named { name, span, .. } | HirFieldInit::Shorthand { name, span, .. } => {
                 (name, *span)
@@ -112,53 +168,39 @@ pub(super) fn collect_record(
         if target.is_none() {
             invalid(ctx, span, format!("unknown variant field `{name}`"));
         }
-        let actual = super::record::collect_field_value(ctx, field, target);
+        let actual = super::record::collect_field_value(ctx, field, target)?;
         if let Some(slot) = slot {
             arguments[slot] = Some(actual);
         }
     }
     for name in &names {
+        ctx.checkpoint()?;
         if !seen.contains(name) {
             invalid(ctx, record.span, format!("missing variant field `{name}`"));
         }
     }
     // Field expressions are collected in source order; the callable solver receives
     // declaration-order arguments and the same generic bounds as positional calls.
+    let output = signature.output;
     if let Some(args) = arguments.into_iter().collect::<Option<Vec<_>>>() {
-        let callee = ctx
-            .ctx
-            .interner
-            .intern(crate::Type::Function(crate::FlowType {
-                input: signature.params,
-                output: signature.output,
-                effects: signature.effects,
-            }));
-        ctx.emit(TypeConstraint::Callable {
-            call: None,
-            callee,
-            generic_params: signature.generic_params,
-            generic_args: Vec::new(),
-            arg_exprs: Vec::new(),
-            args,
-            output: signature.output,
-            origin: ConstraintOrigin { span: record.span },
-        });
+        emit_constructor(ctx, signature, args, record.span);
     }
-    Some(signature.output)
+    Ok(Some(output))
 }
 
-pub(super) fn collect_pattern(
-    ctx: &mut BodyCollectContext<'_, '_>,
+pub(super) fn collect_pattern<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
     path: &ResolvedPath,
     fields: &[etas_hir::HirRecordPatField],
     span: Span,
     ty: TypeId,
-) -> bool {
+) -> Result<bool, E> {
+    ctx.checkpoint()?;
     let Some(variant) = declaration(ctx, path) else {
-        return false;
+        return Ok(false);
     };
     let Some(signature) = signature(ctx, path) else {
-        return false;
+        return Ok(false);
     };
     let Some(names) = variant.field_names else {
         invalid(
@@ -166,7 +208,7 @@ pub(super) fn collect_pattern(
             span,
             "positional or nullary variant cannot use a named-field pattern",
         );
-        return true;
+        return Ok(true);
     };
     ctx.emit(TypeConstraint::Equal {
         lhs: signature.output,
@@ -175,6 +217,7 @@ pub(super) fn collect_pattern(
     });
     let mut seen = std::collections::HashSet::new();
     for field in fields {
+        ctx.checkpoint()?;
         if !seen.insert(&field.name) {
             invalid(ctx, field.span, "duplicate variant pattern field");
         }
@@ -185,7 +228,7 @@ pub(super) fn collect_pattern(
             .copied();
         if let Some(target) = target {
             if let Some(pat) = field.pat {
-                super::pattern::collect_pattern(ctx, pat, target);
+                super::pattern::collect_pattern(ctx, pat, target)?;
             }
         } else {
             invalid(
@@ -196,9 +239,10 @@ pub(super) fn collect_pattern(
         }
     }
     for name in &names {
+        ctx.checkpoint()?;
         if !seen.contains(name) {
             invalid(ctx, span, format!("missing variant pattern field `{name}`"));
         }
     }
-    true
+    Ok(true)
 }

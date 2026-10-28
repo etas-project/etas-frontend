@@ -7,5 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+etas_syntax_derive = { path = "../etas_syntax_derive" }
 etas_core.workspace = true
 ariadne.workspace = true

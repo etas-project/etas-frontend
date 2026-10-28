@@ -106,7 +106,7 @@ fn validate_item_policies(
             .ok_or_else(|| EffectPipelineError::MissingDiagnosticAnchor {
             artifact: format!("trace spec item {item:?}"),
         })?;
-        for diagnostic in validate_alternatives(
+        for diagnostic in validate_conformances(
             types,
             registry,
             alternatives,
@@ -125,7 +125,14 @@ fn validate_item_policies(
         }
         if !matches!(
             hir.items.get(*item),
-            Some(etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_))
+            Some(
+                etas_hir::HirItem::Flow(_)
+                    | etas_hir::HirItem::Tool(_)
+                    | etas_hir::HirItem::Agent(etas_hir::HirAgentDecl {
+                        body: etas_hir::HirAgentBody::Source { .. },
+                        ..
+                    })
+            )
         ) {
             reject_item_for_trace_spec(effects, *item);
         }
@@ -163,7 +170,7 @@ fn validate_external_item_policies(
         else {
             continue;
         };
-        for diagnostic in validate_alternatives(
+        for diagnostic in validate_conformances(
             types,
             registry,
             alternatives,
@@ -329,6 +336,31 @@ fn module_path_has_import_root(path: &[String], root: &str) -> bool {
             .iter()
             .zip(root_segments)
             .all(|(segment, root_segment)| segment == root_segment)
+}
+
+fn validate_conformances(
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    conformances: &super::model::TraceSpecConformances,
+    trace: &ActionTraceDomain,
+    requested_actions: BTreeSet<Effect>,
+    allow_requested_actions: BTreeSet<Effect>,
+    span: Span,
+) -> Vec<Diagnostic> {
+    conformances
+        .iter()
+        .flat_map(|alternatives| {
+            validate_alternatives(
+                types,
+                registry,
+                alternatives,
+                trace,
+                requested_actions.clone(),
+                allow_requested_actions.clone(),
+                span,
+            )
+        })
+        .collect()
 }
 
 fn validate_alternatives(
@@ -510,7 +542,7 @@ mod tests {
             .find_map(|(item, data)| matches!(data, HirItem::Flow(_)).then_some(item))
             .expect("flow item");
         let mut models = TraceSpecModelStore::default();
-        models.referenced_by_item.insert(item, vec![vec![]]);
+        models.referenced_by_item.insert(item, vec![vec![vec![]]]);
         let mut summaries = SummaryStore::new();
         summaries.insert(
             EffectUnit::Item(item),

@@ -1,6 +1,6 @@
 use crate::{Symbol, SymbolData, SymbolId};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
     members: std::collections::HashMap<(SymbolId, String), Vec<SymbolId>>,
@@ -8,7 +8,28 @@ pub struct SymbolTable {
 
 impl SymbolTable {
     pub fn insert_member(&mut self, owner: SymbolId, name: String, member: SymbolId) {
-        self.members.entry((owner, name)).or_default().push(member);
+        let members = self.members.entry((owner, name)).or_default();
+        if !members.contains(&member) {
+            members.push(member);
+        }
+    }
+
+    pub fn rebind_member_owner(&mut self, from: SymbolId, to: SymbolId) {
+        if from == to {
+            return;
+        }
+        let names = self
+            .members
+            .keys()
+            .filter_map(|(owner, name)| (*owner == from).then_some(name.clone()))
+            .collect::<Vec<_>>();
+        for name in names {
+            if let Some(members) = self.members.remove(&(from, name.clone())) {
+                for member in members {
+                    self.insert_member(to, name.clone(), member);
+                }
+            }
+        }
     }
 
     pub fn resolve_member(&self, owner: SymbolId, name: &str) -> crate::ResolveResult {

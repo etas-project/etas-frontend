@@ -33,7 +33,16 @@ pub const AGENTIC_INFER_ACTION: EffectActionId = EffectActionId(88);
 
 const FIRST_DYNAMIC_TAG: u32 = 1024;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct DependencyEffectMetadata {
     pub tags: Vec<DependencyEffectTag>,
     #[serde(default)]
@@ -41,7 +50,9 @@ pub struct DependencyEffectMetadata {
     pub extensions: Vec<DependencyEffectExtension>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ToolProviderBindingMetadata {
     pub tool: Vec<String>,
     pub provider: String,
@@ -50,13 +61,17 @@ pub struct ToolProviderBindingMetadata {
     pub action_row: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct DependencyEffectTag {
     pub path: Vec<String>,
     pub runtime_requirement: Option<RuntimeRequirementReason>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct DependencyEffectAction {
     pub path: Vec<String>,
     pub effect_args: Vec<EffectActionArgKind>,
@@ -68,7 +83,9 @@ pub struct DependencyEffectAction {
     pub runtime_requirement: Option<RuntimeRequirementReason>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct DependencyEffectExtension {
     #[serde(default)]
     pub package: Option<u32>,
@@ -76,14 +93,16 @@ pub struct DependencyEffectExtension {
     pub parent: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct UnresolvedDependencyEffectExtension {
     pub package: Option<u32>,
     pub child: Vec<String>,
     pub parent: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectRegistry {
     tags: BTreeMap<EffectTagId, EffectTag>,
     names: BTreeMap<String, EffectTagId>,
@@ -176,6 +195,16 @@ impl EffectRegistry {
         self.tags.values()
     }
 
+    pub fn named_tags(&self) -> impl Iterator<Item = (&str, EffectTagId)> {
+        self.names.iter().map(|(name, tag)| (name.as_str(), *tag))
+    }
+
+    pub fn named_actions(&self) -> impl Iterator<Item = (&str, &ActionRef)> {
+        self.action_names
+            .iter()
+            .map(|(name, action)| (name.as_str(), action))
+    }
+
     pub fn tag_by_symbol(&self, symbol: SymbolId) -> Option<EffectTagId> {
         self.symbol_tags.get(&symbol).copied()
     }
@@ -208,6 +237,13 @@ impl EffectRegistry {
 
     pub fn action(&self, symbol: SymbolId) -> Option<&EffectActionSig> {
         self.actions.get(&symbol)
+    }
+
+    pub fn action_signatures(&self) -> impl Iterator<Item = &EffectActionSig> {
+        self.standard_actions
+            .values()
+            .chain(self.actions.values())
+            .chain(self.dependency_actions.values())
     }
 
     pub fn standard_action(&self, action: EffectActionId) -> Option<&EffectActionSig> {
@@ -247,6 +283,14 @@ impl EffectRegistry {
     pub fn standard_tag_by_name(&self, name: &str) -> Option<EffectTagId> {
         let tag = self.tag_by_name(name)?;
         (tag.0 < FIRST_DYNAMIC_TAG && !self.dependency_tag_paths.contains_key(&tag)).then_some(tag)
+    }
+
+    pub fn standard_tag_by_id(&self, stable_id: u32) -> Option<EffectTagId> {
+        let tag = EffectTagId(stable_id);
+        (stable_id < FIRST_DYNAMIC_TAG
+            && self.tags.contains_key(&tag)
+            && !self.dependency_tag_paths.contains_key(&tag))
+        .then_some(tag)
     }
 
     pub fn core_action(&self, core: CoreEffect, action: EffectActionId) -> Option<ActionRef> {
@@ -434,6 +478,7 @@ impl EffectRegistry {
                     effect_args: effect_action_args_from_std_decl(action),
                     returns_never: action_returns_never(&action.output),
                     high_impact_ack: action.high_impact_ack,
+                    has_default_handler: action.default_handler_effects.is_some(),
                 },
                 std_registry,
             );
@@ -456,6 +501,7 @@ impl EffectRegistry {
                         effect_args: effect_action_args_from_std_decl(action),
                         returns_never: action_returns_never(&action.output),
                         high_impact_ack: action.high_impact_ack,
+                        has_default_handler: action.default_handler_effects.is_some(),
                     },
                     std_registry,
                 );
@@ -502,12 +548,14 @@ impl EffectRegistry {
             effect_args,
             returns_never,
             high_impact_ack,
+            has_default_handler,
         } = registration;
         let Some(owner_tag) = self.tags.get(&owner) else {
             return;
         };
         let owner_name = owner_tag.name.clone();
         let sig = EffectActionSig {
+            has_default_handler,
             id,
             owner,
             name: name.to_owned(),
@@ -688,6 +736,7 @@ impl EffectRegistry {
             self.dependency_actions.insert(
                 id,
                 EffectActionSig {
+                    has_default_handler: false,
                     id,
                     owner,
                     name,
@@ -814,6 +863,7 @@ impl EffectRegistry {
                     id
                 });
             let sig = EffectActionSig {
+                has_default_handler: signature.default_handler_effects.is_some(),
                 id: action_id,
                 owner,
                 name: local_action_name.to_owned(),
@@ -938,6 +988,7 @@ impl EffectRegistry {
 }
 
 struct StandardActionRegistration<'a> {
+    has_default_handler: bool,
     id: EffectActionId,
     owner: EffectTagId,
     name: &'a str,
@@ -999,11 +1050,14 @@ fn runtime_requirement_from_std(
         etas_std::StdRuntimeRequirement::FileIO => RuntimeRequirementReason::FileIO,
         etas_std::StdRuntimeRequirement::Command => RuntimeRequirementReason::Command,
         etas_std::StdRuntimeRequirement::SecretAccess => RuntimeRequirementReason::SecretAccess,
+        etas_std::StdRuntimeRequirement::Compiler => RuntimeRequirementReason::Compiler,
         etas_std::StdRuntimeRequirement::RuntimeHandler => RuntimeRequirementReason::RuntimeHandler,
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct MemoryPlaceDecl {
     pub id: etas_types::TypeId,
     pub segments: Vec<String>,

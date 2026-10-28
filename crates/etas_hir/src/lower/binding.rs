@@ -127,25 +127,24 @@ impl LowerCtx {
             crate::path_text(&effect.path.syntax_path),
             action.text
         );
-        let matches = self.symbols.find_by_name(&qualified);
-        let action_symbol = match matches.as_slice() {
-            [symbol] => ResolveResult::Resolved(*symbol),
-            [] => {
-                if let Some(symbol) =
-                    self.resolve_standard_action_symbol(&effect, &action.text, action.span)
-                {
-                    ResolveResult::Resolved(symbol)
-                } else {
-                    self.diagnostics
-                        .unresolved_effect_action(&qualified, action.span);
-                    ResolveResult::Unresolved
-                }
-            }
-            many => {
-                self.diagnostics.ambiguous_name(&qualified, action.span);
-                ResolveResult::Ambiguous(many.to_vec())
+        let action_symbol = if let Some(symbol) =
+            self.resolve_standard_action_symbol(&effect, &action.text, action.span)
+        {
+            ResolveResult::Resolved(symbol)
+        } else {
+            match effect.path.resolution {
+                ResolveResult::Resolved(owner) => self.symbols.resolve_member(owner, &action.text),
+                ResolveResult::Ambiguous(ref symbols) => ResolveResult::Ambiguous(symbols.clone()),
+                _ => ResolveResult::Unresolved,
             }
         };
+        match &action_symbol {
+            ResolveResult::Unresolved => self
+                .diagnostics
+                .unresolved_effect_action(&qualified, action.span),
+            ResolveResult::Ambiguous(_) => self.diagnostics.ambiguous_name(&qualified, action.span),
+            _ => {}
+        }
         let span = effect.span.cover(action.span);
 
         ResolvedActionRef {
@@ -156,6 +155,42 @@ impl LowerCtx {
         }
     }
 
+    pub(super) fn resolve_compiler_action(
+        &mut self,
+        role: etas_std::CompilerActionRole,
+        span: Span,
+    ) -> Option<ResolvedActionRef> {
+        let (owner, action) = self.std_registry.symbols().find_map(|symbol| {
+            let StdDecl::EffectAction(action) = &symbol.decl else {
+                return None;
+            };
+            (action.compiler_role == Some(role))
+                .then(|| (action.owner.clone(), action.name.clone()))
+        })?;
+        let owner_path = self.std_registry.symbols().find_map(|symbol| {
+            matches!(&symbol.decl, StdDecl::Effect(effect) if effect.name == owner)
+                .then(|| symbol.qualified_path.clone())
+        })?;
+        let owner_symbol = self.resolve_std_qualified_path(&owner_path, span)?;
+        let mut path = crate::unresolved_path_from_segments(
+            &owner_path.iter().map(String::as_str).collect::<Vec<_>>(),
+            span,
+        );
+        path.resolution = ResolveResult::Resolved(owner_symbol);
+        let effect = HirEffectRef {
+            path,
+            args: Vec::new(),
+            span,
+        };
+        let action_symbol = self.resolve_standard_action_symbol(&effect, &action, span)?;
+        Some(ResolvedActionRef {
+            effect,
+            action,
+            action_symbol: ResolveResult::Resolved(action_symbol),
+            span,
+        })
+    }
+
     fn resolve_standard_action_symbol(
         &mut self,
         effect: &crate::HirEffectRef,
@@ -164,25 +199,23 @@ impl LowerCtx {
     ) -> Option<SymbolId> {
         let owner = effect.path.segments.last()?.name.as_str();
         let qualified = format!("{owner}.{action}");
-        let key = (self.current_module, qualified.clone());
-        if let Some(symbol) = self.std_action_aliases.get(&key) {
-            return Some(*symbol);
-        }
         if !self.effect_ref_resolves_to_standard_owner(effect, owner) {
             return None;
         }
 
-        let is_standard_action = self.std_registry.symbols().any(|symbol| {
-            if symbol.kind != StdSymbolKind::EffectAction {
-                return false;
+        let key = {
+            let mut actions = self.std_registry.symbols().filter(|symbol| {
+                symbol.kind == StdSymbolKind::EffectAction
+                    && matches!(&symbol.decl, StdDecl::EffectAction(decl) if decl.owner == owner && decl.name == action)
+            });
+            let key = actions.next()?.id;
+            if actions.next().is_some() {
+                return None;
             }
-            let StdDecl::EffectAction(decl) = &symbol.decl else {
-                return false;
-            };
-            decl.owner == owner && decl.name == action
-        });
-        if !is_standard_action {
-            return None;
+            key
+        };
+        if let Some(symbol) = self.std_action_aliases.get(&key) {
+            return Some(*symbol);
         }
 
         let symbol = self.alloc_symbol_with_def(SymbolData {
@@ -198,6 +231,7 @@ impl LowerCtx {
             definition_span: span,
         });
         self.std_action_aliases.insert(key, symbol);
+        self.hir.standard_action_targets.insert(symbol, key);
         Some(symbol)
     }
 
@@ -214,8 +248,8 @@ impl LowerCtx {
         };
         match &symbol.def {
             SymbolDef::ImportAlias { path, .. } => {
-                path.first().is_some_and(|segment| segment == "std")
-                    && path.last().is_some_and(|segment| segment == owner)
+                matches!(self.std_registry.lookup_qualified(path).map(|symbol| &symbol.decl),
+                    Some(StdDecl::Effect(decl)) if decl.name == owner)
             }
             _ => false,
         }
@@ -577,8 +611,8 @@ impl LowerCtx {
         symbol
     }
 
-    pub(super) fn item_symbol(&mut self, item_id: HirItemId, item: &ast::Item) -> SymbolId {
-        let key = item_key(item);
+    pub(super) fn item_symbol_at(&mut self, item_id: HirItemId, span: Span) -> SymbolId {
+        let key = super::body_overlay::key(span);
         let symbol = *self
             .top_item_symbols
             .get(&key)

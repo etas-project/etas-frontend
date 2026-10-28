@@ -18,6 +18,24 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct Unit(u32);
 
+#[test]
+fn summary_solver_discards_interrupted_scc_updates() {
+    let mut semantics =
+        TraceInterproceduralSemantics::new(HirProgram::default()).external_body(Unit(0));
+    let checks = std::cell::Cell::new(0);
+    let result =
+        super::SummarySolver::default().solve_with_checkpoint([Unit(0)], &mut semantics, &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 7 {
+                Err("interrupted after SCC transfer")
+            } else {
+                Ok(())
+            }
+        });
+    assert_eq!(result.err(), Some("interrupted after SCC transfer"));
+    assert_eq!(checks.get(), 7);
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct EventDomain {
     events: BTreeSet<&'static str>,
@@ -61,6 +79,8 @@ struct TraceInterproceduralSemantics {
     bodies: BTreeMap<Unit, HirAnalysisBody>,
     expr_events: BTreeMap<HirExprId, &'static str>,
     call_targets: BTreeMap<HirExprId, CallTarget<Unit>>,
+    observed_exprs: Vec<HirExprId>,
+    cancel_at_expr: Option<(HirExprId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
 }
 
 impl TraceInterproceduralSemantics {
@@ -70,6 +90,8 @@ impl TraceInterproceduralSemantics {
             bodies: BTreeMap::new(),
             expr_events: BTreeMap::new(),
             call_targets: BTreeMap::new(),
+            observed_exprs: Vec::new(),
+            cancel_at_expr: None,
         }
     }
 
@@ -116,6 +138,12 @@ impl HirAnalysisSemantics for TraceInterproceduralSemantics {
     }
 
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        self.observed_exprs.push(expr);
+        if let Some((target, signal)) = &self.cancel_at_expr
+            && expr == *target
+        {
+            signal.store(true, std::sync::atomic::Ordering::Release);
+        }
         self.expr_events
             .get(&expr)
             .map(|event| state.clone().with_event(event))
@@ -380,6 +408,31 @@ impl HirBuilder {
 
 fn span() -> Span {
     Span::empty(SourceId(0), TextSize::ZERO)
+}
+
+#[test]
+fn controlled_call_graph_collection_stops_inside_one_large_body() {
+    let mut builder = HirBuilder::default();
+    let expressions = (0..128).map(|_| builder.literal()).collect::<Vec<_>>();
+    let statements = expressions
+        .iter()
+        .map(|expr| builder.expr_stmt(*expr))
+        .collect();
+    let body = builder.block(statements, None);
+    let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut semantics =
+        TraceInterproceduralSemantics::new(builder.finish_with_roots([body])).body(Unit(0), body);
+    semantics.cancel_at_expr = Some((expressions[3], signal.clone()));
+    let result =
+        super::SummarySolver::default().solve_with_checkpoint([Unit(0)], &mut semantics, &|| {
+            if signal.load(std::sync::atomic::Ordering::Acquire) {
+                Err("body cancelled")
+            } else {
+                Ok(())
+            }
+        });
+    assert_eq!(result.err(), Some("body cancelled"));
+    assert_eq!(semantics.observed_exprs, expressions[..4]);
 }
 
 #[test]

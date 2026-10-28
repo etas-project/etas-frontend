@@ -5,10 +5,15 @@ use etas_hir::{
 };
 use etas_std::{RequirementSemantics, StdDecl};
 
-use crate::{
-    SymbolTypeFact,
-    pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState},
-};
+use crate::{SymbolTypeFact, TypeFacts, pipeline::symbols::TypeSymbolIndex};
+
+struct AnnotationContext<'a> {
+    hir: &'a etas_hir::HirProgram,
+    std_registry: &'a etas_std::StdRegistry,
+    signature_facts: &'a TypeFacts,
+    symbols: TypeSymbolIndex,
+    diagnostics: Vec<Diagnostic>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KnownAnnotation {
@@ -22,9 +27,19 @@ enum KnownAnnotation {
     Optimization,
 }
 
-pub fn validate_annotations(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipelineState) {
-    let annotations = ctx
-        .hir
+pub fn validate_annotations(
+    hir: &etas_hir::HirProgram,
+    facts: &TypeFacts,
+    std_registry: &etas_std::StdRegistry,
+) -> Vec<Diagnostic> {
+    let mut ctx = AnnotationContext {
+        hir,
+        std_registry,
+        signature_facts: facts,
+        symbols: TypeSymbolIndex::build(hir),
+        diagnostics: Vec::new(),
+    };
+    let annotations = hir
         .item_annotations
         .iter()
         .flat_map(|(item, annotations)| {
@@ -34,13 +49,13 @@ pub fn validate_annotations(ctx: &mut TypePipelineContext<'_>, state: &Signature
         })
         .collect::<Vec<_>>();
     for (item, annotation) in annotations {
-        validate_annotation(ctx, state, item, &annotation);
+        validate_annotation(&mut ctx, item, &annotation);
     }
+    ctx.diagnostics
 }
 
 fn validate_annotation(
-    ctx: &mut TypePipelineContext<'_>,
-    state: &SignaturePipelineState,
+    ctx: &mut AnnotationContext<'_>,
     item: HirItemId,
     annotation: &HirAnnotation,
 ) {
@@ -52,7 +67,7 @@ fn validate_annotation(
     validate_static_annotation_args(ctx, annotation, kind);
     match kind {
         Some(KnownAnnotation::Model) => validate_model_annotation(ctx, annotation),
-        Some(KnownAnnotation::Tools) => validate_tools_annotation(ctx, state, annotation),
+        Some(KnownAnnotation::Tools) => validate_tools_annotation(ctx, annotation),
         Some(KnownAnnotation::Derive) => validate_derive_annotation(ctx, annotation),
         Some(KnownAnnotation::Test) => validate_test_annotation(ctx, annotation),
         Some(KnownAnnotation::Deprecated) => validate_deprecated_annotation(ctx, annotation),
@@ -86,7 +101,7 @@ fn annotation_name(annotation: &HirAnnotation) -> String {
 }
 
 fn validate_annotation_target(
-    ctx: &mut TypePipelineContext<'_>,
+    ctx: &mut AnnotationContext<'_>,
     item: HirItemId,
     annotation: &HirAnnotation,
     kind: KnownAnnotation,
@@ -119,7 +134,7 @@ fn validate_annotation_target(
 }
 
 fn validate_static_annotation_args(
-    ctx: &mut TypePipelineContext<'_>,
+    ctx: &mut AnnotationContext<'_>,
     annotation: &HirAnnotation,
     kind: Option<KnownAnnotation>,
 ) {
@@ -139,7 +154,7 @@ fn validate_static_annotation_args(
 }
 
 fn is_static_annotation_expr(
-    ctx: &TypePipelineContext<'_>,
+    ctx: &AnnotationContext<'_>,
     expr: HirExprId,
     annotation: Option<KnownAnnotation>,
 ) -> bool {
@@ -216,7 +231,7 @@ fn is_static_literal(literal: &HirLiteral) -> bool {
     )
 }
 
-fn is_static_annotation_path(ctx: &TypePipelineContext<'_>, resolution: ResolveResult) -> bool {
+fn is_static_annotation_path(ctx: &AnnotationContext<'_>, resolution: ResolveResult) -> bool {
     match resolution {
         ResolveResult::Resolved(symbol) => is_static_symbol(ctx, symbol),
         ResolveResult::PartiallyResolved(_)
@@ -225,7 +240,10 @@ fn is_static_annotation_path(ctx: &TypePipelineContext<'_>, resolution: ResolveR
     }
 }
 
-fn is_static_symbol(ctx: &TypePipelineContext<'_>, symbol: etas_hir::SymbolId) -> bool {
+fn is_static_symbol(ctx: &AnnotationContext<'_>, symbol: etas_hir::SymbolId) -> bool {
+    let Some(symbol) = ctx.symbols.canonical_symbol(ctx.hir, symbol) else {
+        return false;
+    };
     let Some(symbol) = ctx.hir.symbols.get(symbol) else {
         return false;
     };
@@ -246,10 +264,11 @@ fn is_static_symbol(ctx: &TypePipelineContext<'_>, symbol: etas_hir::SymbolId) -
         | SymbolDef::Field { .. }
         | SymbolDef::EffectAction { .. }
         | SymbolDef::Error => false,
+        SymbolDef::ExternalEnumVariant { .. } => true,
     }
 }
 
-fn is_known_limit_constructor(ctx: &TypePipelineContext<'_>, callee: HirExprId) -> bool {
+fn is_known_limit_constructor(ctx: &AnnotationContext<'_>, callee: HirExprId) -> bool {
     let Some(HirExpr::Path(path)) = ctx.hir.exprs.get(callee) else {
         return false;
     };
@@ -271,7 +290,7 @@ fn is_known_limit_constructor(ctx: &TypePipelineContext<'_>, callee: HirExprId) 
     matches!(requirement.semantics, RequirementSemantics::Limit(_))
 }
 
-fn is_known_trace_constructor(ctx: &TypePipelineContext<'_>, callee: HirExprId) -> bool {
+fn is_known_trace_constructor(ctx: &AnnotationContext<'_>, callee: HirExprId) -> bool {
     let Some(HirExpr::Path(path)) = ctx.hir.exprs.get(callee) else {
         return false;
     };
@@ -297,7 +316,7 @@ fn is_known_trace_constructor(ctx: &TypePipelineContext<'_>, callee: HirExprId) 
     flow.public_effects.is_empty() && flow.requested_actions.is_empty()
 }
 
-fn validate_model_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &HirAnnotation) {
+fn validate_model_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
     let mut positional_count = 0usize;
     for arg in &annotation.args {
         match arg {
@@ -341,14 +360,14 @@ fn validate_model_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &Hir
     }
 }
 
-fn is_string_literal_expr(ctx: &TypePipelineContext<'_>, expr: HirExprId) -> bool {
+fn is_string_literal_expr(ctx: &AnnotationContext<'_>, expr: HirExprId) -> bool {
     matches!(
         ctx.hir.exprs.get(expr),
         Some(HirExpr::Literal(HirLiteral::String { .. }))
     )
 }
 
-fn validate_test_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &HirAnnotation) {
+fn validate_test_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
     if annotation.args.is_empty() {
         return;
     }
@@ -359,7 +378,7 @@ fn validate_test_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &HirA
     ));
 }
 
-fn validate_deprecated_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &HirAnnotation) {
+fn validate_deprecated_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
     if annotation.args.len() > 1 {
         ctx.diagnostics.push(Diagnostic::type_check(
             TypeDiagnosticCode::InvalidAnnotation,
@@ -389,7 +408,7 @@ fn validate_deprecated_annotation(ctx: &mut TypePipelineContext<'_>, annotation:
     }
 }
 
-fn validate_optimization_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &HirAnnotation) {
+fn validate_optimization_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
     for arg in &annotation.args {
         let value = match arg {
             HirAnnotationArg::Positional { value, .. } | HirAnnotationArg::Named { value, .. } => {
@@ -414,18 +433,14 @@ fn validate_optimization_annotation(ctx: &mut TypePipelineContext<'_>, annotatio
     }
 }
 
-fn is_static_path_expr(ctx: &TypePipelineContext<'_>, expr: HirExprId) -> bool {
+fn is_static_path_expr(ctx: &AnnotationContext<'_>, expr: HirExprId) -> bool {
     let Some(HirExpr::Path(path)) = ctx.hir.exprs.get(expr) else {
         return false;
     };
     is_static_annotation_path(ctx, path.resolution.clone())
 }
 
-fn validate_tools_annotation(
-    ctx: &mut TypePipelineContext<'_>,
-    state: &SignaturePipelineState,
-    annotation: &HirAnnotation,
-) {
+fn validate_tools_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
     for arg in &annotation.args {
         let value = match arg {
             HirAnnotationArg::Positional { value, .. } => *value,
@@ -458,7 +473,7 @@ fn validate_tools_annotation(
             }
         };
         for tool_expr in annotation_tool_entries(ctx, value) {
-            if !is_tool_reference(ctx, state, tool_expr) {
+            if !is_tool_reference(ctx, tool_expr) {
                 let span = ctx
                     .hir
                     .exprs
@@ -475,7 +490,7 @@ fn validate_tools_annotation(
     }
 }
 
-fn validate_derive_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &HirAnnotation) {
+fn validate_derive_annotation(ctx: &mut AnnotationContext<'_>, annotation: &HirAnnotation) {
     for arg in &annotation.args {
         let value = match arg {
             HirAnnotationArg::Positional { value, .. } | HirAnnotationArg::Named { value, .. } => {
@@ -500,22 +515,18 @@ fn validate_derive_annotation(ctx: &mut TypePipelineContext<'_>, annotation: &Hi
     }
 }
 
-fn annotation_tool_entries(ctx: &TypePipelineContext<'_>, expr: HirExprId) -> Vec<HirExprId> {
+fn annotation_tool_entries(ctx: &AnnotationContext<'_>, expr: HirExprId) -> Vec<HirExprId> {
     annotation_sequence_entries(ctx, expr)
 }
 
-fn annotation_sequence_entries(ctx: &TypePipelineContext<'_>, expr: HirExprId) -> Vec<HirExprId> {
+fn annotation_sequence_entries(ctx: &AnnotationContext<'_>, expr: HirExprId) -> Vec<HirExprId> {
     match ctx.hir.exprs.get(expr) {
         Some(HirExpr::Array { elems, .. }) | Some(HirExpr::List { elems, .. }) => elems.clone(),
         _ => vec![expr],
     }
 }
 
-fn is_tool_reference(
-    ctx: &TypePipelineContext<'_>,
-    state: &SignaturePipelineState,
-    expr: HirExprId,
-) -> bool {
+fn is_tool_reference(ctx: &AnnotationContext<'_>, expr: HirExprId) -> bool {
     let Some(HirExpr::Path(path)) = ctx.hir.exprs.get(expr) else {
         return false;
     };
@@ -530,13 +541,7 @@ fn is_tool_reference(
     }
     if ctx
         .symbols
-        .symbol_fact(ctx.hir, &ctx.signature_facts, symbol.id)
-        .or_else(|| {
-            ctx.symbols
-                .canonical_symbol(ctx.hir, symbol.id)
-                .and_then(|canonical| state.symbol_types.get(&canonical))
-        })
-        .or_else(|| state.symbol_types.get(&symbol.id))
+        .symbol_fact(ctx.hir, ctx.signature_facts, symbol.id)
         .is_some_and(|fact| matches!(fact, SymbolTypeFact::Tool { .. }))
     {
         return true;
@@ -547,7 +552,7 @@ fn is_tool_reference(
     }
 }
 
-fn is_derivable_capability(ctx: &TypePipelineContext<'_>, expr: HirExprId) -> bool {
+fn is_derivable_capability(ctx: &AnnotationContext<'_>, expr: HirExprId) -> bool {
     let Some(HirExpr::Path(path)) = ctx.hir.exprs.get(expr) else {
         return false;
     };
