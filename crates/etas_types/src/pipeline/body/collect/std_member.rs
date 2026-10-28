@@ -239,6 +239,25 @@ pub fn std_member_callable_signature_for_symbol<E>(
     std_symbol_callable_signature(ctx, &registry, member_symbol)
 }
 
+pub fn std_type_member_candidates_for_symbol<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    base_symbol: etas_hir::SymbolId,
+    member: &str,
+) -> Vec<CallableCandidate> {
+    let registry = ctx.ctx.std_registry.clone();
+    let Some(receiver) = std_type_symbol_for_hir_symbol(ctx, &registry, base_symbol) else {
+        return Vec::new();
+    };
+    registry
+        .symbols()
+        .filter(|symbol| {
+            std_symbol_is_type_member_candidate(symbol, member)
+                && std_source_method_receiver_matches(symbol, receiver)
+        })
+        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, false))
+        .collect()
+}
+
 pub fn std_member_callable_signature<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     base: etas_hir::HirExprId,

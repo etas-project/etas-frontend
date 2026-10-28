@@ -22,6 +22,7 @@ pub enum ResourceHandleFact {
 )]
 pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
+    pub priority_queue: Option<TypeId>,
     pub opaque_values: std::collections::BTreeSet<TypeId>,
     pub support_constraints: std::collections::BTreeSet<TypeId>,
     pub iterables: std::collections::BTreeMap<TypeId, StdIterableFact>,
