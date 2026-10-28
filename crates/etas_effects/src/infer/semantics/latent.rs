@@ -643,13 +643,6 @@ impl EffectSemantics<'_> {
         let Some(symbol) = self.hir.symbols.get(symbol) else {
             return false;
         };
-        if let SymbolDef::ImportAlias {
-            path,
-            origin: etas_hir::ImportAliasOrigin::SourceImport,
-        } = &symbol.def
-        {
-            return self.source_type_item_for_path(path).is_some();
-        }
         matches!(
             symbol.kind,
             etas_hir::SymbolKind::Type
@@ -657,39 +650,6 @@ impl EffectSemantics<'_> {
                 | etas_hir::SymbolKind::Enum
                 | etas_hir::SymbolKind::EnumVariant
         )
-    }
-
-    pub(crate) fn source_type_item_for_path(&self, path: &[String]) -> Option<HirItemId> {
-        let (name, module_path) = path.split_last()?;
-        for (item, hir_item) in self.hir.items.iter() {
-            let symbol = match hir_item {
-                etas_hir::HirItem::TypeAlias(item) => item.symbol,
-                etas_hir::HirItem::Type(item) => item.symbol,
-                etas_hir::HirItem::Enum(item) => item.symbol,
-                _ => continue,
-            };
-            let Some(symbol) = self.hir.symbols.get(symbol) else {
-                continue;
-            };
-            if symbol.name != *name {
-                continue;
-            }
-            let Some(module) = self.hir.modules_arena.get(symbol.defining_module) else {
-                continue;
-            };
-            let Some(module_name) = &module.name else {
-                continue;
-            };
-            let actual = module_name
-                .segments
-                .iter()
-                .map(|segment| segment.name.as_str())
-                .collect::<Vec<_>>();
-            if actual == module_path.iter().map(String::as_str).collect::<Vec<_>>() {
-                return Some(item);
-            }
-        }
-        None
     }
 
     pub(crate) fn owner_primary_block(&self, item: HirItemId) -> Option<etas_hir::HirBlockId> {

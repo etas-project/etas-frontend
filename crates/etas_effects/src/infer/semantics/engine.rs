@@ -594,7 +594,7 @@ impl<'a> EffectSemantics<'a> {
     pub(crate) fn callee_symbol(&self, callee: HirExprId) -> Option<etas_hir::SymbolId> {
         match self.hir.exprs.get(callee)? {
             HirExpr::Path(path) => match path.resolution {
-                ResolveResult::Resolved(symbol) => Some(symbol),
+                ResolveResult::Resolved(symbol) => self.hir.canonical_source_symbol(symbol),
                 _ => None,
             },
             _ => None,

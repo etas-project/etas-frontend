@@ -1,7 +1,7 @@
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
 use etas_hir::{
-    HirArg, HirExpr, HirExprId, HirItem, HirItemId, HirModuleId, ImportAliasOrigin,
-    PartialResolutionReason, ResolveResult, SymbolDef,
+    HirArg, HirExpr, HirExprId, HirItem, HirItemId, ImportAliasOrigin, PartialResolutionReason,
+    ResolveResult, SymbolDef,
 };
 use etas_hir_analysis::interprocedural::CallSite;
 use etas_std::{IntrinsicMemoryAccess, IntrinsicRuntimeRequirement, StdDecl, TypeDeclKind};
@@ -58,12 +58,6 @@ impl EffectSemantics<'_> {
                 origin: ImportAliasOrigin::SourceImport,
             } = &symbol_data.def
         {
-            if let Some(item) = self.source_item_for_path(path)
-                && let Some(summary) = self.summary_for_item_public_effects(item, site.span)
-            {
-                state.summary.seq_assign(&summary);
-                return state;
-            }
             if path.first().is_some_and(|segment| segment == "std") {
                 if let Some(decl) = self
                     .std_registry
@@ -597,7 +591,8 @@ impl EffectSemantics<'_> {
         };
         match &path.resolution {
             ResolveResult::Resolved(symbol) => {
-                let symbol = self.hir.symbols.get(*symbol)?;
+                let symbol = self.hir.canonical_source_symbol(*symbol)?;
+                let symbol = self.hir.symbols.get(symbol)?;
                 let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
                     return None;
                 };
@@ -608,7 +603,8 @@ impl EffectSemantics<'_> {
             ResolveResult::PartiallyResolved(partial)
                 if partial.reason == PartialResolutionReason::MemberRequiresTypeChecking =>
             {
-                let symbol = self.hir.symbols.get(partial.resolved_prefix?)?;
+                let symbol = self.hir.canonical_source_symbol(partial.resolved_prefix?)?;
+                let symbol = self.hir.symbols.get(symbol)?;
                 let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
                     return None;
                 };
@@ -653,24 +649,8 @@ impl EffectSemantics<'_> {
     }
 
     fn canonical_symbol_path(&self, symbol: etas_hir::SymbolId) -> Option<Vec<String>> {
-        let symbol = self.hir.symbols.get(symbol)?;
-        if let SymbolDef::ImportAlias { path, .. } = &symbol.def {
-            return Some(path.clone());
-        }
-        let module = self.hir.modules_arena.get(symbol.defining_module)?;
-        let mut segments = module
-            .name
-            .as_ref()
-            .map(|module| {
-                module
-                    .segments
-                    .iter()
-                    .map(|segment| segment.name.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        segments.push(symbol.name.clone());
-        Some(segments)
+        self.hir
+            .declaration_path(self.hir.canonical_source_symbol(symbol)?)
     }
 
     fn method_receiver_type_missing(&self, expr: HirExprId) -> bool {
@@ -711,13 +691,13 @@ impl EffectSemantics<'_> {
             return false;
         };
         let SymbolDef::ImportAlias {
-            path,
             origin: ImportAliasOrigin::SourceImport,
+            ..
         } = &symbol.def
         else {
             return false;
         };
-        self.source_agent_item_for_path(path).is_none()
+        self.agent_item_for_receiver(*receiver).is_none()
     }
 
     fn agent_run_summary(&self, expr: HirExprId, span: Span) -> Option<crate::EffectSummary> {
@@ -741,52 +721,8 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return None;
         };
-        let symbol = self.hir.symbols.get(symbol)?;
-        match &symbol.def {
-            SymbolDef::Item { item }
-                if matches!(self.hir.items.get(*item), Some(HirItem::Agent(_))) =>
-            {
-                Some(*item)
-            }
-            SymbolDef::ImportAlias {
-                path,
-                origin: ImportAliasOrigin::SourceImport,
-            } => self.source_agent_item_for_path(path),
-            _ => None,
-        }
-    }
-
-    fn source_agent_item_for_path(&self, path: &[String]) -> Option<HirItemId> {
-        let (name, module_path) = path.split_last()?;
-        for (item, hir_item) in self.hir.items.iter() {
-            let HirItem::Agent(agent) = hir_item else {
-                continue;
-            };
-            let Some(symbol) = self.hir.symbols.get(agent.symbol) else {
-                continue;
-            };
-            if symbol.name != *name {
-                continue;
-            }
-            if self.module_path(symbol.defining_module).as_deref() == Some(module_path) {
-                return Some(item);
-            }
-        }
-        None
-    }
-
-    fn module_path(&self, module: HirModuleId) -> Option<Vec<String>> {
-        self.hir
-            .modules_arena
-            .get(module)?
-            .name
-            .as_ref()
-            .map(|path| {
-                path.segments
-                    .iter()
-                    .map(|segment| segment.name.clone())
-                    .collect()
-            })
+        let item = self.source_item_for_symbol(symbol)?;
+        matches!(self.hir.items.get(item), Some(HirItem::Agent(_))).then_some(item)
     }
 
     pub(crate) fn std_flow_summary(

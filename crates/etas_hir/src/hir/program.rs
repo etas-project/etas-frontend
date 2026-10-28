@@ -37,6 +37,24 @@ pub struct HirAgentMethod {
 }
 
 impl HirProgram {
+    /// Follow resolver-owned source bindings without reinterpreting textual paths.
+    pub fn canonical_source_symbol(&self, symbol: crate::SymbolId) -> Option<crate::SymbolId> {
+        let mut current = symbol;
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            let symbol = self.symbols.get(current)?;
+            let Some(target) = self.source_import_targets.get(&current) else {
+                return Some(current);
+            };
+            if !matches!(symbol.def, crate::SymbolDef::ImportAlias { .. })
+                || !visited.insert(current)
+            {
+                return None;
+            }
+            current = *target;
+        }
+    }
+
     pub fn item_module(&self, item: HirItemId) -> Option<HirModuleId> {
         let symbol = self.items.get(item)?.symbol()?;
         Some(self.symbols.get(symbol)?.defining_module)
@@ -103,3 +121,6 @@ impl HirProgram {
         Some(path)
     }
 }
+
+#[cfg(test)]
+mod tests;
