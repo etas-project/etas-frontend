@@ -587,6 +587,8 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .known_std_types
         .priority_queue
         .map(|ty| remapper.ty(ty));
+    facts.known_std_types.ordered_map = facts.known_std_types.ordered_map.map(|ty| remapper.ty(ty));
+    facts.known_std_types.ordered_set = facts.known_std_types.ordered_set.map(|ty| remapper.ty(ty));
     facts.known_std_types.intrinsic_only_constructors =
         std::mem::take(&mut facts.known_std_types.intrinsic_only_constructors)
             .into_iter()

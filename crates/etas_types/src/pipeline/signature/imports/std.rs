@@ -64,6 +64,12 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
     ctx.signature_facts.known_std_types.priority_queue = registry
         .lookup_qualified(&["std", "collections", "PriorityQueue"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+    ctx.signature_facts.known_std_types.ordered_map = registry
+        .lookup_qualified(&["std", "collections", "OrderedMap"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+    ctx.signature_facts.known_std_types.ordered_set = registry
+        .lookup_qualified(&["std", "collections", "OrderedSet"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     for symbol in registry.symbols() {
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && !declaration.projected_fields.is_empty()
