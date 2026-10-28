@@ -2,6 +2,69 @@ use etas_std::RuntimeTypeRole as Role;
 use etas_types::{ItemSignature, Type, check_program};
 
 #[test]
+fn session_and_limit_abi_facts_are_canonical_and_fully_typed() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(7),
+        None,
+        r#"
+module app.main;
+flow config() -> SessionConfig {
+    return SessionConfig { id = SessionId("s"), context = LastTurns(8), retention = Days(90) };
+}
+flow limit() -> Limit { return Tokens(32); }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&etas_hir::lower_program(&parsed.value));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let known = &output.facts.known_std_types;
+    let session_id = known.runtime_type(Role::SessionId).unwrap();
+    assert!(!known.opaque_values.contains(&session_id));
+    assert!(
+        !known
+            .opaque_values
+            .contains(&known.runtime_type(Role::SessionConfig).unwrap())
+    );
+    let Some(Type::Nominal(id)) = output.store.get(session_id) else {
+        panic!("nominal id");
+    };
+    assert!(matches!(
+        id.representation.and_then(|id| output.store.get(id)),
+        Some(Type::Primitive(etas_types::PrimitiveType::String))
+    ));
+    for (role, names) in [
+        (
+            Role::ContextPolicy,
+            &["All", "LastTurns", "SummaryPlusRecent"][..],
+        ),
+        (Role::RetentionPolicy, &["Forever", "Days"][..]),
+        (
+            Role::Limit,
+            &[
+                "Iterations",
+                "Tokens",
+                "ContextTokens",
+                "Cost",
+                "WallTime",
+                "Attempts",
+            ][..],
+        ),
+    ] {
+        let ty = known.runtime_type(role).unwrap();
+        assert!(matches!(output.store.get(ty), Some(Type::Enum(_))));
+        let layout = &output.facts.enum_layouts[&ty];
+        assert_eq!(
+            layout
+                .variants
+                .iter()
+                .map(|variant| variant.name.as_str())
+                .collect::<Vec<_>>(),
+            names
+        );
+    }
+}
+
+#[test]
 fn native_runtime_identity_facts_survive_body_merge_and_applied_aliases() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(7),
@@ -19,7 +82,7 @@ flow ordinary(value: Command) -> unit { return; }
     let output = check_program(&hir);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let known = &output.facts.known_std_types;
-    assert_eq!(known.runtime_types.len(), 14);
+    assert_eq!(known.runtime_types.len(), 19);
     let signature = output
         .facts
         .item_signatures

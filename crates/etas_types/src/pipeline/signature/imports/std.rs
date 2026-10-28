@@ -120,6 +120,8 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         }
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && declaration.kind == etas_std::TypeDeclKind::Support
+            && declaration.representation.is_none()
+            && declaration.canonical_type.is_none()
             && !declaration.derivable
         {
             let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);

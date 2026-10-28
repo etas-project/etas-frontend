@@ -9,7 +9,7 @@ fn checked_native_roles_are_preserved_by_frontend_materialization() {
         .as_ref()
         .unwrap_or_else(|| panic!("{:?}", output.diagnostics));
     let known = &checked.types.known_std_types;
-    assert_eq!(known.runtime_types.len(), 14);
+    assert_eq!(known.runtime_types.len(), 19);
     for (role, ty) in &known.runtime_types {
         assert!(checked.type_store.get(*ty).is_some());
         assert_eq!(known.runtime_role(&checked.type_store, *ty), Some(*role));
