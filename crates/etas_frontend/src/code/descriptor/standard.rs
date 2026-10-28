@@ -71,6 +71,74 @@ impl DefinitionDescriptorProjector<'_> {
                         .collect::<Result<_, _>>()?,
                 ));
             }
+            StdType::Function {
+                input,
+                output,
+                effects,
+            } => {
+                let parameters = input
+                    .into_iter()
+                    .map(|ty| {
+                        Ok(ParameterInfo {
+                            name: None,
+                            ty: self.standard_ref(ty, scope, module)?,
+                        })
+                    })
+                    .collect::<Result<_, ProjectionError>>()?;
+                let output = self.standard_ref(*output, scope, module)?;
+                let mut projected = Vec::with_capacity(effects.len());
+                for effect in effects {
+                    let target = self
+                        .identities
+                        .effect_target(&self.checked, &effect.path.join("."))?;
+                    let mut arguments = Vec::with_capacity(effect.args.len());
+                    for arg in effect.args {
+                        self.edge()?;
+                        arguments.push(match arg {
+                            etas_std::StdStaticArg::Type(ty) => {
+                                StaticEffectArgInfo::Type(self.standard_ref(ty, scope, module)?)
+                            }
+                            etas_std::StdStaticArg::Path(path) => {
+                                match self.identities.callable_path(&path)? {
+                                    Some(id) => StaticEffectArgInfo::Callable(id.clone()),
+                                    None => StaticEffectArgInfo::Resource(
+                                        self.identities
+                                            .path(&path)
+                                            .ok_or_else(|| {
+                                                ProjectionError::MissingIdentity(path.join("."))
+                                            })?
+                                            .clone(),
+                                    ),
+                                }
+                            }
+                            etas_std::StdStaticArg::String(text) => {
+                                self.text(&text)?;
+                                StaticEffectArgInfo::String(text)
+                            }
+                            etas_std::StdStaticArg::Int(text) => {
+                                self.text(&text)?;
+                                StaticEffectArgInfo::Integer(text)
+                            }
+                            etas_std::StdStaticArg::Wildcard => StaticEffectArgInfo::Wildcard,
+                        });
+                    }
+                    projected.push(EffectInfo { target, arguments });
+                }
+                self.edge()?;
+                self.node()?;
+                let effects = EffectRowInfoRef(self.rows.len() as u32);
+                self.rows.push(Some(EffectRowInfo {
+                    effects: projected,
+                    tail: None,
+                }));
+                return Ok(TypeInfo::Function(SignatureInfo {
+                    generics: Vec::new(),
+                    parameters,
+                    output,
+                    declared_output: None,
+                    effects: Some(effects),
+                }));
+            }
             StdType::NamedApplied { name, args } => {
                 let constructor = self.standard_ref(StdType::Named(name), scope, module)?;
                 let arguments = args

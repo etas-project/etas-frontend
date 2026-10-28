@@ -452,6 +452,29 @@ fn lower_std_type_with_scope(
                 .collect();
             ctx.interner.intern(Type::Tuple(elements))
         }
+        StdType::Function {
+            input,
+            output,
+            effects,
+        } => {
+            let input = input
+                .iter()
+                .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+                .collect();
+            let output = lower_std_type_with_scope(ctx, registry, output, scope);
+            let effects = Some(EffectRowRef {
+                effects: effects
+                    .iter()
+                    .map(|effect| lower_std_effect_ref(ctx, registry, effect, scope))
+                    .collect(),
+                tail: None,
+            });
+            ctx.interner.intern(Type::Function(crate::FlowType {
+                input,
+                output,
+                effects,
+            }))
+        }
         StdType::Schema(inner) => {
             let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
             ctx.interner.intern(Type::Schema(inner))

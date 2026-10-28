@@ -61,6 +61,9 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    ctx.signature_facts.known_std_types.priority_queue = registry
+        .lookup_qualified(&["std", "collections", "PriorityQueue"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     for symbol in registry.symbols() {
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && !declaration.projected_fields.is_empty()
