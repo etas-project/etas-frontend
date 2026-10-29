@@ -394,14 +394,12 @@ impl DefinitionDescriptorProjector<'_> {
                 .map_err(|_| ProjectionError::Invalid("trace arena overflow".into()))?,
         };
         let (segment, mapped) = graph.relocate_roots(&roots, offsets)?;
-        if !segment.binders.is_empty() {
-            return Ok(None);
-        }
         self.ensure_nodes(
             segment
                 .types
                 .len()
                 .saturating_add(segment.rows.len())
+                .saturating_add(segment.binders.len())
                 .saturating_add(segment.traces.len()),
         )?;
         let mut mapped = mapped.into_iter();
@@ -434,6 +432,7 @@ impl DefinitionDescriptorProjector<'_> {
         }
         self.types.extend(segment.types.into_iter().map(Some));
         self.rows.extend(segment.rows.into_iter().map(Some));
+        self.binders.extend(segment.binders);
         self.traces.extend(segment.traces.into_iter().map(Some));
         Ok(Some(ParameterHandlerScopeInfo::Handle { arms }))
     }

@@ -103,7 +103,14 @@ impl EffectSemantics<'_> {
             return None;
         };
         let native_output = self.types.store.get(signature.output)?;
-        if !same_primitive(native_output, graph.type_info(portable_signature.output)?) {
+        if !etas_types::checked_descriptor_type_matches(
+            self.types,
+            &graph,
+            signature.output,
+            portable_signature.output,
+        )
+        .ok()?
+        {
             return None;
         }
         if summary.requested_actions.open.is_some() {
@@ -139,10 +146,13 @@ impl EffectSemantics<'_> {
                 return None;
             };
             if portable_callback.parameters.len() != callback.input.len()
-                || !same_primitive(
-                    self.types.store.get(callback.output)?,
-                    graph.type_info(portable_callback.output)?,
+                || !etas_types::checked_descriptor_type_matches(
+                    self.types,
+                    &graph,
+                    callback.output,
+                    portable_callback.output,
                 )
+                .ok()?
             {
                 return None;
             }
@@ -155,7 +165,14 @@ impl EffectSemantics<'_> {
                 .zip(&callback.input)
                 .zip(&portable_callback.parameters)
                 .map(|((argument, ty), portable)| {
-                    if !same_primitive(self.types.store.get(*ty)?, graph.type_info(portable.ty)?) {
+                    if !etas_types::checked_descriptor_type_matches(
+                        self.types,
+                        &graph,
+                        *ty,
+                        portable.ty,
+                    )
+                    .ok()?
+                    {
                         return None;
                     }
                     let value = match argument {
@@ -396,12 +413,10 @@ impl EffectSemantics<'_> {
                         use etas_code::descriptor::StaticEffectArgInfo as S;
                         match (portable, native) {
                             (S::Type(reference), EffectArgRef::Type(ty)) => {
-                                checked_selector_type_matches(
-                                    &self.types.store,
-                                    graph,
-                                    *ty,
-                                    *reference,
+                                etas_types::checked_descriptor_type_matches(
+                                    self.types, graph, *ty, *reference,
                                 )
+                                .unwrap_or(false)
                             }
                             (S::String(left), EffectArgRef::String(right))
                             | (S::Integer(left), EffectArgRef::Int(right)) => left == right,
@@ -421,111 +436,6 @@ impl EffectSemantics<'_> {
         let result = matching.next()?.clone();
         matching.next().is_none().then_some(result)
     }
-}
-
-fn checked_selector_type_matches(
-    store: &etas_types::TypeStore,
-    graph: &DescriptorGraph,
-    native: etas_types::TypeId,
-    portable: etas_code::descriptor::TypeInfoRef,
-) -> bool {
-    use etas_code::descriptor::{BuiltinTypeInfo as B, TypeInfo};
-    use etas_types::{ResourceHandleType, TrustWrapper};
-    let mut pending = vec![(native, portable)];
-    let mut seen = std::collections::HashSet::new();
-    let limit = etas_code::descriptor::DescriptorLimits::default().max_edges;
-    let mut visited = 0usize;
-    while let Some((native_id, portable_id)) = pending.pop() {
-        visited += 1;
-        if visited > limit {
-            return false;
-        }
-        if !seen.insert((native_id, portable_id)) {
-            continue;
-        }
-        let (Some(native), Some(portable)) = (store.get(native_id), graph.type_info(portable_id))
-        else {
-            return false;
-        };
-        if let TypeInfo::Alias { target, .. } = portable {
-            pending.push((native_id, *target));
-            continue;
-        }
-        if same_primitive(native, portable) {
-            continue;
-        }
-        let (constructor, native_args) = match native {
-            Type::Array(t) => (B::Array, vec![*t]),
-            Type::List(t) => (B::List, vec![*t]),
-            Type::Map { key, value } => (B::Map, vec![*key, *value]),
-            Type::Set(t) => (B::Set, vec![*t]),
-            Type::Range { index } => (B::Range, vec![*index]),
-            Type::Slice(t) => (B::Slice, vec![*t]),
-            Type::Option(t) => (B::Option, vec![*t]),
-            Type::Result { ok, err } => (B::Result, vec![*ok, *err]),
-            Type::Schema(t) => (B::Schema, vec![*t]),
-            Type::Prompt => (B::Prompt, vec![]),
-            Type::PromptPart => (B::PromptPart, vec![]),
-            Type::Message(t) => (B::Message, vec![*t]),
-            Type::MemorySelection(t) => (B::MemorySelection, vec![*t]),
-            Type::Store { key, value } => (B::Store, vec![*key, *value]),
-            Type::MemoryRegion(t) => (B::MemoryRegion, vec![*t]),
-            Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
-                (B::MemoryRegionHandle, vec![*schema])
-            }
-            Type::ResourceHandle(ResourceHandleType::ExternalTool { signature }) => {
-                (B::ExternalToolHandle, vec![*signature])
-            }
-            Type::Trust { wrapper, inner } => (
-                match wrapper {
-                    TrustWrapper::Trusted => B::Trusted,
-                    TrustWrapper::Untrusted => B::Untrusted,
-                    TrustWrapper::Secret => B::Secret,
-                    TrustWrapper::Public => B::Public,
-                    TrustWrapper::Sanitized => B::Sanitized,
-                },
-                vec![*inner],
-            ),
-            Type::Tuple(elements) => {
-                let TypeInfo::Tuple(other) = portable else {
-                    return false;
-                };
-                if elements.len() != other.len() {
-                    return false;
-                }
-                pending.extend(elements.iter().copied().zip(other.iter().copied()));
-                continue;
-            }
-            Type::Record(record) => {
-                let TypeInfo::Record(fields) = portable else {
-                    return false;
-                };
-                if record.fields.len() != fields.len() {
-                    return false;
-                }
-                for (left, right) in record.fields.iter().zip(fields) {
-                    if left.name != right.name {
-                        return false;
-                    }
-                    pending.push((left.ty, right.ty));
-                }
-                continue;
-            }
-            _ => return false,
-        };
-        let TypeInfo::Builtin {
-            constructor: actual,
-            arguments,
-        } = portable
-        else {
-            return false;
-        };
-        if constructor != *actual || native_args.len() != arguments.len() {
-            return false;
-        }
-        pending.extend(native_args.into_iter().zip(arguments.iter().copied()));
-    }
-    true
 }
 
 fn ordered_descriptor_calls(
@@ -569,74 +479,6 @@ fn ordered_native_calls(root: &ActionTraceDomain) -> Option<Vec<&ActionTraceDoma
         }
     }
     Some(calls)
-}
-
-fn same_primitive(native: &Type, portable: &etas_code::descriptor::TypeInfo) -> bool {
-    use etas_code::descriptor::{PrimitiveInfo as P, TypeInfo};
-    matches!(
-        (native, portable),
-        (
-            Type::Primitive(PrimitiveType::Unit),
-            TypeInfo::Primitive(P::Unit)
-        ) | (
-            Type::Primitive(PrimitiveType::Never),
-            TypeInfo::Primitive(P::Never)
-        ) | (
-            Type::Primitive(PrimitiveType::Bool),
-            TypeInfo::Primitive(P::Bool)
-        ) | (
-            Type::Primitive(PrimitiveType::I8),
-            TypeInfo::Primitive(P::I8)
-        ) | (
-            Type::Primitive(PrimitiveType::I16),
-            TypeInfo::Primitive(P::I16)
-        ) | (
-            Type::Primitive(PrimitiveType::I32),
-            TypeInfo::Primitive(P::I32)
-        ) | (
-            Type::Primitive(PrimitiveType::I64),
-            TypeInfo::Primitive(P::I64)
-        ) | (
-            Type::Primitive(PrimitiveType::I128),
-            TypeInfo::Primitive(P::I128)
-        ) | (
-            Type::Primitive(PrimitiveType::ISize),
-            TypeInfo::Primitive(P::Isize)
-        ) | (
-            Type::Primitive(PrimitiveType::U8),
-            TypeInfo::Primitive(P::U8)
-        ) | (
-            Type::Primitive(PrimitiveType::U16),
-            TypeInfo::Primitive(P::U16)
-        ) | (
-            Type::Primitive(PrimitiveType::U32),
-            TypeInfo::Primitive(P::U32)
-        ) | (
-            Type::Primitive(PrimitiveType::U64),
-            TypeInfo::Primitive(P::U64)
-        ) | (
-            Type::Primitive(PrimitiveType::U128),
-            TypeInfo::Primitive(P::U128)
-        ) | (
-            Type::Primitive(PrimitiveType::USize),
-            TypeInfo::Primitive(P::Usize)
-        ) | (
-            Type::Primitive(PrimitiveType::F32),
-            TypeInfo::Primitive(P::F32)
-        ) | (
-            Type::Primitive(PrimitiveType::F64),
-            TypeInfo::Primitive(P::F64)
-        ) | (
-            Type::Primitive(PrimitiveType::Char),
-            TypeInfo::Primitive(P::Char)
-        ) | (
-            Type::Primitive(PrimitiveType::String),
-            TypeInfo::Primitive(P::String)
-        ) | (
-            Type::Primitive(PrimitiveType::Bytes),
-            TypeInfo::Primitive(P::Bytes)
-        )
-    )
 }
 
 fn same_call(graph: &DescriptorGraph, left: &ParameterCallInfo, right: &ParameterCallInfo) -> bool {
@@ -699,23 +541,26 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        assert!(checked_selector_type_matches(
-            &store,
-            &graph,
-            map,
-            TypeInfoRef(3)
-        ));
-        assert!(!checked_selector_type_matches(
-            &store,
-            &graph,
-            mismatched,
-            TypeInfoRef(3)
-        ));
-        assert!(!checked_selector_type_matches(
-            &store,
-            &graph,
-            list,
-            TypeInfoRef(3)
-        ));
+        let types = etas_types::TypeOutput {
+            store: store.into(),
+            ..Default::default()
+        };
+        assert!(
+            etas_types::checked_descriptor_type_matches(&types, &graph, map, TypeInfoRef(3))
+                .unwrap()
+        );
+        assert!(
+            !etas_types::checked_descriptor_type_matches(
+                &types,
+                &graph,
+                mismatched,
+                TypeInfoRef(3)
+            )
+            .unwrap()
+        );
+        assert!(
+            !etas_types::checked_descriptor_type_matches(&types, &graph, list, TypeInfoRef(3))
+                .unwrap()
+        );
     }
 }

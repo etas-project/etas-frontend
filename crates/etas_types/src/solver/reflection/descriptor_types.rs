@@ -8,6 +8,12 @@ use etas_code::descriptor::{
 
 use super::{ReflectionSolveInput, resolve_known_substitutions};
 
+struct TypeMatchInput<'a> {
+    store: &'a crate::TypeStore,
+    facts: &'a crate::TypeFacts,
+    solved: Option<&'a crate::SolverReport>,
+}
+
 /// Compare identities and structural types, never nominal representations.
 pub(super) fn matches(
     input: &ReflectionSolveInput<'_>,
@@ -15,11 +21,41 @@ pub(super) fn matches(
     actual: TypeId,
     expected: TypeInfoRef,
 ) -> Result<bool, &'static str> {
-    matches_scoped(input, graph, actual, expected, &BTreeMap::new())
+    matches_scoped(
+        &TypeMatchInput {
+            store: input.store,
+            facts: input.facts,
+            solved: Some(input.solved),
+        },
+        graph,
+        actual,
+        expected,
+        &BTreeMap::new(),
+    )
+}
+
+/// Compare a finalized checked type with a validated portable descriptor.
+pub fn checked_descriptor_type_matches(
+    types: &crate::TypeOutput,
+    graph: &etas_code::descriptor::DescriptorGraph,
+    actual: TypeId,
+    expected: TypeInfoRef,
+) -> Result<bool, &'static str> {
+    matches_scoped(
+        &TypeMatchInput {
+            store: &types.store,
+            facts: &types.facts,
+            solved: None,
+        },
+        graph.data(),
+        actual,
+        expected,
+        &BTreeMap::new(),
+    )
 }
 
 fn matches_scoped(
-    input: &ReflectionSolveInput<'_>,
+    input: &TypeMatchInput<'_>,
     graph: &DescriptorGraphInput,
     actual: TypeId,
     expected: TypeInfoRef,
@@ -30,7 +66,9 @@ fn matches_scoped(
     let mut seen = BTreeSet::new();
     while let Some((actual, mut expected, scope)) = pending.pop() {
         let environment = &environments[scope];
-        let actual = resolve_known_substitutions(input.store, input.solved, actual);
+        let actual = input.solved.map_or(actual, |solved| {
+            resolve_known_substitutions(input.store, solved, actual)
+        });
         let mut parameters = BTreeSet::new();
         while let Some(TypeInfo::Parameter(parameter)) = graph.types.get(expected.0 as usize) {
             let Some(bound) = environment.get(parameter) else {
@@ -210,7 +248,7 @@ fn matches_scoped(
 }
 
 fn rows_match(
-    input: &ReflectionSolveInput<'_>,
+    input: &TypeMatchInput<'_>,
     graph: &DescriptorGraphInput,
     actual: Option<&crate::EffectRowRef>,
     expected: Option<etas_code::descriptor::EffectRowInfoRef>,
@@ -246,7 +284,7 @@ fn rows_match(
 }
 
 fn effect_matches(
-    input: &ReflectionSolveInput<'_>,
+    input: &TypeMatchInput<'_>,
     graph: &DescriptorGraphInput,
     actual: &crate::EffectRef,
     expected: &etas_code::descriptor::EffectInfo,

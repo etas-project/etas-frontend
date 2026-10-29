@@ -18,6 +18,7 @@ mod numeric_literal;
 pub use numeric_literal::{CheckedIntegerLiteral, checked_integer_literal};
 mod overload;
 mod reflection;
+pub use reflection::checked_descriptor_type_matches;
 pub mod report;
 mod return_type;
 pub mod spec_solver;

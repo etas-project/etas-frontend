@@ -465,7 +465,7 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 })?,
         };
         Ok(NativeDescriptorProjection {
-            graph: DescriptorGraph::new(input, self.limits)?,
+            graph: DescriptorGraph::new_with_merged_binders(input, self.limits)?,
             type_origins,
         })
     }

@@ -6,6 +6,7 @@ use crate::{
 use super::{SolverFailure, SolverReport, resolve_known_substitutions};
 
 mod descriptor_types;
+pub use descriptor_types::checked_descriptor_type_matches;
 mod external;
 mod spec_method;
 
