@@ -4,6 +4,7 @@ use crate::ParameterCallTarget;
 use std::collections::BTreeMap;
 
 mod completion;
+mod handler_scopes;
 mod parameter_calls;
 mod summary_mapper;
 mod trace;

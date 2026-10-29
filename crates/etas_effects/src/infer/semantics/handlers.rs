@@ -89,6 +89,14 @@ impl EffectSemantics<'_> {
                     registry: self.registry,
                     types: &self.types.store,
                 };
+                let definitely_handled = match self.definitely_handled_actions(handler) {
+                    Ok(row) => row,
+                    Err(interruption) => {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        control.join_normal(handler_state);
+                        return control;
+                    }
+                };
                 let value_completion = only_normal
                     && !handler_state.incomplete
                     && self.checked_value_handler_completion(
@@ -110,7 +118,10 @@ impl EffectSemantics<'_> {
                         body_escaping: result.summary.escaping_effects.clone(),
                     });
                 }
+                let mut remaining_requests = result.summary.handler_requests.clone();
+                remaining_requests.subtract_handled(&coverage, &definitely_handled);
                 result.summary.subtract_handled_effects(&coverage, &handled);
+                result.summary.handler_requests = remaining_requests;
                 let remaining = result.summary.escaping_effects.clone();
                 if !value_completion {
                     result
@@ -119,7 +130,7 @@ impl EffectSemantics<'_> {
                         .insert(crate::OutcomeAnalysisGap::Handler(span.into()));
                 }
                 result.summary.default_actions =
-                    coverage.subtract_handled(&result.summary.default_actions, &handled);
+                    coverage.subtract_handled(&result.summary.default_actions, &definitely_handled);
                 result.summary.record_handled_action_row(handled.clone());
                 self.remove_handled_runtime_support(&mut result.summary, &handled);
                 self.apply_runtime_support_for_row(&mut result.summary, &remaining);
@@ -383,7 +394,7 @@ impl EffectSemantics<'_> {
         if let Some(produced) = rows.produced {
             return Ok(Some((rows.handled, produced)));
         }
-        let Some(fact) = self.immutable_handler_value(expr)? else {
+        let Some((_, fact)) = self.immutable_handler_value(expr)? else {
             return Ok(None);
         };
         let coverage = EffectCoverage {
@@ -401,14 +412,14 @@ impl EffectSemantics<'_> {
     fn immutable_handler_value(
         &self,
         mut expr: HirExprId,
-    ) -> Result<Option<&HandlerValueFact>, etas_utils::PipelineInterruption> {
+    ) -> Result<Option<(HirExprId, &HandlerValueFact)>, etas_utils::PipelineInterruption> {
         let mut visited = std::collections::HashSet::new();
         while visited.insert(expr) {
             if let Some(control) = self.query_control {
                 control.checkpoint()?;
             }
             if let Some(fact) = self.inputs.handler_values.get(&expr) {
-                return Ok(Some(fact));
+                return Ok(Some((expr, fact)));
             }
             let Some(HirExpr::Path(path)) = self.hir.exprs.get(expr) else {
                 return Ok(None);
@@ -435,6 +446,48 @@ impl EffectSemantics<'_> {
             };
         }
         Ok(None)
+    }
+
+    pub(super) fn definitely_handled_actions(
+        &self,
+        expr: HirExprId,
+    ) -> Result<EffectRow, etas_utils::PipelineInterruption> {
+        let Some((handler, fact)) = self.immutable_handler_value(expr)? else {
+            return Ok(EffectRow::empty());
+        };
+        let Some(HirExpr::Handler { handlers, .. }) = self.hir.exprs.get(handler) else {
+            return Ok(EffectRow::empty());
+        };
+        let Some(owner) = self.hir.index().expr_item.get(&handler).copied() else {
+            return Ok(EffectRow::empty());
+        };
+        if handlers.len() != fact.arms.len() {
+            return Ok(EffectRow::empty());
+        }
+        let mut effects = EffectSet::new();
+        for (arm, arm_fact) in handlers.iter().zip(&fact.arms) {
+            if let Some(control) = self.query_control {
+                control.checkpoint()?;
+            }
+            if arm_fact.unit != (EffectUnit::HandlerArm { owner, arm: *arm }) {
+                return Ok(EffectRow::empty());
+            }
+            let (Some(data), Some(effect)) = (
+                self.hir.handler_arms.get(*arm),
+                self.inputs.handler_action_effects.get(arm),
+            ) else {
+                return Ok(EffectRow::empty());
+            };
+            if data.patterns.iter().all(|pattern| {
+                matches!(
+                    self.hir.pats.get(*pattern),
+                    Some(etas_hir::HirPat::Binding { .. } | etas_hir::HirPat::Wildcard { .. })
+                )
+            }) {
+                effects.insert(effect.clone());
+            }
+        }
+        Ok(EffectRow::closed(effects))
     }
 
     fn handler_value_item_summary(&self, expr: HirExprId) -> Option<EffectSummary> {

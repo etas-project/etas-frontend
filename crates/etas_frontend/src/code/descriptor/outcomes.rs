@@ -14,6 +14,16 @@ impl DefinitionDescriptorProjector<'_> {
         if exits.gaps.is_empty() {
             return exits.parameter_exits.is_empty();
         }
+        // A callable's escaping row does not bound its default-handled
+        // requests. Until handler-aware callback outcomes are available, an
+        // enclosing handler can change its control flow even for ![].
+        if exits
+            .parameter_exits
+            .iter()
+            .any(|exit| exit.handler_free != Some(true))
+        {
+            return false;
+        }
         let Some(Some(TypeInfo::Function(owner))) = self.types.get(signature.0 as usize) else {
             return false;
         };

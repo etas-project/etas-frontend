@@ -110,6 +110,160 @@ flow recurse(f: () -> unit ![Inner.ping], stop: bool) -> unit ![Inner.ping] {
 }
 
 #[test]
+fn callback_requests_handled_by_local_handler_do_not_become_default_actions() {
+    let source = r#"
+import std.io.println;
+flow invoke(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with { Console.stdout_write(_) => { resume; } };
+    return;
+}
+flow write() -> unit ![] {
+    println("hello")?;
+    return;
+}
+flow main() -> unit ![] { invoke(write); return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let console = etas_effects::Effect::Action(etas_effects::ActionRef {
+        tag: etas_effects::CONSOLE_TAG,
+        action: etas_effects::CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    let write = &output.facts.item_effects[&flow_item(&hir, "write")];
+    assert!(
+        write.default_actions.effects.contains(&console),
+        "{write:?}"
+    );
+    assert!(summary.escaping_effects.is_empty(), "{summary:?}");
+    assert!(
+        summary.requested_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+    assert!(
+        !summary.default_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+    assert!(
+        summary.action_trace.action_set().contains(&console),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn immutable_handler_value_intercepts_callback_default_action() {
+    let source = r#"
+import std.io.println;
+flow invoke(f: () -> unit ![]) -> unit ![] {
+    let local_handler = handler { Console.stdout_write(_) => { resume; } };
+    handle { f(); } with local_handler;
+    return;
+}
+flow write() -> unit ![] { println("hello")?; return; }
+flow main() -> unit ![] { invoke(write); return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let console = etas_effects::Effect::Action(etas_effects::ActionRef {
+        tag: etas_effects::CONSOLE_TAG,
+        action: etas_effects::CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(
+        summary.requested_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+    assert!(
+        !summary.default_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn refutable_callback_handler_keeps_possible_default_action() {
+    let source = r#"
+import std.io.println;
+flow invoke(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with { Console.stdout_write("other") => { resume; } };
+    return;
+}
+flow write() -> unit ![] { println("hello")?; return; }
+flow main() -> unit ![] { invoke(write); return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let console = etas_effects::Effect::Action(etas_effects::ActionRef {
+        tag: etas_effects::CONSOLE_TAG,
+        action: etas_effects::CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(
+        summary.default_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+    assert!(
+        summary.requested_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+    assert!(
+        matches!(
+            &summary.handler_requests,
+            etas_effects::RequestInstantiationSummary::Available { actions, .. }
+                if actions.iter().any(|request| request.action == console)
+        ),
+        "{summary:?}"
+    );
+}
+
+#[test]
+fn callback_outside_handler_keeps_possible_default_action() {
+    let source = r#"
+import std.io.println;
+flow invoke(f: () -> unit ![], handle_it: bool) -> unit ![] {
+    if handle_it {
+        handle { f(); } with { Console.stdout_write(_) => { resume; } };
+    } else {
+        f();
+    }
+    return;
+}
+flow write() -> unit ![] { println("hello")?; return; }
+flow main() -> unit ![] { invoke(write, true); return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let console = etas_effects::Effect::Action(etas_effects::ActionRef {
+        tag: etas_effects::CONSOLE_TAG,
+        action: etas_effects::CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(
+        summary.default_actions.effects.contains(&console),
+        "{summary:?}"
+    );
+}
+
+#[test]
 fn parameter_exit_facts_retain_distinct_checked_call_arguments() {
     let source = "flow relay(f: (i32) -> unit ![]) -> unit ![] { f(0); f(1); return; }";
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));

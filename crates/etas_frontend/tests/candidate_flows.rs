@@ -146,6 +146,47 @@ flow inspect() -> unit { let definition = ^normalize; return; }"#,
 }
 
 #[test]
+fn callback_with_empty_escaping_row_can_still_be_intercepted_by_handler() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+flow normalize(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with { Console.stdout_write(_) => { resume; } };
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let draft = store
+        .with_body(
+            &original,
+            store
+                .syntax_operations()
+                .parse_body(
+                    "handle { f(); } with { Console.stdout_write(_) => { finish (); } }; return;",
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let overlay = store
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(store.syntax_operations())
+        .unwrap();
+    let analysis = FrontendSession::new()
+        .analyze_body_overlay(overlay)
+        .unwrap();
+    let report = analysis.check_report(Default::default()).unwrap();
+    assert_ne!(report.status, CheckStatus::Accepted, "{report:?}");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "code::MissingOutcomeSensitiveSummary"),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn flow_edit_preserves_callable_identity_without_becoming_an_agent() {
     let (store, expr) = definitions();
     let original = store.reflect_flow(expr).unwrap();
