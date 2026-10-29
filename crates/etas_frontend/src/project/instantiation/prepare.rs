@@ -20,6 +20,9 @@ pub(crate) enum InstantiationError {
 impl From<etas_types::TypeSubstitutionError> for InstantiationError {
     fn from(error: etas_types::TypeSubstitutionError) -> Self {
         match error {
+            etas_types::TypeSubstitutionError::Interrupted(interruption) => {
+                Self::Interrupted(interruption)
+            }
             etas_types::TypeSubstitutionError::ExpansionDepth(_)
             | etas_types::TypeSubstitutionError::RepresentationLimit(_) => {
                 Self::Interrupted(PipelineInterruption {
@@ -167,7 +170,8 @@ pub(crate) fn prepare(
             let mut substitution =
                 TypeSubstitutionEngine::materializing(&mut interner, &type_bindings, None)
                     .with_effect_arguments(&row_bindings)
-                    .with_expansion_depth(limits.max_expansion_depth);
+                    .with_expansion_depth(limits.max_expansion_depth)
+                    .with_execution_control(control);
             if let Some(signature) = template {
                 for ty in signature.params.iter().copied().chain([signature.output]) {
                     materialized.push(
@@ -233,7 +237,8 @@ pub(crate) fn prepare(
             drop(substitution);
             let names = HashMap::new();
             let mut validation = TypeSubstitutionEngine::existing(interner.store(), &names)
-                .with_expansion_depth(limits.max_expansion_depth);
+                .with_expansion_depth(limits.max_expansion_depth)
+                .with_execution_control(control);
             for ty in &materialized {
                 validation
                     .substitute(*ty)
