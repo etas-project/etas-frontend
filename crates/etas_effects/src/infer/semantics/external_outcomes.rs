@@ -1,0 +1,313 @@
+use etas_code::descriptor::{
+    CallableOutcomeInfo, DescriptorGraph, ParameterCallInfo, ParameterHandlerScopeInfo,
+    ReturnObservationInfo, TraceInfo,
+};
+use etas_types::{PrimitiveType, Type};
+
+use super::{engine::EffectSemantics, shared::*};
+use crate::{
+    CallableExitSummary, CallableOutcome, EffectRow, ExternalCallableContract, OutcomeAnalysisGap,
+    ParameterCallTarget, ParameterExitFact, ParameterHandlerScopeRef, RequestInstantiationSummary,
+    ReturnObservation,
+};
+
+impl EffectSemantics<'_> {
+    /// Replays only outcome branches whose portable control flow and checked
+    /// callback interface can be proved exactly. Other shapes remain unknown.
+    pub(super) fn external_callback_outcomes(
+        &self,
+        contract: &ExternalCallableContract,
+        summary: &EffectSummary,
+        signature: &etas_types::FlowType,
+        span: Span,
+    ) -> Option<CallableExitSummary> {
+        let graph =
+            DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default()).ok()?;
+        let checked_row = |reference| -> Option<EffectRow> {
+            let row = graph.effect_row(reference)?;
+            if row.tail.is_some() {
+                return None;
+            }
+            let mut effects = crate::EffectSet::new();
+            for effect in &row.effects {
+                effects.insert(self.checked_descriptor_action(contract, effect)?);
+            }
+            Some(EffectRow::closed(effects))
+        };
+        if checked_row(contract.header.analysis.effects.escaping?)? != summary.escaping_effects
+            || checked_row(contract.header.analysis.effects.requested?)?
+                != summary.requested_actions
+            || checked_row(contract.header.analysis.effects.default_handled?)?
+                != summary.default_actions
+        {
+            return None;
+        }
+        let independent = match contract.header.analysis.independent_determinism? {
+            etas_code::descriptor::DeterminismInfo::Deterministic => {
+                crate::Determinism::Deterministic
+            }
+            etas_code::descriptor::DeterminismInfo::RuntimeMediated => {
+                crate::Determinism::RuntimeMediated
+            }
+            etas_code::descriptor::DeterminismInfo::NonDeterministic => {
+                crate::Determinism::NonDeterministic
+            }
+        };
+        if summary.independent_determinism != Some(independent) {
+            return None;
+        }
+        let trace_root = contract.header.analysis.trace?;
+        let outcomes_root = contract.header.analysis.outcomes?;
+        let TraceInfo::ParameterCall(root_call) = graph.trace(trace_root)? else {
+            return None;
+        };
+        if root_call.callable != contract.header.id
+            || root_call.signature != contract.header.signature
+        {
+            return None;
+        }
+        let target = ParameterCallTarget::Interface(root_call.position);
+        if !matches!(&summary.action_trace, ActionTraceDomain::ParameterCall { target: actual, .. } if *actual == target)
+        {
+            return None;
+        }
+        let Type::Function(callback) = self
+            .types
+            .store
+            .get(*signature.input.get(root_call.position as usize)?)?
+        else {
+            return None;
+        };
+        if !callback.input.is_empty() || root_call.arguments.as_deref() != Some(&[]) {
+            return None;
+        }
+        let etas_code::descriptor::TypeInfo::Function(portable_signature) =
+            graph.type_info(contract.header.signature)?
+        else {
+            return None;
+        };
+        let portable_parameter = portable_signature
+            .parameters
+            .get(root_call.position as usize)?;
+        let etas_code::descriptor::TypeInfo::Function(portable_callback) =
+            graph.type_info(portable_parameter.ty)?
+        else {
+            return None;
+        };
+        if !portable_callback.parameters.is_empty()
+            || !same_primitive(
+                self.types.store.get(callback.output)?,
+                graph.type_info(portable_callback.output)?,
+            )
+        {
+            return None;
+        }
+        let callback_row = self.row_from_type_ref(callback.effects.as_ref()?);
+        if checked_row(portable_callback.effects?)? != callback_row {
+            return None;
+        }
+        let native_output = self.types.store.get(signature.output)?;
+        let portable_output = graph.type_info(portable_signature.output)?;
+        if !same_primitive(native_output, portable_output) {
+            return None;
+        }
+        let handlers = root_call.handlers.as_ref()?;
+        let RequestInstantiationSummary::Available { parameters, .. } = &summary.handler_requests
+        else {
+            return None;
+        };
+        let mut requests = parameters
+            .iter()
+            .filter(|parameter| parameter.target == target);
+        let excluded = requests.next()?.excluded.clone();
+        if requests.next().is_some() {
+            return None;
+        }
+        if callback_row.open.is_some() || summary.requested_actions.open.is_some() {
+            return None;
+        }
+        let mut requested = callback_row.effects;
+        let mut handled = crate::EffectSet::new();
+        for scope in handlers {
+            let ParameterHandlerScopeInfo::Handle { arms } = scope;
+            for arm in arms {
+                handled.insert(self.checked_descriptor_action(contract, &arm.action)?);
+                let mut pending = vec![arm.trace];
+                let mut seen = std::collections::BTreeSet::new();
+                while let Some(trace) = pending.pop() {
+                    if !seen.insert(trace.0) {
+                        continue;
+                    }
+                    match graph.trace(trace)? {
+                        TraceInfo::Empty => {}
+                        TraceInfo::Event(action) => {
+                            requested.insert(self.checked_descriptor_action(contract, action)?);
+                        }
+                        TraceInfo::Seq(parts) | TraceInfo::Choice(parts) => {
+                            pending.extend(parts.iter().copied())
+                        }
+                        TraceInfo::Repeat(inner) => pending.push(*inner),
+                        _ => return None,
+                    }
+                }
+            }
+        }
+        if handled != excluded || requested != summary.requested_actions.effects {
+            return None;
+        }
+        let scopes = handlers
+            .iter()
+            .enumerate()
+            .map(|(scope, _)| {
+                Some(ParameterHandlerScopeRef::External {
+                    graph: contract.descriptor_fingerprint,
+                    parameter_call: trace_root.0,
+                    call_index: 0,
+                    scope: u32::try_from(scope).ok()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let TraceInfo::Choice(branches) = graph.trace(outcomes_root)? else {
+            return None;
+        };
+        let mut exits = CallableExitSummary::default();
+        let mut callback_exit = false;
+        for branch in branches {
+            let TraceInfo::Seq(parts) = graph.trace(*branch)? else {
+                return None;
+            };
+            let [prefix, terminal] = parts.as_slice() else {
+                return None;
+            };
+            match graph.trace(*terminal)? {
+                TraceInfo::Outcome(CallableOutcomeInfo::Returned { ty, observation }) => {
+                    if graph.type_fingerprint(*ty).ok()?
+                        != graph.type_fingerprint(portable_signature.output).ok()?
+                        || graph.trace_fingerprint(*prefix).ok()?
+                            != graph.trace_fingerprint(trace_root).ok()?
+                    {
+                        return None;
+                    }
+                    let observation = match (native_output, observation) {
+                        (_, ReturnObservationInfo::Any) => ReturnObservation::Any,
+                        (Type::Primitive(PrimitiveType::Unit), ReturnObservationInfo::Unit) => {
+                            ReturnObservation::Unit
+                        }
+                        (
+                            Type::Primitive(PrimitiveType::Bool),
+                            ReturnObservationInfo::Bool(value),
+                        ) => ReturnObservation::Bool(*value),
+                        _ => return None,
+                    };
+                    exits.record(
+                        CallableOutcome::Returned {
+                            ty: signature.output,
+                            observation,
+                        },
+                        summary.action_trace.clone(),
+                    );
+                }
+                TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturn(call)) => {
+                    if !matches!(graph.trace(*prefix), Some(TraceInfo::Empty))
+                        || !same_call(&graph, root_call, call)
+                    {
+                        return None;
+                    }
+                    let source: crate::FrozenSourceLocation = span.into();
+                    exits.gaps.insert(OutcomeAnalysisGap::ParameterCall {
+                        target,
+                        output: callback.output,
+                        source: source.clone(),
+                    });
+                    exits.record_parameter_exit(ParameterExitFact {
+                        target,
+                        output: callback.output,
+                        source,
+                        arguments: Some(vec![]),
+                        handler_free: Some(scopes.is_empty()),
+                        enclosing_handled: Some(EffectRow::closed(excluded.clone())),
+                        enclosing_handlers: Some(scopes.clone()),
+                        prefix: ActionTraceDomain::Empty,
+                    });
+                    callback_exit = true;
+                }
+                _ => return None,
+            }
+        }
+        (!exits.exits.is_empty() && callback_exit).then_some(exits)
+    }
+
+    fn checked_descriptor_action(
+        &self,
+        contract: &ExternalCallableContract,
+        effect: &etas_code::descriptor::EffectInfo,
+    ) -> Option<crate::Effect> {
+        let etas_code::descriptor::EffectTargetInfo::Action {
+            effect: identity,
+            name,
+        } = &effect.target
+        else {
+            return None;
+        };
+        if !effect.arguments.is_empty() {
+            return None;
+        }
+        let mut resolved = None;
+        for (_, path) in contract
+            .effect_paths
+            .iter()
+            .filter(|(candidate, _)| candidate == identity)
+        {
+            let mut path = path.clone();
+            path.push(name.clone());
+            let Some(action) = self.registry.action_by_name(&path.join(".")) else {
+                continue;
+            };
+            if self
+                .registry
+                .action_signature(&action)
+                .is_none_or(|signature| !signature.effect_args.is_empty())
+            {
+                return None;
+            }
+            if resolved.as_ref().is_some_and(|prior| prior != &action) {
+                return None;
+            }
+            resolved = Some(action);
+        }
+        Some(crate::Effect::Action(resolved?))
+    }
+}
+
+fn same_primitive(native: &Type, portable: &etas_code::descriptor::TypeInfo) -> bool {
+    matches!(
+        (native, portable),
+        (
+            Type::Primitive(PrimitiveType::Unit),
+            etas_code::descriptor::TypeInfo::Primitive(etas_code::descriptor::PrimitiveInfo::Unit)
+        ) | (
+            Type::Primitive(PrimitiveType::Bool),
+            etas_code::descriptor::TypeInfo::Primitive(etas_code::descriptor::PrimitiveInfo::Bool)
+        )
+    )
+}
+
+fn same_call(graph: &DescriptorGraph, left: &ParameterCallInfo, right: &ParameterCallInfo) -> bool {
+    if left.callable != right.callable
+        || left.signature != right.signature
+        || left.position != right.position
+        || left.arguments != right.arguments
+    {
+        return false;
+    }
+    let (Some(left), Some(right)) = (&left.handlers, &right.handlers) else {
+        return false;
+    };
+    left.len() == right.len() && left.iter().zip(right).all(|(left, right)| {
+        let (ParameterHandlerScopeInfo::Handle { arms: left }, ParameterHandlerScopeInfo::Handle { arms: right }) = (left, right);
+        left.len() == right.len() && left.iter().zip(right).all(|(left, right)| {
+            left.action == right.action && left.completion == right.completion &&
+                matches!((graph.trace_fingerprint(left.trace), graph.trace_fingerprint(right.trace)), (Ok(left), Ok(right)) if left == right)
+        })
+    })
+}

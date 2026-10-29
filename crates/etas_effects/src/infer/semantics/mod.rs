@@ -9,6 +9,7 @@ mod constructor;
 mod definition_contract;
 pub mod engine;
 mod external;
+mod external_outcomes;
 pub mod handlers;
 mod inference;
 mod interprocedural;

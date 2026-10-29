@@ -132,12 +132,16 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             return PassResult::failed("effect checking requires the prepared effect registry");
         };
         let external_effect_metadata = prepared.dependencies().clone();
-        let external_summaries = external_effect_summaries(
+        let external_summaries = match external_effect_summaries(
             environment,
             types,
+            &context.std_registry,
             &external_anchors,
             &mut external_metadata_diagnostics,
-        );
+        ) {
+            Ok(summaries) => summaries,
+            Err(error) => return PassResult::failed(error),
+        };
         let external_trace_specs = external_trace_spec_summaries(
             environment,
             types,

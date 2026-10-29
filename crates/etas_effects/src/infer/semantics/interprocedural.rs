@@ -342,7 +342,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 );
             }
         };
-        self.note_call_outcomes(site.call, callee, &summary, &mut state);
+        self.note_call_outcomes(site.call, Some(callee), &summary, &mut state);
         state.summary.seq_assign(&summary);
         state = self.validate_returned_flow_source(&site, state);
         self.record_latent_realization(callee, site.call);

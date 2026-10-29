@@ -75,6 +75,13 @@ impl EffectSemantics<'_> {
             }
             match self.external_call_summary_for_path(path, &site, &mut state) {
                 Ok(Some(summary)) => {
+                    if summary.exits.is_some() {
+                        state
+                            .exits
+                            .gaps
+                            .remove(&crate::OutcomeAnalysisGap::ExternalCall(site.call));
+                        self.note_call_outcomes(site.call, None, &summary, &mut state);
+                    }
                     state.summary.seq_assign(&summary);
                     return state;
                 }

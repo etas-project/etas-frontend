@@ -475,7 +475,7 @@ impl EffectSemantics<'_> {
     pub(crate) fn note_call_outcomes(
         &mut self,
         call: HirExprId,
-        callee: EffectUnit,
+        callee: Option<EffectUnit>,
         summary: &crate::EffectSummary,
         state: &mut EffectState,
     ) {
@@ -563,7 +563,10 @@ impl EffectSemantics<'_> {
                 .as_ref()
                 .is_some_and(CallableExitSummary::returns_only)
         {
-            state.exits.gaps.insert(Gap::Callee(callee));
+            state
+                .exits
+                .gaps
+                .insert(callee.map_or(Gap::ExternalCall(call), Gap::Callee));
         }
     }
 

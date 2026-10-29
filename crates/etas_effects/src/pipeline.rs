@@ -70,6 +70,7 @@ pub struct ExternalCallableContract {
     pub descriptor_fingerprint: etas_code::CodeFingerprint,
     pub header: std::sync::Arc<etas_code::descriptor::CallableHeaderInfo>,
     pub graph: std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
+    pub effect_paths: std::sync::Arc<Vec<(etas_code::DefinitionKey, Vec<String>)>>,
 }
 
 #[derive(

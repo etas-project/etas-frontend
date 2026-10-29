@@ -85,6 +85,25 @@ impl EffectSemantics<'_> {
             .map(|position| crate::ParameterCallTarget::Interface(position as u32))
             .collect::<Vec<_>>();
         let trace_bindings = self.call_trace_bindings(site, &parameter_targets)?;
+        let signature = self
+            .checked_callable_type_for_expr(site.callee_expr)
+            .ok_or(
+                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+            )?;
+        if let Some(contract) = &metadata.callable_contract {
+            if let Some(control) = self.query_control {
+                control
+                    .checkpoint()
+                    .map_err(super::specialize::EffectSpecializationError::Interrupted)?;
+            }
+            summary.exits =
+                self.external_callback_outcomes(contract, &summary, signature, site.span);
+            if let Some(control) = self.query_control {
+                control
+                    .checkpoint()
+                    .map_err(super::specialize::EffectSpecializationError::Interrupted)?;
+            }
+        }
         let (type_bindings, effect_row_bindings) =
             self.checked_call_generic_values(site.call, state)?;
         self.require_named_effect_type_bindings(
@@ -104,11 +123,6 @@ impl EffectSemantics<'_> {
             &type_bindings,
             &effect_row_bindings,
         )?;
-        let signature = self
-            .checked_callable_type_for_expr(site.callee_expr)
-            .ok_or(
-                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
-            )?;
         let inferred_parameters =
             self.inferred_callback_parameters(&parameter_targets, &signature.input)?;
         self.merge_parameter_call_summaries(
@@ -120,6 +134,14 @@ impl EffectSemantics<'_> {
         )?;
         summary.action_trace =
             self.specialize_parameter_call_trace(&summary.action_trace, &trace_bindings, state)?;
+        if let Some(exits) = &mut summary.exits {
+            for exit in &mut exits.exits {
+                exit.trace =
+                    self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
+            }
+        }
+        self.solve_callback_completion(&mut summary, &trace_bindings, &type_bindings, state)?;
+        self.forward_callback_outcomes(&mut summary, &trace_bindings, &parameter_targets, state)?;
         if let Some(graph) = &metadata.returned_callables {
             let arguments = self.call_arguments(site, metadata.param_names.len())?;
             self.record_metadata_sources(

@@ -3,15 +3,14 @@ use crate::{
     CallableOutcome, EffectSummary, OutcomeAnalysisGap,
     infer::semantics::{engine::EffectSemantics, shared::*},
 };
-use etas_hir::SymbolId;
 use etas_types::{Assignable, TypeRelation};
 
 impl EffectSemantics<'_> {
-    pub(super) fn forward_callback_outcomes(
+    pub(crate) fn forward_callback_outcomes(
         &self,
         summary: &mut EffectSummary,
         bindings: &TraceArgumentBindings,
-        params: &[SymbolId],
+        params: &[crate::ParameterCallTarget],
         state: &EffectState,
     ) -> Result<(), EffectSpecializationError> {
         let Some(exits) = &mut summary.exits else {
@@ -68,9 +67,7 @@ impl EffectSemantics<'_> {
                     };
                     argument.value = params
                         .get(*position as usize)
-                        .and_then(|symbol| {
-                            bindings.get(&crate::ParameterCallTarget::Native(*symbol))
-                        })
+                        .and_then(|target| bindings.get(target))
                         .and_then(|binding| match binding {
                             TraceArgumentBinding::Expression(expr) => self.hir.exprs.get(*expr),
                             TraceArgumentBinding::Origins(_) => None,
@@ -105,7 +102,7 @@ impl EffectSemantics<'_> {
         Ok(())
     }
 
-    pub(super) fn solve_callback_completion(
+    pub(crate) fn solve_callback_completion(
         &self,
         summary: &mut EffectSummary,
         bindings: &TraceArgumentBindings,

@@ -276,7 +276,7 @@ impl EffectSemantics<'_> {
             }
         }
         self.solve_callback_completion(&mut specialized, &trace_bindings, &type_bindings, state)?;
-        self.forward_callback_outcomes(&mut specialized, &trace_bindings, &params, state)?;
+        self.forward_callback_outcomes(&mut specialized, &trace_bindings, &param_targets, state)?;
         Ok(specialized)
     }
 

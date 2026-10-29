@@ -209,12 +209,16 @@ pub(super) fn tool_provider_bindings(
 pub(super) fn external_effect_summaries(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
+    std_registry: &etas_std::StdRegistry,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalEffectSummaryMetadata>> {
+) -> Result<
+    Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalEffectSummaryMetadata>>,
+    String,
+> {
     let mut summaries = Vec::new();
     let mut seen = HashSet::<(Option<String>, Vec<String>)>::new();
-    let mut contracts = ExternalContractIndex::new(environment);
+    let mut contracts = ExternalContractIndex::new(environment, std_registry)?;
     for metadata in &environment.external_public_metadata {
         if anchors.package_span(metadata.package).is_none() {
             continue;
@@ -297,7 +301,7 @@ pub(super) fn external_effect_summaries(
             ));
         }
     }
-    summaries
+    Ok(summaries)
 }
 
 type ContractCandidate<'a> = (
@@ -311,13 +315,39 @@ struct ExternalContractIndex<'a> {
     candidates: BTreeMap<&'a etas_code::DefinitionKey, Vec<ContractCandidate<'a>>>,
     graphs: HashMap<usize, Arc<etas_code::descriptor::DescriptorGraphInput>>,
     fingerprints: HashMap<usize, etas_code::CodeFingerprint>,
+    effect_paths: Arc<Vec<(etas_code::DefinitionKey, Vec<String>)>>,
 }
 
 impl<'a> ExternalContractIndex<'a> {
-    fn new(environment: &'a ProjectEnvironmentInput) -> Self {
+    fn new(
+        environment: &'a ProjectEnvironmentInput,
+        std_registry: &etas_std::StdRegistry,
+    ) -> Result<Self, String> {
         let mut paths = HashMap::new();
         let mut candidates = BTreeMap::<_, Vec<_>>::new();
+        let mut effect_paths = Vec::new();
+        let package = crate::code::identity::standard_package_key(std_registry)
+            .map_err(|error| error.to_string())?;
+        for symbol in std_registry.symbols() {
+            if let Some(identity) =
+                crate::code::identity::standard_definition_key(std_registry, package, symbol)
+                    .map_err(|error| error.to_string())?
+                && identity.kind() == etas_code::DefinitionKind::Effect
+            {
+                effect_paths.push((identity, symbol.qualified_path.clone()));
+            }
+        }
         for (index, origin) in environment.external_definition_origins.iter().enumerate() {
+            effect_paths.extend(
+                origin
+                    .origins
+                    .declarations
+                    .iter()
+                    .filter(|binding| {
+                        binding.definition.kind() == etas_code::DefinitionKind::Effect
+                    })
+                    .map(|binding| (binding.definition.clone(), binding.path())),
+            );
             paths.insert(
                 origin.package,
                 origin
@@ -340,12 +370,13 @@ impl<'a> ExternalContractIndex<'a> {
                 }
             }
         }
-        Self {
+        Ok(Self {
             paths,
             candidates,
             graphs: HashMap::new(),
             fingerprints: HashMap::new(),
-        }
+            effect_paths: Arc::new(effect_paths),
+        })
     }
 
     fn get(
@@ -371,6 +402,7 @@ impl<'a> ExternalContractIndex<'a> {
             );
         }
         Ok(Some(etas_effects::ExternalCallableContract {
+            effect_paths: self.effect_paths.clone(),
             descriptor_fingerprint: *self
                 .fingerprints
                 .entry(index)
