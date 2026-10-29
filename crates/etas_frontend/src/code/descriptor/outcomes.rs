@@ -19,7 +19,7 @@ impl DefinitionDescriptorProjector<'_> {
                 return true;
             };
             exit.handler_free != Some(handlers.is_empty())
-                || self.checked_parameter_handler_rows(exit, exits).is_none()
+                || self.checked_parameter_handler_scopes(exit, exits).is_none()
         }) {
             return false;
         }

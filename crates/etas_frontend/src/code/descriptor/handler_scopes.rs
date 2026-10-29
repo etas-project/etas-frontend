@@ -1,13 +1,21 @@
-use etas_code::descriptor::ParameterHandlerScopeInfo;
+use etas_code::descriptor::{
+    ParameterHandlerArmInfo, ParameterHandlerScopeInfo, ReturnObservationInfo,
+};
 use etas_effects::{
-    ActionTraceDomain, CallableExitSummary, CallableOutcome, Effect, EffectRow, EffectSet,
-    EffectSummary, EffectUnit, FinishSummary, ParameterCallTarget, ParameterExitFact,
-    ResumeSummary, ReturnObservation,
+    ActionTraceDomain, CallableExitSummary, CallableOutcome, Effect, EffectSummary, EffectUnit,
+    FinishSummary, ParameterCallTarget, ParameterExitFact, ResumeSummary, ReturnObservation,
 };
 use etas_hir::{HirExpr, HirExprId, HirOwner, HirPat, ResolveResult};
-use etas_types::{PrimitiveType, Type};
+use etas_types::{PrimitiveType, Type, TypeId};
 
 use super::{DefinitionDescriptorProjector, ProjectionError};
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct CheckedResumeArm {
+    action: Effect,
+    result_type: TypeId,
+    value: ReturnObservationInfo,
+}
 
 impl DefinitionDescriptorProjector<'_> {
     pub(super) fn handler_scope_source(&self, handler: HirExprId) -> Option<etas_core::Span> {
@@ -26,11 +34,11 @@ impl DefinitionDescriptorProjector<'_> {
 
     /// Resolve a scope only from checked handler and handler-arm facts. An
     /// unavailable transformer stays unavailable; it is never an empty scope.
-    pub(super) fn checked_resume_unit_scope(
+    pub(super) fn checked_resume_scope(
         &self,
         handler: HirExprId,
         exits: &CallableExitSummary,
-    ) -> Option<EffectRow> {
+    ) -> Option<Vec<CheckedResumeArm>> {
         let span = self.handler_scope_source(handler)?;
         let mut evidence = exits
             .handler_gaps
@@ -50,7 +58,7 @@ impl DefinitionDescriptorProjector<'_> {
         if handlers.len() != fact.arms.len() || !fact.produced.is_empty() {
             return None;
         }
-        let mut actions = EffectSet::new();
+        let mut arms = Vec::new();
         for (arm, fact) in handlers.iter().zip(&fact.arms) {
             if fact.unit != (EffectUnit::HandlerArm { owner, arm: *arm })
                 || !fact.resumable
@@ -87,13 +95,7 @@ impl DefinitionDescriptorProjector<'_> {
             }
             self.checked.effect_registry.action_signature(action)?;
             let signature = self.checked.types.action_signatures.get(&symbol)?;
-            if signature.returns_never
-                || checked_action.params.len() != data.patterns.len()
-                || !matches!(
-                    self.checked.type_store.get(checked_action.output),
-                    Some(Type::Primitive(PrimitiveType::Unit))
-                )
-            {
+            if signature.returns_never || checked_action.params.len() != data.patterns.len() {
                 return None;
             }
             let summary = effects.unit_effects.get(&fact.unit)?;
@@ -106,33 +108,44 @@ impl DefinitionDescriptorProjector<'_> {
                 return None;
             }
             let exit = &completion.exits[0];
-            if exit.trace != ActionTraceDomain::Empty
-                || !matches!(exit.outcome, CallableOutcome::HandlerResumed {
-                    ty,
-                    observation: ReturnObservation::Unit,
-                } if matches!(self.checked.type_store.get(ty), Some(Type::Primitive(PrimitiveType::Unit))))
-            {
+            let CallableOutcome::HandlerResumed { ty, observation } = &exit.outcome else {
+                return None;
+            };
+            if exit.trace != ActionTraceDomain::Empty || *ty != checked_action.output {
                 return None;
             }
+            let value = match (self.checked.type_store.get(*ty), observation) {
+                (Some(Type::Primitive(PrimitiveType::Unit)), ReturnObservation::Unit) => {
+                    ReturnObservationInfo::Unit
+                }
+                (Some(Type::Primitive(PrimitiveType::Bool)), ReturnObservation::Bool(value)) => {
+                    ReturnObservationInfo::Bool(*value)
+                }
+                _ => return None,
+            };
             let mut expected = EffectSummary::local();
             expected.exits = Some(completion.clone());
             if summary != &expected {
                 return None;
             }
-            actions.insert(effect.clone());
+            arms.push(CheckedResumeArm {
+                action: effect.clone(),
+                result_type: *ty,
+                value,
+            });
         }
-        Some(EffectRow::closed(actions))
+        Some(arms)
     }
 
-    pub(super) fn checked_parameter_handler_rows(
+    pub(super) fn checked_parameter_handler_scopes(
         &self,
         exit: &ParameterExitFact,
         exits: &CallableExitSummary,
-    ) -> Option<Vec<EffectRow>> {
+    ) -> Option<Vec<Vec<CheckedResumeArm>>> {
         exit.enclosing_handlers
             .as_ref()?
             .iter()
-            .map(|handler| self.checked_resume_unit_scope(*handler, exits))
+            .map(|handler| self.checked_resume_scope(*handler, exits))
             .collect()
     }
 
@@ -153,18 +166,28 @@ impl DefinitionDescriptorProjector<'_> {
         let Some(first) = matching.next() else {
             return Ok(None);
         };
-        let Some(rows) = self.checked_parameter_handler_rows(first, exits) else {
+        let Some(scopes) = self.checked_parameter_handler_scopes(first, exits) else {
             return Ok(None);
         };
-        if matching
-            .any(|exit| self.checked_parameter_handler_rows(exit, exits).as_ref() != Some(&rows))
-        {
+        if matching.any(|exit| {
+            self.checked_parameter_handler_scopes(exit, exits).as_ref() != Some(&scopes)
+        }) {
             return Ok(None);
         }
-        rows.iter()
-            .map(|row| {
-                self.analysis_row(row, scope)
-                    .map(|actions| ParameterHandlerScopeInfo::ResumeUnit { actions })
+        scopes
+            .iter()
+            .map(|arms| {
+                let arms = arms
+                    .iter()
+                    .map(|arm| {
+                        Ok(ParameterHandlerArmInfo {
+                            action: self.analysis_effect(&arm.action, scope)?,
+                            result_type: self.type_ref(arm.result_type, scope)?,
+                            value: arm.value.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ProjectionError>>()?;
+                Ok(ParameterHandlerScopeInfo::Resume { arms })
             })
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
