@@ -1,13 +1,14 @@
-use etas_core::Span;
-use etas_hir::HirExprId;
-
 use super::{EffectSemantics, EffectSpecializationError};
-use crate::{Effect, EffectCoverage, EffectRow, EffectSet, EffectSummary, ParameterCallTarget};
+use crate::{
+    EffectCoverage, EffectRow, EffectSet, EffectSummary, ParameterCallTarget,
+    RequestInstantiationSummary,
+};
+use etas_core::Span;
 
 impl EffectSemantics<'_> {
     pub(super) fn remove_intercepted_callback_defaults(
         &self,
-        target: &EffectSummary,
+        target: &mut EffectSummary,
         parameter: ParameterCallTarget,
         span: Span,
         callback: &mut EffectSummary,
@@ -15,6 +16,7 @@ impl EffectSemantics<'_> {
         let intercepted =
             self.definitely_intercepted_callback_defaults(target, parameter, span, callback)?;
         if !intercepted.is_empty() {
+            target.record_handled_action_row(intercepted.clone());
             let coverage = EffectCoverage {
                 registry: self.registry,
                 types: &self.types.store,
@@ -33,13 +35,13 @@ impl EffectSemantics<'_> {
         span: Span,
         callback: &EffectSummary,
     ) -> Result<EffectRow, EffectSpecializationError> {
-        let Some(exits) = &target.exits else {
+        let RequestInstantiationSummary::Available { parameters, .. } = &target.handler_requests
+        else {
             return Ok(EffectRow::empty());
         };
-        let matching = exits
-            .parameter_exits
+        let matching = parameters
             .iter()
-            .filter(|exit| exit.target == parameter && exit.source.span() == span)
+            .filter(|request| request.target == parameter && request.span == span)
             .collect::<Vec<_>>();
         if matching.is_empty() {
             return Ok(EffectRow::empty());
@@ -51,19 +53,17 @@ impl EffectSemantics<'_> {
         let mut handled = EffectSet::new();
         for action in callback.default_actions.effects.iter() {
             let mut every_path = true;
-            for exit in &matching {
-                let Some(scopes) = &exit.enclosing_handlers else {
-                    every_path = false;
-                    break;
-                };
-                let mut intercepted = false;
-                for handler in scopes {
-                    if self.handler_unconditionally_intercepts(*handler, action, &coverage)? {
-                        intercepted = true;
-                        break;
-                    }
+            for request in &matching {
+                if let Some(control) = self.query_control {
+                    control
+                        .checkpoint()
+                        .map_err(EffectSpecializationError::Interrupted)?;
                 }
-                if !intercepted {
+                if !request
+                    .excluded
+                    .iter()
+                    .any(|handled| coverage.covers(handled, action))
+                {
                     every_path = false;
                     break;
                 }
@@ -73,20 +73,5 @@ impl EffectSemantics<'_> {
             }
         }
         Ok(EffectRow::closed(handled))
-    }
-
-    fn handler_unconditionally_intercepts(
-        &self,
-        handler: HirExprId,
-        action: &Effect,
-        coverage: &EffectCoverage<'_>,
-    ) -> Result<bool, EffectSpecializationError> {
-        let handled = self
-            .definitely_handled_actions(handler)
-            .map_err(EffectSpecializationError::Interrupted)?;
-        Ok(handled
-            .effects
-            .iter()
-            .any(|effect| coverage.covers(effect, action)))
     }
 }

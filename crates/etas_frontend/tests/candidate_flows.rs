@@ -187,6 +187,84 @@ flow inspect() -> unit { let definition = ^normalize; return; }"#,
 }
 
 #[test]
+fn changing_the_intercepted_action_changes_the_frozen_callback_contract() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+flow normalize(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with { Console.stdout_write(_) => { resume; } };
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let draft = store
+        .with_body(
+            &original,
+            store
+                .syntax_operations()
+                .parse_body(
+                    "handle { f(); } with { Console.stderr_write(_) => { resume; } }; return;",
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let overlay = store
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(store.syntax_operations())
+        .unwrap();
+    let report = FrontendSession::new()
+        .analyze_body_overlay(overlay)
+        .unwrap()
+        .check_report(Default::default())
+        .unwrap();
+    assert_ne!(report.status, CheckStatus::Accepted, "{report:?}");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "code::ActionTraceNotContained"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn changing_non_unit_resume_value_is_not_treated_as_a_unit_transformer() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+effect Choice { action decide() -> bool; }
+flow normalize(f: () -> unit ![Choice.decide]) -> unit ![] {
+    handle { f(); } with { Choice.decide() => { resume true; } };
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let draft = store
+        .with_body(
+            &original,
+            store
+                .syntax_operations()
+                .parse_body(
+                    "handle { f(); } with { Choice.decide() => { resume false; } }; return;",
+                )
+                .unwrap(),
+        )
+        .unwrap();
+    let overlay = store
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(store.syntax_operations())
+        .unwrap();
+    let report = FrontendSession::new()
+        .analyze_body_overlay(overlay)
+        .unwrap()
+        .check_report(Default::default())
+        .unwrap();
+    assert_ne!(report.status, CheckStatus::Accepted, "{report:?}");
+}
+
+#[test]
 fn flow_edit_preserves_callable_identity_without_becoming_an_agent() {
     let (store, expr) = definitions();
     let original = store.reflect_flow(expr).unwrap();

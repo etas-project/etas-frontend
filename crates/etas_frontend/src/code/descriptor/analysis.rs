@@ -233,12 +233,15 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 ActionTraceDomain::ParameterCall { target, span, .. } => {
                     self.edge()?;
+                    let handlers =
+                        self.project_parameter_handler_scopes(*target, *span, exits, scope)?;
                     TraceInfo::ParameterCall(parameter_call(
                         callable,
                         signature,
                         parameters,
                         *target,
                         self.parameter_arguments(signature, parameters, *target, *span, exits),
+                        handlers,
                     )?)
                 }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
@@ -272,6 +275,12 @@ impl DefinitionDescriptorProjector<'_> {
                         let mut calls = Vec::with_capacity(parameter_calls.len());
                         for call in parameter_calls {
                             self.edge()?;
+                            let handlers = self.project_parameter_handler_scopes(
+                                call.target,
+                                call.span,
+                                exits,
+                                scope,
+                            )?;
                             calls.push(parameter_call(
                                 callable,
                                 signature,
@@ -284,6 +293,7 @@ impl DefinitionDescriptorProjector<'_> {
                                     call.span,
                                     exits,
                                 ),
+                                handlers,
                             )?);
                         }
                         TraceInfo::Widened {
@@ -356,6 +366,7 @@ pub(super) fn parameter_call(
     parameters: &[etas_hir::SymbolId],
     target: etas_effects::ParameterCallTarget,
     arguments: Option<Vec<ParameterArgumentInfo>>,
+    handlers: Option<Vec<ParameterHandlerScopeInfo>>,
 ) -> Result<ParameterCallInfo, ProjectionError> {
     let mut positions = parameters
         .iter()
@@ -367,6 +378,7 @@ pub(super) fn parameter_call(
             signature,
             position: position as u32,
             arguments,
+            handlers,
         }),
         _ => Err(ProjectionError::Invalid(
             "trace parameter call has no unique signature parameter".into(),

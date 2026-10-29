@@ -14,14 +14,13 @@ impl DefinitionDescriptorProjector<'_> {
         if exits.gaps.is_empty() {
             return exits.parameter_exits.is_empty();
         }
-        // A callable's escaping row does not bound its default-handled
-        // requests. Until handler-aware callback outcomes are available, an
-        // enclosing handler can change its control flow even for ![].
-        if exits
-            .parameter_exits
-            .iter()
-            .any(|exit| exit.handler_free != Some(true))
-        {
+        if exits.parameter_exits.iter().any(|exit| {
+            let Some(handlers) = &exit.enclosing_handlers else {
+                return true;
+            };
+            exit.handler_free != Some(handlers.is_empty())
+                || self.checked_parameter_handler_rows(exit, exits).is_none()
+        }) {
             return false;
         }
         let Some(Some(TypeInfo::Function(owner))) = self.types.get(signature.0 as usize) else {
@@ -42,7 +41,18 @@ impl DefinitionDescriptorProjector<'_> {
                 matching.is_empty()
                     || matching.iter().any(|evidence| {
                         !evidence.normal_control
-                            || !coverage.rows_disjoint(&evidence.handled, &evidence.body_escaping)
+                            || (!exits.parameter_exits.iter().any(|exit| {
+                                exit.enclosing_handlers.as_ref().is_some_and(|handlers| {
+                                    handlers.iter().any(|handler| {
+                                        self.handler_scope_source(*handler) == Some(source.span())
+                                    })
+                                })
+                            }) && (!exits
+                                .parameter_exits
+                                .iter()
+                                .all(|exit| exit.handler_free == Some(true))
+                                || !coverage
+                                    .rows_disjoint(&evidence.handled, &evidence.body_escaping)))
                     })
             }
             _ => true,
@@ -110,82 +120,10 @@ impl DefinitionDescriptorProjector<'_> {
             arguments.len() == callback.parameters.len()
                 && callback.generics.is_empty()
                 && row.tail.is_none()
-                && (row.effects.is_empty()
-                    || ((exit.handler_free == Some(true)
-                        || exit
-                            .enclosing_handled
-                            .as_ref()
-                            .is_some_and(|handled| self.handler_row_disjoint(handled, row)))
-                        && row.effects.iter().all(|effect| {
-                            matches!(effect.target, EffectTargetInfo::Action { .. })
-                        })))
-        })
-    }
-
-    fn handler_row_disjoint(
-        &self,
-        handled: &etas_effects::EffectRow,
-        callback: &EffectRowInfo,
-    ) -> bool {
-        if handled.open.is_some() {
-            return false;
-        }
-        handled.effects.iter().all(|effect| {
-            let (tag, action) = match effect {
-                etas_effects::Effect::Tag(tag) | etas_effects::Effect::Applied { tag, .. } => {
-                    (*tag, None)
-                }
-                etas_effects::Effect::Action(action) => (action.tag, Some(action)),
-                etas_effects::Effect::AppliedAction(instance) => {
-                    (instance.action.tag, Some(&instance.action))
-                }
-                etas_effects::Effect::Error(_) => {
-                    let Some(tag) = self
-                        .checked
-                        .effect_registry
-                        .tag_by_core(etas_effects::CoreEffect::Error)
-                    else {
-                        return false;
-                    };
-                    (tag, None)
-                }
-                etas_effects::Effect::Var(_) => return false,
-            };
-            if self.identities.effect_tag(tag).is_err() {
-                return false;
-            }
-            let action_name = match action {
-                Some(action) => match self.checked.effect_registry.action_signature(action) {
-                    Some(signature) => Some(signature.name.as_str()),
-                    None => return false,
-                },
-                None => None,
-            };
-            callback.effects.iter().all(|effect| match &effect.target {
-                EffectTargetInfo::Action { effect, name } => {
-                    let mut candidates = self.checked.effect_registry.tags().filter_map(|tag| {
-                        self.identities
-                            .effect_tag(tag.id)
-                            .ok()
-                            .filter(|identity| *identity == effect)
-                            .map(|_| tag.id)
-                    });
-                    let Some(callback_tag) = candidates.next() else {
-                        return false;
-                    };
-                    if candidates.next().is_some() {
-                        return false;
-                    }
-                    action_tags_disjoint(
-                        self.checked.effect_registry,
-                        tag,
-                        action_name,
-                        callback_tag,
-                        name,
-                    )
-                }
-                EffectTargetInfo::Effect(_) => false,
-            })
+                && row
+                    .effects
+                    .iter()
+                    .all(|effect| matches!(effect.target, EffectTargetInfo::Action { .. }))
         })
     }
 
@@ -306,6 +244,12 @@ impl DefinitionDescriptorProjector<'_> {
                 parameters,
                 exit.target,
                 arguments,
+                self.project_parameter_handler_scopes(
+                    exit.target,
+                    exit.source.span(),
+                    Some(exits),
+                    scope,
+                )?,
             )?;
             let terminal = self.reserve_trace()?;
             self.traces[terminal.0 as usize] = Some(TraceInfo::Outcome(
@@ -318,25 +262,6 @@ impl DefinitionDescriptorProjector<'_> {
         self.traces[root.0 as usize] = Some(TraceInfo::Choice(branches));
         Ok(root)
     }
-}
-
-fn action_tags_disjoint(
-    registry: &etas_effects::EffectRegistry,
-    handled: etas_effects::EffectTagId,
-    handled_action: Option<&str>,
-    callback: etas_effects::EffectTagId,
-    callback_action: &str,
-) -> bool {
-    if registry.tag_name(handled).is_none()
-        || registry.tag_name(callback).is_none()
-        || !registry.unresolved_dependency_extensions().is_empty()
-    {
-        return false;
-    }
-    if handled == callback {
-        return handled_action.is_some_and(|action| action != callback_action);
-    }
-    !registry.tag_extends(handled, callback) && !registry.tag_extends(callback, handled)
 }
 
 fn linear_site_count(
@@ -371,8 +296,6 @@ fn linear_site_count(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn handler_disjointness_accounts_for_effect_extensions() {
         use etas_effects::{
@@ -404,28 +327,16 @@ mod tests {
         let parent = registry.tag_by_name("example.Parent").unwrap();
         let child = registry.tag_by_name("example.Child").unwrap();
         let other = registry.tag_by_name("example.Other").unwrap();
-        assert!(!action_tags_disjoint(&registry, parent, None, child, "act"));
-        assert!(!action_tags_disjoint(
-            &registry,
-            child,
-            Some("a"),
-            parent,
-            "b"
-        ));
-        assert!(action_tags_disjoint(&registry, parent, None, other, "act"));
-        assert!(action_tags_disjoint(
-            &registry,
-            parent,
-            Some("a"),
-            parent,
-            "b"
-        ));
-        assert!(!action_tags_disjoint(
-            &registry,
-            parent,
-            Some("a"),
-            parent,
-            "a"
-        ));
+        let types = etas_types::TypeStore::new();
+        let coverage = etas_effects::EffectCoverage {
+            registry: &registry,
+            types: &types,
+        };
+        let row = |tag| {
+            etas_effects::EffectRow::closed([etas_effects::Effect::Tag(tag)].into_iter().collect())
+        };
+        assert!(!coverage.rows_disjoint(&row(parent), &row(child)));
+        assert!(!coverage.rows_disjoint(&row(child), &row(parent)));
+        assert!(coverage.rows_disjoint(&row(parent), &row(other)));
     }
 }

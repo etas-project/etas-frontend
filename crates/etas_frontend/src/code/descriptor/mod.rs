@@ -1,5 +1,6 @@
 mod analysis;
 mod effects;
+mod handler_scopes;
 mod input;
 mod outcomes;
 mod project;
