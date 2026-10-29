@@ -1,14 +1,14 @@
 use etas_code::descriptor::{
-    CallableOutcomeInfo, DescriptorGraph, ParameterCallInfo, ParameterHandlerScopeInfo,
-    ReturnObservationInfo, TraceInfo,
+    CallableOutcomeInfo, DescriptorGraph, ParameterArgumentInfo, ParameterCallInfo,
+    ParameterHandlerScopeInfo, ReturnObservationInfo, TraceInfo,
 };
 use etas_types::{PrimitiveType, Type};
 
 use super::{engine::EffectSemantics, shared::*};
 use crate::{
     CallableExitSummary, CallableOutcome, EffectRow, ExternalCallableContract, OutcomeAnalysisGap,
-    ParameterCallTarget, ParameterExitFact, ParameterHandlerScopeRef, RequestInstantiationSummary,
-    ReturnObservation,
+    ParameterArgumentValue, ParameterCallTarget, ParameterExitArgument, ParameterExitFact,
+    ParameterHandlerScopeRef, RequestInstantiationSummary, ReturnObservation,
 };
 
 impl EffectSemantics<'_> {
@@ -78,9 +78,6 @@ impl EffectSemantics<'_> {
         else {
             return None;
         };
-        if !callback.input.is_empty() || root_call.arguments.as_deref() != Some(&[]) {
-            return None;
-        }
         let etas_code::descriptor::TypeInfo::Function(portable_signature) =
             graph.type_info(contract.header.signature)?
         else {
@@ -94,7 +91,7 @@ impl EffectSemantics<'_> {
         else {
             return None;
         };
-        if !portable_callback.parameters.is_empty()
+        if portable_callback.parameters.len() != callback.input.len()
             || !same_primitive(
                 self.types.store.get(callback.output)?,
                 graph.type_info(portable_callback.output)?,
@@ -102,6 +99,51 @@ impl EffectSemantics<'_> {
         {
             return None;
         }
+        let source: crate::FrozenSourceLocation = span.into();
+        let arguments = root_call.arguments.as_ref()?;
+        if arguments.len() != callback.input.len() {
+            return None;
+        }
+        let arguments = arguments
+            .iter()
+            .zip(&callback.input)
+            .zip(&portable_callback.parameters)
+            .map(|((argument, ty), portable)| {
+                if !same_primitive(self.types.store.get(*ty)?, graph.type_info(portable.ty)?) {
+                    return None;
+                }
+                let value = match argument {
+                    ParameterArgumentInfo::Bool(value) => ParameterArgumentValue::Bool(*value),
+                    ParameterArgumentInfo::Integer {
+                        negative,
+                        magnitude,
+                    } => ParameterArgumentValue::Integer {
+                        negative: *negative,
+                        magnitude: *magnitude,
+                    },
+                    ParameterArgumentInfo::Input { position } => {
+                        let owner_ty = *signature.input.get(*position as usize)?;
+                        let portable_owner =
+                            portable_signature.parameters.get(*position as usize)?;
+                        if owner_ty != *ty
+                            || graph.type_fingerprint(portable_owner.ty).ok()?
+                                != graph.type_fingerprint(portable.ty).ok()?
+                        {
+                            return None;
+                        }
+                        ParameterArgumentValue::Input {
+                            position: *position,
+                        }
+                    }
+                };
+                Some(ParameterExitArgument {
+                    name: None,
+                    ty: *ty,
+                    source: source.clone(),
+                    value: Some(value),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
         let callback_row = self.row_from_type_ref(callback.effects.as_ref()?);
         if checked_row(portable_callback.effects?)? != callback_row {
             return None;
@@ -213,7 +255,6 @@ impl EffectSemantics<'_> {
                     {
                         return None;
                     }
-                    let source: crate::FrozenSourceLocation = span.into();
                     exits.gaps.insert(OutcomeAnalysisGap::ParameterCall {
                         target,
                         output: callback.output,
@@ -222,8 +263,8 @@ impl EffectSemantics<'_> {
                     exits.record_parameter_exit(ParameterExitFact {
                         target,
                         output: callback.output,
-                        source,
-                        arguments: Some(vec![]),
+                        source: source.clone(),
+                        arguments: Some(arguments.clone()),
                         handler_free: Some(scopes.is_empty()),
                         enclosing_handled: Some(EffectRow::closed(excluded.clone())),
                         enclosing_handlers: Some(scopes.clone()),
@@ -280,14 +321,69 @@ impl EffectSemantics<'_> {
 }
 
 fn same_primitive(native: &Type, portable: &etas_code::descriptor::TypeInfo) -> bool {
+    use etas_code::descriptor::{PrimitiveInfo as P, TypeInfo};
     matches!(
         (native, portable),
         (
             Type::Primitive(PrimitiveType::Unit),
-            etas_code::descriptor::TypeInfo::Primitive(etas_code::descriptor::PrimitiveInfo::Unit)
+            TypeInfo::Primitive(P::Unit)
+        ) | (
+            Type::Primitive(PrimitiveType::Never),
+            TypeInfo::Primitive(P::Never)
         ) | (
             Type::Primitive(PrimitiveType::Bool),
-            etas_code::descriptor::TypeInfo::Primitive(etas_code::descriptor::PrimitiveInfo::Bool)
+            TypeInfo::Primitive(P::Bool)
+        ) | (
+            Type::Primitive(PrimitiveType::I8),
+            TypeInfo::Primitive(P::I8)
+        ) | (
+            Type::Primitive(PrimitiveType::I16),
+            TypeInfo::Primitive(P::I16)
+        ) | (
+            Type::Primitive(PrimitiveType::I32),
+            TypeInfo::Primitive(P::I32)
+        ) | (
+            Type::Primitive(PrimitiveType::I64),
+            TypeInfo::Primitive(P::I64)
+        ) | (
+            Type::Primitive(PrimitiveType::I128),
+            TypeInfo::Primitive(P::I128)
+        ) | (
+            Type::Primitive(PrimitiveType::ISize),
+            TypeInfo::Primitive(P::Isize)
+        ) | (
+            Type::Primitive(PrimitiveType::U8),
+            TypeInfo::Primitive(P::U8)
+        ) | (
+            Type::Primitive(PrimitiveType::U16),
+            TypeInfo::Primitive(P::U16)
+        ) | (
+            Type::Primitive(PrimitiveType::U32),
+            TypeInfo::Primitive(P::U32)
+        ) | (
+            Type::Primitive(PrimitiveType::U64),
+            TypeInfo::Primitive(P::U64)
+        ) | (
+            Type::Primitive(PrimitiveType::U128),
+            TypeInfo::Primitive(P::U128)
+        ) | (
+            Type::Primitive(PrimitiveType::USize),
+            TypeInfo::Primitive(P::Usize)
+        ) | (
+            Type::Primitive(PrimitiveType::F32),
+            TypeInfo::Primitive(P::F32)
+        ) | (
+            Type::Primitive(PrimitiveType::F64),
+            TypeInfo::Primitive(P::F64)
+        ) | (
+            Type::Primitive(PrimitiveType::Char),
+            TypeInfo::Primitive(P::Char)
+        ) | (
+            Type::Primitive(PrimitiveType::String),
+            TypeInfo::Primitive(P::String)
+        ) | (
+            Type::Primitive(PrimitiveType::Bytes),
+            TypeInfo::Primitive(P::Bytes)
         )
     )
 }
