@@ -1,6 +1,6 @@
 use etas_core::Span;
 use etas_hir::{HirBlockId, HirExprId};
-use etas_utils::{FixpointEngine, JoinSemiLattice};
+use etas_utils::{ConvergenceStatus, FixpointEngine, JoinSemiLattice};
 
 use super::Traversal;
 use crate::intraprocedural::{Control, HirAnalysisSemantics};
@@ -15,19 +15,23 @@ where
         body: HirBlockId,
         initial: S::Domain,
     ) -> Result<Control<S::Domain>, E> {
-        let fixed = FixpointEngine::default()
-            .try_solve(initial, |state| {
-                let body_control = self.block_control(body, state.clone())?;
-                let mut back_edge = S::Domain::bottom();
-                if let Some(normal) = body_control.normal_state() {
-                    back_edge.join_assign(normal);
-                }
-                if let Some(continued) = body_control.continue_state() {
-                    back_edge.join_assign(continued);
-                }
-                Ok(state.join_assign(&back_edge))
-            })?
-            .value;
+        let solved = FixpointEngine::default().try_solve(initial, |state| {
+            let body_control = self.block_control(body, state.clone())?;
+            let mut back_edge = S::Domain::bottom();
+            if let Some(normal) = body_control.normal_state() {
+                back_edge.join_assign(normal);
+            }
+            if let Some(continued) = body_control.continue_state() {
+                back_edge.join_assign(continued);
+            }
+            Ok(state.join_assign(&back_edge))
+        })?;
+        let fixed = match solved.status {
+            ConvergenceStatus::Converged => solved.value,
+            ConvergenceStatus::IterationLimitReached => {
+                self.semantics.incomplete_facts(solved.value)
+            }
+        };
 
         let body_control = self.block_control(body, fixed.clone())?;
         let mut result = Control::normal(fixed);

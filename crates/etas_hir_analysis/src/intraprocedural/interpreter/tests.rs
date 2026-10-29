@@ -13,6 +13,7 @@ use crate::intraprocedural::{AnalysisStep, HirAbstractInterpreter, HirAnalysisSe
 struct EventDomain {
     events: BTreeSet<&'static str>,
     incomplete: bool,
+    growth: usize,
 }
 
 impl EventDomain {
@@ -33,7 +34,9 @@ impl EventDomain {
 
 impl PartialOrder for EventDomain {
     fn less_equal(&self, other: &Self) -> bool {
-        self.events.is_subset(&other.events) && (!self.incomplete || other.incomplete)
+        self.events.is_subset(&other.events)
+            && (!self.incomplete || other.incomplete)
+            && self.growth <= other.growth
     }
 }
 
@@ -45,9 +48,13 @@ impl JoinSemiLattice for EventDomain {
     fn join_assign(&mut self, other: &Self) -> bool {
         let old_len = self.events.len();
         let old_incomplete = self.incomplete;
+        let old_growth = self.growth;
         self.events.extend(other.events.iter().copied());
         self.incomplete |= other.incomplete;
-        self.events.len() != old_len || self.incomplete != old_incomplete
+        self.growth = self.growth.max(other.growth);
+        self.events.len() != old_len
+            || self.incomplete != old_incomplete
+            || self.growth != old_growth
     }
 }
 
@@ -69,6 +76,7 @@ struct TraceSemantics {
     match_entries: Vec<(HirExprId, HirExprId, HirPatId, usize)>,
     match_event: Option<&'static str>,
     symbolic_match_entries: Vec<(HirExprId, HirPatId, bool)>,
+    growing_expr: Option<HirExprId>,
 }
 
 impl TraceSemantics {
@@ -91,6 +99,7 @@ impl TraceSemantics {
             match_entries: Vec::new(),
             match_event: None,
             symbolic_match_entries: Vec::new(),
+            growing_expr: None,
         }
     }
 
@@ -149,6 +158,10 @@ impl HirAnalysisSemantics for TraceSemantics {
 
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         self.started_exprs.push(expr);
+        let mut state = state;
+        if self.growing_expr == Some(expr) {
+            state.growth += 1;
+        }
         self.expr_events
             .get(&expr)
             .map(|event| state.clone().with_event(event))
@@ -817,6 +830,38 @@ fn solves_loop_body_to_fixpoint() {
 
     assert!(result.events.contains("loop-body"));
     assert!(!result.incomplete);
+}
+
+#[test]
+fn loop_iteration_limit_marks_nonconverged_facts_incomplete() {
+    let mut builder = HirBuilder::default();
+    let tick = builder.literal();
+    let condition = builder.literal();
+    let returned = builder.return_stmt(None);
+    let then_block = builder.block(vec![returned], None);
+    let else_block = builder.block(Vec::new(), None);
+    let branch = builder.expr(HirExpr::If {
+        cond: condition,
+        then_block,
+        else_branch: Some(HirElseBranch::Block(else_block)),
+        span: span(),
+    });
+    let branch = builder.stmt(HirStmt::If(branch));
+    let tick = builder.expr_stmt(tick);
+    let loop_body = builder.block(vec![tick, branch], None);
+    let retry = builder.retry_stmt(loop_body);
+    let root = builder.block(vec![retry], None);
+    let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+    semantics.growing_expr = Some(condition);
+
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let control = interpreter.block_control(root, EventDomain::initial());
+
+    let normal = control.normal_state().expect("normal loop exit");
+    let returned = control.return_state().expect("return from loop");
+    assert!(normal.growth >= etas_utils::IterationLimit::DEFAULT.max_iterations());
+    assert!(normal.incomplete, "normal facts must be incomplete");
+    assert!(returned.incomplete, "return facts must be incomplete");
 }
 
 #[test]
