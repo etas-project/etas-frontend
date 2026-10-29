@@ -310,6 +310,7 @@ struct ExternalContractIndex<'a> {
     paths: HashMap<crate::ExternalPackageId, HashMap<Vec<String>, &'a etas_code::DefinitionKey>>,
     candidates: BTreeMap<&'a etas_code::DefinitionKey, Vec<ContractCandidate<'a>>>,
     graphs: HashMap<usize, Arc<etas_code::descriptor::DescriptorGraphInput>>,
+    fingerprints: HashMap<usize, etas_code::CodeFingerprint>,
 }
 
 impl<'a> ExternalContractIndex<'a> {
@@ -343,6 +344,7 @@ impl<'a> ExternalContractIndex<'a> {
             paths,
             candidates,
             graphs: HashMap::new(),
+            fingerprints: HashMap::new(),
         }
     }
 
@@ -369,6 +371,10 @@ impl<'a> ExternalContractIndex<'a> {
             );
         }
         Ok(Some(etas_effects::ExternalCallableContract {
+            descriptor_fingerprint: *self
+                .fingerprints
+                .entry(index)
+                .or_insert_with(|| etas_package_metadata::definition_descriptors_fingerprint(set)),
             header: Arc::new(header.clone()),
             graph: self
                 .graphs

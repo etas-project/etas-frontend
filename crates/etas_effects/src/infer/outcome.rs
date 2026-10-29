@@ -214,6 +214,7 @@ pub enum ParameterHandlerScopeRef {
     External {
         graph: etas_code::CodeFingerprint,
         parameter_call: u32,
+        call_index: u32,
         scope: u32,
     },
 }

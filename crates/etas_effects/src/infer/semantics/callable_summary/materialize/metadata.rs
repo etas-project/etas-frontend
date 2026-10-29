@@ -14,6 +14,33 @@ impl EffectSemantics<'_> {
     pub(crate) fn materialize_metadata_callable_analyses(
         &mut self,
     ) -> Result<(), EffectPipelineError> {
+        for metadata in self.external_summaries {
+            if let Some(control) = self.query_control {
+                control
+                    .checkpoint()
+                    .map_err(EffectPipelineError::Interrupted)?;
+            }
+            let Some(contract) = &metadata.callable_contract else {
+                continue;
+            };
+            match self
+                .inputs
+                .external_descriptor_graphs
+                .entry(contract.descriptor_fingerprint)
+            {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(contract.graph.clone());
+                }
+                std::collections::btree_map::Entry::Occupied(entry)
+                    if entry.get() != &contract.graph =>
+                {
+                    return Err(invalid(
+                        "external descriptor fingerprint identifies different graphs",
+                    ));
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
         let mut sources = BTreeSet::new();
         for key in self.callable_summaries.borrow().summaries.keys() {
             if let LatentSource::Metadata(source) = key.source {

@@ -26,6 +26,7 @@ impl EffectFactProjector {
             .chain(analysis.inputs.unit_effects)
             .collect();
         let mut facts = EffectFacts {
+            external_descriptor_graphs: analysis.inputs.external_descriptor_graphs,
             handled_body_requests: analysis.inputs.handled_body_requests,
             frozen_callable_graphs: analysis.inputs.frozen_callable_graphs,
             callable_references: analysis.inputs.callable_references,

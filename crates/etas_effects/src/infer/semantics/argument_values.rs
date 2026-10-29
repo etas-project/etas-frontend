@@ -333,6 +333,7 @@ mod tests {
         let external = External {
             graph: etas_code::CodeFingerprint::from_bytes([7; 32]),
             parameter_call: 2,
+            call_index: 0,
             scope: 0,
         };
         assert_eq!(

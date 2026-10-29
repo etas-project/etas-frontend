@@ -67,6 +67,7 @@ pub struct ExternalEffectSummaryMetadata {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ExternalCallableContract {
+    pub descriptor_fingerprint: etas_code::CodeFingerprint,
     pub header: std::sync::Arc<etas_code::descriptor::CallableHeaderInfo>,
     pub graph: std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
 }
