@@ -68,7 +68,7 @@ pub(super) enum Work {
 pub struct DefinitionDescriptorProjector<'a> {
     pub(super) checked: super::DescriptorInput<'a>,
     pub(super) identities: &'a DefinitionIdentityIndex,
-    limits: DescriptorLimits,
+    pub(super) limits: DescriptorLimits,
     pub(super) scopes: Vec<Scope>,
     pub(super) types: Vec<Option<TypeInfo>>,
     pub(super) rows: Vec<Option<EffectRowInfo>>,

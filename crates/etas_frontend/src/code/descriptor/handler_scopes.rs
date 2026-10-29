@@ -24,6 +24,12 @@ pub(super) struct CheckedHandlerArm {
     finishes: bool,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(super) enum CheckedHandlerScope {
+    Native(Vec<CheckedHandlerArm>),
+    External(etas_effects::ParameterHandlerScopeRef),
+}
+
 pub(super) struct TraceProjectionContext<'a> {
     pub scope: usize,
     pub callable: &'a CallableId,
@@ -183,15 +189,18 @@ impl DefinitionDescriptorProjector<'_> {
         &self,
         exit: &ParameterExitFact,
         exits: &CallableExitSummary,
-    ) -> Option<Vec<Vec<CheckedHandlerArm>>> {
+    ) -> Option<Vec<CheckedHandlerScope>> {
         exit.enclosing_handlers
             .as_ref()?
             .iter()
             .map(|handler| match handler {
-                etas_effects::ParameterHandlerScopeRef::Native(handler) => {
-                    self.checked_handler_scope(*handler, exits, exit.source.span())
+                etas_effects::ParameterHandlerScopeRef::Native(handler) => self
+                    .checked_handler_scope(*handler, exits, exit.source.span())
+                    .map(CheckedHandlerScope::Native),
+                external @ etas_effects::ParameterHandlerScopeRef::External { .. } => {
+                    self.checked.effects?.external_handler_scope(*external)?;
+                    Some(CheckedHandlerScope::External(*external))
                 }
-                etas_effects::ParameterHandlerScopeRef::External { .. } => None,
             })
             .collect()
     }
@@ -273,7 +282,13 @@ impl DefinitionDescriptorProjector<'_> {
         }
         scopes
             .iter()
-            .map(|arms| {
+            .map(|scope| {
+                let arms = match scope {
+                    CheckedHandlerScope::Native(arms) => arms,
+                    CheckedHandlerScope::External(reference) => {
+                        return self.project_external_handler_scope(*reference);
+                    }
+                };
                 let arms = arms
                     .iter()
                     .map(|arm| {
@@ -301,10 +316,96 @@ impl DefinitionDescriptorProjector<'_> {
                         })
                     })
                     .collect::<Result<Vec<_>, ProjectionError>>()?;
-                Ok(ParameterHandlerScopeInfo::Handle { arms })
+                Ok(Some(ParameterHandlerScopeInfo::Handle { arms }))
             })
             .collect::<Result<Vec<_>, _>>()
-            .map(Some)
+            .map(|scopes| scopes.into_iter().collect())
+    }
+
+    fn project_external_handler_scope(
+        &mut self,
+        reference: etas_effects::ParameterHandlerScopeRef,
+    ) -> Result<Option<ParameterHandlerScopeInfo>, ProjectionError> {
+        use etas_code::descriptor::{
+            DescriptorGraph, DescriptorGraphOffsets, DescriptorNode, StaticEffectArgInfo,
+        };
+        let Some((graph, scope)) = self
+            .checked
+            .effects
+            .and_then(|facts| facts.external_handler_scope(reference))
+        else {
+            return Ok(None);
+        };
+        let graph = graph.clone();
+        let ParameterHandlerScopeInfo::Handle { mut arms } = scope.clone();
+        let mut roots = Vec::new();
+        for arm in &arms {
+            roots.push(DescriptorNode::Trace(arm.trace));
+            roots.push(DescriptorNode::Type(arm.completion.result_type()));
+            roots.extend(
+                arm.action
+                    .arguments
+                    .iter()
+                    .filter_map(|argument| match argument {
+                        StaticEffectArgInfo::Type(ty) => Some(DescriptorNode::Type(*ty)),
+                        _ => None,
+                    }),
+            );
+        }
+        let graph = DescriptorGraph::new(graph, self.limits)?;
+        let offsets = DescriptorGraphOffsets {
+            types: u32::try_from(self.types.len())
+                .map_err(|_| ProjectionError::Invalid("type arena overflow".into()))?,
+            rows: u32::try_from(self.rows.len())
+                .map_err(|_| ProjectionError::Invalid("row arena overflow".into()))?,
+            binders: u32::try_from(self.binders.len())
+                .map_err(|_| ProjectionError::Invalid("binder arena overflow".into()))?,
+            traces: u32::try_from(self.traces.len())
+                .map_err(|_| ProjectionError::Invalid("trace arena overflow".into()))?,
+        };
+        let (segment, mapped) = graph.relocate_roots(&roots, offsets)?;
+        if !segment.binders.is_empty() {
+            return Ok(None);
+        }
+        self.ensure_nodes(
+            segment
+                .types
+                .len()
+                .saturating_add(segment.rows.len())
+                .saturating_add(segment.traces.len()),
+        )?;
+        let mut mapped = mapped.into_iter();
+        for arm in &mut arms {
+            let Some(DescriptorNode::Trace(trace)) = mapped.next() else {
+                return Err(ProjectionError::Invalid(
+                    "missing relocated handler trace".into(),
+                ));
+            };
+            let Some(DescriptorNode::Type(ty)) = mapped.next() else {
+                return Err(ProjectionError::Invalid(
+                    "missing relocated handler result".into(),
+                ));
+            };
+            arm.trace = trace;
+            match &mut arm.completion {
+                ParameterHandlerCompletionInfo::Resume { result_type, .. }
+                | ParameterHandlerCompletionInfo::Finish { result_type, .. } => *result_type = ty,
+            }
+            for argument in &mut arm.action.arguments {
+                if let StaticEffectArgInfo::Type(ty) = argument {
+                    let Some(DescriptorNode::Type(mapped_ty)) = mapped.next() else {
+                        return Err(ProjectionError::Invalid(
+                            "missing relocated handler selector".into(),
+                        ));
+                    };
+                    *ty = mapped_ty;
+                }
+            }
+        }
+        self.types.extend(segment.types.into_iter().map(Some));
+        self.rows.extend(segment.rows.into_iter().map(Some));
+        self.traces.extend(segment.traces.into_iter().map(Some));
+        Ok(Some(ParameterHandlerScopeInfo::Handle { arms }))
     }
 }
 
@@ -323,4 +424,139 @@ fn concrete_action_trace(trace: &ActionTraceDomain) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        Frontend, ProjectInput, SourceInput,
+        code::identity::{DefinitionIdentityIndex, DefinitionOrigins},
+    };
+    use etas_code::{
+        CallableId, CodeFingerprint, DefinitionKey, DefinitionKind, PackageKey, descriptor::*,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    #[test]
+    fn external_scope_projection_preserves_validated_action_trace() {
+        let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([7; 32]));
+        let key = |name: &str, kind| {
+            DefinitionKey::new(package, vec!["lib".into()], vec![name.into()], kind).unwrap()
+        };
+        let effect = key("Choice", DefinitionKind::Effect);
+        let action = |name: &str| EffectInfo {
+            target: EffectTargetInfo::Action {
+                effect: effect.clone(),
+                name: name.into(),
+            },
+            arguments: vec![],
+        };
+        let callable = CallableId::declaration(key("relay", DefinitionKind::Flow)).unwrap();
+        let foreign = DescriptorGraphInput {
+            types: vec![
+                TypeInfo::Primitive(PrimitiveInfo::Unit),
+                TypeInfo::Function(SignatureInfo {
+                    generics: vec![],
+                    parameters: vec![ParameterInfo {
+                        name: Some("f".into()),
+                        ty: TypeInfoRef(2),
+                    }],
+                    output: TypeInfoRef(0),
+                    declared_output: None,
+                    effects: None,
+                }),
+                TypeInfo::Function(SignatureInfo {
+                    generics: vec![],
+                    parameters: vec![],
+                    output: TypeInfoRef(0),
+                    declared_output: None,
+                    effects: None,
+                }),
+            ],
+            rows: vec![],
+            binders: vec![],
+            traces: vec![
+                TraceInfo::Event(action("first")),
+                TraceInfo::Event(action("second")),
+                TraceInfo::Seq(vec![TraceInfoRef(0), TraceInfoRef(1)]),
+                TraceInfo::ParameterCall(ParameterCallInfo {
+                    callable,
+                    signature: TypeInfoRef(1),
+                    position: 0,
+                    arguments: Some(vec![]),
+                    handlers: Some(vec![ParameterHandlerScopeInfo::Handle {
+                        arms: vec![ParameterHandlerArmInfo {
+                            action: {
+                                let mut request = action("request");
+                                request
+                                    .arguments
+                                    .push(StaticEffectArgInfo::Type(TypeInfoRef(0)));
+                                request
+                            },
+                            trace: TraceInfoRef(2),
+                            completion: ParameterHandlerCompletionInfo::Resume {
+                                result_type: TypeInfoRef(0),
+                                value: ReturnObservationInfo::Unit,
+                            },
+                        }],
+                    }]),
+                }),
+            ],
+        };
+        let original = DescriptorGraph::new(foreign.clone(), Default::default()).unwrap();
+        let fingerprint = CodeFingerprint::from_bytes([9; 32]);
+        let mut input = ProjectInput::single_source(SourceInput::anonymous(
+            "module app; flow main() -> unit { return; }",
+        ));
+        input.options.entry_policy = crate::EntryPolicy::Optional;
+        let output = Frontend.check_project(input);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let checked = output.checked.unwrap();
+        let origins = DefinitionOrigins {
+            source_modules: DefinitionOrigins::declared_source_modules(&checked, package).unwrap(),
+            standard_package: package,
+            external_definitions: BTreeMap::new(),
+        };
+        let identities = DefinitionIdentityIndex::build(&checked, &origins).unwrap();
+        let mut facts = (*checked.effects).clone();
+        facts
+            .external_descriptor_graphs
+            .insert(fingerprint, Arc::new(foreign));
+        let input = super::super::DescriptorInput {
+            effects: Some(&facts),
+            ..(&*checked).into()
+        };
+        let mut projector =
+            DefinitionDescriptorProjector::from_input(input, &identities, Default::default());
+        projector
+            .types
+            .push(Some(TypeInfo::Primitive(PrimitiveInfo::Bool)));
+        projector.traces.push(Some(TraceInfo::Empty));
+        let reference = etas_effects::ParameterHandlerScopeRef::External {
+            graph: fingerprint,
+            parameter_call: 3,
+            call_index: 0,
+            scope: 0,
+        };
+        let ParameterHandlerScopeInfo::Handle { arms } = projector
+            .project_external_handler_scope(reference)
+            .unwrap()
+            .unwrap();
+        assert_eq!(arms.len(), 1);
+        assert_eq!(
+            arms[0].action.arguments,
+            [StaticEffectArgInfo::Type(TypeInfoRef(1))]
+        );
+        assert_eq!(arms[0].completion.result_type(), TypeInfoRef(1));
+        let projected_trace = arms[0].trace;
+        let projected = projector.finish().unwrap();
+        assert_eq!(
+            original.trace_fingerprint(TraceInfoRef(2)).unwrap(),
+            projected.trace_fingerprint(projected_trace).unwrap()
+        );
+        assert!(
+            matches!(projected.trace(projected_trace), Some(TraceInfo::Seq(parts)) if parts.len() == 2)
+        );
+    }
 }
