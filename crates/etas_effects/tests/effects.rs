@@ -24,6 +24,8 @@ mod callback_identity;
 mod completion;
 #[path = "effects/parameter_inference.rs"]
 mod parameter_inference;
+#[path = "effects/resume_branches.rs"]
+mod resume_branches;
 #[path = "effects/returned_anonymous.rs"]
 mod returned_anonymous;
 #[path = "effects/returned_callable.rs"]
@@ -9033,7 +9035,8 @@ flow main() -> unit {
 }
 
 #[test]
-fn check_program_rejects_multiple_resumes_in_one_handler_arm() {
+fn check_program_ignores_unreachable_resume_after_terminal_resume() {
+    // Resume transfers control out of the arm; its following statement is unreachable.
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
@@ -9061,7 +9064,7 @@ flow main() -> unit {
     let output = check_program(&hir, &types);
 
     assert!(
-        output.diagnostics.iter().any(|diagnostic| {
+        !output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::ResumeUsedMoreThanOnce)
         }),
         "{:?}",

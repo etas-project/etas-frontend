@@ -15,6 +15,14 @@ impl Parser<'_> {
         expr
     }
 
+    pub(crate) fn with_record_expressions<T>(&mut self, parse: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.record_expr_enabled;
+        self.record_expr_enabled = true;
+        let result = parse(self);
+        self.record_expr_enabled = previous;
+        result
+    }
+
     pub(crate) fn lambda_or_pipeline(&mut self) -> Expr {
         if self.cursor.at_ident_like()
             && self.cursor.nth(1).kind == TokenKind::Punct(Punct::FatArrow)
@@ -309,9 +317,9 @@ impl Parser<'_> {
                     });
                 }
             } else if self.eat_open_punct(Punct::LBracket).is_some() {
-                let start = self.expr();
+                let start = self.with_record_expressions(Self::expr);
                 if self.cursor.eat_punct(Punct::Comma).is_some() {
-                    let end_expr = self.expr();
+                    let end_expr = self.with_record_expressions(Self::expr);
                     let end = self.expect_punct(Punct::RParen, "expected `)` after slice");
                     let span = expr.span().cover(end);
                     expr = Expr::Slice(SliceExpr {
@@ -420,9 +428,11 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::LBrace) => Expr::Block(BlockExpr {
                 block: self.block(),
             }),
-            TokenKind::Punct(Punct::LBracket) => self.list_expr(),
-            TokenKind::Punct(Punct::LParen) => self.tuple_or_group_expr(),
-            TokenKind::Punct(Punct::Hash) => self.set_expr(),
+            TokenKind::Punct(Punct::LBracket) => self.with_record_expressions(Self::list_expr),
+            TokenKind::Punct(Punct::LParen) => {
+                self.with_record_expressions(Self::tuple_or_group_expr)
+            }
+            TokenKind::Punct(Punct::Hash) => self.with_record_expressions(Self::set_expr),
             _ if self.cursor.at_ident_like() => self.path_or_record_expr(),
             _ => {
                 let span = self.cursor.peek().span;

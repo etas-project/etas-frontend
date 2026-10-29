@@ -3,6 +3,46 @@ use crate::{Diagnostic, Keyword, Punct, Span, SyntaxDiagnosticCode, TokenKind, a
 
 use crate::parser::Parser;
 
+fn tail_control_expression(statement: Stmt) -> Result<Expr, Box<Stmt>> {
+    match statement {
+        Stmt::Match(statement) => Ok(Expr::Match(MatchExpr {
+            scrutinee: Box::new(statement.scrutinee),
+            arms: statement.arms,
+            span: statement.span,
+        })),
+        Stmt::If(statement) => tail_if_expression(statement)
+            .map(Expr::If)
+            .map_err(|statement| Box::new(Stmt::If(*statement))),
+        other => Err(Box::new(other)),
+    }
+}
+
+fn tail_if_expression(mut statement: IfStmt) -> Result<IfExpr, Box<IfStmt>> {
+    let Some(branch) = statement.else_branch.take() else {
+        return Err(Box::new(statement));
+    };
+    let else_branch = match branch {
+        ElseBranch::Block(block) => block,
+        ElseBranch::If(nested) => match tail_if_expression(*nested) {
+            Ok(expr) => Block {
+                span: expr.span,
+                stmts: Vec::new(),
+                final_expr: Some(Box::new(Expr::If(expr))),
+            },
+            Err(nested) => {
+                statement.else_branch = Some(ElseBranch::If(nested));
+                return Err(Box::new(statement));
+            }
+        },
+    };
+    Ok(IfExpr {
+        condition: Box::new(statement.condition),
+        then_branch: statement.then_branch,
+        else_branch,
+        span: statement.span,
+    })
+}
+
 impl Parser<'_> {
     pub(crate) fn block(&mut self) -> Block {
         let start = self.expect_punct(Punct::LBrace, "expected block");
@@ -10,14 +50,16 @@ impl Parser<'_> {
     }
 
     pub(crate) fn block_after_lbrace(&mut self, start: Span) -> Block {
-        self.with_body_recursion(
-            |span| Block {
-                stmts: Vec::new(),
-                final_expr: None,
-                span,
-            },
-            |parser| parser.block_after_lbrace_inner(start),
-        )
+        self.with_record_expressions(|parser| {
+            parser.with_body_recursion(
+                |span| Block {
+                    stmts: Vec::new(),
+                    final_expr: None,
+                    span,
+                },
+                |parser| parser.block_after_lbrace_inner(start),
+            )
+        })
     }
 
     fn block_after_lbrace_inner(&mut self, start: Span) -> Block {
@@ -39,6 +81,29 @@ impl Parser<'_> {
         while !self.cursor.at_eof() && !terminator.is_some_and(|punct| self.cursor.at_punct(punct))
         {
             let before = self.cursor.position();
+            if self.cursor.at_keyword(Keyword::If) || self.cursor.at_keyword(Keyword::Match) {
+                let statement = if self.cursor.at_keyword(Keyword::If) {
+                    Stmt::If(self.if_stmt())
+                } else {
+                    Stmt::Match(self.match_stmt())
+                };
+                let at_end = self.cursor.at_eof()
+                    || terminator.is_some_and(|punct| self.cursor.at_punct(punct));
+                let statement = if at_end {
+                    match tail_control_expression(statement) {
+                        Ok(expr) => {
+                            final_expr = Some(Box::new(expr));
+                            break;
+                        }
+                        Err(statement) => *statement,
+                    }
+                } else {
+                    statement
+                };
+                stmts.push(self.with_optional_trailing_semicolon(statement));
+                self.ensure_progress(before, "expected control statement or final expression");
+                continue;
+            }
             if self.starts_stmt_keyword() {
                 stmts.push(self.stmt());
                 self.ensure_progress(before, "expected statement");
