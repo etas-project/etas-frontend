@@ -636,7 +636,7 @@ fn lookup_std_type_decl<'a>(
         (name.to_owned(), registry.lookup_qualified(&path)?)
     } else {
         let symbol = registry
-            .lookup_prelude(name)
+            .lookup_prelude_in_namespace(name, etas_std::StdNamespace::Type)
             .and_then(|symbol| registry.symbol(symbol.id))
             .or_else(|| {
                 let mut matches = registry.symbols().filter(|symbol| symbol.name == name);

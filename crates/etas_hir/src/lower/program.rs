@@ -25,6 +25,29 @@ pub fn lower_program(program: &ast::Program) -> HirProgram {
 }
 
 #[derive(Clone, Copy)]
+pub(super) enum PreludeContext {
+    Any,
+    Type,
+    Effect,
+    Value,
+}
+
+impl PreludeContext {
+    fn accepts(self, kind: etas_std::StdSymbolKind) -> bool {
+        use etas_std::StdNamespace;
+        match self {
+            Self::Any => true,
+            Self::Type => kind.namespace() == StdNamespace::Type,
+            Self::Effect => kind.namespace() == StdNamespace::Effect,
+            Self::Value => matches!(
+                kind.namespace(),
+                StdNamespace::Type | StdNamespace::Value | StdNamespace::Module
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct HirProjectModule<'a> {
     pub parts: &'a [&'a ast::Program],
     pub namespace: Option<HirProjectNamespace<'a>>,
@@ -338,7 +361,7 @@ pub(super) struct LowerCtx {
     pub(super) method_symbols: HashMap<SyntaxKey, SymbolId>,
     pub(super) local_binding: Option<LocalBindingContext>,
     pub(super) pattern_binding: Option<PatternBindingContext>,
-    pub(super) std_prelude_aliases: HashMap<(HirModuleId, String), SymbolId>,
+    pub(super) std_prelude_aliases: HashMap<(HirModuleId, String, etas_std::StdSymbolId), SymbolId>,
     pub(super) std_qualified_aliases: HashMap<(HirModuleId, Vec<String>), SymbolId>,
     pub(super) std_action_aliases: HashMap<etas_std::StdSymbolId, SymbolId>,
     pub(super) std_registry: Arc<etas_std::StdRegistry>,
@@ -621,19 +644,41 @@ impl LowerCtx {
         &mut self,
         name: &str,
         span: etas_core::Span,
-    ) -> Option<SymbolId> {
-        let module_scope = self.current_module_scope?;
-        let key = (self.current_module, name.to_owned());
-        if let Some(symbol) = self.std_prelude_aliases.get(&key) {
-            return Some(*symbol);
+        context: PreludeContext,
+    ) -> ResolveResult {
+        if self.current_module_scope.is_none() {
+            return ResolveResult::Unresolved;
         }
-
-        let symbol_ref = self.std_registry.lookup_prelude(name)?;
-        let qualified_path = self
+        let candidates = self
             .std_registry
-            .symbol(symbol_ref.id)?
-            .qualified_path
-            .clone();
+            .prelude()
+            .candidates(name)
+            .filter_map(|binding| self.std_registry.symbol(binding.id))
+            .filter(|symbol| context.accepts(symbol.kind))
+            .map(|symbol| (symbol.id, symbol.qualified_path.clone()))
+            .collect::<Vec<_>>();
+        let candidates = candidates
+            .into_iter()
+            .map(|(id, path)| self.std_prelude_alias(name, id, path, span))
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [] => ResolveResult::Unresolved,
+            [symbol] => ResolveResult::Resolved(*symbol),
+            _ => ResolveResult::Ambiguous(candidates),
+        }
+    }
+
+    fn std_prelude_alias(
+        &mut self,
+        name: &str,
+        id: etas_std::StdSymbolId,
+        qualified_path: Vec<String>,
+        span: etas_core::Span,
+    ) -> SymbolId {
+        let key = (self.current_module, name.to_owned(), id);
+        if let Some(symbol) = self.std_prelude_aliases.get(&key) {
+            return *symbol;
+        }
         let symbol = self.alloc_symbol_with_def(SymbolData {
             name: name.to_owned(),
             kind: SymbolKind::StdPreludeAlias,
@@ -647,9 +692,8 @@ impl LowerCtx {
             declared_type: None,
             definition_span: span,
         });
-        self.scopes.insert(module_scope, name.to_owned(), symbol);
         self.std_prelude_aliases.insert(key, symbol);
-        Some(symbol)
+        symbol
     }
 
     pub(super) fn resolve_std_qualified_path(
