@@ -22,7 +22,7 @@ pub fn collect_handler<E>(
     span: etas_core::Span,
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
-    collect_handler_for_requests(ctx, handlers, span, expected, &[], None)
+    collect_handler_for_requests(ctx, handlers, span, expected, &[], None, None)
 }
 
 pub(super) fn collect_handler_for_requests<E>(
@@ -32,6 +32,7 @@ pub(super) fn collect_handler_for_requests<E>(
     expected: Option<TypeId>,
     requests: &[super::handler_request::ActionRequest],
     request_body: Option<etas_hir::HirExprId>,
+    answer_context: Option<TypeId>,
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
     let mut handled = Vec::new();
@@ -46,7 +47,10 @@ pub(super) fn collect_handler_for_requests<E>(
         Some(Type::Handler(handler)) => Some(handler.clone()),
         _ => None,
     });
-    let expected_result = expected_handler.as_ref().and_then(|handler| handler.result);
+    let expected_result = expected_handler
+        .as_ref()
+        .and_then(|handler| handler.result)
+        .or(answer_context);
     let expected_produced = expected_handler
         .as_ref()
         .map(|handler| handler.produced.clone())

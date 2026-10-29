@@ -157,7 +157,7 @@ impl TypeStore {
 
     pub fn intern(&mut self, ty: Type) -> TypeId {
         let id = TypeId(self.len() as u32);
-        self.types.push(ty);
+        self.types.push(canonical_type(ty));
         id
     }
 
@@ -190,7 +190,7 @@ impl TypeStore {
     pub fn with_local_types(base: SharedTypeBase, types: Vec<Type>) -> Self {
         Self {
             base: Some(base),
-            types,
+            types: types.into_iter().map(canonical_type).collect(),
         }
     }
 }
@@ -224,7 +224,11 @@ impl<'de> Deserialize<'de> for TypeStore {
         }
         Ok(Self {
             base: None,
-            types: FlatStore::deserialize(deserializer)?.types,
+            types: FlatStore::deserialize(deserializer)?
+                .types
+                .into_iter()
+                .map(canonical_type)
+                .collect(),
         })
     }
 }
@@ -269,6 +273,7 @@ impl TypeInterner {
     }
 
     pub fn intern(&mut self, ty: Type) -> TypeId {
+        let ty = canonical_type(ty);
         if let Some(id) = self
             .types
             .get(&ty)
@@ -286,5 +291,12 @@ impl TypeInterner {
     }
     pub fn into_store(self) -> TypeStore {
         self.store
+    }
+}
+
+fn canonical_type(ty: Type) -> Type {
+    match ty {
+        Type::Tuple(elements) if elements.is_empty() => Type::Primitive(PrimitiveType::Unit),
+        ty => ty,
     }
 }
