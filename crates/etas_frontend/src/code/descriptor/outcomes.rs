@@ -44,7 +44,8 @@ impl DefinitionDescriptorProjector<'_> {
                             || (!exits.parameter_exits.iter().any(|exit| {
                                 exit.enclosing_handlers.as_ref().is_some_and(|handlers| {
                                     handlers.iter().any(|handler| {
-                                        self.handler_scope_source(*handler) == Some(source.span())
+                                        matches!(handler, etas_effects::ParameterHandlerScopeRef::Native(handler)
+                                            if self.handler_scope_source(*handler) == Some(source.span()))
                                     })
                                 })
                             }) && (!exits

@@ -194,6 +194,30 @@ pub struct ExitTraceFact {
     pub trace: ActionTraceDomain,
 }
 
+/// A checked handler scope. External references address a parameter-call node
+/// and one of its ordered scopes in the validated descriptor graph.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub enum ParameterHandlerScopeRef {
+    Native(HirExprId),
+    External {
+        graph: etas_code::CodeFingerprint,
+        parameter_call: u32,
+        scope: u32,
+    },
+}
+
 /// A possible callback termination at its checked call site. `prefix` ends
 /// immediately before the callback; its unknown outcome remains a gap until
 /// the caller's callback contract can be applied.
@@ -213,10 +237,10 @@ pub struct ParameterExitFact {
     /// Checked effects intercepted by enclosing handler scopes; None is unknown.
     #[serde(default)]
     pub enclosing_handled: Option<crate::EffectRow>,
-    /// Session-local handler expressions, ordered from the innermost to the
-    /// outermost scope. None means the scope chain could not be established.
+    /// Checked scope identities, ordered from innermost to outermost. None
+    /// means the scope chain could not be established.
     #[serde(default)]
-    pub enclosing_handlers: Option<Vec<HirExprId>>,
+    pub enclosing_handlers: Option<Vec<ParameterHandlerScopeRef>>,
     pub prefix: ActionTraceDomain,
 }
 

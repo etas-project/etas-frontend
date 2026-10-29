@@ -26,12 +26,18 @@ fn unit_parameters(hir: &etas_hir::HirRevision, unit: EffectUnit) -> &[etas_hir:
 }
 
 fn relocate_handler_scopes(
-    handlers: Option<&[etas_hir::HirExprId]>,
+    handlers: Option<&[etas_effects::ParameterHandlerScopeRef]>,
     expressions: &HashMap<etas_hir::HirExprId, etas_hir::HirExprId>,
-) -> Option<Vec<etas_hir::HirExprId>> {
+) -> Option<Vec<etas_effects::ParameterHandlerScopeRef>> {
     handlers?
         .iter()
-        .map(|handler| expressions.get(handler).copied())
+        .map(|handler| match handler {
+            etas_effects::ParameterHandlerScopeRef::Native(handler) => expressions
+                .get(handler)
+                .copied()
+                .map(etas_effects::ParameterHandlerScopeRef::Native),
+            external @ etas_effects::ParameterHandlerScopeRef::External { .. } => Some(*external),
+        })
         .collect()
 }
 
@@ -877,18 +883,30 @@ mod scope_tests {
 
     #[test]
     fn relocates_ordered_scopes_only_when_every_expression_is_checked() {
+        use etas_effects::ParameterHandlerScopeRef::{External, Native};
         let expressions =
             HashMap::from([(HirExprId(1), HirExprId(11)), (HirExprId(2), HirExprId(12))]);
+        let external = External {
+            graph: etas_code::CodeFingerprint::from_bytes([7; 32]),
+            parameter_call: 3,
+            scope: 1,
+        };
         assert_eq!(
-            relocate_handler_scopes(Some(&[HirExprId(2), HirExprId(1)]), &expressions),
-            Some(vec![HirExprId(12), HirExprId(11)])
+            relocate_handler_scopes(
+                Some(&[external, Native(HirExprId(2)), Native(HirExprId(1))]),
+                &expressions
+            ),
+            Some(vec![external, Native(HirExprId(12)), Native(HirExprId(11))])
         );
         assert_eq!(
             relocate_handler_scopes(Some(&[]), &expressions),
             Some(vec![])
         );
         assert_eq!(
-            relocate_handler_scopes(Some(&[HirExprId(1), HirExprId(3)]), &expressions),
+            relocate_handler_scopes(
+                Some(&[Native(HirExprId(1)), Native(HirExprId(3))]),
+                &expressions
+            ),
             None
         );
         assert_eq!(relocate_handler_scopes(None, &expressions), None);

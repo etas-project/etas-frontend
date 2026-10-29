@@ -90,12 +90,18 @@ fn parameter_exit_preserves_distinct_and_unknown_handler_scope_orders() {
         arguments: Some(Vec::new()),
         handler_free: Some(false),
         enclosing_handled: Some(crate::EffectRow::empty()),
-        enclosing_handlers: Some(vec![HirExprId(10), HirExprId(11)]),
+        enclosing_handlers: Some(vec![
+            ParameterHandlerScopeRef::Native(HirExprId(10)),
+            ParameterHandlerScopeRef::Native(HirExprId(11)),
+        ]),
         prefix: ActionTraceDomain::Empty,
     };
     summary.record_parameter_exit(exit.clone());
     let mut reversed = exit.clone();
-    reversed.enclosing_handlers = Some(vec![HirExprId(11), HirExprId(10)]);
+    reversed.enclosing_handlers = Some(vec![
+        ParameterHandlerScopeRef::Native(HirExprId(11)),
+        ParameterHandlerScopeRef::Native(HirExprId(10)),
+    ]);
     summary.record_parameter_exit(reversed);
     let mut unknown = exit;
     unknown.enclosing_handlers = None;
@@ -111,13 +117,21 @@ fn parameter_exit_preserves_distinct_and_unknown_handler_scope_orders() {
         summary
             .parameter_exits
             .iter()
-            .any(|exit| exit.enclosing_handlers == Some(vec![HirExprId(10), HirExprId(11)]))
+            .any(|exit| exit.enclosing_handlers
+                == Some(vec![
+                    ParameterHandlerScopeRef::Native(HirExprId(10)),
+                    ParameterHandlerScopeRef::Native(HirExprId(11))
+                ]))
     );
     assert!(
         summary
             .parameter_exits
             .iter()
-            .any(|exit| exit.enclosing_handlers == Some(vec![HirExprId(11), HirExprId(10)]))
+            .any(|exit| exit.enclosing_handlers
+                == Some(vec![
+                    ParameterHandlerScopeRef::Native(HirExprId(11)),
+                    ParameterHandlerScopeRef::Native(HirExprId(10))
+                ]))
     );
 }
 

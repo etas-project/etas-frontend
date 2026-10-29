@@ -94,7 +94,10 @@ fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_
                 source: span().into(),
                 handler_free: Some(true),
                 enclosing_handled: Some(crate::EffectRow::empty()),
-                enclosing_handlers: Some(vec![etas_hir::HirExprId(22), etas_hir::HirExprId(23)]),
+                enclosing_handlers: Some(vec![
+                    crate::ParameterHandlerScopeRef::Native(etas_hir::HirExprId(22)),
+                    crate::ParameterHandlerScopeRef::Native(etas_hir::HirExprId(23)),
+                ]),
                 arguments: Some(vec![crate::ParameterExitArgument {
                     name: None,
                     ty: parameter,
@@ -182,7 +185,10 @@ fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_
     assert_eq!(symbolic_exit.arguments.as_ref().unwrap()[0].ty, boolean);
     assert_eq!(
         symbolic_exit.enclosing_handlers,
-        Some(vec![etas_hir::HirExprId(22), etas_hir::HirExprId(23)])
+        Some(vec![
+            crate::ParameterHandlerScopeRef::Native(etas_hir::HirExprId(22)),
+            crate::ParameterHandlerScopeRef::Native(etas_hir::HirExprId(23))
+        ])
     );
     assert_eq!(symbolic_exit.prefix, callback);
     assert_eq!(

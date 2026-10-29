@@ -187,7 +187,12 @@ impl DefinitionDescriptorProjector<'_> {
         exit.enclosing_handlers
             .as_ref()?
             .iter()
-            .map(|handler| self.checked_handler_scope(*handler, exits, exit.source.span()))
+            .map(|handler| match handler {
+                etas_effects::ParameterHandlerScopeRef::Native(handler) => {
+                    self.checked_handler_scope(*handler, exits, exit.source.span())
+                }
+                etas_effects::ParameterHandlerScopeRef::External { .. } => None,
+            })
             .collect()
     }
 

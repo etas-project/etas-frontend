@@ -242,10 +242,10 @@ pub(super) fn enclosing_handlers(
 }
 
 pub(super) fn compose_handler_scopes(
-    inner: Option<Vec<HirExprId>>,
-    outer: Option<&[HirExprId]>,
+    inner: Option<Vec<crate::ParameterHandlerScopeRef>>,
+    outer: Option<&[crate::ParameterHandlerScopeRef]>,
     control: Option<&dyn etas_utils::PipelineExecutionControl>,
-) -> Result<Option<Vec<HirExprId>>, etas_utils::PipelineInterruption> {
+) -> Result<Option<Vec<crate::ParameterHandlerScopeRef>>, etas_utils::PipelineInterruption> {
     let (Some(mut inner), Some(outer)) = (inner, outer) else {
         return Ok(None);
     };
@@ -265,7 +265,7 @@ pub(super) fn compose_handler_scopes(
 pub(super) struct EnclosingHandlerContext {
     pub free: Option<bool>,
     pub handled: Option<crate::EffectRow>,
-    pub handlers: Option<Vec<HirExprId>>,
+    pub handlers: Option<Vec<crate::ParameterHandlerScopeRef>>,
 }
 
 impl super::engine::EffectSemantics<'_> {
@@ -281,6 +281,11 @@ impl super::engine::EffectSemantics<'_> {
                 handlers: None,
             });
         };
+        let scope_refs = handlers
+            .iter()
+            .copied()
+            .map(crate::ParameterHandlerScopeRef::Native)
+            .collect::<Vec<_>>();
         let mut handled = crate::EffectRow::empty();
         for expression in &handlers {
             if let Some(control) = self.query_control {
@@ -290,14 +295,14 @@ impl super::engine::EffectSemantics<'_> {
                 return Ok(EnclosingHandlerContext {
                     free,
                     handled: None,
-                    handlers: Some(handlers),
+                    handlers: Some(scope_refs),
                 });
             };
             let Some(Type::Handler(handler)) = self.types.store.get(*ty) else {
                 return Ok(EnclosingHandlerContext {
                     free,
                     handled: None,
-                    handlers: Some(handlers),
+                    handlers: Some(scope_refs),
                 });
             };
             let row = self.row_from_type_ref(&handler.handled);
@@ -305,7 +310,7 @@ impl super::engine::EffectSemantics<'_> {
                 return Ok(EnclosingHandlerContext {
                     free,
                     handled: None,
-                    handlers: Some(handlers),
+                    handlers: Some(scope_refs),
                 });
             }
             handled.union_assign(&row);
@@ -313,7 +318,7 @@ impl super::engine::EffectSemantics<'_> {
         Ok(EnclosingHandlerContext {
             free,
             handled: Some(handled),
-            handlers: Some(handlers),
+            handlers: Some(scope_refs),
         })
     }
 }
@@ -324,12 +329,32 @@ mod tests {
 
     #[test]
     fn recursive_handler_scopes_remain_explicitly_unknown() {
+        use crate::ParameterHandlerScopeRef::{External, Native};
+        let external = External {
+            graph: etas_code::CodeFingerprint::from_bytes([7; 32]),
+            parameter_call: 2,
+            scope: 0,
+        };
         assert_eq!(
-            compose_handler_scopes(Some(vec![HirExprId(1)]), Some(&[HirExprId(2)]), None).unwrap(),
-            Some(vec![HirExprId(1), HirExprId(2)])
+            compose_handler_scopes(
+                Some(vec![external, Native(HirExprId(1))]),
+                Some(&[Native(HirExprId(2))]),
+                None
+            )
+            .unwrap(),
+            Some(vec![external, Native(HirExprId(1)), Native(HirExprId(2))])
         );
         assert_eq!(
-            compose_handler_scopes(Some(vec![HirExprId(1)]), Some(&[HirExprId(1)]), None).unwrap(),
+            compose_handler_scopes(
+                Some(vec![Native(HirExprId(1))]),
+                Some(&[Native(HirExprId(1))]),
+                None
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            compose_handler_scopes(Some(vec![external]), Some(&[external]), None).unwrap(),
             None
         );
         assert_eq!(compose_handler_scopes(None, Some(&[]), None).unwrap(), None);

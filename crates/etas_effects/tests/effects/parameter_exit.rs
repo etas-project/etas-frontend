@@ -32,6 +32,9 @@ flow relay(f: () -> unit ![Inner.ping, Outer.pong]) -> unit ![] {
     let spans = handlers
         .iter()
         .map(|handler| {
+            let etas_effects::ParameterHandlerScopeRef::Native(handler) = handler else {
+                panic!("expected native handler")
+            };
             let span = hir.exprs.get(*handler).unwrap().span(&hir.blocks);
             &source[span.range.start.to_usize()..span.range.end.to_usize()]
         })
@@ -73,6 +76,9 @@ flow relay(f: () -> unit ![Inner.ping, Outer.pong]) -> unit ![] {
     let spans = handlers
         .iter()
         .map(|handler| {
+            let etas_effects::ParameterHandlerScopeRef::Native(handler) = handler else {
+                panic!("expected native handler")
+            };
             let span = hir.exprs.get(*handler).unwrap().span(&hir.blocks);
             &source[span.range.start.to_usize()..span.range.end.to_usize()]
         })

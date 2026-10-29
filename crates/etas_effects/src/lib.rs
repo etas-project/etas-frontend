@@ -39,8 +39,8 @@ pub use infer::{
     HandlerGapEvidence, HostRequirementKind, HostRequirementSet, InterpreterFeatureKind,
     InterpreterOrchestrationRequirementSet, InterpreterSupport, MetadataCallableSource,
     OutcomeAnalysisGap, ParameterArgumentValue, ParameterCallTarget, ParameterExitArgument,
-    ParameterExitFact, ParameterRequest, RequestInstantiationSummary, ResidualCheckSet,
-    ReturnObservation, RuntimeRequirementReason,
+    ParameterExitFact, ParameterHandlerScopeRef, ParameterRequest, RequestInstantiationSummary,
+    ResidualCheckSet, ReturnObservation, RuntimeRequirementReason,
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
