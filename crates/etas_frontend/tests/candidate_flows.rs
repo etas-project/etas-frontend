@@ -181,9 +181,99 @@ flow inspect() -> unit { let definition = ^normalize; return; }"#,
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "code::MissingOutcomeSensitiveSummary"),
+            .any(|diagnostic| diagnostic.code == "code::ActionTraceNotContained"),
         "{report:?}"
     );
+}
+
+#[test]
+fn callback_handler_contract_preserves_mixed_resume_and_finish_arms() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+flow normalize(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with {
+        Console.stdout_write(_) => { finish (); }
+        Console.stderr_write(_) => { resume; }
+    };
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let report_for = |source| {
+        let body = store.syntax_operations().parse_body(source).unwrap();
+        let draft = store.with_body(&original, body).unwrap();
+        let overlay = store
+            .resolve(&draft)
+            .unwrap()
+            .body_overlay(store.syntax_operations())
+            .unwrap();
+        FrontendSession::new()
+            .analyze_body_overlay(overlay)
+            .unwrap()
+            .check_report(Default::default())
+            .unwrap()
+    };
+    let same = report_for(
+        "handle { f(); } with { Console.stdout_write(_) => { finish (); } Console.stderr_write(_) => { resume; } }; return;",
+    );
+    assert_eq!(same.status, CheckStatus::Accepted, "{same:?}");
+    let changed = report_for(
+        "handle { f(); } with { Console.stdout_write(_) => { resume; } Console.stderr_write(_) => { finish (); } }; return;",
+    );
+    assert_ne!(changed.status, CheckStatus::Accepted, "{changed:?}");
+    assert!(
+        changed
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "code::ActionTraceNotContained"),
+        "{changed:?}"
+    );
+}
+
+#[test]
+fn callback_finish_contract_preserves_control_and_rejects_skipped_continuation() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+import std.io.println;
+flow normalize(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with { Console.stdout_write(_) => { finish (); } };
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let report_for = |source| {
+        let body = store.syntax_operations().parse_body(source).unwrap();
+        let draft = store.with_body(&original, body).unwrap();
+        let overlay = store
+            .resolve(&draft)
+            .unwrap()
+            .body_overlay(store.syntax_operations())
+            .unwrap();
+        FrontendSession::new()
+            .analyze_body_overlay(overlay)
+            .unwrap()
+            .check_report(Default::default())
+            .unwrap()
+    };
+    let unchanged =
+        report_for("handle { f(); } with { Console.stdout_write(_) => { finish (); } }; return;");
+    assert_eq!(unchanged.status, CheckStatus::Accepted, "{unchanged:?}");
+    let changed =
+        report_for("handle { f(); } with { Console.stdout_write(_) => { resume; } }; return;");
+    assert_ne!(changed.status, CheckStatus::Accepted, "{changed:?}");
+    assert!(
+        changed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "code::ActionTraceNotContained"),
+        "{changed:?}"
+    );
+    let skipped = report_for(
+        "handle { f(); println(\"skipped\")?; } with { Console.stdout_write(_) => { finish (); } }; return;",
+    );
+    assert_ne!(skipped.status, CheckStatus::Accepted, "{skipped:?}");
 }
 
 #[test]
