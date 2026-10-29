@@ -1365,6 +1365,17 @@ impl std::ops::Deref for CheckedProgramData {
 }
 
 impl CheckedProgramData {
+    pub fn recursive_generic_call_targets(
+        &self,
+        call: etas_hir::HirExprId,
+    ) -> impl Iterator<Item = HirItemId> + '_ {
+        self.native_instantiations
+            .recursive_templates
+            .iter()
+            .filter(move |template| template.call == call)
+            .map(|template| template.target)
+    }
+
     pub fn checked_reflections(
         &self,
     ) -> &std::collections::HashMap<etas_hir::HirExprId, etas_types::CheckedReflectionFact> {

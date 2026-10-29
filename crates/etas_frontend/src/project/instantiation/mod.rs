@@ -1,4 +1,5 @@
 mod prepare;
+mod recursive;
 mod rows;
 #[cfg(test)]
 mod tests;
@@ -27,6 +28,16 @@ pub(crate) struct NativeInstantiation {
 #[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub(crate) struct NativeInstantiationPlan {
     pub instances: Vec<NativeInstantiation>,
+    pub recursive_templates: Vec<NativeInvocationTemplate>,
+}
+
+/// A checked recursive call is a template application, not a request to eagerly
+/// enumerate every possible runtime argument in an unbounded monomorphization.
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub(crate) struct NativeInvocationTemplate {
+    pub owner: HirItemId,
+    pub call: etas_hir::HirExprId,
+    pub target: HirItemId,
 }
 
 pub(crate) type NativeBindings = (HashMap<String, TypeId>, HashMap<String, EffectRowRef>);

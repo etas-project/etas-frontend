@@ -73,7 +73,7 @@ fn a_recursive_instantiation_reaches_a_finite_fixed_point() {
 }
 
 #[test]
-fn an_expanding_instantiation_graph_reports_a_resource_error() {
+fn an_expanding_recursive_instantiation_retains_its_checked_template() {
     let (hir, types, effects) = recursion(true);
     let result = prepare(
         PreparationInput {
@@ -89,7 +89,20 @@ fn an_expanding_instantiation_graph_reports_a_resource_error() {
         &[],
         None,
     );
-    assert!(matches!(result, Err(InstantiationError::Resource { .. })));
+    let prepared = match result {
+        Ok(prepared) => prepared,
+        Err(_) => panic!("recursive templates must not enumerate an infinite instance graph"),
+    };
+    assert_eq!(prepared.plan.instances.len(), 1);
+    assert_eq!(prepared.plan.recursive_templates.len(), 1);
+    let template = &prepared.plan.recursive_templates[0];
+    assert_eq!(template.owner, template.target);
+    assert!(
+        types
+            .facts
+            .generic_instantiations
+            .contains_key(&template.call)
+    );
 }
 
 #[test]
@@ -136,7 +149,22 @@ fn instantiation_work_remains_cooperatively_cancellable() {
 
 #[test]
 fn expanding_type_depth_is_a_resource_failure_before_native_stack_exhaustion() {
-    let (hir, types, effects) = recursion(true);
+    let (hir, mut types, effects) = recursion(false);
+    let owner = effects
+        .native_call_targets
+        .values()
+        .flat_map(|targets| targets.iter())
+        .find_map(|target| match target {
+            etas_effects::EffectUnit::Item(item) => Some(*item),
+            _ => None,
+        })
+        .unwrap();
+    let mut interner = etas_types::TypeInterner::from_store((*types.store).clone());
+    let mut argument = interner.primitive(etas_types::PrimitiveType::I32);
+    for _ in 0..8 {
+        argument = interner.intern(etas_types::Type::Array(argument));
+    }
+    types.store = Arc::new(interner.into_store());
     let result = prepare(
         PreparationInput {
             hir: &hir,
@@ -149,7 +177,10 @@ fn expanding_type_depth_is_a_resource_failure_before_native_stack_exhaustion() {
             },
             control: None,
         },
-        &[],
+        &[NativeInstantiation {
+            owner,
+            arguments: vec![NativeGenericArgument::Type(argument)],
+        }],
         None,
     );
     assert!(

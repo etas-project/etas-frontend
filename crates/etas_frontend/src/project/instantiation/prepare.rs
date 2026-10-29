@@ -134,7 +134,15 @@ pub(crate) fn prepare(
         .collect::<VecDeque<_>>();
     pending.extend(seeds.iter().cloned());
     let mut seen = HashSet::new();
-    let mut plan = NativeInstantiationPlan::default();
+    let mut plan = NativeInstantiationPlan {
+        instances: Vec::new(),
+        recursive_templates: super::recursive::templates(&calls, effects),
+    };
+    let recursive = plan
+        .recursive_templates
+        .iter()
+        .map(|site| (site.call, site.target))
+        .collect::<HashSet<_>>();
     let mut interner = interner.unwrap_or_else(|| TypeInterner::from_store((*types.store).clone()));
     let mut materialized = Vec::new();
     let mut representations =
@@ -207,6 +215,9 @@ pub(crate) fn prepare(
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
                     let arguments = bind_call(&mut substitution, target_signature, fact)?;
+                    if recursive.contains(&(*call, *item)) {
+                        continue;
+                    }
                     pending.push_back(NativeInstantiation {
                         owner: *item,
                         arguments,
