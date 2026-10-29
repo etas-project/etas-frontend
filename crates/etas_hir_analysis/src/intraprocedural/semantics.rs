@@ -1,6 +1,7 @@
 use etas_core::Span;
 use etas_hir::{
-    HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirPatId, HirStmtId, ResolvedActionRef,
+    HirArg, HirBlockId, HirExprId, HirGenericArg, HirHandlerArmId, HirPatId, HirStmtId,
+    ResolvedActionRef,
 };
 
 use crate::intraprocedural::{AbstractDomain, Control};
@@ -70,6 +71,10 @@ pub trait HirAnalysisSemantics {
     fn analysis_context(&self) -> &crate::HirAnalysisContext;
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain;
+
+    fn loop_fixpoint_incomplete(&mut self, _body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        self.incomplete_facts(state)
+    }
 
     fn unhandled_semantics(
         &mut self,

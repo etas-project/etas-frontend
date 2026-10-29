@@ -29,7 +29,7 @@ where
         let fixed = match solved.status {
             ConvergenceStatus::Converged => solved.value,
             ConvergenceStatus::IterationLimitReached => {
-                self.semantics.incomplete_facts(solved.value)
+                self.semantics.loop_fixpoint_incomplete(body, solved.value)
             }
         };
 

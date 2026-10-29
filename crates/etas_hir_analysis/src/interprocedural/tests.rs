@@ -36,6 +36,23 @@ fn summary_solver_discards_interrupted_scc_updates() {
     assert_eq!(checks.get(), 7);
 }
 
+#[test]
+fn summary_adapter_forwards_loop_nonconvergence_with_its_body_identity() {
+    let mut semantics = TraceInterproceduralSemantics::new(HirProgram::default());
+    let summaries = super::SummaryStore::<Unit, EventDomain>::default();
+    let mut diagnostics = Vec::new();
+    let body = HirBlockId(7);
+    let mut adapter = super::adapter::SummaryApplicationAdapter::new(
+        &mut semantics,
+        Unit(0),
+        &summaries,
+        &mut diagnostics,
+    );
+    let state = adapter.loop_fixpoint_incomplete(body, EventDomain::default());
+    assert!(state.incomplete);
+    assert_eq!(semantics.incomplete_loops, vec![body]);
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct EventDomain {
     events: BTreeSet<&'static str>,
@@ -82,6 +99,7 @@ struct TraceInterproceduralSemantics {
     observed_exprs: Vec<HirExprId>,
     cancel_at_expr: Option<(HirExprId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     handle_start_event: Option<&'static str>,
+    incomplete_loops: Vec<HirBlockId>,
 }
 
 impl TraceInterproceduralSemantics {
@@ -94,6 +112,7 @@ impl TraceInterproceduralSemantics {
             observed_exprs: Vec::new(),
             cancel_at_expr: None,
             handle_start_event: None,
+            incomplete_loops: Vec::new(),
         }
     }
 
@@ -136,6 +155,11 @@ impl HirAnalysisSemantics for TraceInterproceduralSemantics {
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {
+        state.with_incomplete()
+    }
+
+    fn loop_fixpoint_incomplete(&mut self, body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        self.incomplete_loops.push(body);
         state.with_incomplete()
     }
 

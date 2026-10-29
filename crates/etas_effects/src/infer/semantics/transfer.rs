@@ -16,6 +16,19 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         self.incomplete_at_anchor(anchor, "effect analysis is missing checked facts", state)
     }
 
+    fn loop_fixpoint_incomplete(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        match self.hir.blocks.get(body) {
+            Some(block) => {
+                self.incomplete_at(block.span, "effect loop analysis did not converge", state)
+            }
+            None => self.incomplete_facts(state),
+        }
+    }
+
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         if let Some(unit) = state.unit {
             self.call_completion_exits.remove(&(unit, expr));
@@ -553,5 +566,32 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             ));
         };
         AnalysisStep::handled(self.materialize_handler_value(expr, span, handlers, state))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonconverged_loop_reports_its_real_body_span() {
+        let source = etas_core::SourceFile::anonymous("flow f() -> unit { return; }");
+        let parsed = etas_syntax::parse_program(source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = etas_hir::HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
+        let (body, block) = hir.blocks.iter().next().unwrap();
+        let span = block.span;
+        let types = etas_types::TypeOutput::default();
+        let std = etas_std::standard_registry();
+        let registry = crate::EffectRegistry::with_standard_effects_from(&std);
+        let mut semantics = EffectSemantics::new(&hir, &types, &std, &registry, &[], &[]);
+
+        let state = semantics.loop_fixpoint_incomplete(body, EffectState::default());
+        assert!(state.incomplete);
+        let [diagnostic] = semantics.diagnostics.as_slice() else {
+            panic!("expected exactly one diagnostic");
+        };
+        assert_eq!(diagnostic.primary.span, span);
+        assert!(diagnostic.message.contains("did not converge"));
     }
 }

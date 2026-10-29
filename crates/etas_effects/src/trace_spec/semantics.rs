@@ -237,6 +237,22 @@ impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
         )
     }
 
+    fn loop_fixpoint_incomplete(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        match self.hir.blocks.get(body) {
+            Some(block) => self.reject_trace_spec_state(
+                state.owner,
+                block.span,
+                "trace spec loop analysis did not converge",
+                state,
+            ),
+            None => self.incomplete_facts(state),
+        }
+    }
+
     fn after_expr_control(
         &mut self,
         expr: HirExprId,

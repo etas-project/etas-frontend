@@ -77,6 +77,7 @@ struct TraceSemantics {
     match_event: Option<&'static str>,
     symbolic_match_entries: Vec<(HirExprId, HirPatId, bool)>,
     growing_expr: Option<HirExprId>,
+    incomplete_loops: Vec<HirBlockId>,
 }
 
 impl TraceSemantics {
@@ -100,6 +101,7 @@ impl TraceSemantics {
             match_event: None,
             symbolic_match_entries: Vec::new(),
             growing_expr: None,
+            incomplete_loops: Vec::new(),
         }
     }
 
@@ -137,6 +139,11 @@ impl HirAnalysisSemantics for TraceSemantics {
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {
+        state.with_incomplete()
+    }
+
+    fn loop_fixpoint_incomplete(&mut self, body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        self.incomplete_loops.push(body);
         state.with_incomplete()
     }
 
@@ -862,6 +869,7 @@ fn loop_iteration_limit_marks_nonconverged_facts_incomplete() {
     assert!(normal.growth >= etas_utils::IterationLimit::DEFAULT.max_iterations());
     assert!(normal.incomplete, "normal facts must be incomplete");
     assert!(returned.incomplete, "return facts must be incomplete");
+    assert_eq!(interpreter.semantics().incomplete_loops, vec![loop_body]);
 }
 
 #[test]
