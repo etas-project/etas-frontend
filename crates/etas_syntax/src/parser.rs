@@ -276,7 +276,8 @@ impl Parser<'_> {
 
     pub(crate) fn arg_list(&mut self) -> Vec<Arg> {
         self.expect_punct(Punct::LParen, "expected argument list");
-        let args = self.comma_list(Punct::RParen, |this| this.arg());
+        let args =
+            self.with_record_expressions(|this| this.comma_list(Punct::RParen, |this| this.arg()));
         self.expect_punct(Punct::RParen, "expected `)` after arguments");
         args
     }

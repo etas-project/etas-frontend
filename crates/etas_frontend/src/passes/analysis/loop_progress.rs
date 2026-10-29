@@ -89,6 +89,9 @@ impl LoopProgressAnalyzer<'_> {
                 .stmts
                 .iter()
                 .any(|stmt| self.stmt_assigns_symbol(*stmt, symbol))
+                || block
+                    .final_expr
+                    .is_some_and(|expr| self.expr_assigns_symbol(expr, symbol))
         })
     }
 
@@ -142,6 +145,39 @@ impl LoopProgressAnalyzer<'_> {
         match path.resolution {
             ResolveResult::Resolved(symbol) => Some(symbol),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loop_progress_includes_unsemicolonized_tail_control_expressions() {
+        for (tail, progressing) in [
+            ("if flag { n = n + 1; } else { n = n + 2; }", true),
+            (
+                "match flag { true => { n = n + 1; }, false => { n = n + 2; } }",
+                true,
+            ),
+            ("match flag { true => {}, false => {} }", false),
+        ] {
+            let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(format!(
+                "flow f(flag: bool) -> unit {{ var n = 0; while n < 4 {{ {tail} }} }}"
+            )));
+            assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+            let hir = etas_hir::lower_program(&parsed.value);
+            let analyzer = LoopProgressAnalyzer { hir: &hir };
+            let mut diagnostics = Vec::new();
+            for (stmt, _) in hir.stmts.iter() {
+                analyzer.check_stmt(stmt, &mut diagnostics);
+            }
+            assert_eq!(
+                diagnostics.is_empty(),
+                progressing,
+                "{tail}: {diagnostics:?}"
+            );
         }
     }
 }
