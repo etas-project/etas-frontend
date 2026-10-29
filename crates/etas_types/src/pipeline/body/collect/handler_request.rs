@@ -35,6 +35,18 @@ pub(super) fn collect_handle<E>(
     let body_ty = super::expr::collect_expr(ctx, body, expected);
     ctx.state.request_scope_depth -= 1;
     let body_ty = body_ty?;
+    let answer_context = match expected {
+        Some(expected) => Some(expected),
+        // A non-returning body supplies no answer type on its own.
+        None if matches!(
+            ctx.ctx.interner.store().get(body_ty),
+            Some(Type::Primitive(crate::PrimitiveType::Never))
+        ) =>
+        {
+            None
+        }
+        None => Some(body_ty),
+    };
     let requests = ctx.state.action_requests.drain(start..).collect::<Vec<_>>();
     let handler_ty = if let HirExpr::Handler { handlers, span } = ctx.ctx.hir.exprs[handler].clone()
     {
@@ -45,6 +57,7 @@ pub(super) fn collect_handle<E>(
             None,
             &requests,
             Some(body),
+            answer_context,
         )?;
         let targets = handlers
             .iter()

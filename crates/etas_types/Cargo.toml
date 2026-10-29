@@ -1,6 +1,6 @@
 [package]
 name = "etas_types"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,3 +18,4 @@ blake3.workspace = true
 
 [dev-dependencies]
 etas_syntax.workspace = true
+serde_json.workspace = true
