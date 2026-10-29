@@ -272,6 +272,48 @@ flow inspect() -> unit { let definition = ^normalize; return; }"#,
 }
 
 #[test]
+fn branch_with_checked_completion_preserves_callback_trace_order() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+import std.io.{println, eprintln};
+flow normalize(flag: bool, f: () -> unit ![]) -> unit ![] {
+    if flag { println("a")?; } else { eprintln("b")?; }
+    f();
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let report_for = |source| {
+        let body = store.syntax_operations().parse_body(source).unwrap();
+        let draft = store.with_body(&original, body).unwrap();
+        let overlay = store
+            .resolve(&draft)
+            .unwrap()
+            .body_overlay(store.syntax_operations())
+            .unwrap();
+        FrontendSession::new()
+            .analyze_body_overlay(overlay)
+            .unwrap()
+            .check_report(Default::default())
+            .unwrap()
+    };
+    let unchanged =
+        report_for("if flag { println(\"a\")?; } else { eprintln(\"b\")?; } f(); return;");
+    assert_eq!(unchanged.status, CheckStatus::Accepted, "{unchanged:?}");
+    let reordered =
+        report_for("f(); if flag { println(\"a\")?; } else { eprintln(\"b\")?; } return;");
+    assert_ne!(reordered.status, CheckStatus::Accepted, "{reordered:?}");
+    assert!(
+        reordered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "code::ActionTraceNotContained"),
+        "{reordered:?}"
+    );
+}
+
+#[test]
 fn branch_before_callback_does_not_discard_unproved_host_outcomes() {
     let (store, expr) = definitions_from(
         r#"module app;
