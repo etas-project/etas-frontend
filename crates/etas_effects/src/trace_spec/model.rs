@@ -145,6 +145,7 @@ impl TraceSpecPattern {
         let spec_facts = etas_types::SpecFacts {
             external_signatures: types.facts.external_specs.signatures.clone(),
             external_impls: types.facts.external_specs.impls.clone(),
+            external_methods: types.facts.external_specs.methods.clone(),
             external_aliases: types.facts.external_specs.aliases.clone(),
             signatures: types.facts.spec_signatures.clone(),
             impls: types.facts.spec_impls.clone(),

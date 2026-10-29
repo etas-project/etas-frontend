@@ -8,10 +8,12 @@ use crate::{
 };
 
 pub struct SpecMethodCallInput<'a> {
+    pub expr: etas_hir::HirExprId,
     pub receiver: etas_hir::HirExprId,
     pub spec_path: &'a ResolvedPath,
     pub spec_args: &'a [etas_hir::HirTypeId],
     pub method: &'a str,
+    pub generic_args: &'a [etas_hir::HirGenericArg],
     pub args: &'a [HirArg],
     pub span: etas_core::Span,
     pub expected: Option<TypeId>,
@@ -23,23 +25,17 @@ pub fn collect_spec_method_call<E>(
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
     let SpecMethodCallInput {
+        expr,
         receiver,
         spec_path,
         spec_args,
         method,
+        generic_args,
         args,
         span,
         expected,
     } = input;
     let receiver_ty = collect_expr(ctx, receiver, None)?;
-    let explicit_arg_tys = args
-        .iter()
-        .map(|arg| match arg {
-            HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
-            HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
-        })
-        .collect::<Result<Vec<_>, E>>()?;
-
     let Some(spec_symbol) = resolved_spec_symbol(ctx, spec_path) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: TypeDiagnosticCode::UnknownType,
@@ -91,7 +87,7 @@ pub fn collect_spec_method_call<E>(
         return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
 
-    let Some(callee_ty) = method_callable_type(ctx, method_fact) else {
+    let Some(method_signature) = method_callable_signature(ctx, method_fact) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: TypeDiagnosticCode::IncompleteTypeFacts,
             span,
@@ -99,6 +95,62 @@ pub fn collect_spec_method_call<E>(
         });
         return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
+
+    let bindings = signature
+        .param_names
+        .iter()
+        .cloned()
+        .zip(spec_arg_tys.iter().copied())
+        .collect();
+    let method_signature = match crate::lower::spec_method::specialize(
+        &mut ctx.ctx.interner,
+        &method_signature,
+        method_fact.receiver_param,
+        bindings,
+        receiver_ty,
+    ) {
+        Ok(signature) => signature,
+        Err(message) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message,
+            });
+            return Ok(ctx.primitive(crate::PrimitiveType::Never));
+        }
+    };
+    let Some(method_signature) =
+        super::callable_instantiation::instantiate_signature(ctx, method_signature)
+    else {
+        return Ok(ctx.primitive(crate::PrimitiveType::Never));
+    };
+    let callee_ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+        input: method_signature.params,
+        output: method_signature.output,
+        effects: method_signature.effects,
+    }));
+    let checked_generic_args = super::call::lower_callable_generic_args(ctx, generic_args);
+    let signature_hint = super::callable_instantiation::signature_hints(
+        ctx,
+        callee_ty,
+        &method_signature.generic_params,
+        &checked_generic_args,
+        span,
+    );
+    let explicit_arg_tys = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            let expected = signature_hint
+                .as_ref()
+                .and_then(|signature| signature.input.get(index + 1))
+                .copied();
+            match arg {
+                HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
+                HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
+            }
+        })
+        .collect::<Result<Vec<_>, E>>()?;
 
     ctx.state.spec_obligations.push(SpecObligation {
         ty: receiver_ty,
@@ -110,25 +162,17 @@ pub fn collect_spec_method_call<E>(
     let mut call_args = Vec::with_capacity(explicit_arg_tys.len() + 1);
     call_args.push(receiver_ty);
     call_args.extend(explicit_arg_tys);
-    let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
+    let output = super::call::select_call_output(
+        ctx,
+        signature_hint.map(|signature| signature.output),
+        expected,
+        span,
+    );
     ctx.emit(TypeConstraint::Callable {
-        call: None,
+        call: Some(expr),
         callee: callee_ty,
-        generic_params: signature
-            .param_names
-            .into_iter()
-            .zip(spec_arg_tys.iter().copied())
-            .map(|(name, subject)| crate::CallableGenericParam {
-                kind: crate::CallableGenericParamKind::Type,
-                name,
-                subject,
-                bounds: Vec::new(),
-            })
-            .collect(),
-        generic_args: spec_arg_tys
-            .into_iter()
-            .map(crate::CallableGenericArg::Type)
-            .collect(),
+        generic_params: method_signature.generic_params,
+        generic_args: checked_generic_args,
         arg_exprs: std::iter::once(Some(receiver))
             .chain(args.iter().map(|arg| {
                 Some(match arg {
@@ -179,10 +223,10 @@ fn lower_spec_args<E>(
     Some(lowered)
 }
 
-fn method_callable_type<E>(
+fn method_callable_signature<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     method: &crate::SpecMethodFact,
-) -> Option<TypeId> {
+) -> Option<crate::CallableSignature> {
     let signature = if let Some(signature) = &method.signature {
         signature.clone()
     } else {
@@ -193,9 +237,5 @@ fn method_callable_type<E>(
         };
         signature
     };
-    Some(ctx.ctx.interner.intern(Type::Function(FlowType {
-        input: signature.params,
-        output: signature.output,
-        effects: signature.effects,
-    })))
+    Some(signature)
 }

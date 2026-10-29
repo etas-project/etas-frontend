@@ -144,7 +144,7 @@ impl Fingerprinter<'_> {
             instances.insert(combine(
                 "etas.code.parameter-request.v1",
                 [
-                    encoded("parameter", &parameter.parameter)?,
+                    self.request_target(&parameter.parameter)?,
                     combine("etas.code.request-mask.v1", excluded),
                 ],
             ));
@@ -262,7 +262,7 @@ impl Fingerprinter<'_> {
                     self.effect(&event.action)?,
                 ],
             ),
-            T::ParameterCall { parameter } => ("parameter", vec![encoded("parameter", parameter)?]),
+            T::ParameterCall { parameter } => ("parameter", vec![self.request_target(parameter)?]),
             T::Seq(parts) | T::Choice(parts) => {
                 let mut parts = parts
                     .iter()
@@ -285,7 +285,12 @@ impl Fingerprinter<'_> {
                     parameter_calls, ..
                 } = trace
                 {
-                    parts.push(encoded("parameters", parameter_calls)?);
+                    let mut calls = parameter_calls
+                        .iter()
+                        .map(|target| self.request_target(target))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    calls.sort_unstable();
+                    parts.push(combine("etas.code.latent-request-targets.v1", calls));
                     "widened"
                 } else {
                     "unknown-order"
@@ -297,6 +302,47 @@ impl Fingerprinter<'_> {
             "etas.code.latent-trace.v1",
             std::iter::once(encoded("trace", &tag)?).chain(parts),
         ))
+    }
+
+    fn request_target(
+        &self,
+        target: &metadata::CallableRequestTarget,
+    ) -> Result<CodeFingerprint, ProjectionError> {
+        match target {
+            metadata::CallableRequestTarget::Parameter(parameter) => {
+                encoded("parameter", parameter)
+            }
+            metadata::CallableRequestTarget::SpecMethod(method) => {
+                let mut parts = vec![
+                    self.definition(&method.spec)?,
+                    self.ty(&method.receiver)?,
+                    encoded("member", &(&method.method, method.arity))?,
+                ];
+                for ty in &method.spec_args {
+                    parts.push(self.ty(ty)?);
+                }
+                for argument in &method.generic_arguments {
+                    parts.push(match argument {
+                        metadata::SpecMethodGenericArgument::Type(ty) => {
+                            combine("etas.code.method-type-argument.v1", [self.ty(ty)?])
+                        }
+                        metadata::SpecMethodGenericArgument::EffectRow(row) => {
+                            combine("etas.code.method-row-argument.v1", [self.row(row)?])
+                        }
+                    });
+                }
+                for argument in &method.callable_arguments {
+                    parts.push(combine(
+                        "etas.code.method-callback-argument.v1",
+                        [
+                            encoded("position", &argument.position)?,
+                            fingerprint(self.catalog, &argument.sources)?,
+                        ],
+                    ));
+                }
+                Ok(combine("etas.code.spec-method-invocation.v1", parts))
+            }
+        }
     }
 }
 

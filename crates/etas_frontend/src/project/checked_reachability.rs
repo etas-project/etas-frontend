@@ -18,6 +18,7 @@ pub enum CheckedReachabilityError {
     MissingAnalysis(HirItemId),
     MissingSymbol(SymbolId),
     MissingMethod(SymbolId),
+    MissingSpecMethod(HirExprId),
     AliasCycle(SymbolId),
     UnresolvedPath(HirExprId),
     InvalidLambda(HirExprId),
@@ -304,6 +305,28 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
     fn enter_expr(&mut self, expression: ExprView<'view, 'hir>) {
         if self.error.is_some() {
             return;
+        }
+        if matches!(expression.data(), HirExpr::SpecMethodCall { .. }) {
+            let Some(targets) = self
+                .checked
+                .effects
+                .native_call_targets
+                .get(&expression.id())
+            else {
+                self.error = Some(CheckedReachabilityError::MissingSpecMethod(expression.id()));
+                return;
+            };
+            if targets.is_empty() {
+                self.error = Some(CheckedReachabilityError::MissingSpecMethod(expression.id()));
+                return;
+            }
+            for target in targets {
+                let etas_effects::EffectUnit::Item(item) = target else {
+                    self.error = Some(CheckedReachabilityError::MissingSpecMethod(expression.id()));
+                    return;
+                };
+                self.pending.push(*item);
+            }
         }
         if let Some(symbol) = self.checked.types.agent_method_calls.get(&expression.id()) {
             let Some(method) = self.checked.types.agent_methods.get(symbol) else {

@@ -8561,10 +8561,10 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
             latent_flows: Vec::new(),
             action_trace: ProjectExternalActionTraceInput::Seq(vec![
                 ProjectExternalActionTraceInput::ParameterCall {
-                    parameter: "callback".to_owned(),
+                    parameter: "callback".into(),
                 },
                 ProjectExternalActionTraceInput::ParameterCall {
-                    parameter: "callback".to_owned(),
+                    parameter: "callback".into(),
                 },
             ]),
         });
@@ -9006,7 +9006,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
             action_trace: ProjectExternalActionTraceInput::ParameterCall {
-                parameter: "callback".to_owned(),
+                parameter: "callback".into(),
             },
         });
 
@@ -9690,7 +9690,7 @@ flow main() -> unit {
             .iter()
             .filter(|node| matches!(
                 node,
-                etas_package_metadata::ActionTrace::ParameterCall { parameter }
+                etas_package_metadata::ActionTrace::ParameterCall { parameter: etas_package_metadata::CallableRequestTarget::Parameter(parameter) }
                     if parameter == "f"
             ))
             .count(),

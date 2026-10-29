@@ -1,4 +1,4 @@
-use super::program::{LowerCtx, SyntaxKey};
+use super::program::{LowerCtx, PreludeContext, SyntaxKey};
 use crate::*;
 use etas_core::Span;
 use etas_std::{StdDecl, StdSymbolKind};
@@ -11,11 +11,41 @@ impl LowerCtx {
         scope: ScopeId,
         item_id: HirItemId,
     ) -> Vec<SymbolId> {
+        self.lower_params_with_receiver(params, scope, item_id, None)
+    }
+
+    pub(super) fn lower_params_with_receiver(
+        &mut self,
+        params: &[ast::Param],
+        scope: ScopeId,
+        item_id: HirItemId,
+        receiver_type: Option<&ast::TypeExpr>,
+    ) -> Vec<SymbolId> {
         params
             .iter()
             .enumerate()
             .map(|(param_index, param)| {
-                let ty = self.lower_type(&param.ty, scope, item_id);
+                let ty = match &param.ty {
+                    ast::ParamType::Explicit(ty) => self.lower_type(ty, scope, item_id),
+                    ast::ParamType::SelfReceiver { span } if param_index == 0 => receiver_type
+                        .map(|ty| self.lower_type(ty, scope, item_id))
+                        .unwrap_or_else(|| {
+                            self.diagnostics.push(etas_core::Diagnostic::type_check(
+                                etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
+                                *span,
+                                "implicit self receiver requires a type or spec method owner",
+                            ));
+                            self.lower_type(&ast::TypeExpr::Error(*span), scope, item_id)
+                        }),
+                    ast::ParamType::SelfReceiver { span } => {
+                        self.diagnostics.push(etas_core::Diagnostic::type_check(
+                            etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
+                            *span,
+                            "implicit self receiver must be the first method parameter",
+                        ));
+                        self.lower_type(&ast::TypeExpr::Error(*span), scope, item_id)
+                    }
+                };
                 self.bind_symbol_with_def(
                     scope,
                     SymbolData {
@@ -261,10 +291,22 @@ impl LowerCtx {
         scope: ScopeId,
         report: bool,
     ) -> ResolvedPath {
+        self.resolve_path_in_context(path, scope, report, PreludeContext::Any)
+    }
+
+    pub(super) fn resolve_path_in_context(
+        &mut self,
+        path: &ast::Path,
+        scope: ScopeId,
+        report: bool,
+        context: PreludeContext,
+    ) -> ResolvedPath {
         let full_path = crate::path_text(path);
         let resolution = if path.segments.len() > 1 {
-            match self.resolve_name(&full_path, path.span, scope, false) {
-                ResolveResult::Unresolved => self.resolve_qualified_prefix(path, scope, report),
+            match self.resolve_name_in_context(&full_path, path.span, scope, false, context) {
+                ResolveResult::Unresolved => {
+                    self.resolve_qualified_prefix(path, scope, report, context)
+                }
                 ResolveResult::Ambiguous(symbols) => {
                     if report {
                         self.diagnostics.ambiguous_name(&full_path, path.span);
@@ -279,7 +321,7 @@ impl LowerCtx {
                 .first()
                 .map(|segment| segment.text.as_str())
                 .unwrap_or_default();
-            self.resolve_name(name, path.span, scope, report)
+            self.resolve_name_in_context(name, path.span, scope, report, context)
         };
         ResolvedPath {
             syntax_path: path.clone(),
@@ -332,6 +374,17 @@ impl LowerCtx {
         scope: ScopeId,
         report: bool,
     ) -> ResolveResult {
+        self.resolve_name_in_context(name, span, scope, report, PreludeContext::Any)
+    }
+
+    fn resolve_name_in_context(
+        &mut self,
+        name: &str,
+        span: Span,
+        scope: ScopeId,
+        report: bool,
+        context: PreludeContext,
+    ) -> ResolveResult {
         match crate::resolve_name(
             name,
             span,
@@ -341,14 +394,15 @@ impl LowerCtx {
             false,
         ) {
             ResolveResult::Unresolved => {
-                if let Some(symbol) = self.resolve_std_prelude_name(name, span) {
-                    ResolveResult::Resolved(symbol)
-                } else {
-                    if report && !name.is_empty() {
-                        self.diagnostics.unresolved_name(name, span);
+                let result = self.resolve_std_prelude_name(name, span, context);
+                if report && !name.is_empty() {
+                    match &result {
+                        ResolveResult::Unresolved => self.diagnostics.unresolved_name(name, span),
+                        ResolveResult::Ambiguous(_) => self.diagnostics.ambiguous_name(name, span),
+                        _ => {}
                     }
-                    ResolveResult::Unresolved
                 }
+                result
             }
             ResolveResult::Ambiguous(symbols) => {
                 if report && !name.is_empty() {
@@ -389,6 +443,7 @@ impl LowerCtx {
         path: &ast::Path,
         scope: ScopeId,
         report: bool,
+        context: PreludeContext,
     ) -> ResolveResult {
         let full_path = crate::path_text(path);
         for prefix_len in (1..path.segments.len()).rev() {
@@ -397,7 +452,7 @@ impl LowerCtx {
                 .map(|segment| segment.text.as_str())
                 .collect::<Vec<_>>()
                 .join(".");
-            match self.resolve_name(&prefix, path.span, scope, false) {
+            match self.resolve_name_in_context(&prefix, path.span, scope, false, context) {
                 ResolveResult::Resolved(symbol) => {
                     let remaining = path.segments[prefix_len..]
                         .iter()

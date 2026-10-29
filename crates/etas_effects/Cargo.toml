@@ -16,6 +16,7 @@ etas_std.workspace = true
 etas_types.workspace = true
 etas_utils.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 etas_syntax.workspace = true

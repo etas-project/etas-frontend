@@ -14,7 +14,7 @@ impl EffectSemantics<'_> {
     pub(crate) fn materialize_metadata_callable_analyses(
         &mut self,
     ) -> Result<(), EffectPipelineError> {
-        let mut sources = BTreeSet::new();
+        let mut sources = self.discovered_external_method_sources.borrow().clone();
         for key in self.callable_summaries.borrow().summaries.keys() {
             if let LatentSource::Metadata(source) = key.source {
                 sources.insert(source);

@@ -118,6 +118,13 @@ impl Builder<'_, '_> {
         let mut parameter_bindings = vec![];
         let mut bound = BTreeSet::new();
         for target in trace_parameters(&summary.action_trace) {
+            if matches!(
+                target,
+                etas_effects::ParameterCallTarget::SpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+            ) {
+                continue;
+            }
             let etas_effects::ParameterCallTarget::Native(symbol) = target else {
                 return Ok(None);
             };

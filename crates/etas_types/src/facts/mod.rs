@@ -5,6 +5,7 @@ pub mod inference;
 pub mod method_specs;
 pub mod reflection;
 pub mod signatures;
+mod spec_method;
 pub mod specs;
 pub mod symbols;
 
@@ -17,10 +18,12 @@ pub use effects::{
     EffectActionSignature, HandlerTypeBinding,
 };
 pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
+mod impl_methods;
 pub use expressions::{
     CheckedIndexKind, CheckedSliceKind, CheckedStdMethodFact, DeferredEffectRowObligation,
     FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
 };
+pub use impl_methods::TypeImplMethodFact;
 pub use inference::CheckedAgentInferenceFact;
 pub use reflection::{CheckedReflectionFact, CheckedReflectionTarget};
 pub use signatures::{
@@ -29,7 +32,7 @@ pub use signatures::{
 };
 pub use specs::{
     CallableSpecSatisfactionFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
-    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
+    ExternalCallableSpecSatisfactionFact, ExternalSpecIdentity, ExternalTraceSpecConformanceFact,
     ExternalTraceSpecConformanceTarget, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind,
     SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
     TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
@@ -41,6 +44,7 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    pub type_impl_methods: HashMap<SymbolId, TypeImplMethodFact>,
     pub external_specs: specs::ExternalSpecFacts,
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
     pub reflection_type_identities: HashMap<TypeId, etas_code::DefinitionKey>,
@@ -134,6 +138,7 @@ impl From<&TypeFacts> for SpecFacts {
         Self {
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
+            external_methods: facts.external_specs.methods.clone(),
             external_aliases: facts.external_specs.aliases.clone(),
             signatures: facts.spec_signatures.clone(),
             impls: facts.spec_impls.clone(),

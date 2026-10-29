@@ -45,6 +45,7 @@ fn check_program(
     // Corruption fixtures edit raw HIR; analysis consumes a frozen revision.
     let hir = etas_hir::HirRevision::try_new(hir.clone()).unwrap();
     RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &hir,
         types,
@@ -2278,6 +2279,7 @@ tool search(q: string) -> string ![Network];
         action_row: Vec::new(),
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3794,6 +3796,7 @@ flow main() -> unit ![] {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let units = RunEffectPipeline::artifacts(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3857,6 +3860,7 @@ flow helper() -> unit {
 
     let main = flow_item(&hir, "main");
     let plan = RunEffectPipeline::plan(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3872,6 +3876,7 @@ flow helper() -> unit {
 
     assert!(plan.registry.tag_extends(CONSOLE_TAG, FILE_IO_TAG));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3948,6 +3953,7 @@ flow main() -> unit ![Network] {
     let helper = flow_item(&hir, "helper");
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4072,6 +4078,7 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4174,6 +4181,7 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4312,6 +4320,7 @@ flow main() -> unit {
         }],
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4378,6 +4387,7 @@ flow main() -> unit {
         },
     ];
     let missing_anchor_error = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4395,6 +4405,7 @@ flow main() -> unit {
         etas_effects::EffectPipelineError::MissingDiagnosticAnchor { .. }
     ));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4877,6 +4888,7 @@ flow main(path: string) -> string ![Workspace.read<_>]
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let pipeline = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,

@@ -118,11 +118,79 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
         facts: &'a etas_types::TypeFacts,
         hir: &'a etas_hir::HirProgram,
         store: &'a etas_types::TypeStore,
+        symbols: etas_types::pipeline::symbols::TypeSymbolIndex,
         items: BTreeSet<HirItemId>,
         missing: bool,
     }
+    impl Targets<'_> {
+        fn signature(&mut self, signature: &etas_types::CallableSignature) {
+            for parameter in &signature.generic_params {
+                for bound in &parameter.bounds {
+                    self.spec_methods(&bound.spec, None);
+                }
+            }
+        }
+
+        fn spec_methods(&mut self, spec: &etas_types::CheckedSpecRef, method: Option<&str>) {
+            for implementation in &self.facts.spec_impls {
+                let matches = match spec {
+                    etas_types::CheckedSpecRef::Source(symbol) => {
+                        self.symbols.canonical_symbol(self.hir, *symbol)
+                            == Some(implementation.spec_symbol)
+                    }
+                    etas_types::CheckedSpecRef::External(identity) => {
+                        self.facts
+                            .external_specs
+                            .aliases
+                            .get(&implementation.spec_symbol)
+                            == Some(identity)
+                    }
+                    etas_types::CheckedSpecRef::Std(_) => false,
+                };
+                if !matches {
+                    continue;
+                }
+                for candidate in implementation
+                    .methods
+                    .iter()
+                    .filter(|candidate| method.is_none_or(|name| candidate.name == name))
+                {
+                    match self
+                        .hir
+                        .symbols
+                        .get(candidate.symbol)
+                        .map(|symbol| &symbol.def)
+                    {
+                        Some(etas_hir::SymbolDef::Item { item }) => {
+                            self.items.insert(*item);
+                        }
+                        _ => self.missing = true,
+                    }
+                }
+            }
+        }
+    }
     impl<'view, 'hir> HirVisitor<'view, 'hir> for Targets<'_> {
         fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
+            if let etas_hir::HirExpr::SpecMethodCall {
+                spec_path, method, ..
+            } = expr.data()
+            {
+                let spec = match spec_path.resolution {
+                    etas_hir::ResolveResult::Resolved(symbol) => {
+                        self.symbols.canonical_symbol(self.hir, symbol)
+                    }
+                    _ => None,
+                };
+                let Some(spec) = spec else {
+                    self.missing = true;
+                    return;
+                };
+                // Generic receivers may select different implementations at
+                // invocation time. Check candidate bodies without granting their
+                // execution authority; effect evidence chooses actual targets.
+                self.spec_methods(&etas_types::CheckedSpecRef::Source(spec), Some(method));
+            }
             if let etas_hir::HirExpr::Path(path) = expr.data()
                 && let etas_hir::ResolveResult::Resolved(mut symbol) = path.resolution
             {
@@ -133,6 +201,11 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
                         return;
                     }
                     symbol = *target;
+                }
+                if let Some(etas_types::SymbolTypeFact::Flow { signature }) =
+                    self.symbols.symbol_fact(self.hir, self.facts, symbol)
+                {
+                    self.signature(signature);
                 }
                 match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
                     Some(etas_hir::SymbolDef::TopLevelLet {
@@ -187,10 +260,23 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
         facts: &types.facts,
         hir: &hir.hir,
         store: &types.store,
+        symbols: etas_types::pipeline::symbols::TypeSymbolIndex::build(&hir.hir),
         items: reachability.analysis_items.clone(),
         missing: false,
     };
     for item in &reachability.analysis_items {
+        match types.facts.item_signatures.get(item) {
+            Some(
+                etas_types::ItemSignature::Flow(signature)
+                | etas_types::ItemSignature::Tool(signature),
+            ) => targets.signature(signature),
+            Some(etas_types::ItemSignature::Agent(signature)) => {
+                if let Some(signature) = signature.callable() {
+                    targets.signature(signature);
+                }
+            }
+            _ => {}
+        }
         walk_item(&view, *item, &mut targets);
     }
     if targets.missing

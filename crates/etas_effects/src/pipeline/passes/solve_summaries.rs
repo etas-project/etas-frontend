@@ -38,6 +38,8 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
         let parameter_effects = std::sync::Arc::new(frozen_calls.parameter_effects.clone());
         let analysis = run_effect_analysis(
             EffectAnalysisInput {
+                external_implementations: context.input.external_implementations,
+                method_evidence: std::sync::Arc::new(frozen_calls.method_evidence.clone()),
                 frozen_graphs: std::sync::Arc::new(frozen_calls.graphs.clone()),
                 callable_environments: std::sync::Arc::new(
                     frozen_calls.callable_environments.clone(),

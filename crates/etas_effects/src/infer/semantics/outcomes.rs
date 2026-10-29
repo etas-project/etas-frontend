@@ -130,7 +130,9 @@ impl EffectSemantics<'_> {
                 super::state::LatentSource::Unit(_)
                 | super::state::LatentSource::Reference { .. }
                 | super::state::LatentSource::EnumConstructor(_) => return None,
-                super::state::LatentSource::Unavailable { .. } => return None,
+                super::state::LatentSource::Unavailable { .. }
+                | super::state::LatentSource::SpecMethod { .. }
+                | super::state::LatentSource::MetadataSpecMethod { .. } => return None,
             };
             returned.insert(source);
         }
@@ -380,6 +382,29 @@ impl EffectSemantics<'_> {
                 completion.record(exit.outcome.clone(), trace);
             }
             self.call_completion_exits.insert((unit, call), completion);
+            return;
+        }
+        if let Some(exits) = &summary.exits
+            && !exits.exits.is_empty()
+            && !exits.gaps.is_empty()
+            && exits.gaps.iter().all(|gap| {
+                matches!(
+                    gap,
+                    Gap::ParameterCall {
+                        target: crate::ParameterCallTarget::SpecMethod { .. }
+                            | crate::ParameterCallTarget::MetadataSpecMethod { .. },
+                        ..
+                    }
+                )
+            })
+            && exits
+                .exits
+                .iter()
+                .all(|exit| matches!(exit.outcome, CallableOutcome::Returned { .. }))
+        {
+            // Method evidence carries its generic environment across wrappers.
+            // A raw callback binder may still belong to the callee's scope.
+            state.exits.gaps.extend(exits.gaps.iter().cloned());
             return;
         }
         if self.expr_is_never(call)

@@ -49,6 +49,15 @@ pub trait InterproceduralSemantics {
         None
     }
 
+    fn spec_method_call_target(
+        &mut self,
+        _context: UnitContext<Self::Unit>,
+        _call: HirExprId,
+        _state: &Self::Domain,
+    ) -> Option<Self::Unit> {
+        None
+    }
+
     fn handler_arm_dependency(
         &mut self,
         _context: UnitContext<Self::Unit>,

@@ -13,6 +13,84 @@ pub(crate) fn lower_callable_graph(
     lower_graph(graph, &resolver)
 }
 
+pub(crate) fn lower_callable_request_target(
+    target: &metadata::CallableRequestTarget,
+    types: &TypeOutput,
+) -> Result<etas_effects::ExternalCallableRequestTarget, String> {
+    request_target(target, &CheckedExternalTypeResolver::new(types))
+}
+
+fn request_target(
+    target: &metadata::CallableRequestTarget,
+    resolver: &CheckedExternalTypeResolver<'_>,
+) -> Result<etas_effects::ExternalCallableRequestTarget, String> {
+    use etas_effects::{
+        ExternalCallableRequestTarget as Target, ExternalSpecMethodGenericArgument as Argument,
+    };
+    Ok(match target {
+        metadata::CallableRequestTarget::Parameter(parameter) => {
+            Target::Parameter(parameter.clone())
+        }
+        metadata::CallableRequestTarget::SpecMethod(method) => Target::SpecMethod(
+            std::sync::Arc::new(etas_effects::ExternalSpecMethodInvocation {
+                identity: target.fingerprint().map_err(|error| error.to_string())?,
+                receiver: type_id(&method.receiver, resolver)?,
+                spec: resolver
+                    .spec_identity(&method.spec)
+                    .map_err(|error| error.message)?,
+                spec_args: method
+                    .spec_args
+                    .iter()
+                    .map(|ty| type_id(ty, resolver))
+                    .collect::<Result<_, _>>()?,
+                method: method.method.clone(),
+                arity: method.arity,
+                generic_arguments: method
+                    .generic_arguments
+                    .iter()
+                    .map(|argument| {
+                        Ok(match argument {
+                            metadata::SpecMethodGenericArgument::Type(ty) => {
+                                Argument::Type(type_id(ty, resolver)?)
+                            }
+                            metadata::SpecMethodGenericArgument::EffectRow(row) => {
+                                let projected =
+                                    package_effect_row_input(row).map_err(|error| error.message)?;
+                                Argument::EffectRow(
+                                    resolver
+                                        .effect_row(&projected)
+                                        .map_err(|error| error.message)?,
+                                )
+                            }
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+                callable_arguments: method
+                    .callable_arguments
+                    .iter()
+                    .map(|argument| {
+                        Ok(etas_effects::ExternalSpecMethodCallableArgument {
+                            position: argument.position,
+                            sources: argument.sources.clone(),
+                            values: lower_graph(&argument.sources, resolver)?,
+                        })
+                    })
+                    .collect::<Result<_, String>>()?,
+            }),
+        ),
+    })
+}
+
+pub(crate) fn lower_callable_request_target_in_scope(
+    target: &metadata::CallableRequestTarget,
+    types: &TypeOutput,
+    parameters: &[etas_types::CallableGenericParam],
+) -> Result<etas_effects::ExternalCallableRequestTarget, String> {
+    let resolver = CheckedExternalTypeResolver::for_callable(types, parameters)
+        .map_err(|error| error.message)?;
+    request_target(target, &resolver)
+}
+
 pub(crate) fn lower_callable_graph_in_scope(
     graph: &metadata::CallableValueGraph,
     types: &TypeOutput,
@@ -98,7 +176,7 @@ fn request_template(
             .iter()
             .map(|parameter| {
                 Ok(etas_effects::ExternalParameterRequestMetadata {
-                    parameter: parameter.parameter.clone(),
+                    parameter: request_target(&parameter.parameter, resolver)?,
                     excluded: parameter
                         .excluded
                         .iter()
@@ -192,7 +270,7 @@ fn trace(
             },
         },
         metadata::ActionTrace::ParameterCall { parameter } => T::ParameterCall {
-            parameter: parameter.clone(),
+            parameter: request_target(parameter, resolver)?,
         },
         metadata::ActionTrace::Seq(parts) => T::Seq(
             parts
@@ -221,7 +299,10 @@ fn trace(
                 .iter()
                 .map(|value| effect(value, resolver))
                 .collect::<Result<_, _>>()?,
-            parameter_calls: parameter_calls.clone(),
+            parameter_calls: parameter_calls
+                .iter()
+                .map(|target| request_target(target, resolver))
+                .collect::<Result<_, _>>()?,
         },
     })
 }

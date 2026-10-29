@@ -4,6 +4,7 @@ use super::*;
 fn nested_callable_type_variables_require_declared_enclosing_parameters() {
     let path = vec!["dep".into(), "Stage".into()];
     let scope = GenericScope {
+        parameter_kinds: vec![etas_package_metadata::GenericParamKind::Type; 2],
         types: HashSet::from(["I".into(), "O".into()]),
         effects: HashSet::new(),
     };
@@ -45,6 +46,7 @@ fn nested_callable_type_variables_require_declared_enclosing_parameters() {
 fn nested_callable_cannot_reinterpret_an_effect_parameter_as_a_type() {
     let path = vec!["dep".into(), "Stage".into(), "run".into()];
     let scope = GenericScope {
+        parameter_kinds: vec![etas_package_metadata::GenericParamKind::Effect],
         types: HashSet::new(),
         effects: HashSet::from(["E".into()]),
     };

@@ -12,11 +12,12 @@ pub use request::{
     ExternalEffectArgInput, ExternalEffectRefInput, ExternalEffectRowInput,
     ExternalFlowSignatureInput, ExternalNamedSignatureInput, ExternalPackageKey,
     ExternalPublicMetadataInput, ExternalRecordFieldInput, ExternalSignatureInput,
-    ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput, ExternalSpecMethodInput,
-    ExternalSpecSignatureInput, ExternalSymbolBindingInput, ExternalToolSignatureInput,
-    ExternalTraceSpecConformanceInput, ExternalTraceSpecConformanceTargetInput, ExternalTypeInput,
-    ExternalTypeSpecSatisfactionInput, ReflectionSignatureInput, SignaturePipelineInput,
-    SourceSignatureInput, SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput,
+    ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecImplMethodInput,
+    ExternalSpecKindInput, ExternalSpecMethodInput, ExternalSpecSignatureInput,
+    ExternalSymbolBindingInput, ExternalToolSignatureInput, ExternalTraceSpecConformanceInput,
+    ExternalTraceSpecConformanceTargetInput, ExternalTypeInput, ExternalTypeSpecSatisfactionInput,
+    ReflectionSignatureInput, SignaturePipelineInput, SourceSignatureInput,
+    SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput,
 };
 
 pub fn check_project(request: CheckProjectRequest<'_>) -> TypeOutput {

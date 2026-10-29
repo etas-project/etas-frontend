@@ -119,6 +119,7 @@ impl Relocation<'_> {
                         }
                     }
                     for parameter in &mut requests.parameters {
+                        self.graph_target(&mut parameter.parameter, scope)?;
                         for effect in &mut parameter.excluded {
                             self.graph_effect(effect, scope)?;
                         }
@@ -132,19 +133,69 @@ impl Relocation<'_> {
                         ExternalActionTraceMetadata::Seq(parts)
                         | ExternalActionTraceMetadata::Choice(parts) => pending.extend(parts),
                         ExternalActionTraceMetadata::Repeat(part) => pending.push(part),
-                        ExternalActionTraceMetadata::UnknownOrder(actions)
-                        | ExternalActionTraceMetadata::Widened { actions, .. } => {
+                        ExternalActionTraceMetadata::UnknownOrder(actions) => {
                             for action in actions {
                                 self.graph_effect(action, scope)?;
                             }
                         }
-                        ExternalActionTraceMetadata::Empty
-                        | ExternalActionTraceMetadata::ParameterCall { .. } => {}
+                        ExternalActionTraceMetadata::Widened {
+                            actions,
+                            parameter_calls,
+                        } => {
+                            for action in actions {
+                                self.graph_effect(action, scope)?;
+                            }
+                            for target in parameter_calls {
+                                self.graph_target(target, scope)?;
+                            }
+                        }
+                        ExternalActionTraceMetadata::Empty => {}
+                        ExternalActionTraceMetadata::ParameterCall { parameter } => {
+                            self.graph_target(parameter, scope)?
+                        }
                     }
                 }
                 Ok(value)
             })
             .collect()
+    }
+
+    fn graph_target(
+        &self,
+        target: &mut ExternalCallableRequestTarget,
+        scope: &GenericOwner,
+    ) -> Result<(), ProjectionError> {
+        let ExternalCallableRequestTarget::SpecMethod(method) = target else {
+            return Ok(());
+        };
+        let method = std::sync::Arc::make_mut(method);
+        if !self
+            .target_output
+            .facts
+            .external_specs
+            .signatures
+            .contains_key(&method.spec)
+        {
+            return Err(invalid(
+                "frozen graph method has no checked target spec identity",
+            ));
+        }
+        method.receiver = self.ty(scope, method.receiver)?;
+        for arg in &mut method.spec_args {
+            *arg = self.ty(scope, *arg)?;
+        }
+        for arg in &mut method.generic_arguments {
+            match arg {
+                ExternalSpecMethodGenericArgument::Type(ty) => *ty = self.ty(scope, *ty)?,
+                ExternalSpecMethodGenericArgument::EffectRow(row) => {
+                    *row = self.reference_row(row, scope)?
+                }
+            }
+        }
+        for argument in &mut method.callable_arguments {
+            argument.values = self.graph_values(std::mem::take(&mut argument.values), scope)?;
+        }
+        Ok(())
     }
 
     fn graph_row(

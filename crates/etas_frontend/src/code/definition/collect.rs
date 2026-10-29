@@ -98,7 +98,7 @@ fn build_selected(
     let mut callables = BTreeMap::new();
     let mut callable_bindings = HashMap::new();
     for (id, symbol, item) in pending {
-        if !selected_callable(&checked, symbol, item, selection)? {
+        if !selected_callable(&checked, &identities, symbol, item, selection)? {
             continue;
         }
         let signature = callable_signature(checked.as_ref().into(), item)
@@ -342,6 +342,7 @@ fn build_selected(
 
 fn selected_callable(
     checked: &CheckedProgram,
+    identities: &DefinitionIdentityIndex,
     symbol: etas_hir::SymbolId,
     item: HirItemId,
     selection: Option<&BTreeSet<HirItemId>>,
@@ -349,6 +350,44 @@ fn selected_callable(
     let Some(selection) = selection else {
         return Ok(true);
     };
+    if let Some(method) = checked.types.type_impl_methods.get(&symbol) {
+        let id = identities
+            .method(symbol)
+            .ok_or(ProjectionError::MissingCallable(symbol))?;
+        let exported = |definition: &etas_code::DefinitionKey| {
+            selection.iter().any(|item| {
+                checked
+                    .items
+                    .get(*item)
+                    .and_then(HirItem::symbol)
+                    .and_then(|symbol| identities.symbol(symbol))
+                    == Some(definition)
+            })
+        };
+        if !exported(id.implementation().subject()) {
+            return Ok(false);
+        }
+        if method.inherent {
+            return Ok(checked
+                .symbols
+                .get(symbol)
+                .is_some_and(|symbol| symbol.visibility == etas_hir::Visibility::Public));
+        }
+        let Some(HirItem::Impl(decl)) = checked.items.get(method.implementation) else {
+            return Err(ProjectionError::MissingCallable(symbol));
+        };
+        let etas_hir::HirImplTarget::SpecSatisfaction { specs, .. } = &decl.target else {
+            return Err(ProjectionError::Invalid(
+                "type method has no checked spec implementation".into(),
+            ));
+        };
+        return Ok(specs.iter().any(|spec| match spec.spec_path.resolution {
+            etas_hir::ResolveResult::Resolved(symbol) => {
+                identities.symbol(symbol).is_some_and(exported)
+            }
+            _ => false,
+        }));
+    }
     let Some(method) = checked.types.agent_methods.get(&symbol) else {
         return Ok(selection.contains(&item));
     };

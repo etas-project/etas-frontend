@@ -210,7 +210,43 @@ pub(crate) fn prepare(
                     };
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
-                    let arguments = bind_call(&mut substitution, target_signature, fact)?;
+                    let method_fact = match hir.exprs.get(*call) {
+                        Some(etas_hir::HirExpr::SpecMethodCall {
+                            spec_path, method, ..
+                        }) => {
+                            let etas_hir::ResolveResult::Resolved(symbol) = spec_path.resolution
+                            else {
+                                return Err("spec invocation has no resolved spec".into());
+                            };
+                            let symbol = hir
+                                .canonical_source_symbol(symbol)
+                                .ok_or("spec invocation has no canonical spec")?;
+                            let method = types
+                                .facts
+                                .spec_signatures
+                                .get(&symbol)
+                                .and_then(|spec| {
+                                    spec.methods
+                                        .iter()
+                                        .find(|candidate| candidate.name == *method)
+                                })
+                                .ok_or("spec invocation has no checked method declaration")?;
+                            let declaration = method
+                                .signature_in(&types.facts)
+                                .ok_or("spec invocation has no checked method signature")?;
+                            Some(method.implementation_instantiation(
+                                declaration,
+                                target_signature,
+                                fact,
+                            )?)
+                        }
+                        _ => None,
+                    };
+                    let arguments = bind_call(
+                        &mut substitution,
+                        target_signature,
+                        method_fact.as_ref().unwrap_or(fact),
+                    )?;
                     pending.push_back(NativeInstantiation {
                         owner: *item,
                         arguments,

@@ -67,12 +67,7 @@ impl ProjectMetadataProjection<'_> {
                 .iter()
                 .map(|parameter| {
                     Ok(etas_package_metadata::ParameterRequestTemplate {
-                        parameter: labels.get(&parameter.target).cloned().ok_or_else(|| {
-                            PackageMetadataError::InvalidMetadataType {
-                                reason: "request template parameter has no stable callable binding"
-                                    .into(),
-                            }
-                        })?,
+                        parameter: self.callable_request_target(parameter.target, labels)?,
                         excluded: parameter
                             .excluded
                             .iter()

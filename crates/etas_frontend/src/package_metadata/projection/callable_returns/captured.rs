@@ -142,9 +142,35 @@ impl CapturedProjection {
         ty: TypeId,
     ) -> Result<MetadataType, PackageMetadataError> {
         let mut ty = projection.metadata_type(ty)?;
-        normalize_generic_type(&mut ty, &self.owner_type_names);
-        expansion::validate(&ty, &self.types, &self.rows)?;
-        let mut pending = vec![Part::Type(&mut ty)];
+        self.expand_type(&mut ty)?;
+        Ok(ty)
+    }
+
+    pub fn effect_row(
+        &self,
+        mut row: MetadataEffectRow,
+    ) -> Result<MetadataEffectRow, PackageMetadataError> {
+        let original_members = row.effects.len();
+        if let Some(argument) = row.tail.as_ref().and_then(|tail| self.rows.get(tail)) {
+            row.effects.extend(argument.effects.iter().cloned());
+            row.tail = argument.tail.clone();
+        }
+        for ty in row
+            .effects
+            .iter_mut()
+            .take(original_members)
+            .flat_map(|effect| &mut effect.args)
+            .filter_map(|arg| arg.ty.as_mut())
+        {
+            self.expand_type(ty)?;
+        }
+        Ok(row)
+    }
+
+    fn expand_type(&self, ty: &mut MetadataType) -> Result<(), PackageMetadataError> {
+        normalize_generic_type(ty, &self.owner_type_names);
+        expansion::validate(ty, &self.types, &self.rows)?;
+        let mut pending = vec![Part::Type(ty)];
         while let Some(part) = pending.pop() {
             match part {
                 Part::Type(ty) => {
@@ -181,6 +207,6 @@ impl CapturedProjection {
                 }
             }
         }
-        Ok(ty)
+        Ok(())
     }
 }

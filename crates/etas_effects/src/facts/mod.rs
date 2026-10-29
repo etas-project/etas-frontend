@@ -5,6 +5,7 @@ pub use callable_values::{
     CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
     CallableReferenceAnalysis, CallableValueOrigin, CapturedCallableAnalysis, CapturedCallableId,
     MetadataCallableAnalysis, MetadataCallableGraphFact, MetadataCallableTypeFact,
+    MetadataSpecMethodDefinition,
 };
 pub use type_rows::checked_type_effect_row;
 pub mod effect_facts;

@@ -257,20 +257,43 @@ impl Parser<'_> {
     }
 
     pub(crate) fn param_list(&mut self) -> Vec<Param> {
+        self.param_list_with_receiver(false)
+    }
+
+    pub(crate) fn param_list_with_receiver(&mut self, allow_receiver: bool) -> Vec<Param> {
         self.expect_punct(Punct::LParen, "expected parameter list");
-        let params = self.comma_list(Punct::RParen, |this| this.param());
+        let mut first = true;
+        let params = self.comma_list(Punct::RParen, |this| {
+            let param = this.param(allow_receiver && first);
+            first = false;
+            param
+        });
         self.expect_punct(Punct::RParen, "expected `)` after parameters");
         params
     }
 
-    pub(crate) fn param(&mut self) -> Param {
+    fn param(&mut self, allow_receiver: bool) -> Param {
         let name = self.name("expected parameter name");
+        if name.text == "self" && !self.cursor.at_punct(Punct::Colon) {
+            if !allow_receiver {
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    name.span,
+                    "implicit self is only valid as the first parameter of a method",
+                ));
+            }
+            return Param {
+                span: name.span,
+                ty: ParamType::SelfReceiver { span: name.span },
+                name,
+            };
+        }
         self.expect_punct(Punct::Colon, "expected `:` after parameter name");
         let ty = self.type_expr();
         Param {
             span: name.span.cover(ty.span()),
             name,
-            ty,
+            ty: ParamType::Explicit(Box::new(ty)),
         }
     }
 

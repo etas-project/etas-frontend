@@ -92,6 +92,20 @@ impl EffectSemantics<'_> {
         &[crate::ExternalCallableValueMetadata],
         Span,
     )> {
+        if let Some(index) = self.implementation_graphs.get(&key) {
+            if self.frozen_graphs.contains_key(&key)
+                || self.metadata_callables.contains_key(&key)
+                || self.method_callback_graphs.contains_key(&key)
+            {
+                return None;
+            }
+            let method = self.external_implementations.get((*index)?)?;
+            return (method.graph.values.len() == method.values.len()).then_some((
+                &method.graph,
+                &method.values,
+                method.span,
+            ));
+        }
         if let Some(graph) = self.frozen_graphs.get(&key) {
             if self.metadata_callables.contains_key(&key) {
                 return None;
@@ -99,6 +113,15 @@ impl EffectSemantics<'_> {
             return (graph.graph.values.len() == graph.values.len()
                 && graph.values.len() == graph.exits.len())
             .then_some((&graph.graph, &graph.values, graph.anchor));
+        }
+        if let Some(graph) = self.method_callback_graphs.get(&key) {
+            let graph = graph.as_ref()?;
+            let argument = graph.argument()?;
+            return (argument.sources.values.len() == argument.values.len()).then_some((
+                &argument.sources,
+                &argument.values,
+                graph.span,
+            ));
         }
         let index = self.metadata_callables.get(&key).copied().flatten()?;
         let metadata = self.external_summaries.get(index)?;
@@ -132,7 +155,7 @@ impl EffectSemantics<'_> {
         span: Span,
         mode: CallableSummaryMode,
     ) -> Result<CallableSummaryPlan, EffectSpecializationError> {
-        let (_, node, checked) = self
+        let (graph, node, checked) = self
             .metadata_callable(source)
             .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
         let parameter_targets = node
@@ -151,6 +174,9 @@ impl EffectSemantics<'_> {
         let mut summary = self
             .external_callable_summary(
                 crate::pipeline::ExternalCallableEffectView {
+                    generic_params: &self
+                        .metadata_evidence_generics(source)
+                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
                     handler_requests: checked.handler_requests.as_ref(),
                     parameter_targets: &parameter_targets,
                     public_effects: &checked.public_effects,
@@ -182,30 +208,70 @@ impl EffectSemantics<'_> {
             .map(|id| self.callable_environment(id))
             .transpose()?;
         let scopes = self.metadata_callable_scopes(source)?;
+        // Implementation roots describe an already applied method. Unlike a
+        // first-class callable value, their own callback inputs are captured
+        // by the checked spec invocation and must be substituted here.
+        let applied_implementation = self.implementation_graphs.contains_key(&source.graph)
+            && graph.sources.as_slice() == [CallableValueSource::Value(source.value)];
         let own_parameters = node
             .parameter_bindings
             .iter()
             .filter(|binding| {
-                binding.parameter.scope == CallableValueScope::Value(source.value)
-                    || (mode == CallableSummaryMode::Descriptor
-                        && binding.parameter.scope != CallableValueScope::Root
-                        && scopes.contains(&binding.parameter.scope))
+                !applied_implementation
+                    && (binding.parameter.scope == CallableValueScope::Value(source.value)
+                        || (mode == CallableSummaryMode::Descriptor
+                            && binding.parameter.scope != CallableValueScope::Root
+                            && scopes.contains(&binding.parameter.scope)))
             })
             .map(|binding| crate::ParameterCallTarget::Graph {
                 graph: source.graph,
                 parameter: binding.parameter,
             })
             .collect();
+        let mut bindings = environment
+            .as_ref()
+            .map_or_else(BTreeMap::new, |environment| {
+                environment
+                    .parameters
+                    .iter()
+                    .filter(|(target, _)| is_captured_parameter(**target, source, &scopes)
+                        || (applied_implementation && matches!(target, crate::ParameterCallTarget::Graph { graph, parameter }
+                            if *graph == source.graph && parameter.scope == CallableValueScope::Value(source.value))))
+                    .map(|(target, sources)| {
+                        (
+                            *target,
+                            super::specialize::TraceArgumentBinding::Origins(sources.clone()),
+                        )
+                    })
+                    .collect::<super::specialize::TraceArgumentBindings>()
+            });
+        let invocation_state = EffectState {
+            owner: environment.as_ref().map(|environment| environment.owner),
+            ..EffectState::default()
+        };
+        self.bind_spec_method_arguments(
+            &summary,
+            &mut bindings,
+            source
+                .environment
+                .map_or(source.graph, |environment| environment.application),
+            &invocation_state,
+            &types,
+            &rows,
+        )?;
+        let bindings = bindings
+            .into_iter()
+            .map(|(target, binding)| match binding {
+                super::specialize::TraceArgumentBinding::Origins(sources) => Ok((target, sources)),
+                _ => Err(EffectSpecializationError::InvalidCallableEnvironment {
+                    reason: "metadata invocation contains an unbound expression".into(),
+                }),
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         Ok(CallableSummaryPlan::Captured(
             CallableSummaryInstantiation {
                 template: summary,
-                bindings: environment.map_or_else(BTreeMap::new, |environment| {
-                    environment
-                        .parameters
-                        .into_iter()
-                        .filter(|(target, _)| is_captured_parameter(*target, source, &scopes))
-                        .collect()
-                }),
+                bindings,
                 own_parameters,
                 type_bindings: types,
             },

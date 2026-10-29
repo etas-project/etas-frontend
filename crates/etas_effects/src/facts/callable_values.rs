@@ -51,6 +51,14 @@ pub enum CallableGenericValue {
     etas_core::RetainedSize,
 )]
 pub enum CallableValueOrigin {
+    MetadataSpecMethod {
+        invocation: CodeFingerprint,
+        environment: CallableEnvironmentId,
+    },
+    SpecMethod {
+        call: HirExprId,
+        environment: CallableEnvironmentId,
+    },
     Metadata(MetadataCallableSource),
     Unit(EffectUnit),
     Captured {
@@ -74,6 +82,30 @@ pub enum CallableValueOrigin {
     Unavailable {
         expr: HirExprId,
     },
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct MetadataSpecMethodDefinition {
+    pub invocation: std::sync::Arc<crate::ExternalSpecMethodInvocation>,
+    pub generics: Vec<(String, etas_types::CallableGenericParamKind)>,
+    pub parameters: Vec<(String, ParameterCallTarget)>,
+    pub span: etas_core::Span,
+}
+
+impl MetadataSpecMethodDefinition {
+    pub fn identity(&self) -> Result<CodeFingerprint, String> {
+        let context = serde_json::to_vec(&(&self.parameters, &self.generics))
+            .map_err(|error| format!("method binding identity could not be encoded: {error}"))?;
+        Ok(CodeFingerprint::of_parts(
+            "etas.effects.metadata-method.v1",
+            [
+                self.invocation.identity.as_bytes().as_slice(),
+                context.as_slice(),
+            ],
+        ))
+    }
 }
 
 /// Static creation/application sites, not a runtime address or execution permit.

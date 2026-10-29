@@ -613,7 +613,7 @@ impl Parser<'_> {
         let start = self.expect_keyword(Keyword::Flow, "expected `flow`");
         let name = self.name("expected flow name");
         let type_params = self.type_params();
-        let params = self.param_list();
+        let params = self.param_list_with_receiver(true);
         let return_type = self
             .cursor
             .eat_punct(Punct::Arrow)
@@ -705,7 +705,9 @@ impl Parser<'_> {
             let before = self.cursor.position();
             let visibility = self.item_visibility();
             if self.cursor.at_keyword(Keyword::Flow) {
-                items.push(ImplItem::Flow(Box::new(self.flow_decl(visibility))));
+                items.push(ImplItem::Flow(Box::new(
+                    self.flow_decl_with_receiver(visibility, true),
+                )));
             } else if self.cursor.at_keyword(Keyword::Action)
                 && !matches!(target, ImplTarget::Agent { .. })
             {
@@ -906,10 +908,14 @@ impl Parser<'_> {
     }
 
     pub(crate) fn flow_decl(&mut self, visibility: Visibility) -> FlowDecl {
+        self.flow_decl_with_receiver(visibility, false)
+    }
+
+    fn flow_decl_with_receiver(&mut self, visibility: Visibility, receiver: bool) -> FlowDecl {
         let start = self.expect_keyword(Keyword::Flow, "expected `flow`");
         let name = self.name("expected flow name");
         let type_params = self.type_params();
-        let params = self.param_list();
+        let params = self.param_list_with_receiver(receiver);
         let return_type = self
             .cursor
             .eat_punct(Punct::Arrow)

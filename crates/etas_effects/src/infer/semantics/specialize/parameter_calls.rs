@@ -271,18 +271,25 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         arity: usize,
     ) -> Result<Vec<HirExprId>, EffectSpecializationError> {
-        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
-            self.hir.exprs.get(site.call)
-        else {
-            return Err(EffectSpecializationError::InvalidCallableParameterInterface);
+        let arguments = match self.hir.exprs.get(site.call) {
+            Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) => args
+                .iter()
+                .map(|arg| {
+                    arg_expr(arg)
+                        .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(HirExpr::SpecMethodCall { receiver, args, .. }) => std::iter::once(Ok(*receiver))
+                .chain(args.iter().map(|arg| {
+                    arg_expr(arg)
+                        .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
+                }))
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(EffectSpecializationError::InvalidCallableParameterInterface),
         };
-        if args.len() != arity {
+        if arguments.len() != arity {
             return Err(EffectSpecializationError::InvalidCallableParameterInterface);
         }
-        args.iter()
-            .map(|arg| {
-                arg_expr(arg).ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
-            })
-            .collect()
+        Ok(arguments)
     }
 }

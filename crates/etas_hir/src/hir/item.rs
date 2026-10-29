@@ -205,6 +205,7 @@ pub enum HirSpecItem {
 pub struct HirFlowSignature {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
+    pub receiver_type_param: Option<SymbolId>,
     pub params: Vec<SymbolId>,
     pub return_type: Option<HirTypeId>,
     pub effects: Option<HirEffectRow>,

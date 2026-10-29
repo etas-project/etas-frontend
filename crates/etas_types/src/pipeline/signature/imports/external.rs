@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 mod enums;
+mod implementation_methods;
 mod specs;
 #[cfg(test)]
 mod tests;
@@ -391,7 +392,18 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 .args
                 .iter()
                 .map(|arg| lower_external_type(ctx, span, arg))
-                .collect();
+                .collect::<Vec<_>>();
+            if !implementation_methods::apply(
+                ctx,
+                metadata.package,
+                package_span,
+                self_type,
+                &spec,
+                &args,
+                &implementation.methods,
+            ) {
+                continue;
+            }
             let spec_symbol = match spec {
                 crate::CheckedSpecRef::Source(symbol) => symbol,
                 crate::CheckedSpecRef::Std(path) => {
@@ -587,43 +599,7 @@ fn lower_external_spec_signature(
         );
         return None;
     };
-    let methods = signature
-        .methods
-        .iter()
-        .map(|method| {
-            let signature = method.signature.as_ref().and_then(|signature| {
-                let generic_params = lower_external_callable_generic_params(
-                    ctx,
-                    span,
-                    package,
-                    &signature.path,
-                    &signature.generic_params,
-                )?;
-                Some(CallableSignature {
-                    generic_params,
-                    params: signature
-                        .params
-                        .iter()
-                        .map(|ty| lower_external_type(ctx, span, ty))
-                        .collect(),
-                    output: lower_external_type(ctx, span, &signature.output),
-                    effects: signature
-                        .effects
-                        .as_ref()
-                        .map(|row| lower_external_effect_row(ctx, span, row)),
-                    requested_actions: None,
-                })
-            });
-            SpecMethodFact {
-                identity: SpecMethodIdentity::External {
-                    package: package.0,
-                    path: method.path.clone(),
-                },
-                name: method.name.clone(),
-                signature,
-            }
-        })
-        .collect();
+    let methods = lower_external_spec_methods(ctx, package, span, signature);
     let mut super_specs = Vec::with_capacity(signature.super_specs.len());
     for bound in &signature.super_specs {
         let super_spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len()) {
@@ -679,6 +655,52 @@ fn lower_external_spec_signature(
         methods,
         super_specs,
     })
+}
+
+fn lower_external_spec_methods(
+    ctx: &mut TypePipelineContext<'_>,
+    package: ExternalPackageKey,
+    span: etas_core::Span,
+    signature: &crate::ExternalSpecSignatureInput,
+) -> Vec<SpecMethodFact> {
+    signature
+        .methods
+        .iter()
+        .map(|method| {
+            let signature = method.signature.as_ref().and_then(|signature| {
+                let generic_params = lower_external_callable_generic_params(
+                    ctx,
+                    span,
+                    package,
+                    &signature.path,
+                    &signature.generic_params,
+                )?;
+                Some(CallableSignature {
+                    generic_params,
+                    params: signature
+                        .params
+                        .iter()
+                        .map(|ty| lower_external_type(ctx, span, ty))
+                        .collect(),
+                    output: lower_external_type(ctx, span, &signature.output),
+                    effects: signature
+                        .effects
+                        .as_ref()
+                        .map(|row| lower_external_effect_row(ctx, span, row)),
+                    requested_actions: None,
+                })
+            });
+            SpecMethodFact {
+                identity: SpecMethodIdentity::External {
+                    package: package.0,
+                    path: method.path.clone(),
+                },
+                name: method.name.clone(),
+                receiver_param: method.receiver_param,
+                signature,
+            }
+        })
+        .collect()
 }
 
 fn empty_external_trace_spec_signature(

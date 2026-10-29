@@ -15,7 +15,7 @@ pub use display::display_type;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
 pub use normalize::{
     applied_representation, nominal_representation_parts, record_fields_with_applied_params,
-    type_contains_named_param,
+    type_contains_named_param, type_contains_source_parameter,
 };
 pub use primitive::PrimitiveType;
 pub use representation::{TypeRepresentationMaterializer, materialize_representations};

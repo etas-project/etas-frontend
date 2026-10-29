@@ -12,6 +12,58 @@ use crate::{
     ProjectExternalPublicMetadataInput, ProjectExternalTraceSpecClauseKindInput,
 };
 
+pub(super) fn external_implementations(
+    environment: &ProjectEnvironmentInput,
+    types: &TypeOutput,
+    anchors: &ExternalImportAnchorIndex,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>> {
+    let mut result: Vec<
+        etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>,
+    > = Vec::new();
+    for package in &environment.external_public_metadata {
+        let Some(span) = anchors.package_span(package.package) else {
+            continue;
+        };
+        for implementation in &package.spec_impls {
+            for method in &implementation.methods {
+                let checked = (|| -> Result<Option<etas_effects::ExternalSpecImplementationMetadata>, String> {
+                let mut signatures = types.facts.external_specs.methods.iter().filter(|fact| fact.identity == method.identity);
+                let Some(signature) = signatures.next() else {
+                    return Err("external implementation graph has no checked method signature".into());
+                };
+                if signatures.any(|other| other.signature != signature.signature) {
+                    return Err("external implementation graph has conflicting checked method signatures".into());
+                }
+                if let Some(existing) = result.iter().find(|existing| existing.identity == method.identity) {
+                    if existing.graph.as_ref() != &method.callable {
+                        return Err("external implementation method identity has conflicting behavior graphs".into());
+                    }
+                    return Ok(None);
+                }
+                let graph_fingerprint = etas_package_metadata::callable_value_graph_fingerprint(&method.callable).map_err(|error| error.to_string())?;
+                let graph_key = etas_code::CodeFingerprint::of_parts("etas.effects.external-implementation.v1", [method.identity.fingerprint().as_bytes().as_slice(), graph_fingerprint.as_bytes().as_slice()]);
+                Ok(Some(etas_effects::ExternalSpecImplementationMetadata {
+                        identity: method.identity.clone(), graph_key,
+                        graph: std::sync::Arc::new(method.callable.clone()),
+                        values: crate::project::lower_callable_graph(&method.callable, types)?,
+                    }))
+                })();
+                match checked {
+                    Ok(Some(metadata)) => result.push(etas_effects::AnchoredExternalMetadata {
+                        package: package.package.0,
+                        span,
+                        metadata,
+                    }),
+                    Ok(None) => {}
+                    Err(reason) => push_external_metadata_diagnostic(diagnostics, span, reason),
+                }
+            }
+        }
+    }
+    result
+}
+
 pub(super) fn external_effect_metadata(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
@@ -320,7 +372,7 @@ fn external_effect_summary_metadata(
                     }).collect::<Result<_, String>>()).transpose()?,
                 })).collect::<Result<_, String>>()?,
                 parameters: template.parameters.iter().map(|parameter| Ok(etas_effects::ExternalParameterRequestMetadata {
-                    parameter: parameter.parameter.clone(),
+                    parameter: crate::project::lower_callable_request_target(&parameter.parameter, types)?,
                     excluded: parameter.excluded.iter().map(|effect| lower_external_effect_metadata(effect, types)).collect::<Result<_, _>>()?,
                 })).collect::<Result<_, String>>()?,
             })
@@ -429,7 +481,7 @@ fn external_action_trace(
         }
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
             etas_effects::ExternalActionTraceMetadata::ParameterCall {
-                parameter: parameter.clone(),
+                parameter: crate::project::lower_callable_request_target(parameter, types)?,
             }
         }
         ProjectExternalActionTraceInput::Seq(children) => {
@@ -469,7 +521,10 @@ fn external_action_trace(
                 .iter()
                 .map(|action| lower_external_effect_metadata(action, types))
                 .collect::<Result<Vec<_>, _>>()?,
-            parameter_calls: parameter_calls.clone(),
+            parameter_calls: parameter_calls
+                .iter()
+                .map(|target| crate::project::lower_callable_request_target(target, types))
+                .collect::<Result<_, _>>()?,
         },
     })
 }

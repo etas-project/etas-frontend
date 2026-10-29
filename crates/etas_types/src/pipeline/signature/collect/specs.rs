@@ -68,6 +68,15 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 HirSpecItem::FlowSignature(signature) => Some(SpecMethodFact {
                                     identity: SpecMethodIdentity::Source(signature.symbol),
                                     name: symbol_name(ctx, signature.symbol),
+                                    receiver_param: signature.receiver_type_param.and_then(
+                                        |receiver| {
+                                            signature
+                                                .type_params
+                                                .iter()
+                                                .position(|param| *param == receiver)
+                                                .map(|index| index as u32)
+                                        },
+                                    ),
                                     signature: None,
                                 }),
                                 HirSpecItem::Error { .. } => None,
@@ -78,7 +87,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                 );
                 for item in decl.items {
                     if let HirSpecItem::FlowSignature(signature) = item {
-                        let callable = callable_signature_from_spec_item(ctx, &signature);
+                        let callable = callable_signature_from_spec_item(ctx, state, &signature);
                         state.symbol_types.insert(
                             signature.symbol,
                             SymbolTypeFact::Flow {
@@ -115,7 +124,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                     .collect::<Vec<_>>();
                 for item in &decl.items {
                     if let HirImplItem::Flow(flow) = item {
-                        let callable = callable_signature_from_flow(ctx, flow);
+                        let callable = callable_signature_from_flow(ctx, state, flow);
                         state.symbol_types.insert(
                             flow.symbol,
                             SymbolTypeFact::Flow {
@@ -135,9 +144,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 .symbols
                                 .canonical_symbol(ctx.hir, spec_symbol)
                                 .unwrap_or(spec_symbol);
-                            let methods = if state
-                                .spec_signatures
-                                .get(&spec_symbol)
+                            let methods = if spec_signature(ctx, state, spec_symbol)
                                 .is_some_and(|signature| !signature.methods.is_empty())
                             {
                                 impl_methods.clone()
@@ -205,10 +212,15 @@ fn symbol_name(ctx: &TypePipelineContext<'_>, symbol: etas_hir::SymbolId) -> Str
 
 fn callable_signature_from_spec_item(
     ctx: &mut TypePipelineContext<'_>,
+    state: &SignaturePipelineState,
     signature: &etas_hir::HirFlowSignature,
 ) -> CallableSignature {
     CallableSignature {
-        generic_params: Vec::new(),
+        generic_params: super::callables::callable_generic_params(
+            ctx,
+            state,
+            &signature.type_params,
+        ),
         params: lower_param_types(ctx, &signature.params),
         output: signature
             .return_type
@@ -248,10 +260,11 @@ fn callable_signature_from_spec_callable(
 
 fn callable_signature_from_flow(
     ctx: &mut TypePipelineContext<'_>,
+    state: &SignaturePipelineState,
     flow: &etas_hir::HirFlowDecl,
 ) -> CallableSignature {
     CallableSignature {
-        generic_params: Vec::new(),
+        generic_params: super::callables::callable_generic_params(ctx, state, &flow.type_params),
         params: lower_param_types(ctx, &flow.params),
         output: flow
             .return_type

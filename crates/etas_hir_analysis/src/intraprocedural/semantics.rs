@@ -154,6 +154,15 @@ pub trait HirAnalysisSemantics {
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain>;
 
+    fn spec_method_call(
+        &mut self,
+        _expr: HirExprId,
+        _span: Span,
+        state: Self::Domain,
+    ) -> AnalysisStep<Self::Domain> {
+        AnalysisStep::unhandled(state, "spec_method_call")
+    }
+
     fn stage_compose(
         &mut self,
         expr: HirExprId,

@@ -8,6 +8,7 @@ use etas_types::{
 use std::collections::{BTreeMap, HashMap};
 mod captured;
 mod graphs;
+mod methods;
 
 fn unit_parameters(hir: &etas_hir::HirRevision, unit: EffectUnit) -> &[etas_hir::SymbolId] {
     match unit {
@@ -28,6 +29,17 @@ fn unit_parameters(hir: &etas_hir::HirRevision, unit: EffectUnit) -> &[etas_hir:
 pub(super) struct Relocation<'a> {
     original: &'a crate::CheckedProgram,
     target: DescriptorInput<'a>,
+    target_output: &'a etas_types::TypeOutput,
+    metadata_projection: crate::package_metadata::ProjectMetadataProjection<'a>,
+    method_targets: std::cell::RefCell<
+        HashMap<(CodeFingerprint, etas_effects::facts::CallableEnvironmentId), CodeFingerprint>,
+    >,
+    method_evidence: std::cell::RefCell<
+        BTreeMap<
+            CodeFingerprint,
+            std::sync::Arc<etas_effects::facts::MetadataSpecMethodDefinition>,
+        >,
+    >,
     from: &'a Projection,
     to: &'a Projection,
     types: BTreeMap<GenericOwner, HashMap<TypeId, TypeId>>,
@@ -45,6 +57,7 @@ impl<'a> Relocation<'a> {
     pub fn new(
         original: &'a crate::CheckedProgram,
         target: DescriptorInput<'a>,
+        target_output: &'a etas_types::TypeOutput,
         from: &'a Projection,
         to: &'a Projection,
         overlay: &crate::code::draft::DefaultBodyOverlay,
@@ -240,6 +253,10 @@ impl<'a> Relocation<'a> {
             native_exprs: captured::expression_bindings(original, target, &returned_items, overlay),
             original,
             target,
+            target_output,
+            metadata_projection: crate::package_metadata::ProjectMetadataProjection::new(original),
+            method_targets: Default::default(),
+            method_evidence: Default::default(),
             from,
             to,
             types,
@@ -528,6 +545,24 @@ impl<'a> Relocation<'a> {
                 .map(ParameterCallTarget::Native)
                 .ok_or_else(|| invalid("frozen trace parameter has no checked target identity")),
             ParameterCallTarget::Graph { .. } => Ok(target),
+            ParameterCallTarget::MetadataSpecMethod {
+                invocation,
+                environment,
+            } => {
+                let environment = environment.ok_or_else(|| {
+                    invalid("frozen method evidence has no checked capture bindings")
+                })?;
+                Ok(ParameterCallTarget::MetadataSpecMethod {
+                    invocation: self.metadata_method(invocation, environment)?,
+                    environment: None,
+                })
+            }
+            ParameterCallTarget::SpecMethod { call, environment } => {
+                Ok(ParameterCallTarget::SpecMethod {
+                    call: self.captured_expr(call)?,
+                    environment,
+                })
+            }
             ParameterCallTarget::Interface(_) => Err(invalid(
                 "an uninstantiated external interface cannot be a native frozen trace",
             )),

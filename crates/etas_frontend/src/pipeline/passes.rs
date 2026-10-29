@@ -4,11 +4,11 @@ use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
     AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass, BuildCheckedProjectPass,
     BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass, BuildSignatureFactsPass,
-    BuildSourceSetPass, BuildUnitTreePass, CompleteTypedAnalysisReachabilityPass,
-    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
-    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
-    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
-    FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    BuildSourceSetPass, BuildUnitTreePass, CompleteEffectRuntimeReachabilityPass,
+    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
+    ComputeAffectedModulesPass, ComputeDefinitionAnalysisReachabilityPass,
+    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
+    FinalizeProjectHirPass, FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareInvocationTypesPass,
     ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
@@ -103,6 +103,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(CompleteTypedAnalysisReachabilityPass)
         .pass(CompleteTypedRuntimeReachabilityPass)
         .pass(RunEffectPipelinePass)
+        .pass(CompleteEffectRuntimeReachabilityPass)
         .pass(MaterializeGenericEffectRowsPass)
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)

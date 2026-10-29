@@ -173,6 +173,7 @@ pub(super) fn callable_declarations(
         .types
         .agent_methods
         .keys()
+        .chain(checked.types.type_impl_methods.keys())
         .map(|symbol| {
             identities
                 .method(*symbol)
@@ -203,8 +204,15 @@ pub(super) fn callable_declarations(
             .types
             .agent_methods
             .get(&symbol)
-            .ok_or(ProjectionError::MissingCallable(symbol))?
-            .body;
+            .map(|method| method.body)
+            .or_else(|| {
+                checked
+                    .types
+                    .type_impl_methods
+                    .get(&symbol)
+                    .map(|method| method.body)
+            })
+            .ok_or(ProjectionError::MissingCallable(symbol))?;
         pending.push((etas_code::CallableId::method(method), symbol, body));
     }
     pending.sort_by(|left, right| left.0.cmp(&right.0));

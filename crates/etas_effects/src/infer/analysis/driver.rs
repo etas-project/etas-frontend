@@ -37,6 +37,7 @@ pub fn run_effect_analysis<'a>(
         }
         let mut parameters = (*input.parameter_effects).clone();
         let callable_environments = result.semantics.callable_environments.borrow().clone();
+        let method_evidence = result.semantics.method_evidence.borrow().clone();
         for (symbol, observed) in &result.semantics.inputs.inferred_parameter_effects {
             let mut summary = observed.clone();
             if let Some(current) = parameters.get(symbol) {
@@ -60,6 +61,7 @@ pub fn run_effect_analysis<'a>(
             && global_values == *input.global_values
             && call_results == *input.call_results
             && callable_environments == input.callable_environments
+            && method_evidence == input.method_evidence
         {
             result.semantics.inputs.callable_environments = (*callable_environments).clone();
             result.semantics.inputs.inferred_parameter_effects = parameters;
@@ -73,6 +75,7 @@ pub fn run_effect_analysis<'a>(
         input.global_values = std::sync::Arc::new(global_values);
         input.call_results = std::sync::Arc::new(call_results);
         input.callable_environments = callable_environments;
+        input.method_evidence = method_evidence;
         Ok(true)
     })?;
     if solved.status != etas_utils::ConvergenceStatus::Converged {

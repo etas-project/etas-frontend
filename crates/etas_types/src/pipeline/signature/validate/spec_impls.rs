@@ -10,6 +10,7 @@ pub fn validate_spec_impls(ctx: &mut TypePipelineContext<'_>, state: &SignatureP
     validate_duplicate_impls(ctx, state);
     validate_method_bearing_spec_groups(ctx, state);
     validate_required_methods(ctx, state);
+    super::spec_methods::validate(ctx, state);
 }
 
 fn validate_impl_member_kinds(ctx: &mut TypePipelineContext<'_>) {
@@ -57,15 +58,26 @@ fn validate_impl_member_kinds(ctx: &mut TypePipelineContext<'_>) {
                                 "effect impls may only declare effect actions",
                             ));
                         }
+                        HirImplItem::Callable { item } if is_effect_impl => {
+                            let span = ctx
+                                .hir
+                                .items
+                                .get(*item)
+                                .map_or(decl.span, |item| item.span());
+                            ctx.diagnostics.push(Diagnostic::type_check(
+                                TypeDiagnosticCode::InvalidImplMemberKind,
+                                span,
+                                "effect impls may only declare effect actions",
+                            ));
+                        }
                         _ => {}
                     }
                 }
             }
             HirImplTarget::SpecSatisfaction { .. } => {
-                let has_flow = decl
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, HirImplItem::Flow(_)));
+                let has_flow = decl.items.iter().any(|item| {
+                    matches!(item, HirImplItem::Flow(_) | HirImplItem::Callable { .. })
+                });
                 let has_action = decl
                     .items
                     .iter()
@@ -114,6 +126,11 @@ fn validate_method_bearing_spec_groups(
         let method_count = state
             .spec_signatures
             .get(&impl_fact.spec_symbol)
+            .or_else(|| {
+                ctx.signature_facts
+                    .spec_signatures
+                    .get(&impl_fact.spec_symbol)
+            })
             .map(|signature| signature.methods.len())
             .unwrap_or_default();
         if method_count > 0 {
@@ -136,7 +153,15 @@ fn validate_method_bearing_spec_groups(
 
 fn validate_required_methods(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipelineState) {
     for impl_fact in &state.spec_impls {
-        let Some(signature) = state.spec_signatures.get(&impl_fact.spec_symbol) else {
+        let Some(signature) = state
+            .spec_signatures
+            .get(&impl_fact.spec_symbol)
+            .or_else(|| {
+                ctx.signature_facts
+                    .spec_signatures
+                    .get(&impl_fact.spec_symbol)
+            })
+        else {
             continue;
         };
         let required = signature

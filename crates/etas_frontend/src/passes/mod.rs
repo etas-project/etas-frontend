@@ -18,8 +18,9 @@ pub use analysis::{
     ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
 pub use dependency::{
-    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
-    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
+    CompleteTypedRuntimeReachabilityPass, ComputeDefinitionAnalysisReachabilityPass,
+    ComputeEntryReachabilityPass,
 };
 pub use execution::VerifyInterpreterSupportPass;
 pub use graph::{

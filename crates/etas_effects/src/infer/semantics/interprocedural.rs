@@ -147,6 +147,21 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         Some(target)
     }
 
+    fn spec_method_call_target(
+        &mut self,
+        _context: UnitContext<Self::Unit>,
+        call: HirExprId,
+        _state: &Self::Domain,
+    ) -> Option<Self::Unit> {
+        let target = self.checked_spec_method_target(call)?;
+        self.inputs
+            .native_call_targets
+            .entry(call)
+            .or_default()
+            .insert(target);
+        Some(target)
+    }
+
     fn handler_arm_dependency(
         &mut self,
         context: UnitContext<Self::Unit>,
@@ -171,6 +186,38 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Some(HirExpr::SpecMethodCall {
+            spec_path, method, ..
+        }) = self.hir.exprs.get(expr)
+        {
+            if let ResolveResult::Resolved(spec) = spec_path.resolution
+                && let Some(spec) = self.type_symbols.canonical_symbol(self.hir, spec)
+            {
+                // Discover candidate bodies so later evidence specialization can
+                // choose one solved summary. This does not merge their behavior.
+                let mut dependencies = std::collections::BTreeSet::new();
+                for implementation in &self.types.facts.spec_impls {
+                    if implementation.spec_symbol != spec {
+                        continue;
+                    }
+                    for candidate in implementation
+                        .methods
+                        .iter()
+                        .filter(|candidate| candidate.name == *method)
+                    {
+                        if let Some(SymbolDef::Item { item }) = self
+                            .hir
+                            .symbols
+                            .get(candidate.symbol)
+                            .map(|symbol| &symbol.def)
+                        {
+                            dependencies.insert(EffectUnit::Item(*item));
+                        }
+                    }
+                }
+                return dependencies.into_iter().collect();
+            }
+        }
         if matches!(self.hir.exprs.get(expr), Some(HirExpr::StageCompose { .. }))
             && let Some(owner) = context.unit.owner()
             && let Some(unit) = self.anonymous_flow_unit_for_expr(owner, expr)
@@ -219,6 +266,12 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         {
                             return vec![unit];
                         }
+                    }
+                    Some(SymbolDef::ImportAlias {
+                        path,
+                        origin: etas_hir::ImportAliasOrigin::SourceImport,
+                    }) => {
+                        return self.external_method_dependencies(path);
                     }
                     _ => {}
                 }

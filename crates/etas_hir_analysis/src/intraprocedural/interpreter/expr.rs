@@ -63,7 +63,10 @@ where
             HirExpr::MethodCall { .. } => self.method_call_chain_control(expr, state)?,
             HirExpr::SpecMethodCall { receiver, args, .. } => {
                 let control = self.expr_control(receiver, state)?;
-                self.args_control(&args, control)?
+                let control = self.args_control(&args, control)?;
+                self.apply_normal_step(control, |this, state| {
+                    this.semantics.spec_method_call(expr, span, state)
+                })?
             }
             HirExpr::Record(record) => {
                 self.record_fields_control(record.fields, Control::normal(state))?

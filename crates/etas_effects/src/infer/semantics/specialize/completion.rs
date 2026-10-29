@@ -58,7 +58,17 @@ impl EffectSemantics<'_> {
             let Some(callback) = resolve(*target, source.span())? else {
                 continue;
             };
-            let Some(actual) = callback.exits.as_ref().filter(|exits| exits.returns_only()) else {
+            let Some(actual) = callback.exits.as_ref().filter(|exits| {
+                !exits.exits.is_empty()
+                    && exits
+                        .gaps
+                        .iter()
+                        .all(|gap| matches!(gap, OutcomeAnalysisGap::ParameterCall { .. }))
+                    && exits
+                        .exits
+                        .iter()
+                        .all(|exit| matches!(exit.outcome, CallableOutcome::Returned { .. }))
+            }) else {
                 continue;
             };
             if !callback.escaping_effects.is_empty() {
@@ -72,6 +82,7 @@ impl EffectSemantics<'_> {
             let relation = TypeRelation::new(&self.types.store);
             if actual.exits.iter().all(|exit| matches!(exit.outcome, CallableOutcome::Returned { ty, .. } if relation.assignable(ty, output).is_ok())) {
                 exits.gaps.remove(&obligation);
+                exits.gaps.extend(actual.gaps.iter().cloned());
             }
         }
         Ok(())

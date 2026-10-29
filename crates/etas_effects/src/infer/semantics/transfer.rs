@@ -305,6 +305,65 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         AnalysisStep::handled(self.std_method_call(expr, span, state))
     }
 
+    fn spec_method_call(
+        &mut self,
+        expr: HirExprId,
+        span: Span,
+        mut state: Self::Domain,
+    ) -> AnalysisStep<Self::Domain> {
+        match self.spec_method_call_evidence(expr, &state) {
+            Ok(super::spec_methods::MethodEvidence::Resolved(
+                source @ LatentSource::Metadata(_),
+            )) => match self.latent_source_summary(source, span) {
+                Ok(summary) => {
+                    state
+                        .exits
+                        .gaps
+                        .insert(crate::OutcomeAnalysisGap::ExternalCall(expr));
+                    state.summary.seq_assign(&summary);
+                    AnalysisStep::handled(state)
+                }
+                Err(error) => {
+                    AnalysisStep::handled(self.incomplete_at(span, error.to_string(), state))
+                }
+            },
+            Ok(super::spec_methods::MethodEvidence::Resolved(_)) => {
+                AnalysisStep::handled(self.incomplete_at(
+                    span,
+                    "concrete source method was not scheduled as a checked call",
+                    state,
+                ))
+            }
+            Ok(super::spec_methods::MethodEvidence::Deferred { summary }) => {
+                let ActionTraceDomain::ParameterCall { target, .. } = &summary.action_trace else {
+                    return AnalysisStep::handled(self.incomplete_at(
+                        span,
+                        "deferred method completion has no checked invocation target",
+                        state,
+                    ));
+                };
+                let Some(output) = self.types.facts.expr_types.get(&expr).copied() else {
+                    return AnalysisStep::handled(self.incomplete_at(
+                        span,
+                        "deferred method completion has no checked output type",
+                        state,
+                    ));
+                };
+                state
+                    .exits
+                    .gaps
+                    .insert(crate::OutcomeAnalysisGap::ParameterCall {
+                        target: *target,
+                        output,
+                        source: span.into(),
+                    });
+                state.summary.seq_assign(&summary);
+                AnalysisStep::handled(state)
+            }
+            Err(error) => AnalysisStep::handled(self.incomplete_at(span, error.to_string(), state)),
+        }
+    }
+
     fn stage_compose(
         &mut self,
         expr: HirExprId,
