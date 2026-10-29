@@ -311,10 +311,18 @@ fn external_effect_summary_metadata(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_effects::ExternalEffectSummaryMetadata {
+        behavior: summary.behavior.clone(),
         handler_requests: summary.handler_requests.as_ref().map(|template| {
             Ok::<_, String>(etas_effects::ExternalRequestInstantiationMetadata {
                 actions: template.actions.iter().map(|instance| Ok(etas_effects::ExternalActionRequestMetadata {
                     action: lower_external_effect_metadata(&instance.action, types)?,
+                    signature: instance.signature.as_ref().map(|signature| {
+                        let lower = |ty| etas_types::lower::external::external_type_id_from_output(types, &super::super::type_check_bridge::convert_external_type(ty)).map_err(|error| error.message);
+                        Ok::<_, String>(etas_types::ActionRequestSignature {
+                            params: signature.params.iter().map(lower).collect::<Result<_, _>>()?,
+                            output: lower(&signature.output)?,
+                        })
+                    }).transpose()?,
                     type_bindings: instance.type_bindings.as_ref().map(|bindings| bindings.iter().map(|(name, ty)| {
                         Ok((name.clone(), etas_types::lower::external::external_type_id_from_output(types, &super::super::type_check_bridge::convert_external_type(ty)).map_err(|error| error.message)?))
                     }).collect::<Result<_, String>>()).transpose()?,

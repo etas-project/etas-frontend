@@ -30,25 +30,24 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         pattern: HirPatId,
         mut state: Self::Domain,
     ) -> Self::Domain {
-        if self.expr_type_contains_flow(scrutinee) {
-            match self.latent_sources_for_expr(&state, scrutinee) {
-                Some(sources) => {
-                    if let Err(reason) =
-                        self.record_latent_sources_for_pat(&mut state, pattern, sources)
-                    {
-                        let span = self.hir.exprs[expr].span(&self.hir.blocks);
-                        return self.incomplete_at(span, reason, state);
-                    }
-                }
-                None => {
+        match self.latent_sources_for_expr(&state, scrutinee) {
+            Some(sources) => {
+                if let Err(reason) =
+                    self.record_latent_sources_for_pat(&mut state, pattern, sources)
+                {
                     let span = self.hir.exprs[expr].span(&self.hir.blocks);
-                    return self.incomplete_at(
-                        span,
-                        "match payload requires checked latent callable origins",
-                        state,
-                    );
+                    return self.incomplete_at(span, reason, state);
                 }
             }
+            None if self.expr_type_contains_flow(scrutinee) => {
+                let span = self.hir.exprs[expr].span(&self.hir.blocks);
+                return self.incomplete_at(
+                    span,
+                    "match payload requires checked latent callable origins",
+                    state,
+                );
+            }
+            None => {}
         }
         state
     }
@@ -189,7 +188,10 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 target,
                 value,
                 span,
-            } if self.is_typed_flow_expr(target) => {
+            } if self.is_typed_flow_expr(target)
+                || self.expr_type_contains_flow(target)
+                || self.symbolic_contract_expr(&state, value) =>
+            {
                 if let Err(message) = self.record_callable_assignment(&mut state, target, value) {
                     state = self.incomplete_at(span, message, state);
                 }
@@ -218,7 +220,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     }
                 }
             }
-            HirStmt::Resume { span, .. } => {
+            HirStmt::Resume { value, span } => {
                 if state.handler_depth == 0 {
                     self.diagnostics.push(Diagnostic::effect_check(
                         EffectDiagnosticCode::ResumeOutsideHandler,
@@ -227,13 +229,18 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     ));
                     state.summary.support =
                         InterpreterSupport::Rejected(FrontendRejectionReason::UnsupportedHandler);
+                } else {
+                    state.resume_count += 1;
+                    self.record_resume_value(value, &mut state);
                 }
             }
-            HirStmt::Finish { span, .. } => {
+            HirStmt::Finish { value, span } => {
                 if state.handler_depth == 0 {
                     let _ = span;
                     state.summary.support =
                         InterpreterSupport::Rejected(FrontendRejectionReason::UnsupportedHandler);
+                } else {
+                    self.record_finish_value(value, &mut state);
                 }
             }
             HirStmt::While { limits, span, .. } | HirStmt::Retry { limits, span, .. } => {
@@ -481,7 +488,8 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     }
 
     fn begin_handle_body(&mut self, _expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
-        state.summary.handler_requests = crate::RequestInstantiationSummary::default();
+        state.summary = EffectSummary::local();
+        state.exits = crate::CallableExitSummary::default();
         state
     }
 

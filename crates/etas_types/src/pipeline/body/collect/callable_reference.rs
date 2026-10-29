@@ -25,7 +25,7 @@ pub(super) fn collect<E>(
         return None;
     }
     let candidate = super::expr::callable_candidate_from_fact(ctx, fact, true)?;
-    for param in &candidate.generic_params {
+    for param in &candidate.signature.generic_params {
         if param.kind != crate::CallableGenericParamKind::Type {
             continue;
         }
@@ -54,7 +54,7 @@ pub(super) fn collect<E>(
     ctx.emit(TypeConstraint::CallableReference {
         expr,
         signature: candidate.ty,
-        generic_params: candidate.generic_params,
+        generic_params: candidate.signature.generic_params,
         expected,
         lexical_effect_params,
         origin: ConstraintOrigin { span },

@@ -148,6 +148,7 @@ fn a_single_instantiation_can_be_cancelled_during_type_substitution() {
             Ok(())
         }
     }
+
     let (hir, types, mut effects) = recursion(false);
     effects.native_call_targets.clear();
     let owner = hir

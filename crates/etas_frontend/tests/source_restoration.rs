@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use etas_code::{
     CodeFingerprint, PackageKey,
     definition::{
-        AgentSourceBundle, AnalysisUnavailableReason, CodeDefinitionOperations, SourceBundleError,
-        SourceBundleLimits,
+        AnalysisUnavailableReason, CodeDefinitionOperations, DefinitionSourceBundle,
+        SourceBundleError, SourceBundleLimits,
     },
     syntax::CodeSyntaxOperations,
 };
@@ -101,7 +101,7 @@ fn source_bundle_restores_exact_revision_as_unchecked_data_in_a_fresh_backend() 
     let bytes = serde_json::to_vec(&saved).unwrap();
     drop((store, original, first, second, checked, candidate));
 
-    let saved: AgentSourceBundle = serde_json::from_slice(&bytes).unwrap();
+    let saved: DefinitionSourceBundle = serde_json::from_slice(&bytes).unwrap();
     let (store, expression) = prepare_with_id(SOURCE, true, Some(etas_core::SourceId(73)));
     let target = store.reflect_agent(expression).unwrap();
     let restored = store

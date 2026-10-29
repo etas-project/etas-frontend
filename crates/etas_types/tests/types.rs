@@ -2398,10 +2398,10 @@ flow main(
         .filter_map(|(_, ty)| match ty {
             Type::Applied { constructor, args } => {
                 let constructor = output.store.get(TypeId(constructor.0))?;
-                let Type::Named(named) = constructor else {
+                let Type::Nominal(nominal) = constructor else {
                     return None;
                 };
-                Some((named.name.as_str(), args.len()))
+                Some((nominal.name.as_str(), args.len()))
             }
             _ => None,
         })
@@ -3232,7 +3232,7 @@ flow main() -> SandboxProfile {
     };
     assert!(matches!(
         output.store.get(*ty),
-        Some(Type::Named(named)) if named.name == "std.host.sandbox.SandboxProfile"
+        Some(Type::Nominal(nominal)) if nominal.name == "std.host.sandbox.SandboxProfile"
     ));
 }
 

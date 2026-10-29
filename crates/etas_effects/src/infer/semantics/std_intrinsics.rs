@@ -184,7 +184,7 @@ impl EffectSemantics<'_> {
         span: Span,
         mut state: EffectState,
     ) -> EffectState {
-        if let Some(fact) = self.types.facts.std_method_calls.get(&expr) {
+        if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr) {
             if self.method_receiver_type_missing(expr) {
                 return self.reject_effect_state(
                     span,
@@ -585,7 +585,7 @@ impl EffectSemantics<'_> {
         Some((module_path.to_vec(), name.clone()))
     }
 
-    fn std_qualified_path_for_expr(&self, expr: HirExprId) -> Option<Vec<String>> {
+    pub(super) fn std_qualified_path_for_expr(&self, expr: HirExprId) -> Option<Vec<String>> {
         let HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
             return None;
         };
@@ -732,15 +732,40 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<crate::EffectSummary> {
         let symbol = self.callee_symbol(callee)?;
-        let symbol_data = self.hir.symbols.get(symbol)?;
-        let SymbolDef::ImportAlias { path, .. } = &symbol_data.def else {
-            return None;
-        };
+        let path = self
+            .types
+            .facts
+            .std_intrinsic_calls
+            .get(&call)
+            .map(|fact| fact.qualified_path.clone())
+            .or_else(|| self.std_qualified_path_for_expr(callee))?;
         let decl = self
             .std_registry
             .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())?;
-        let StdDecl::Flow(flow) = &decl.decl else {
+        let StdDecl::Flow(_) = &decl.decl else {
             return None;
+        };
+        let selected = self.types.facts.std_intrinsic_calls.get(&call);
+        if selected.is_none() && self.std_registry.flow_declarations(decl.id).count() > 1 {
+            return Some(
+                self.reject_effect_state(
+                    span,
+                    "overloaded standard call is missing its checked signature selection",
+                    EffectState::default(),
+                )
+                .summary,
+            );
+        }
+        let overload = selected.map_or(0, |fact| fact.overload);
+        let Some(flow) = self.std_registry.flow_declarations(decl.id).nth(overload) else {
+            return Some(
+                self.reject_effect_state(
+                    span,
+                    "checked standard call names an absent overload",
+                    EffectState::default(),
+                )
+                .summary,
+            );
         };
         let mut summary = match decl
             .intrinsic
@@ -812,10 +837,7 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> crate::EffectSummary {
         let mut summary = crate::EffectSummary::local();
-        let Some(SymbolTypeFact::Flow { signature }) =
-            self.type_symbols
-                .symbol_fact(self.hir, &self.types.facts, symbol)
-        else {
+        let Some(signature) = self.checked_std_flow_signature(call, symbol) else {
             self.diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
                 span,
@@ -892,10 +914,7 @@ impl EffectSemantics<'_> {
             tag: action.owner,
             action: action.id,
         };
-        let Some(SymbolTypeFact::Flow { signature }) =
-            self.type_symbols
-                .symbol_fact(self.hir, &self.types.facts, symbol)
-        else {
+        let Some(signature) = self.checked_std_flow_signature(call, symbol) else {
             self.diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
                 span,
@@ -999,6 +1018,23 @@ impl EffectSemantics<'_> {
             ));
         }
         summary
+    }
+
+    fn checked_std_flow_signature(
+        &self,
+        call: HirExprId,
+        symbol: etas_hir::SymbolId,
+    ) -> Option<etas_types::CallableSignature> {
+        if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&call) {
+            return Some(fact.signature.clone());
+        }
+        match self
+            .type_symbols
+            .symbol_fact(self.hir, &self.types.facts, symbol)?
+        {
+            SymbolTypeFact::Flow { signature } => Some(signature.clone()),
+            _ => None,
+        }
     }
 
     fn specialize_std_effect_row(
@@ -1254,6 +1290,7 @@ mod tests {
         }));
         let concrete_arg = interner.primitive(PrimitiveType::I32);
         let wrapper = interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Wrapper".to_owned(),
             params: vec!["T".to_owned()],
             representation: None,

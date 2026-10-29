@@ -95,7 +95,11 @@ impl EffectSemantics<'_> {
             }
             return match definition.def {
                 SymbolDef::Param { owner, .. }
-                    if self.checked_function_parameter(symbol).is_some() =>
+                    if self.checked_function_parameter(symbol).is_some()
+                        || self.symbolic_callable_parameter(symbol)
+                        || self
+                            .symbol_value_type(symbol)
+                            .is_some_and(|ty| self.descriptor_contract_type(ty).is_some()) =>
                 {
                     Some(vec![LatentSource::Parameter { owner, symbol }])
                 }
@@ -142,6 +146,7 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Result<EffectSummary, super::specialize::EffectSpecializationError> {
         match source {
+            LatentSource::FrozenContract { .. } => self.solve_callable_summary(source, span),
             LatentSource::Reference { .. } | LatentSource::StdReference { .. } => {
                 self.reference_summary(source, span)
             }
@@ -162,6 +167,7 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         match source {
+            LatentSource::FrozenContract { .. } => None,
             LatentSource::Captured { .. } | LatentSource::Metadata(_) => None,
             LatentSource::Unavailable { .. } => None,
             LatentSource::EnumConstructor(symbol) => self
@@ -193,6 +199,9 @@ impl EffectSemantics<'_> {
                 };
                 let mut summary =
                     self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span);
+                // The row describes the callback's possible effects, not work
+                // performed independently by its caller.
+                summary.independent_determinism = Some(crate::Determinism::Deterministic);
                 // A declared escaping row never describes internal requested or
                 // handled actions. Keep the call symbolic until the argument is known.
                 summary.action_trace = ActionTraceDomain::ParameterCall {

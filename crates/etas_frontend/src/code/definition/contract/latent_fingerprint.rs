@@ -107,6 +107,18 @@ impl Fingerprinter<'_> {
         let mut instances = std::collections::BTreeSet::new();
         for request in &template.actions {
             let mut parts = vec![self.effect(&request.action)?];
+            parts.push(match &request.signature {
+                Some(signature) => combine(
+                    "etas.code.request-signature.v1",
+                    signature
+                        .params
+                        .iter()
+                        .chain(std::iter::once(&signature.output))
+                        .map(|ty| self.ty(ty))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+                None => combine("etas.code.unavailable-request-signature.v1", []),
+            });
             parts.push(match &request.type_bindings {
                 Some(bindings) => {
                     let mut bindings = bindings

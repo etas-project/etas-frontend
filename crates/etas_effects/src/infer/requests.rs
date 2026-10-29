@@ -18,6 +18,7 @@ use etas_types::TypeId;
 pub struct ActionRequestInstance {
     pub action: Effect,
     pub type_bindings: Option<Vec<(String, TypeId)>>,
+    pub signature: Option<etas_types::ActionRequestSignature>,
 }
 
 #[cfg(test)]
@@ -98,11 +99,16 @@ impl RequestInstantiationSummary {
             ) => actions.is_subset(rhs) && parameters.is_subset(rparams),
         }
     }
-    pub fn action(action: Effect, type_bindings: Vec<(String, TypeId)>) -> Self {
+    pub fn action(
+        action: Effect,
+        type_bindings: Vec<(String, TypeId)>,
+        signature: etas_types::ActionRequestSignature,
+    ) -> Self {
         Self::Available {
             actions: BTreeSet::from([ActionRequestInstance {
                 action,
                 type_bindings: Some(type_bindings),
+                signature: Some(signature),
             }]),
             parameters: BTreeSet::new(),
         }
@@ -113,6 +119,7 @@ impl RequestInstantiationSummary {
             actions.insert(ActionRequestInstance {
                 action,
                 type_bindings: None,
+                signature: None,
             });
         }
     }

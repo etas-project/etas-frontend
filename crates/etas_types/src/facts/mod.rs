@@ -13,12 +13,13 @@ use std::collections::HashMap;
 use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 
 pub use effects::{
-    CheckedHandlerActionFact, DeferredHandlerInstantiation, EffectActionArgKind,
+    ActionRequestSignature, CheckedActionCallFact, CheckedHandlerActionFact,
+    DeferredHandlerInstantiation, DeferredHandlerOverload, EffectActionArgKind,
     EffectActionSignature, HandlerTypeBinding,
 };
 pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
 pub use expressions::{
-    CheckedIndexKind, CheckedSliceKind, CheckedStdMethodFact, DeferredEffectRowObligation,
+    CheckedIndexKind, CheckedSliceKind, CheckedStdCallFact, DeferredEffectRowObligation,
     FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
 };
 pub use inference::CheckedAgentInferenceFact;
@@ -53,9 +54,11 @@ pub struct TypeFacts {
         crate::facts::signatures::AgentMethodSignature,
     >,
     pub agent_method_calls: HashMap<HirExprId, SymbolId>,
-    pub std_method_calls: HashMap<HirExprId, CheckedStdMethodFact>,
+    pub std_intrinsic_calls: HashMap<HirExprId, CheckedStdCallFact>,
+    pub action_calls: HashMap<HirExprId, CheckedActionCallFact>,
     pub expr_types: HashMap<HirExprId, TypeId>,
     pub reflections: HashMap<HirExprId, CheckedReflectionFact>,
+    pub definition_operations: HashMap<HirExprId, reflection::CheckedDefinitionOperation>,
     pub agent_inferences: HashMap<HirExprId, CheckedAgentInferenceFact>,
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, CheckedHandlerActionFact>,
     pub deferred_handler_instantiations:

@@ -6,14 +6,7 @@ use etas_utils::{JoinSemiLattice, PartialOrder};
 use crate::{Effect, EffectRow, EffectSet, RequirementSet};
 
 #[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct EffectSummary {
     pub handler_requests: super::RequestInstantiationSummary,
@@ -30,7 +23,32 @@ pub struct EffectSummary {
     pub trace_spec_obligations: RequirementSet,
     pub requirements: RequirementSet,
     pub determinism: Determinism,
+    /// Determinism contributed by this body apart from unresolved callable parameters.
+    /// None means the independent contribution is not available from checked facts.
+    #[serde(default)]
+    pub independent_determinism: Option<Determinism>,
     pub support: InterpreterSupport,
+}
+
+impl Default for EffectSummary {
+    fn default() -> Self {
+        Self {
+            handler_requests: Default::default(),
+            default_handler_effects: None,
+            exits: None,
+            escaping_effects: Default::default(),
+            requested_actions: Default::default(),
+            default_actions: Default::default(),
+            handled_actions: Default::default(),
+            action_trace: Default::default(),
+            residual_checks: Default::default(),
+            trace_spec_obligations: Default::default(),
+            requirements: Default::default(),
+            determinism: Default::default(),
+            independent_determinism: Some(Determinism::default()),
+            support: Default::default(),
+        }
+    }
 }
 
 impl EffectSummary {
@@ -40,6 +58,9 @@ impl EffectSummary {
 
     pub fn require_runtime(&mut self, reason: RuntimeRequirementReason) {
         self.determinism.join_assign(&Determinism::RuntimeMediated);
+        if let Some(independent) = &mut self.independent_determinism {
+            independent.join_assign(&Determinism::RuntimeMediated);
+        }
         self.support.join_assign(&InterpreterSupport::from(reason));
     }
 
@@ -110,6 +131,10 @@ impl EffectSummary {
             .union_assign(&other.trace_spec_obligations);
         changed |= self.requirements.union_assign(&other.requirements);
         changed |= self.determinism.join_assign(&other.determinism);
+        changed |= join_independent_determinism(
+            &mut self.independent_determinism,
+            other.independent_determinism,
+        );
         changed |= self.support.join_assign(&other.support);
         changed
     }
@@ -138,6 +163,10 @@ impl EffectSummary {
             .union_assign(&other.trace_spec_obligations);
         changed |= self.requirements.union_assign(&other.requirements);
         changed |= self.determinism.join_assign(&other.determinism);
+        changed |= join_independent_determinism(
+            &mut self.independent_determinism,
+            other.independent_determinism,
+        );
         changed |= self.support.join_assign(&other.support);
         changed
     }
@@ -199,8 +228,26 @@ impl EffectSummary {
             .union_assign(&other.trace_spec_obligations);
         changed |= self.requirements.union_assign(&other.requirements);
         changed |= self.determinism.join_assign(&other.determinism);
+        changed |= join_independent_determinism(
+            &mut self.independent_determinism,
+            other.independent_determinism,
+        );
         changed |= self.support.join_assign(&other.support);
         changed
+    }
+}
+
+fn join_independent_determinism(
+    left: &mut Option<Determinism>,
+    right: Option<Determinism>,
+) -> bool {
+    match (left.as_mut(), right) {
+        (Some(left), Some(right)) => left.join_assign(&right),
+        (Some(_), None) => {
+            *left = None;
+            true
+        }
+        (None, _) => false,
     }
 }
 
@@ -266,6 +313,22 @@ pub enum ParameterCallTarget {
 
 impl ActionTraceDomain {
     const FIXPOINT_TRACE_NODE_LIMIT: usize = 32;
+
+    pub fn has_parameter_calls(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::ParameterCall { .. } => return true,
+                Self::Widened {
+                    parameter_calls, ..
+                } if !parameter_calls.is_empty() => return true,
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty | Self::Event(_) | Self::UnknownOrder(_) | Self::Widened { .. } => {}
+            }
+        }
+        false
+    }
 
     pub fn seq_assign(&mut self, other: Self) -> bool {
         let joined = self.clone().seq(other);
@@ -600,6 +663,11 @@ impl PartialOrder for EffectSummary {
             )
             && requirement_set_less_equal(&self.requirements, &other.requirements)
             && self.determinism <= other.determinism
+            && match (self.independent_determinism, other.independent_determinism) {
+                (Some(left), Some(right)) => left <= right,
+                (_, None) => true,
+                (None, Some(_)) => false,
+            }
             && self.support.less_equal(&other.support)
     }
 }

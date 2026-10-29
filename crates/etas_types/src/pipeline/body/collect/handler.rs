@@ -23,6 +23,12 @@ pub fn collect_handler<E>(
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
     collect_handler_for_requests(ctx, handlers, span, expected, &[], None)
+        .map(|collected| collected.ty)
+}
+
+pub(super) struct CollectedHandler {
+    pub ty: TypeId,
+    pub finishes: Vec<(TypeId, crate::ConstraintOrigin)>,
 }
 
 pub(super) fn collect_handler_for_requests<E>(
@@ -32,9 +38,10 @@ pub(super) fn collect_handler_for_requests<E>(
     expected: Option<TypeId>,
     requests: &[super::handler_request::ActionRequest],
     request_body: Option<etas_hir::HirExprId>,
-) -> Result<TypeId, E> {
+) -> Result<CollectedHandler, E> {
     ctx.checkpoint()?;
     let mut handled = Vec::new();
+    let mut finishes = Vec::new();
     if handlers.is_empty() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::EmptyHandler,
@@ -62,39 +69,9 @@ pub(super) fn collect_handler_for_requests<E>(
         ctx.checkpoint()?;
         let arm = ctx.ctx.hir.handler_arms[*handler].clone();
         let action_signature = match arm.action.action_symbol {
-            etas_hir::ResolveResult::Resolved(symbol) => ctx
-                .state
-                .provisional
-                .symbol_types
-                .get(&symbol)
-                .or_else(|| ctx.ctx.symbol_fact(symbol))
-                .and_then(|fact| match fact {
-                    SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
-                    _ => None,
-                })
-                .and_then(|signature| {
-                    let signature = specialize_action_signature(
-                        ctx,
-                        signature,
-                        &arm.action.effect.args,
-                        arm.span,
-                    )?;
-                    let signature = specialize_action_signature_from_generic_args(
-                        ctx,
-                        signature,
-                        &arm.generic_args,
-                        arm.span,
-                    )?;
-                    let action = super::handler_request::action_identity(ctx, symbol);
-                    super::handler_request::instantiate(
-                        ctx,
-                        signature,
-                        action,
-                        requests,
-                        request_body.map(|body| (*handler, body)),
-                        arm.span,
-                    )
-                }),
+            etas_hir::ResolveResult::Resolved(symbol) => {
+                action_signature(ctx, symbol, *handler, &arm, requests, request_body)
+            }
             _ => None,
         };
         if let Some(signature) = &action_signature {
@@ -191,26 +168,98 @@ pub(super) fn collect_handler_for_requests<E>(
             .map(|signature| signature.output)
             .unwrap_or_else(|| ctx.fresh_type_var());
         ctx.state.handler_resume_stack.push(resume_ty);
-        if let Some(result) = expected_result {
-            ctx.state.handler_finish_stack.push(result);
-        }
+        ctx.state.handler_finish_stack.push(expected_result);
+        ctx.state.handler_finish_candidates.push(Vec::new());
         ctx.state.handler_depth += 1;
         let collected = collect_block(ctx, arm.body, None);
         ctx.state.handler_depth -= 1;
-        if expected_result.is_some() {
-            ctx.state.handler_finish_stack.pop();
+        if let Some(candidates) = ctx.state.handler_finish_candidates.pop() {
+            finishes.extend(candidates);
+        } else {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span: arm.span,
+                message: "handler completion constraints lost their lexical collection scope"
+                    .into(),
+            });
         }
+        ctx.state.handler_finish_stack.pop();
         ctx.state.handler_resume_stack.pop();
         collected?;
     }
-    Ok(ctx.ctx.interner.intern(Type::Handler(HandlerType {
+    let result = expected_result.or_else(|| (!finishes.is_empty()).then(|| ctx.fresh_type_var()));
+    if expected_result.is_none()
+        && let Some(output) = result
+    {
+        for (from, origin) in &finishes {
+            ctx.emit(crate::TypeConstraint::Assignable {
+                from: *from,
+                to: output,
+                origin: *origin,
+                reason: crate::AssignabilityReason::Finish,
+            });
+        }
+        let never = ctx.primitive(crate::PrimitiveType::Never);
+        ctx.emit(crate::TypeConstraint::ControlResult {
+            output,
+            candidates: finishes.iter().map(|(ty, _)| *ty).collect(),
+            never,
+            origin: crate::ConstraintOrigin { span },
+        });
+    }
+    let ty = ctx.ctx.interner.intern(Type::Handler(HandlerType {
         handled: expected_handled.unwrap_or(EffectRowRef {
             effects: handled,
             tail: None,
         }),
         produced: expected_produced,
-        result: expected_result,
-    })))
+        result,
+    }));
+    Ok(CollectedHandler { ty, finishes })
+}
+
+fn action_signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    symbol: etas_hir::SymbolId,
+    handler: HirHandlerArmId,
+    arm: &etas_hir::HirHandlerArm,
+    requests: &[super::handler_request::ActionRequest],
+    request_body: Option<etas_hir::HirExprId>,
+) -> Option<crate::EffectActionSignature> {
+    let action = super::handler_request::action_identity(ctx, symbol);
+    let scope = request_body.map(|body| (handler, body));
+    if let Some((_, signatures)) = super::action_selector::overload_signatures(ctx, symbol) {
+        let signatures = signatures
+            .into_iter()
+            .map(|(_, signature)| {
+                let signature =
+                    specialize_action_signature(ctx, signature, &arm.action.effect.args, arm.span)?;
+                specialize_action_signature_from_generic_args(
+                    ctx,
+                    signature,
+                    &arm.generic_args,
+                    arm.span,
+                )
+            })
+            .collect::<Option<Vec<_>>>()?;
+        return super::handler_request::instantiate_overloads(
+            ctx, signatures, requests, action, scope, arm.span,
+        );
+    }
+    let signature = ctx
+        .state
+        .provisional
+        .symbol_types
+        .get(&symbol)
+        .or_else(|| ctx.ctx.symbol_fact(symbol))
+        .and_then(|fact| match fact {
+            SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
+            _ => None,
+        })?;
+    let signature = specialize_action_signature(ctx, signature, &arm.action.effect.args, arm.span)?;
+    let signature =
+        specialize_action_signature_from_generic_args(ctx, signature, &arm.generic_args, arm.span)?;
+    super::handler_request::instantiate(ctx, signature, action, requests, scope, arm.span)
 }
 
 fn validate_handler_arm_completion<E>(

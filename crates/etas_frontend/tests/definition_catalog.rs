@@ -383,7 +383,7 @@ flow inspect() -> unit { let a = ^Worker.run; let b = ^normalize; return; }
 #[test]
 fn frozen_revision_uses_the_catalog_default_method_identity() {
     use etas_code::definition::{
-        AgentDefinition, BaseRevisionInput, FrozenDefinition, FrozenDefinitionInput,
+        BaseRevisionInput, DefinitionSnapshot, FrozenDefinition, FrozenDefinitionInput,
     };
     let checked = check(&[
         "module app; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let a = ^Worker; let b = ^Worker.run; return; }",
@@ -409,7 +409,7 @@ fn frozen_revision_uses_the_catalog_default_method_identity() {
     })
     .unwrap();
     assert_eq!(frozen.default_callable(), Some(&callable));
-    let definition = AgentDefinition::<_, ()>::from_base(
+    let definition = DefinitionSnapshot::<_, ()>::from_base(
         frozen,
         BaseRevisionInput {
             body: None,

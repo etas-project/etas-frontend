@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use etas_code::{
     CodeFingerprint,
-    definition::AgentDefinitionRef,
+    definition::DefinitionRef,
     descriptor::{DescriptorLimits, EffectSummaryInfo},
     diagnostic::{
         DiagnosticDetails, DiagnosticLocation, DiagnosticRecord, DiagnosticSeverity,
@@ -15,7 +15,7 @@ use super::{CandidateAnalysisError, CandidateCompileError, CheckReportError, Che
 use crate::{
     FrontendSession,
     code::{
-        definition::{NativeAgentDefinitionView, NativeDefinitionError, NativeDefinitionStore},
+        definition::{NativeDefinitionError, NativeDefinitionStore, NativeDefinitionView},
         diagnostic::DiagnosticProjector,
     },
 };
@@ -54,7 +54,7 @@ impl From<CandidateCompileError> for NativeCompilerError {
 impl NativeDefinitionStore {
     pub fn analyze_definition_with_dependencies(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         dependency_sources: Vec<crate::SourceInput>,
         limits: DescriptorLimits,
@@ -86,7 +86,7 @@ impl NativeDefinitionStore {
     /// accounting and operation ownership; this runs the common frontend passes.
     pub fn check_definition(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         limits: DescriptorLimits,
     ) -> Result<CheckReport, NativeCompilerError> {
@@ -95,7 +95,7 @@ impl NativeDefinitionStore {
 
     pub fn check_definition_controlled(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         limits: DescriptorLimits,
         control: Arc<dyn etas_utils::PipelineExecutionControl>,
@@ -105,7 +105,7 @@ impl NativeDefinitionStore {
 
     fn check_definition_inner(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         limits: DescriptorLimits,
         control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
@@ -132,7 +132,7 @@ impl NativeDefinitionStore {
 
     pub fn compile_definition(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         limits: DescriptorLimits,
     ) -> Result<CheckedCandidate, NativeCompilerError> {
@@ -141,7 +141,7 @@ impl NativeDefinitionStore {
 
     pub fn compile_definition_controlled(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         limits: DescriptorLimits,
         control: Arc<dyn etas_utils::PipelineExecutionControl>,
@@ -151,7 +151,7 @@ impl NativeDefinitionStore {
 
     fn compile_definition_inner(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         session: &mut FrontendSession,
         limits: DescriptorLimits,
         control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
@@ -178,7 +178,7 @@ impl NativeDefinitionStore {
 
     fn missing_entry_report(
         &self,
-        view: &NativeAgentDefinitionView,
+        view: &NativeDefinitionView,
         limits: DescriptorLimits,
     ) -> Result<CheckReport, NativeCompilerError> {
         let graph = view.signature_descriptors();
@@ -202,7 +202,7 @@ impl NativeDefinitionStore {
             }
             None => match view.environment() {
                 Ok(frozen) => {
-                    let declaration = frozen.checked().hir.items.get(frozen.agent()).ok_or(
+                    let declaration = frozen.checked().hir.items.get(frozen.declaration()).ok_or(
                         NativeCompilerError::Report(CheckReportError::IncompleteAnalysis(
                             "bare agent declaration is missing",
                         )),

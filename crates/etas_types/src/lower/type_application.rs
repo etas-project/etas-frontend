@@ -19,6 +19,7 @@ pub(crate) fn take_obligations(
     let mut validations = Vec::new();
     for application in std::mem::take(&mut ctx.type_applications) {
         let parameters = match ctx.symbol_fact(application.symbol) {
+            Some(SymbolTypeFact::Agent { .. }) => Vec::new(),
             Some(SymbolTypeFact::TypeAlias { params, .. }) => params.clone(),
             Some(
                 SymbolTypeFact::NominalType { constructor, .. }
@@ -44,6 +45,29 @@ pub(crate) fn take_obligations(
                 continue;
             }
         };
+        let callable_definition = matches!(ctx.symbol_fact(application.symbol), Some(SymbolTypeFact::NominalType { constructor, .. }) if matches!(ctx.interner.store().get(TypeId(constructor.0)), Some(crate::Type::Nominal(declaration)) if declaration.read_only_erased_view));
+        if callable_definition {
+            if application.arguments.is_empty() {
+                continue;
+            }
+            if let [argument] = application.arguments.as_slice()
+                && !matches!(
+                    ctx.interner.store().get(*argument),
+                    Some(crate::Type::Function(_) | crate::Type::Var(_))
+                        | Some(crate::Type::Named(crate::NamedTypeRef {
+                            source_parameter: Some(_),
+                            ..
+                        }))
+                )
+            {
+                validations.push(ValidationRequest::Diagnostic {
+                    code: TypeDiagnosticCode::TypeMismatch,
+                    span: application.span,
+                    message: "CallableDef<F> requires an ordinary callable contract, not a concrete non-callable type".into(),
+                });
+                continue;
+            }
+        }
         match crate::constraint::generic_bounds::instantiate(
             &mut ctx.interner,
             &parameters,

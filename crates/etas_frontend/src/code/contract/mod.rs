@@ -55,6 +55,7 @@ pub enum ContractUncertainty {
     MissingCandidateAnalysis,
     MissingOutcomeSensitiveSummary,
     MissingLatentBehaviorSummary,
+    UnprovenParametricDeterminism,
     UnsupportedResidualChecks,
     TraceProofLimit {
         resource: &'static str,

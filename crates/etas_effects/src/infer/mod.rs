@@ -5,9 +5,10 @@ pub use default_handlers::{DefaultHandlerContribution, DefaultHandlerEffects};
 mod outcome;
 mod requests;
 pub use outcome::{
-    CallableExitSummary, CallableOutcome, CallableReferenceTarget, CallableReturnReference,
-    CallableReturnSource, ExitTraceFact, FrozenSourceLocation, MetadataCallableSource,
-    OutcomeAnalysisGap, ReturnObservation,
+    CallableAnalysisKind, CallableExitSummary, CallableOutcome, CallableReferenceTarget,
+    CallableReturnReference, CallableReturnSource, ExitTraceFact, FrozenSourceLocation,
+    HandlerGapEvidence, MetadataCallableSource, OutcomeAnalysisGap, ParameterArgumentValue,
+    ParameterExitArgument, ParameterExitFact, ReturnObservation,
 };
 pub use requests::{ActionRequestInstance, ParameterRequest, RequestInstantiationSummary};
 pub(crate) mod memory_provenance;

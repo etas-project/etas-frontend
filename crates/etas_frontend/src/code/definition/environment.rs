@@ -9,8 +9,8 @@ use std::sync::Arc;
 pub struct FrozenDefinitionEnvironment {
     checked: CheckedProgram,
     origins: Arc<crate::code::identity::DefinitionOrigins>,
-    contract: Arc<super::FrozenAgentContract>,
-    agent: HirItemId,
+    contract: Arc<super::FrozenDefinitionContract>,
+    declaration: HirItemId,
     default_body: Option<HirItemId>,
     module: HirModuleId,
     declaration_scope: Option<ScopeId>,
@@ -23,25 +23,32 @@ pub struct FrozenDefinitionEnvironment {
 impl FrozenDefinitionEnvironment {
     pub(super) fn new(
         checked: CheckedProgram,
-        contract: Arc<super::FrozenAgentContract>,
-        agent: HirItemId,
+        contract: Arc<super::FrozenDefinitionContract>,
+        declaration: HirItemId,
         default_body: Option<HirItemId>,
         origins: Arc<crate::code::identity::DefinitionOrigins>,
         body_revisions: CodeFingerprint,
         callable_slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
     ) -> Result<Arc<Self>, ProjectionError> {
-        let decl = checked.items.get(agent).ok_or_else(|| {
-            ProjectionError::Invalid("frozen agent declaration is missing".into())
+        let decl = checked.items.get(declaration).ok_or_else(|| {
+            ProjectionError::Invalid("frozen definition declaration is missing".into())
         })?;
         let symbol = decl
             .symbol()
             .and_then(|symbol| checked.symbols.get(symbol))
             .ok_or_else(|| {
-                ProjectionError::Invalid("frozen agent has no declaration symbol".into())
+                ProjectionError::Invalid("frozen definition has no declaration symbol".into())
             })?;
-        if !matches!(decl, etas_hir::HirItem::Agent(_)) {
+        let valid_kind = matches!(
+            (contract.identity().kind(), decl),
+            (
+                etas_code::DefinitionKind::Agent,
+                etas_hir::HirItem::Agent(_)
+            ) | (etas_code::DefinitionKind::Flow, etas_hir::HirItem::Flow(_))
+        );
+        if !valid_kind {
             return Err(ProjectionError::Invalid(
-                "only a nominal agent can establish a frozen agent environment".into(),
+                "frozen definition identity disagrees with its declaration kind".into(),
             ));
         }
         if checked.definition_environment.fingerprint() != checked.project_environment_fingerprint {
@@ -96,7 +103,7 @@ impl FrozenDefinitionEnvironment {
             })
             .collect::<Result<Vec<_>, ProjectionError>>()?;
         source_fingerprints.sort_unstable();
-        let identity_fingerprint = contract.header().identity.fingerprint();
+        let identity_fingerprint = contract.identity().fingerprint();
         let contract_fingerprint = contract.fingerprint();
         let options = checked.compile_options.canonical_options_fingerprint();
         let standard = origins.standard_package.fingerprint();
@@ -142,7 +149,7 @@ impl FrozenDefinitionEnvironment {
             checked,
             origins,
             contract,
-            agent,
+            declaration,
             default_body,
             module,
             declaration_scope,
@@ -156,16 +163,21 @@ impl FrozenDefinitionEnvironment {
         self.fingerprint
     }
     pub fn identity(&self) -> &DefinitionKey {
-        &self.contract.header().identity
+        self.contract.identity()
     }
-    pub fn contract(&self) -> &super::FrozenAgentContract {
+    pub fn contract(&self) -> &super::FrozenDefinitionContract {
         &self.contract
     }
-    pub(crate) fn contract_arc(&self) -> Arc<super::FrozenAgentContract> {
+    pub fn callable_application(&self) -> Option<&crate::CheckedCallableApplication> {
+        self.contract
+            .applied_behavior()
+            .map(|behavior| behavior.application())
+    }
+    pub(crate) fn contract_arc(&self) -> Arc<super::FrozenDefinitionContract> {
         self.contract.clone()
     }
-    pub fn agent(&self) -> HirItemId {
-        self.agent
+    pub fn declaration(&self) -> HirItemId {
+        self.declaration
     }
     pub fn default_body(&self) -> Option<HirItemId> {
         self.default_body

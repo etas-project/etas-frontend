@@ -15,6 +15,8 @@ mod index_tests;
 mod iterable;
 mod method;
 mod numeric_literal;
+pub use numeric_literal::{CheckedIntegerLiteral, checked_integer_literal};
+mod overload;
 mod reflection;
 pub mod report;
 mod return_type;
@@ -78,6 +80,66 @@ impl TypeSolver {
         for constraint in input.constraints {
             checkpoint()?;
             match constraint {
+                TypeConstraint::HandlerOverloadInstantiation {
+                    candidates,
+                    requests,
+                    params,
+                    output,
+                    deferred,
+                    origin,
+                } => {
+                    if let Some((arm, body)) = deferred {
+                        report.deferred_handler_instantiations.insert(
+                            *arm,
+                            crate::DeferredHandlerInstantiation {
+                                body: *body,
+                                parameters: Vec::new(),
+                                overload: Some(crate::DeferredHandlerOverload {
+                                    candidates: candidates
+                                        .iter()
+                                        .map(|candidate| crate::ActionRequestSignature {
+                                            params: candidate.signature.params.clone(),
+                                            output: candidate.signature.output,
+                                        })
+                                        .collect(),
+                                    params: params.clone(),
+                                    output: *output,
+                                }),
+                                span: origin.span,
+                            },
+                        );
+                        if requests.is_empty() {
+                            continue;
+                        }
+                    }
+                    if let Some(selected) = handler::select_request_signature(
+                        input.store,
+                        &mut report,
+                        candidates,
+                        requests,
+                        *origin,
+                    ) {
+                        let candidate = &candidates[selected];
+                        handler::bind_signature(
+                            input.store,
+                            &mut report,
+                            &candidate.signature,
+                            params,
+                            *output,
+                            *origin,
+                        );
+                        if deferred.is_none() {
+                            handler::instantiate(
+                                input.store,
+                                &mut report,
+                                &candidate.parameters,
+                                requests,
+                                *origin,
+                                &mut handler_parameters,
+                            );
+                        }
+                    }
+                }
                 TypeConstraint::HandlerInstantiation {
                     parameters,
                     requests,
@@ -89,6 +151,7 @@ impl TypeSolver {
                             *arm,
                             crate::DeferredHandlerInstantiation {
                                 body: *body,
+                                overload: None,
                                 parameters: parameters
                                     .iter()
                                     .map(|(parameter, candidate, rigid)| {
@@ -122,13 +185,44 @@ impl TypeSolver {
                         report.push(failure);
                     }
                 }
-                TypeConstraint::ReturnType { .. } => returns.push(constraint),
+                TypeConstraint::ReturnType { .. } | TypeConstraint::ControlResult { .. } => {
+                    returns.push(constraint)
+                }
                 TypeConstraint::AgentInference { .. } => inferences.push(constraint),
                 TypeConstraint::CallableReference { .. } => callable_references.push(constraint),
+                TypeConstraint::OverloadedCall {
+                    expr,
+                    callee,
+                    candidates,
+                    probes,
+                    generic_args,
+                    arg_exprs,
+                    args,
+                    output,
+                    origin,
+                } => {
+                    overload::solve(
+                        &input,
+                        overload::Invocation {
+                            expr: *expr,
+                            callee: *callee,
+                            candidates,
+                            probes,
+                            generic_args,
+                            arg_exprs,
+                            args,
+                            output: *output,
+                            origin: *origin,
+                        },
+                        &mut report,
+                        checkpoint,
+                    )?;
+                }
                 TypeConstraint::Reflection {
                     expr,
                     access_module,
                     binding,
+                    callable_descriptor,
                     members,
                     output,
                     origin,
@@ -137,6 +231,7 @@ impl TypeSolver {
                         store: input.store,
                         facts: input.declaration_facts,
                         binding,
+                        callable_descriptor: *callable_descriptor,
                         members,
                         origin: *origin,
                         solved: &report,
@@ -192,7 +287,12 @@ impl TypeSolver {
                                 display_type(input.store, to)
                             ),
                         });
-                    } else {
+                    } else if !matches!(
+                        input.store.get(from),
+                        Some(Type::Primitive(PrimitiveType::Never))
+                    ) {
+                        // Bottom is assignable without equating the target to
+                        // never; other control paths can still supply a value.
                         let mut unifier = TypeUnifier::with_known_substitution(
                             input.store,
                             &report.substitutions,

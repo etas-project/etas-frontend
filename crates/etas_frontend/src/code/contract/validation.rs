@@ -1,5 +1,5 @@
 use super::{CandidateContractAnalysis, ContractComponent, ContractRelation};
-use crate::code::definition::FrozenAgentContract;
+use crate::code::definition::FrozenDefinitionContract;
 use etas_code::CodeFingerprint;
 
 #[derive(Debug)]
@@ -23,7 +23,7 @@ impl CandidateContractAnalysis {
     pub(crate) fn validate_for(
         &self,
         snapshot: CodeFingerprint,
-        frozen: &FrozenAgentContract,
+        frozen: &FrozenDefinitionContract,
     ) -> Result<bool, ContractArtifactError> {
         match self {
             Self::SourceRejected { snapshot: actual } => {

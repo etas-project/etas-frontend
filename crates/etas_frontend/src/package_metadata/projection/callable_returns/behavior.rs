@@ -5,7 +5,10 @@ use etas_package_metadata::{
     CallableValueInterpreterFeature as I,
 };
 
-pub(super) fn behavior(summary: &EffectSummary) -> Option<CallableValueBehavior> {
+pub(in crate::package_metadata::projection) fn behavior(
+    summary: &EffectSummary,
+) -> Option<CallableValueBehavior> {
+    summary.independent_determinism?;
     let (host, features) = match &summary.support {
         InterpreterSupport::LocalOnly => (vec![], vec![]),
         InterpreterSupport::RequiresHost(host) => {
@@ -29,14 +32,19 @@ pub(super) fn behavior(summary: &EffectSummary) -> Option<CallableValueBehavior>
         InterpreterSupport::Rejected(_) => return None,
     };
     Some(CallableValueBehavior {
-        determinism: match summary.determinism {
-            Determinism::Deterministic => D::Deterministic,
-            Determinism::RuntimeMediated => D::RuntimeMediated,
-            Determinism::NonDeterministic => D::NonDeterministic,
-        },
+        determinism: determinism(summary.determinism),
+        independent_determinism: summary.independent_determinism.map(determinism),
         host_requirements: host,
         interpreter_features: features,
     })
+}
+
+fn determinism(value: Determinism) -> D {
+    match value {
+        Determinism::Deterministic => D::Deterministic,
+        Determinism::RuntimeMediated => D::RuntimeMediated,
+        Determinism::NonDeterministic => D::NonDeterministic,
+    }
 }
 
 fn host_kind(kind: &HostRequirementKind) -> H {

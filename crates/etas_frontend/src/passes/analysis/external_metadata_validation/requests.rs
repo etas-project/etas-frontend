@@ -11,6 +11,18 @@ pub(super) fn validate(
         .saturating_add(template.parameters.len());
     for action in &template.actions {
         validate_effect_ref(&action.action, scope)?;
+        if let Some(signature) = &action.signature {
+            nodes = nodes
+                .saturating_add(signature.params.len())
+                .saturating_add(1);
+            for ty in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.output))
+            {
+                validate_type(ty, scope, false)?;
+            }
+        }
         if let Some(bindings) = &action.type_bindings {
             nodes = nodes.saturating_add(bindings.len());
             let mut names = HashSet::new();

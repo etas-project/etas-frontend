@@ -20,6 +20,21 @@ pub fn merge_body_deltas<'a>(
     })
 }
 
+pub fn merge_body_deltas_with_application<'a>(
+    base: &crate::SignatureEnvironment,
+    bodies: impl IntoIterator<Item = &'a crate::BodyTypeOutput>,
+    application: &crate::InstantiatedBodyOutput,
+) -> Result<crate::TypeOutput, String> {
+    let bodies = bodies.into_iter().collect::<Vec<_>>();
+    if bodies.iter().any(|body| body.owner == application.owner()) {
+        return Err("instantiated body cannot replace a separately checked generic body".into());
+    }
+    merge_body_deltas(
+        base,
+        bodies.into_iter().chain(std::iter::once(&application.body)),
+    )
+}
+
 fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
     facts.type_generics.extend(body.type_generics);
     facts
@@ -29,7 +44,11 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
     facts.agent_method_calls.extend(body.agent_method_calls);
     facts.reflections.extend(body.reflections);
     facts.agent_inferences.extend(body.agent_inferences);
-    facts.std_method_calls.extend(body.std_method_calls);
+    facts.std_intrinsic_calls.extend(body.std_intrinsic_calls);
+    facts.action_calls.extend(body.action_calls);
+    facts
+        .definition_operations
+        .extend(body.definition_operations);
     facts.handler_actions.extend(body.handler_actions);
     facts
         .deferred_handler_instantiations
@@ -52,6 +71,9 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
         .known_std_types
         .runtime_values
         .extend(body.known_std_types.runtime_values);
+    if facts.known_std_types.json_value.is_none() {
+        facts.known_std_types.json_value = body.known_std_types.json_value;
+    }
     if facts.known_std_types.priority_queue.is_none() {
         facts.known_std_types.priority_queue = body.known_std_types.priority_queue;
     }

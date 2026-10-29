@@ -29,9 +29,7 @@ pub(super) fn original_overlay(
         .ok_or_else(|| invalid("original body source is unavailable"))?;
     let callable = frozen
         .contract()
-        .header()
-        .default_entry
-        .as_ref()
+        .entry()
         .ok_or_else(|| invalid("original default callable is unavailable"))?;
     let syntax = NativeCodeSyntaxOperations::default();
     let body = match archive.overlaid_body(item) {
@@ -122,7 +120,7 @@ pub(super) fn needs_completion(overlay: &DefaultBodyOverlay) -> bool {
             let analysis = &callable.analysis;
             analysis.effects.requested.is_none()
                 || analysis.effects.escaping.is_none()
-                || analysis.determinism.is_none()
+                || (analysis.determinism.is_none() && analysis.independent_determinism.is_none())
                 || analysis.trace.is_none()
                 || analysis.outcomes.is_none()
         })

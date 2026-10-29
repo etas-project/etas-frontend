@@ -104,6 +104,81 @@ impl DefinitionCatalog {
         self.freeze_agent_view(agent, item)
     }
 
+    pub fn freeze_flow(
+        &self,
+        expression: HirExprId,
+    ) -> Result<Arc<super::FrozenDefinitionEnvironment>, ProjectionError> {
+        let (header, item) = self.editable_flow_reflection(expression)?;
+        self.freeze_flow_view(header, item)
+    }
+
+    pub fn freeze_callable_application(
+        &self,
+        application: &crate::CheckedCallableApplication,
+        limits: etas_code::descriptor::DescriptorLimits,
+    ) -> Result<Arc<super::FrozenDefinitionEnvironment>, ProjectionError> {
+        if !self.checked.definition_sources.revisions().is_empty() {
+            return Err(ProjectionError::RuntimeRevisionRequired);
+        }
+        let contract =
+            super::FrozenDefinitionContract::capture_application(self, application, limits)?;
+        self.freeze_contract(contract, application.owner())
+    }
+
+    pub(super) fn editable_flow_reflection(
+        &self,
+        expression: HirExprId,
+    ) -> Result<(&CallableHeaderInfo, HirItemId), ProjectionError> {
+        let fact = self
+            .checked
+            .checked_reflections()
+            .get(&expression)
+            .ok_or(ProjectionError::MissingReflection(expression))?;
+        let typed = matches!(self.checked.type_store.get(fact.descriptor_type),
+            Some(etas_types::Type::Applied { constructor, args })
+                if Some(etas_types::TypeId(constructor.0)) == self.checked.types.known_std_types.code.callable_definition && args.len() == 1);
+        if !typed {
+            return Err(ProjectionError::Invalid(
+                "editing requires a typed ordinary-flow definition, not an erased method view"
+                    .into(),
+            ));
+        }
+        let StaticReflectionView::Callable(header) = self.static_reflection(expression)? else {
+            return Err(ProjectionError::Invalid(
+                "flow compilation requires CallableDef<F>".into(),
+            ));
+        };
+        let item = self.item_owner(&header.id).ok_or_else(|| {
+            ProjectionError::MissingIdentity("frozen flow source declaration".into())
+        })?;
+        Ok((header, item))
+    }
+
+    pub(super) fn freeze_flow_view(
+        &self,
+        header: &CallableHeaderInfo,
+        item: HirItemId,
+    ) -> Result<Arc<super::FrozenDefinitionEnvironment>, ProjectionError> {
+        if !self.checked.definition_sources.revisions().is_empty() {
+            return Err(ProjectionError::RuntimeRevisionRequired);
+        }
+        let Some(etas_hir::HirItem::Flow(flow)) = self.checked.items.get(item) else {
+            return Err(ProjectionError::Invalid(
+                "frozen ordinary-flow declaration is missing".into(),
+            ));
+        };
+        if self.checked.types.agent_methods.contains_key(&flow.symbol)
+            || self.callable_bindings.get(&flow.symbol) != Some(&header.id)
+            || self.item_owner(&header.id) != Some(item)
+        {
+            return Err(ProjectionError::Invalid(
+                "frozen flow declaration and canonical identity disagree".into(),
+            ));
+        }
+        let contract = super::FrozenDefinitionContract::capture_flow(self, header)?;
+        self.freeze_contract(contract, item)
+    }
+
     pub(super) fn freeze_agent_view(
         &self,
         agent: AgentHeaderInfo,
@@ -132,16 +207,23 @@ impl DefinitionCatalog {
             .ok_or(ProjectionError::MissingDeclaration(symbol))?
             .header
             .clone();
-        let body = agent
-            .default_entry
-            .as_ref()
+        let contract = super::FrozenDefinitionContract::capture_agent(self, agent)?;
+        self.freeze_contract(contract, item)
+    }
+
+    fn freeze_contract(
+        &self,
+        contract: Arc<super::FrozenDefinitionContract>,
+        declaration: HirItemId,
+    ) -> Result<Arc<super::FrozenDefinitionEnvironment>, ProjectionError> {
+        let body = contract
+            .entry()
             .map(|id| {
                 self.item_owner(id).ok_or_else(|| {
                     ProjectionError::MissingIdentity("frozen default callable owner".into())
                 })
             })
             .transpose()?;
-        let contract = super::FrozenAgentContract::capture(self, agent)?;
         let callable_slots = contract
             .callables()
             .map(|(id, _)| {
@@ -162,7 +244,7 @@ impl DefinitionCatalog {
         super::FrozenDefinitionEnvironment::new(
             self.checked.clone(),
             contract,
-            item,
+            declaration,
             body,
             self.origins.clone(),
             self.body_revision_fingerprint()?,
@@ -341,21 +423,7 @@ impl DefinitionCatalog {
     pub fn native_type_declarations(
         &self,
     ) -> impl Iterator<Item = (etas_types::TypeId, &DefinitionKey)> {
-        self.checked.type_store.iter().filter_map(|(ty, data)| {
-            let declaration = self.identities.types.get(&ty).or_else(|| {
-                let name = match data {
-                    etas_types::Type::Named(data) => &data.name,
-                    etas_types::Type::Nominal(data) => &data.name,
-                    etas_types::Type::Enum(data) => &data.name,
-                    _ => return None,
-                };
-                self.identities.type_names.get(name)
-            })?;
-            declaration
-                .alias
-                .is_none()
-                .then_some((ty, &declaration.identity))
-        })
+        super::relocation::native_type_declarations(&self.checked.type_store, &self.identities)
     }
 
     pub fn native_effect_identity(
@@ -451,6 +519,74 @@ impl DefinitionCatalog {
         self.reflection_view(fact, &target)
     }
 
+    pub fn callable_value_reflection(
+        &self,
+        expression: HirExprId,
+        item: HirItemId,
+    ) -> Result<&CallableHeaderInfo, ProjectionError> {
+        self.compatible_callable_value_reflection(expression, item)?
+            .ok_or_else(|| {
+                ProjectionError::Invalid(
+                    "reflected flow implementation differs from its checked binding signature"
+                        .into(),
+                )
+            })
+    }
+
+    /// Finds an eligible checked value view without treating a different F as
+    /// a corrupt fact. Missing facts and invalid source identities still fail.
+    pub fn compatible_callable_value_reflection(
+        &self,
+        expression: HirExprId,
+        item: HirItemId,
+    ) -> Result<Option<&CallableHeaderInfo>, ProjectionError> {
+        let fact = self
+            .checked
+            .checked_reflections()
+            .get(&expression)
+            .ok_or(ProjectionError::MissingReflection(expression))?;
+        let CheckedReflectionTarget::CallableValue { signature, .. } = fact.target else {
+            return Err(ProjectionError::Invalid(
+                "runtime reflection requires a checked ordinary-flow binding".into(),
+            ));
+        };
+        let Some(etas_hir::HirItem::Flow(flow)) = self.checked.hir.items.get(item) else {
+            return Err(ProjectionError::Invalid(
+                "reflected callable value has no ordinary-flow declaration".into(),
+            ));
+        };
+        if self.checked.types.agent_methods.contains_key(&flow.symbol) {
+            return Err(ProjectionError::Invalid(
+                "an agent method is not an editable ordinary flow".into(),
+            ));
+        }
+        let Some(etas_types::Type::Function(expected)) = self.checked.type_store.get(signature)
+        else {
+            return Err(ProjectionError::MissingType(signature));
+        };
+        let Some(etas_types::ItemSignature::Flow(actual)) =
+            self.checked.types.item_signatures.get(&item)
+        else {
+            return Err(ProjectionError::MissingCallable(flow.symbol));
+        };
+        if expected.input != actual.params
+            || expected.output != actual.output
+            || expected.effects != actual.effects
+        {
+            return Ok(None);
+        }
+        let id = self
+            .callable_bindings
+            .get(&flow.symbol)
+            .ok_or(ProjectionError::MissingCallable(flow.symbol))?;
+        match self.callable_view(id, fact.access_module)? {
+            StaticReflectionView::Callable(header) => Ok(Some(header)),
+            StaticReflectionView::Agent(_) => Err(ProjectionError::Invalid(
+                "ordinary-flow reflection resolved to an agent".into(),
+            )),
+        }
+    }
+
     pub fn retained_agent_value_body(
         &self,
         expression: HirExprId,
@@ -465,6 +601,16 @@ impl DefinitionCatalog {
             Some(callable) => self.retained_callable_body(expression, &callable, syntax),
             None => Ok(None),
         }
+    }
+
+    pub fn retained_callable_value_body(
+        &self,
+        expression: HirExprId,
+        item: HirItemId,
+        syntax: &crate::code::service::NativeCodeSyntaxOperations,
+    ) -> Result<Option<etas_code::syntax::SyntaxBlockRef>, ProjectionError> {
+        let header = self.callable_value_reflection(expression, item)?;
+        self.retained_callable_body(expression, &header.id, syntax)
     }
 
     fn reflection_view(
@@ -581,13 +727,14 @@ impl DefinitionCatalog {
                     .ok_or(ProjectionError::MissingCallable(declaration))?;
                 self.callable_view(id, fact.access_module)
             }
-            CheckedReflectionTarget::AgentValue { .. } => {
+            CheckedReflectionTarget::AgentValue { .. }
+            | CheckedReflectionTarget::CallableValue { .. } => {
                 Err(ProjectionError::RuntimeRevisionRequired)
             }
         }
     }
 
-    fn callable_view(
+    pub(super) fn callable_view(
         &self,
         id: &CallableId,
         access: Option<HirModuleId>,
@@ -607,6 +754,16 @@ impl DefinitionCatalog {
         self.callables
             .get(callable)
             .map(|record| record.native.item)
+    }
+
+    pub fn ordinary_flow_identity(&self, item: HirItemId) -> Option<&CallableId> {
+        let etas_hir::HirItem::Flow(flow) = self.checked.hir.items.get(item)? else {
+            return None;
+        };
+        if self.checked.types.agent_methods.contains_key(&flow.symbol) {
+            return None;
+        }
+        self.callable_bindings.get(&flow.symbol)
     }
 
     pub fn callable(&self, callable: &CallableId) -> Option<&CallableHeaderInfo> {
@@ -648,6 +805,17 @@ impl DefinitionCatalog {
                 .get(callable)
                 .map(|record| &record.graph)
         }
+    }
+
+    pub fn canonical_callable(&self, callable: &CallableId) -> Option<&CallableId> {
+        self.callables
+            .get(callable)
+            .map(|record| &record.native.canonical)
+            .or_else(|| {
+                self.external_callables
+                    .get(callable)
+                    .map(|record| &record.canonical)
+            })
     }
 
     pub(super) fn body_content(

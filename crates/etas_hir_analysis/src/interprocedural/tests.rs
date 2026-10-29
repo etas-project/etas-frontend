@@ -81,6 +81,7 @@ struct TraceInterproceduralSemantics {
     call_targets: BTreeMap<HirExprId, CallTarget<Unit>>,
     observed_exprs: Vec<HirExprId>,
     cancel_at_expr: Option<(HirExprId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    handle_start_event: Option<&'static str>,
 }
 
 impl TraceInterproceduralSemantics {
@@ -92,6 +93,7 @@ impl TraceInterproceduralSemantics {
             call_targets: BTreeMap::new(),
             observed_exprs: Vec::new(),
             cancel_at_expr: None,
+            handle_start_event: None,
         }
     }
 
@@ -215,6 +217,13 @@ impl HirAnalysisSemantics for TraceInterproceduralSemantics {
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
         AnalysisStep::handled(state)
+    }
+
+    fn begin_handle_body(&mut self, _: HirExprId, state: Self::Domain) -> Self::Domain {
+        match self.handle_start_event {
+            Some(event) => state.with_event(event),
+            None => state,
+        }
     }
 
     fn lambda_boundary(
@@ -456,6 +465,32 @@ fn solves_known_call_by_applying_callee_summary() {
     let caller = result.summaries.get(Unit(0)).expect("caller summary");
     assert!(caller.events.contains("callee-body"));
     assert!(!caller.incomplete);
+}
+
+#[test]
+fn summary_application_forwards_the_handled_body_entry_hook() {
+    let mut builder = HirBuilder::default();
+    let body = builder.literal();
+    let handler = builder.literal();
+    let handled = builder.expr(HirExpr::Handle {
+        body,
+        handler,
+        span: span(),
+    });
+    let root = builder.block(Vec::new(), Some(handled));
+    let mut semantics =
+        TraceInterproceduralSemantics::new(builder.finish_with_roots([root])).body(Unit(0), root);
+    semantics.handle_start_event = Some("begin-handled-body");
+    let result = InterproceduralAnalysis::new([Unit(0)], semantics).solve();
+    assert!(result.diagnostics.is_empty());
+    assert!(
+        result
+            .summaries
+            .get(Unit(0))
+            .unwrap()
+            .events
+            .contains("begin-handled-body")
+    );
 }
 
 #[test]

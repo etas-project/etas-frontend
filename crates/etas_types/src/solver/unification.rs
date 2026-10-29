@@ -30,6 +30,8 @@ pub struct TypeUnifier<'a> {
     store: &'a TypeStore,
     substitution: Substitution,
     known: Option<&'a Substitution>,
+    read_only_erasure: bool,
+    definition_contract: bool,
 }
 
 impl<'a> TypeUnifier<'a> {
@@ -38,6 +40,8 @@ impl<'a> TypeUnifier<'a> {
             store,
             substitution: Substitution::default(),
             known: None,
+            read_only_erasure: false,
+            definition_contract: false,
         }
     }
 
@@ -46,6 +50,8 @@ impl<'a> TypeUnifier<'a> {
             store,
             substitution,
             known: None,
+            read_only_erasure: false,
+            definition_contract: false,
         }
     }
 
@@ -55,7 +61,14 @@ impl<'a> TypeUnifier<'a> {
             store,
             substitution: Substitution::default(),
             known: Some(known),
+            read_only_erasure: false,
+            definition_contract: false,
         }
+    }
+
+    pub(crate) fn with_read_only_erasure(mut self) -> Self {
+        self.read_only_erasure = true;
+        self
     }
 
     pub fn into_substitution(self) -> Substitution {
@@ -169,10 +182,22 @@ impl<'a> TypeUnifier<'a> {
             (Some(Type::Function(a)), Some(Type::Function(b)))
                 if a.input.len() == b.input.len() =>
             {
-                for (a, b) in a.input.iter().copied().zip(b.input.iter().copied()) {
-                    self.unify(a, b)?;
+                if self.definition_contract
+                    && !same_effect_row(a.effects.as_ref(), b.effects.as_ref())
+                {
+                    return Err(UnifyError::Mismatch { lhs, rhs });
                 }
-                self.unify(a.output, b.output)
+                // Erasure projects descriptor values, not higher-order parameter types.
+                let erasure = self.read_only_erasure;
+                self.read_only_erasure = false;
+                let result = (|| {
+                    for (a, b) in a.input.iter().copied().zip(b.input.iter().copied()) {
+                        self.unify(a, b)?;
+                    }
+                    self.unify(a.output, b.output)
+                })();
+                self.read_only_erasure = erasure;
+                result
             }
             (Some(Type::Handler(a)), Some(Type::Handler(b))) if a.handled == b.handled => {
                 match (a.result, b.result) {
@@ -182,6 +207,14 @@ impl<'a> TypeUnifier<'a> {
             }
             (Some(Type::Named(a)), Some(Type::Named(b))) if a == b => Ok(()),
             (Some(Type::Nominal(a)), Some(Type::Nominal(b))) if a.name == b.name => Ok(()),
+            (Some(Type::Applied { constructor, args }), Some(Type::Nominal(view)))
+                if self.read_only_erasure
+                    && view.read_only_erased_view
+                    && args.len() == view.params.len()
+                    && matches!(self.store.get(TypeId(constructor.0)), Some(Type::Nominal(declaration)) if declaration == view) =>
+            {
+                Ok(())
+            }
             (
                 Some(Type::Applied {
                     constructor: ac,
@@ -193,10 +226,16 @@ impl<'a> TypeUnifier<'a> {
                 }),
             ) if aa.len() == ba.len() => {
                 self.unify(TypeId(ac.0), TypeId(bc.0))?;
-                for (a, b) in aa.iter().copied().zip(ba.iter().copied()) {
-                    self.unify(a, b)?;
-                }
-                Ok(())
+                let contract = self.definition_contract;
+                self.definition_contract |= matches!(self.store.get(TypeId(ac.0)), Some(Type::Nominal(declaration)) if declaration.read_only_erased_view);
+                let result = (|| {
+                    for (a, b) in aa.iter().copied().zip(ba.iter().copied()) {
+                        self.unify(a, b)?;
+                    }
+                    Ok(())
+                })();
+                self.definition_contract = contract;
+                result
             }
             _ => Err(UnifyError::Mismatch { lhs, rhs }),
         }
@@ -285,6 +324,24 @@ impl<'a> TypeUnifier<'a> {
             }
             _ => false,
         }
+    }
+}
+
+fn same_effect_row(lhs: Option<&EffectRowRef>, rhs: Option<&EffectRowRef>) -> bool {
+    match (lhs, rhs) {
+        (None, None) => true,
+        (Some(lhs), Some(rhs)) => {
+            lhs.tail == rhs.tail
+                && lhs
+                    .effects
+                    .iter()
+                    .all(|effect| rhs.effects.contains(effect))
+                && rhs
+                    .effects
+                    .iter()
+                    .all(|effect| lhs.effects.contains(effect))
+        }
+        _ => false,
     }
 }
 

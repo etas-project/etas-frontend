@@ -16,6 +16,9 @@ impl Relocation<'_> {
             {
                 for source in sources {
                     match source {
+                        CallableReturnSource::FrozenContract { environment, .. } => {
+                            pending.extend(environment)
+                        }
                         CallableReturnSource::Captured { environment, .. } => {
                             pending.push(*environment)
                         }
@@ -54,6 +57,20 @@ impl Relocation<'_> {
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
                     let origin = match *origin {
+                        CallableValueOrigin::FrozenContract {
+                            unit,
+                            reference,
+                            environment,
+                        } => {
+                            pending.extend(environment);
+                            CallableValueOrigin::FrozenContract {
+                                unit: self.captured_unit(unit)?,
+                                reference: reference
+                                    .map(|value| self.captured_expr(value))
+                                    .transpose()?,
+                                environment,
+                            }
+                        }
                         CallableValueOrigin::Unit(unit) => {
                             CallableValueOrigin::Unit(self.captured_unit(unit)?)
                         }

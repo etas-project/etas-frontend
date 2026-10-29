@@ -21,6 +21,7 @@ pub(super) struct ExternalCallable {
     pub header: CallableHeaderInfo,
     pub graph: DescriptorGraph,
     pub body: Option<Arc<etas_code::descriptor::CallableBodyInfo>>,
+    pub snapshot: Option<etas_code::descriptor::DefinitionSnapshotInfo>,
 }
 
 impl DefinitionCatalog {
@@ -85,6 +86,13 @@ impl DefinitionCatalog {
                 continue;
             }
             let graph = DescriptorGraph::new(set.graph.clone(), limits)?;
+            let snapshots = headers.snapshots.as_ref().map(|snapshots| {
+                snapshots
+                    .flows
+                    .iter()
+                    .map(|snapshot| (&snapshot.identity, snapshot))
+                    .collect::<BTreeMap<_, _>>()
+            });
             let bodies = headers.bodies.as_ref().map(|bodies| {
                 bodies
                     .entries
@@ -97,10 +105,16 @@ impl DefinitionCatalog {
                     .as_ref()
                     .and_then(|bodies| bodies.get(&header.id))
                     .map(|body| Arc::new((*body).clone()));
+                let snapshot = header
+                    .id
+                    .as_declaration()
+                    .and_then(|identity| snapshots.as_ref()?.get(identity))
+                    .map(|snapshot| (*snapshot).clone());
                 if let Some(existing) = self.external_callables.get(&header.id) {
                     if existing.header != *header
                         || existing.graph != graph
                         || existing.body != body
+                        || existing.snapshot != snapshot
                     {
                         return Err(ProjectionError::Invalid(
                             "external callable has conflicting portable definitions".into(),
@@ -114,6 +128,7 @@ impl DefinitionCatalog {
                             header: header.clone(),
                             graph: graph.clone(),
                             body,
+                            snapshot,
                         },
                     );
                 }

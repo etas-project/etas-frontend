@@ -84,6 +84,11 @@ pub(crate) fn contract_diagnostic(
                 "returned callable behavior is unavailable; compatibility is not proved",
                 None,
             ),
+            U::UnprovenParametricDeterminism => (
+                "code::UnprovenParametricDeterminism",
+                "callback-dependent determinism cannot be proved from the checked trace",
+                None,
+            ),
             U::UnsupportedResidualChecks => (
                 "code::UnsupportedResidualChecks",
                 "required residual checks cannot be installed by this compilation backend",
@@ -105,7 +110,7 @@ pub(crate) fn contract_diagnostic(
             "contract check has no frozen callable",
         ))?;
     let actual = catalog.callable(&check.callable);
-    let location = if frozen.header().default_entry.as_ref() == Some(&check.callable) {
+    let location = if frozen.entry() == Some(&check.callable) {
         let (source, _) = analysis.candidate_source();
         let source = analysis
             .output()

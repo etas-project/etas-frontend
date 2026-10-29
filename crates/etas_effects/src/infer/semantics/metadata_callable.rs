@@ -169,12 +169,9 @@ impl EffectSemantics<'_> {
                 .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?
                 .clone();
         }
-        let (determinism, support) = behavior::lower(&node.behavior);
-        if summary.determinism > determinism || !summary.support.less_equal(&support) {
+        if !apply_metadata_behavior(&mut summary, &node.behavior) {
             return Err(EffectSpecializationError::InvalidCallableReturnSources);
         }
-        summary.determinism = determinism;
-        summary.support = support;
         let (types, rows) = self.metadata_environment_generics_in_mode(source, mode)?;
         summary = self.specialize_summary_with_bindings(&summary, &[], &types, &rows)?;
         let environment = source
@@ -255,11 +252,16 @@ impl EffectSemantics<'_> {
         let mut found = BTreeSet::new();
         for source in sources {
             match source {
-                CallableValueSource::Value(value) => {
+                CallableValueSource::Value(value) | CallableValueSource::FrozenContract(value) => {
                     let source = crate::MetadataCallableSource {
                         graph: key,
                         value: *value,
                         environment: environment_id,
+                        analysis: if matches!(source, CallableValueSource::FrozenContract(_)) {
+                            crate::CallableAnalysisKind::FrozenContract
+                        } else {
+                            crate::CallableAnalysisKind::CheckedRevision
+                        },
                     };
                     self.metadata_callable(source)
                         .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
@@ -510,6 +512,27 @@ impl EffectSemantics<'_> {
     }
 }
 
+pub(super) fn apply_metadata_behavior(
+    summary: &mut crate::EffectSummary,
+    metadata: &etas_package_metadata::CallableValueBehavior,
+) -> bool {
+    let (determinism, support) = behavior::lower(metadata);
+    let independent = metadata
+        .independent_determinism
+        .map(behavior::lower_determinism);
+    if summary.determinism > determinism
+        || !summary.support.less_equal(&support)
+        || independent.is_some_and(|value| value > determinism)
+        || (summary.action_trace.has_parameter_calls() && independent.is_none())
+    {
+        return false;
+    }
+    summary.determinism = determinism;
+    summary.independent_determinism = independent;
+    summary.support = support;
+    true
+}
+
 mod behavior;
 
 fn is_captured_parameter(
@@ -533,6 +556,7 @@ mod tests {
             graph,
             value: 1,
             environment: None,
+            analysis: crate::CallableAnalysisKind::CheckedRevision,
         };
         let scopes = [
             CallableValueScope::Root,

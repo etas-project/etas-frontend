@@ -43,6 +43,10 @@ impl<'a> TypeSubstitutionEngine<'a> {
         } = self.expanded_row(row)?;
         for (index, effect) in row.effects.iter_mut().enumerate() {
             self.checkpoint()?;
+            if let Some(budget) = self.budget {
+                budget.node()?;
+                budget.edges(effect.args.len())?;
+            }
             let names = match &self.target {
                 SubstitutionTarget::Relocate(input) => Some(input.effect_names),
                 SubstitutionTarget::RelocateMaterialize(input) => Some(input.effect_names),
@@ -88,6 +92,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
         }
         let expanded = match &self.effect_rows {
             Some(EffectRowSubstitution::Arguments(arguments)) => {
+                if let Some(binding) = row.tail.as_ref().and_then(|tail| arguments.get(tail))
+                    && let Some(budget) = self.budget
+                {
+                    budget.edges(binding.effects.len())?;
+                }
                 let argument_start =
                     row.tail
                         .as_ref()
@@ -114,6 +123,10 @@ impl<'a> TypeSubstitutionEngine<'a> {
                         .map(|binding| (tail.clone(), binding))
                 }) {
                     self.checkpoint()?;
+                    if let Some(budget) = self.budget {
+                        budget.node()?;
+                        budget.edges(binding.effects.len())?;
+                    }
                     if !visited.insert(tail.clone()) {
                         return Err(TypeSubstitutionError::CyclicEffectRow(tail));
                     }

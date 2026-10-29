@@ -95,15 +95,24 @@ impl EffectSemantics<'_> {
                 .iter()
                 .flatten()
                 .filter_map(|returned| match returned {
-                    CallableValueSource::Value(value) => Some(*value),
+                    CallableValueSource::Value(value) => {
+                        Some((*value, crate::CallableAnalysisKind::CheckedRevision))
+                    }
+                    CallableValueSource::FrozenContract(value) => {
+                        Some((*value, crate::CallableAnalysisKind::FrozenContract))
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>();
             if let CallableValueScope::Value(value) = node.parent_scope {
-                children.push(value);
+                children.push((value, crate::CallableAnalysisKind::CheckedRevision));
             }
-            for value in children {
-                let child = MetadataCallableSource { value, ..source };
+            for (value, analysis) in children {
+                let child = MetadataCallableSource {
+                    value,
+                    analysis,
+                    ..source
+                };
                 if sources.insert(child) {
                     nodes += 1;
                     pending.push(child);

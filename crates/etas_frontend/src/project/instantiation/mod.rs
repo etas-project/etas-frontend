@@ -1,3 +1,4 @@
+mod index;
 mod prepare;
 mod rows;
 #[cfg(test)]
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use etas_hir::HirItemId;
 use etas_types::{CallableGenericParamKind, CallableSignature, EffectRowRef, TypeId};
 
+pub(crate) use index::normalized_row;
 pub(crate) use prepare::{InstantiationError, PreparationInput, PreparedInstantiations, prepare};
 pub(crate) use rows::checked_row;
 
@@ -26,7 +28,14 @@ pub(crate) struct NativeInstantiation {
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub(crate) struct NativeInstantiationPlan {
-    pub instances: Vec<NativeInstantiation>,
+    instances: Vec<NativeInstantiation>,
+    by_hash: HashMap<u64, Vec<usize>>,
+}
+
+impl NativeInstantiationPlan {
+    pub fn instances(&self) -> &[NativeInstantiation] {
+        &self.instances
+    }
 }
 
 pub(crate) type NativeBindings = (HashMap<String, TypeId>, HashMap<String, EffectRowRef>);

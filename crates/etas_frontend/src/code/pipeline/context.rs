@@ -7,6 +7,8 @@ pub(crate) struct CandidatePipelineContext {
     pub overlay: DefaultBodyOverlay,
     pub revisions: HashMap<Span, Arc<NativeBodyRevision>>,
     pub target: Option<HirItemId>,
+    pub bound_application: Option<BoundCandidateApplication>,
+    pub bound_body: Option<etas_types::InstantiatedBodyOutput>,
     pub descriptors: Option<super::passes::CandidateDescriptors>,
     pub descriptor_limits: etas_code::descriptor::DescriptorLimits,
     pub contract_analysis: Option<crate::code::contract::CandidateContractAnalysis>,
@@ -31,6 +33,8 @@ impl CandidatePipelineContext {
             overlay,
             revisions,
             target: None,
+            bound_application: None,
+            bound_body: None,
             descriptors: None,
             descriptor_limits: Default::default(),
             contract_analysis: None,
@@ -85,4 +89,9 @@ impl CandidatePipelineContext {
         self.dependency_sources = sources;
         Ok(())
     }
+}
+
+pub(crate) struct BoundCandidateApplication {
+    pub owner: HirItemId,
+    pub arguments: Vec<etas_types::CallableGenericArg>,
 }

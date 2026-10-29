@@ -48,14 +48,9 @@ impl CandidateBodyAnalysis {
             .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error);
         let catalog = self.definition_catalog(limits)?;
         let frozen = self.frozen().contract();
-        let default =
-            frozen
-                .header()
-                .default_entry
-                .as_ref()
-                .ok_or(CheckReportError::IncompleteAnalysis(
-                    "candidate has no frozen default entry",
-                ))?;
+        let default = frozen.entry().ok_or(CheckReportError::IncompleteAnalysis(
+            "candidate has no frozen default entry",
+        ))?;
         let expected = frozen
             .callables()
             .find(|(id, _)| *id == default)

@@ -56,12 +56,13 @@ pub(super) fn lower(behavior: &CallableValueBehavior) -> (Determinism, Interpret
     } else {
         InterpreterSupport::LocalOnly
     };
-    (
-        match behavior.determinism {
-            D::Deterministic => Determinism::Deterministic,
-            D::RuntimeMediated => Determinism::RuntimeMediated,
-            D::NonDeterministic => Determinism::NonDeterministic,
-        },
-        support,
-    )
+    (lower_determinism(behavior.determinism), support)
+}
+
+pub(super) fn lower_determinism(value: D) -> Determinism {
+    match value {
+        D::Deterministic => Determinism::Deterministic,
+        D::RuntimeMediated => Determinism::RuntimeMediated,
+        D::NonDeterministic => Determinism::NonDeterministic,
+    }
 }

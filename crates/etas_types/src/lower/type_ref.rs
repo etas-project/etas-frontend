@@ -12,7 +12,22 @@ use crate::{
 pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Option<TypeId> {
     let is_path_type = matches!(ctx.hir.types[ty], HirType::Path { .. });
     if !is_path_type && let Some(existing) = ctx.type_ref(ty) {
-        return Some(existing);
+        return match ctx.instantiate_annotation_type(existing) {
+            Ok(lowered) => {
+                if lowered != existing {
+                    ctx.signature_facts.type_refs.insert(ty, lowered);
+                }
+                Some(lowered)
+            }
+            Err(error) => {
+                ctx.diagnostics.push(Diagnostic::type_check(
+                    TypeDiagnosticCode::IncompleteTypeFacts,
+                    ctx.hir.types[ty].span(),
+                    format!("bound body annotation could not be instantiated: {error}"),
+                ));
+                Some(ctx.interner.primitive(PrimitiveType::Never))
+            }
+        };
     }
     let lowered = match ctx.hir.types[ty].clone() {
         HirType::Primitive { kind, .. } => ctx.interner.primitive(map_primitive(kind)),
@@ -135,6 +150,7 @@ fn lower_named_path(
                     etas_hir::SymbolKind::Type
                         | etas_hir::SymbolKind::TypeAlias
                         | etas_hir::SymbolKind::Enum
+                        | etas_hir::SymbolKind::Agent
                 )
         });
         if is_source_type
@@ -143,6 +159,7 @@ fn lower_named_path(
                 Some(
                     crate::SymbolTypeFact::TypeAlias { .. }
                         | crate::SymbolTypeFact::NominalType { .. }
+                        | crate::SymbolTypeFact::Agent { .. }
                 )
             )
         {
@@ -265,6 +282,9 @@ fn lower_declared_path(
                 .get(canonical_symbol)
                 .is_some_and(|symbol| matches!(symbol.def, SymbolDef::TypeParam { .. }))
             {
+                if let Some(bound) = ctx.bound_type_parameter(canonical_symbol) {
+                    return applied_or_constructor(ctx, bound, args);
+                }
                 let parameter = ctx.interner.intern(Type::Named(NamedTypeRef {
                     name: name.to_owned(),
                     source_parameter: Some(canonical_symbol),
@@ -290,14 +310,9 @@ fn lower_declared_path(
             let fact = ctx.symbol_fact(symbol).cloned();
             if let Some(fact) = fact {
                 return match fact {
-                    crate::SymbolTypeFact::Agent { signature } => apply_declared_type_args(
-                        ctx,
-                        signature.component,
-                        Vec::new(),
-                        args,
-                        span,
-                        "agent component was given type arguments but declares none",
-                    ),
+                    crate::SymbolTypeFact::Agent { signature } => {
+                        apply_declared_type_args(ctx, signature.component, Vec::new(), args)
+                    }
                     crate::SymbolTypeFact::TypeAlias { target, params } => apply_alias_type(
                         ctx,
                         target,
@@ -309,20 +324,12 @@ fn lower_declared_path(
                         constructor,
                         params,
                         ..
-                    } => apply_declared_type_args(
-                        ctx,
-                        TypeId(constructor.0),
-                        params,
-                        args,
-                        span,
-                        "nominal type was given the wrong number of type arguments",
-                    ),
+                    } => apply_declared_type_args(ctx, TypeId(constructor.0), params, args),
                     crate::SymbolTypeFact::Type { constructor } => {
                         if let Some(symbol) = ctx.hir.symbols.get(canonical_symbol) {
                             if let SymbolDef::Item { item } = symbol.def {
                                 if let Some(HirItem::Enum(decl)) = ctx.hir.items.get(item) {
                                     if args.len() != decl.type_params.len() {
-                                        ctx.diagnostics.push(Diagnostic::type_check(TypeDiagnosticCode::ArityMismatch, span, "enum type was given the wrong number of type arguments"));
                                         return ctx.interner.primitive(PrimitiveType::Never);
                                     }
                                 }
@@ -357,11 +364,6 @@ fn apply_alias_type(
     span: etas_core::Span,
 ) -> TypeId {
     if params.len() != args.len() {
-        ctx.diagnostics.push(Diagnostic::type_check(
-            TypeDiagnosticCode::ArityMismatch,
-            span,
-            "type alias was given the wrong number of type arguments",
-        ));
         return ctx.interner.primitive(PrimitiveType::Never);
     }
     if params.is_empty() {
@@ -386,15 +388,15 @@ fn apply_declared_type_args(
     base: TypeId,
     params: Vec<String>,
     args: Vec<TypeId>,
-    span: etas_core::Span,
-    message: &'static str,
 ) -> TypeId {
+    if args.is_empty()
+        && matches!(ctx.interner.store().get(base), Some(Type::Nominal(declaration)) if declaration.read_only_erased_view)
+    {
+        return base;
+    }
     if params.len() != args.len() {
-        ctx.diagnostics.push(Diagnostic::type_check(
-            TypeDiagnosticCode::ArityMismatch,
-            span,
-            message,
-        ));
+        // The queued TypeApplication owns arity/bound diagnostics. Do not
+        // construct a malformed Applied node or report the same error twice.
         return ctx.interner.primitive(PrimitiveType::Never);
     }
     applied_or_constructor(ctx, base, args)
@@ -496,6 +498,7 @@ fn lower_source_declared_type(
                 HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
             };
             let lowered = Some(ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                read_only_erased_view: false,
                 name,
                 params,
                 representation,

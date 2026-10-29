@@ -15,6 +15,11 @@ use super::engine::EffectSemantics;
 use super::state::EffectState;
 
 mod completion;
+mod result;
+
+fn handler_evaluation_is_inert(entry: &EffectState, handler: &EffectState) -> bool {
+    !handler.incomplete && handler.summary == entry.summary && handler.exits == entry.exits
+}
 
 impl EffectSemantics<'_> {
     pub(crate) fn handle_parts(
@@ -36,20 +41,49 @@ impl EffectSemantics<'_> {
                     && parts.body.resume_state().is_none()
                     && parts.body.finish_state().is_none()
                     && parts.body.error_state().is_none();
+                let body_normal = parts.body.normal_state().is_some();
+                let handler_only_normal = control.normal_state().is_some()
+                    && control.return_state().is_none()
+                    && control.break_state().is_none()
+                    && control.continue_state().is_none()
+                    && control.resume_state().is_none()
+                    && control.finish_state().is_none()
+                    && control.error_state().is_none();
+                let mut control = control;
+                let Some(mut handler_state) = control.take_normal_state() else {
+                    return control;
+                };
                 let body_state = parts.body.into_joined_domain();
                 if let Some(HirExpr::Handle { body, .. }) = self.hir.exprs.get(expr) {
                     self.inputs
                         .handled_body_requests
                         .insert(*body, body_state.summary.handler_requests.clone());
                 }
-                let mut handler_state = control.into_joined_domain();
                 if let Some(summary) = self.handler_value_item_summary(handler) {
                     handler_state
                         .summary
                         .merge_request_footprint_without_escaping_or_trace(&summary);
                 }
-                let Some((handled, produced)) = self.handler_rows_for_expr(handler, span) else {
-                    return Control::normal(body_state);
+                let rows = match self.handler_rows_for_expr(handler, span) {
+                    Ok(rows) => rows,
+                    Err(interruption) => {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        control.join_normal(handler_state);
+                        return control;
+                    }
+                };
+                let Some((handled, produced)) = rows else {
+                    let mut result = body_state;
+                    let mut summary = handler_state.summary;
+                    summary.seq_assign(&result.summary);
+                    result.summary = summary;
+                    result.exits.join_assign(&handler_state.exits);
+                    control.join_normal(self.incomplete_at(
+                        span,
+                        "handled expression requires checked handler rows",
+                        result,
+                    ));
+                    return control;
                 };
                 let coverage = EffectCoverage {
                     registry: self.registry,
@@ -65,13 +99,24 @@ impl EffectSemantics<'_> {
                         (&handled, &produced),
                     );
                 let mut result = body_state;
+                if !value_completion {
+                    result.exits.handler_gaps.insert(crate::HandlerGapEvidence {
+                        source: span.into(),
+                        normal_control: only_normal
+                            && handler_only_normal
+                            && !result.incomplete
+                            && handler_evaluation_is_inert(&entry, &handler_state),
+                        handled: handled.clone(),
+                        body_escaping: result.summary.escaping_effects.clone(),
+                    });
+                }
                 result.summary.subtract_handled_effects(&coverage, &handled);
                 let remaining = result.summary.escaping_effects.clone();
                 if !value_completion {
                     result
                         .exits
                         .gaps
-                        .insert(crate::OutcomeAnalysisGap::Handler(expr));
+                        .insert(crate::OutcomeAnalysisGap::Handler(span.into()));
                 }
                 result.summary.default_actions =
                     coverage.subtract_handled(&result.summary.default_actions, &handled);
@@ -101,7 +146,29 @@ impl EffectSemantics<'_> {
                         remaining,
                     },
                 );
-                Control::normal(result)
+                if let Err(error) =
+                    self.record_handle_result_sources(expr, handler, body_normal, &mut result)
+                {
+                    if let super::specialize::EffectSpecializationError::Interrupted(interruption) =
+                        error
+                    {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        control.join_normal(result);
+                        return control;
+                    }
+                    result = self.incomplete_at(span, error.to_string(), result);
+                }
+                for exit in &mut result.exits.exits {
+                    let mut trace = handler_state.summary.action_trace.clone();
+                    trace.seq_assign(exit.trace.clone());
+                    exit.trace = trace;
+                }
+                result.exits.join_assign(&handler_state.exits);
+                let mut summary = handler_state.summary;
+                summary.seq_assign(&result.summary);
+                result.summary = summary;
+                control.join_normal(result);
+                control
             }
         }
     }
@@ -130,8 +197,16 @@ impl EffectSemantics<'_> {
         let mut inferred_produced = EffectRow::empty();
         let mut arm_facts = Vec::new();
         let mut unsupported = false;
+        let captures = match self.lambda_value_captures(expr, &state) {
+            Ok(captures) => captures,
+            Err(reason) => return self.incomplete_at(span, reason, state),
+        };
 
         for arm in handlers {
+            self.discovered_value_captures
+                .entry(EffectUnit::HandlerArm { owner, arm: *arm })
+                .or_default()
+                .join_assign(&captures);
             let Some(arm_data) = self.hir.handler_arms.get(*arm).cloned() else {
                 state = self.incomplete_at(
                     span,
@@ -212,6 +287,7 @@ impl EffectSemantics<'_> {
                 .handler_action_effects
                 .insert(*arm, effect.clone());
             arm_facts.push(HandlerArmFact {
+                unit: EffectUnit::HandlerArm { owner, arm: *arm },
                 action: HandlerActionFact {
                     effect_segments: arm_data
                         .action
@@ -297,13 +373,68 @@ impl EffectSemantics<'_> {
         &mut self,
         expr: HirExprId,
         span: Span,
-    ) -> Option<(EffectRow, EffectRow)> {
+    ) -> Result<Option<(EffectRow, EffectRow)>, etas_utils::PipelineInterruption> {
         if let Some(fact) = self.inputs.handler_values.get(&expr) {
-            return Some((fact.handled.clone(), fact.produced.clone()));
+            return Ok(Some((fact.handled.clone(), fact.produced.clone())));
         }
-        let rows = self.checked_handler_rows(expr, span)?;
-        let produced = rows.produced.unwrap_or_else(EffectRow::empty);
-        Some((rows.handled, produced))
+        let Some(rows) = self.checked_handler_rows(expr, span) else {
+            return Ok(None);
+        };
+        if let Some(produced) = rows.produced {
+            return Ok(Some((rows.handled, produced)));
+        }
+        let Some(fact) = self.immutable_handler_value(expr)? else {
+            return Ok(None);
+        };
+        let coverage = EffectCoverage {
+            registry: self.registry,
+            types: &self.types.store,
+        };
+        if !coverage.row_covers(&rows.handled, &fact.handled)
+            || !coverage.row_covers(&fact.handled, &rows.handled)
+        {
+            return Ok(None);
+        }
+        Ok(Some((rows.handled, fact.produced.clone())))
+    }
+
+    fn immutable_handler_value(
+        &self,
+        mut expr: HirExprId,
+    ) -> Result<Option<&HandlerValueFact>, etas_utils::PipelineInterruption> {
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(expr) {
+            if let Some(control) = self.query_control {
+                control.checkpoint()?;
+            }
+            if let Some(fact) = self.inputs.handler_values.get(&expr) {
+                return Ok(Some(fact));
+            }
+            let Some(HirExpr::Path(path)) = self.hir.exprs.get(expr) else {
+                return Ok(None);
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                return Ok(None);
+            };
+            let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+                return Ok(None);
+            };
+            expr = match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
+                Some(etas_hir::SymbolDef::TopLevelLet { initializer, .. }) => *initializer,
+                Some(etas_hir::SymbolDef::Local {
+                    binding,
+                    pattern,
+                    initializer: Some(initializer),
+                    ..
+                }) if matches!(self.hir.stmts.get(*binding), Some(HirStmt::Let { pat, value, .. }) if pat == pattern && value == initializer)
+                    && matches!(self.hir.pats.get(*pattern), Some(etas_hir::HirPat::Binding { symbol: bound, .. }) if *bound == symbol) =>
+                {
+                    *initializer
+                }
+                _ => return Ok(None),
+            };
+        }
+        Ok(None)
     }
 
     fn handler_value_item_summary(&self, expr: HirExprId) -> Option<EffectSummary> {
@@ -741,4 +872,46 @@ struct HandlerControlScan {
     finishes: usize,
     captured_by_lambda: bool,
     finish_captured_by_lambda: bool,
+}
+
+#[cfg(test)]
+mod inert_tests {
+    use super::*;
+
+    #[test]
+    fn handler_construction_must_not_add_actions_effects_or_exit_gaps() {
+        let entry = EffectState::default();
+        assert!(handler_evaluation_is_inert(&entry, &entry));
+        let action = crate::Effect::Action(crate::ActionRef {
+            tag: crate::CONSOLE_TAG,
+            action: crate::CONSOLE_STDOUT_WRITE_ACTION,
+        });
+        let mut handler = entry.clone();
+        handler.summary.action_trace =
+            crate::ActionTraceDomain::UnknownOrder([action.clone()].into_iter().collect());
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        handler = entry.clone();
+        handler.summary.record_escaping_effect(action);
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        handler = entry.clone();
+        handler.summary.determinism = crate::Determinism::NonDeterministic;
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        handler = entry.clone();
+        handler.summary.independent_determinism = None;
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        handler = entry.clone();
+        handler
+            .summary
+            .require_runtime(crate::RuntimeRequirementReason::Time);
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        handler = entry.clone();
+        handler
+            .exits
+            .gaps
+            .insert(crate::OutcomeAnalysisGap::InvalidControlExit);
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        handler = entry.clone();
+        handler.incomplete = true;
+        assert!(!handler_evaluation_is_inert(&entry, &handler));
+    }
 }

@@ -169,6 +169,18 @@ impl EffectSemantics<'_> {
                 let mut resolved = BTreeSet::new();
                 for source in sources {
                     match source {
+                        LatentSource::FrozenContract {
+                            unit,
+                            reference,
+                            environment,
+                        } => {
+                            pending.extend(environment);
+                            resolved.insert(LatentSource::FrozenContract {
+                                unit,
+                                reference,
+                                environment: environment.map(mapped),
+                            });
+                        }
                         LatentSource::Parameter { symbol, .. }
                             if bindings.contains_key(&ParameterCallTarget::Native(symbol)) =>
                         {

@@ -66,7 +66,7 @@ flow build(definition: AgentDef<Worker>) -> Result<Worker, CompileError> {
 fn compiler_service_rejects_wrong_agent_identity_callable_and_report_as_a_definition() {
     for source in [
         "import std.compiler.compile; agent A; agent B; flow bad() -> B { return compile(^A); }",
-        "import std.compiler.check; flow target() -> unit { return; } flow bad() -> unit { check(^target); return; }",
+        "import std.compiler.check; flow target() -> unit { return; } flow bad() -> unit { check(target); return; }",
         "import std.compiler.CheckReport; import std.compiler.compile; flow bad(report: CheckReport) -> unit { compile(report); return; }",
     ] {
         let (_, output) = check(source);
@@ -74,6 +74,64 @@ fn compiler_service_rejects_wrong_agent_identity_callable_and_report_as_a_defini
             !output.diagnostics.is_empty(),
             "unexpected acceptance: {source}"
         );
+    }
+}
+
+#[test]
+fn compiler_check_accepts_a_typed_flow_descriptor_but_not_a_raw_callable() {
+    let (_, output) = check(
+        "import std.compiler.check; flow target() -> unit ![] { return; } flow verify() -> unit { check(^target); return; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .facts
+            .std_intrinsic_calls
+            .values()
+            .any(|fact| fact.overload == 1)
+    );
+}
+
+#[test]
+fn direct_compiler_actions_select_typed_flow_overloads() {
+    for operation in ["check", "compile"] {
+        let (_, output) = check(&format!(
+            "flow target(text: string) -> string ![] {{ return text; }} flow invoke() -> unit {{ let result = perform Code.{operation}(^target); return; }}"
+        ));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{operation}: {:?}",
+            output.diagnostics
+        );
+        let fact = output.facts.action_calls.values().next().unwrap();
+        assert_eq!(fact.overload, 1);
+        let callable = output
+            .facts
+            .known_std_types
+            .code
+            .callable_definition
+            .unwrap();
+        assert!(
+            matches!(output.store.get(fact.signature.params[0]), Some(Type::Applied { constructor, .. }) if constructor.0 == callable.0)
+        );
+        if operation == "compile" {
+            assert!(matches!(
+                output.store.get(fact.signature.output),
+                Some(Type::Function(_))
+            ));
+        }
+    }
+}
+
+#[test]
+fn direct_compiler_actions_reject_erasure_and_wrong_expected_callable() {
+    for body in [
+        "import std.compiler.CallableDef; flow invalid(info: CallableDef) -> (string) -> string ![] { return perform Code.compile(info); }",
+        "flow target(text: string) -> string ![] { return text; } flow invalid() -> (i32) -> i32 ![] { return perform Code.compile(^target); }",
+        "flow target(text: string) -> string ![] { return text; } flow invalid() -> unit { let report = perform Code.check<(string) -> string ![]>(^target); return; }",
+    ] {
+        let (_, output) = check(body);
+        assert!(!output.diagnostics.is_empty(), "{body}");
     }
 }
 
@@ -125,6 +183,7 @@ flow main() -> Worker {
         Code.compile(_) => { resume Worker; }
     };
 }
+
 "#,
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
@@ -135,6 +194,124 @@ flow main() -> Worker {
     assert!(
         matches!(output.store.get(fact.output), Some(Type::Nominal(nominal)) if nominal.name == "Worker")
     );
+}
+
+#[test]
+fn compiler_handler_uses_the_selected_flow_request_input_signature() {
+    for request in ["build(^target)", "perform Code.compile(^target)"] {
+        let (_, output) = check(&format!(
+            r#"
+import std.compiler.compile as build;
+flow target(value: i32) -> i32 ![] {{ return value; }}
+flow main() -> i32 {{
+    let candidate = handle {{ {request} }} with {{
+        Code.compile(_) => {{ resume target; }}
+    }};
+    return candidate(7);
+}}
+"#
+        ));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{request}: {:?}",
+            output.diagnostics
+        );
+        let handler = output.facts.handler_actions.values().next().unwrap();
+        assert!(matches!(
+            output.store.get(handler.output),
+            Some(Type::Function(_))
+        ));
+        let callable = output
+            .facts
+            .known_std_types
+            .code
+            .callable_definition
+            .unwrap();
+        assert!(
+            matches!(output.store.get(handler.params[0]), Some(Type::Applied { constructor, .. }) if constructor.0 == callable.0)
+        );
+    }
+}
+
+#[test]
+fn compiler_check_handler_payload_uses_inputs_even_when_both_overloads_return_the_same_report() {
+    for request in ["inspect(^target)", "perform Code.check(^target)"] {
+        let (_, output) = check(&format!(
+            r#"
+import std.compiler.{{check as inspect, CheckReport, CallableDef}};
+flow target(value: i32) -> i32 ![] {{ return value; }}
+flow main(report: CheckReport) -> CheckReport {{
+    return handle {{ {request} }} with {{
+        Code.check(definition) => {{
+            let typed: CallableDef<(i32) -> i32 ![]> = definition;
+            resume report;
+        }}
+    }};
+}}
+"#
+        ));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{request}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn compiler_handler_rejects_mixed_request_families_and_wrong_resume_signatures() {
+    for (requests, resume) in [
+        ("let agent = compile(^Worker); compile(^target)", "target"),
+        ("compile(^target)", "other"),
+    ] {
+        let (_, output) = check(&format!(
+            r#"
+import std.compiler.compile;
+agent Worker() -> i32 {{ return 7; }}
+flow target(value: i32) -> i32 ![] {{ return value; }}
+flow other(value: string) -> string ![] {{ return value; }}
+flow main() -> unit {{
+    let result = handle {{ {requests} }} with {{ Code.compile(_) => {{ resume {resume}; }} }};
+    return;
+}}
+"#
+        ));
+        assert!(
+            !output.diagnostics.is_empty(),
+            "{requests}: resume {resume}"
+        );
+    }
+}
+
+#[test]
+fn handler_finish_cannot_replace_the_checked_nominal_or_callable_result_type() {
+    for source in [
+        "import std.compiler.compile; agent A() -> i32 { return 1; } agent B() -> i32 { return 2; } flow bad() -> A { return handle { compile(^A) } with { Code.compile(_) => { finish B; } }; }",
+        "import std.compiler.compile; flow original(x: i32) -> i32 ![] { return x; } flow other(x: string) -> string ![] { return x; } flow bad() -> unit { let selected = handle { compile(^original) } with { Code.compile(_) => { finish other; } }; return; }",
+    ] {
+        let (_, output) = check(source);
+        assert!(!output.diagnostics.is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn handler_finish_infers_a_value_result_when_the_body_cannot_return() {
+    let (_, output) = check(
+        "flow main() -> i32 { let result = handle { return perform Error<string>.raise(\"fail\"); } with { Error<string>.raise(_) => { finish 7; } }; return result; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.facts.symbol_types.values().any(|fact| matches!(fact, etas_types::SymbolTypeFact::Local { ty, .. } if matches!(output.store.get(*ty), Some(Type::Primitive(etas_types::PrimitiveType::I32))))));
+}
+
+#[test]
+fn unit_literal_and_zero_tuple_type_have_one_checked_identity() {
+    let mut interner = etas_types::TypeInterner::new();
+    let unit = interner.primitive(etas_types::PrimitiveType::Unit);
+    assert_eq!(interner.intern(Type::Tuple(Vec::new())), unit);
+    let (_, output) = check(
+        "flow identity(value: unit) -> unit { return value; } flow main() -> unit { return identity(()); }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }
 
 #[test]

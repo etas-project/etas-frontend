@@ -24,6 +24,11 @@ struct FrozenTypes {
 )]
 pub struct TypeBaseId(pub [u8; 32]);
 
+pub(crate) enum TypeBaseBuildError {
+    TypeLimit { limit: usize },
+    Interrupted(etas_utils::PipelineInterruption),
+}
+
 struct TypeHash(blake3::Hasher);
 impl Hasher for TypeHash {
     fn write(&mut self, bytes: &[u8]) {
@@ -57,6 +62,50 @@ impl SharedTypeBase {
             ids,
             identity,
         }))
+    }
+
+    pub(crate) fn new_controlled(
+        store: TypeStore,
+        max_types: usize,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<Self, TypeBaseBuildError> {
+        control
+            .checkpoint()
+            .map_err(TypeBaseBuildError::Interrupted)?;
+        if store.len() > max_types {
+            return Err(TypeBaseBuildError::TypeLimit { limit: max_types });
+        }
+        let mut types = Vec::with_capacity(store.len());
+        for (_, ty) in store.iter() {
+            control
+                .checkpoint()
+                .map_err(TypeBaseBuildError::Interrupted)?;
+            types.push(ty.clone());
+        }
+        let mut ids = HashMap::with_capacity(types.len());
+        for (index, ty) in types.iter().enumerate() {
+            control
+                .checkpoint()
+                .map_err(TypeBaseBuildError::Interrupted)?;
+            ids.entry(ty.clone()).or_insert(TypeId(index as u32));
+        }
+        let mut hash = TypeHash(blake3::Hasher::new_derive_key("etas.type-base.v1"));
+        types.len().hash(&mut hash);
+        for ty in &types {
+            control
+                .checkpoint()
+                .map_err(TypeBaseBuildError::Interrupted)?;
+            ty.hash(&mut hash);
+        }
+        control
+            .checkpoint()
+            .map_err(TypeBaseBuildError::Interrupted)?;
+        let identity = TypeBaseId(*hash.0.finalize().as_bytes());
+        Ok(Self(Arc::new(FrozenTypes {
+            types,
+            ids,
+            identity,
+        })))
     }
 
     pub fn len(&self) -> usize {
@@ -269,6 +318,10 @@ impl TypeInterner {
     }
 
     pub fn intern(&mut self, ty: Type) -> TypeId {
+        let ty = match ty {
+            Type::Tuple(fields) if fields.is_empty() => Type::Primitive(PrimitiveType::Unit),
+            ty => ty,
+        };
         if let Some(id) = self
             .types
             .get(&ty)

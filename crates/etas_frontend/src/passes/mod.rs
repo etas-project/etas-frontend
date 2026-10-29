@@ -13,9 +13,10 @@ mod source;
 pub use analysis::{
     AnalyzeLoopProgressPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
     InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
-    PrepareInvocationTypesPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass,
-    RunEffectPipelinePass, TypeCheckBodyPass, ValidateExternalEnvironmentPass,
-    ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
+    PrepareEffectRegistryPass, PrepareInvocationTypesPass, RetainDefinitionSourcesPass,
+    ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
 pub use dependency::{
     CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,

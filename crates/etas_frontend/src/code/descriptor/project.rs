@@ -175,6 +175,23 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         types.iter().map(|ty| self.type_ref(*ty, scope)).collect()
     }
 
+    pub fn project_closed_rows(
+        &mut self,
+        owner: GenericOwner,
+        rows: &[EffectRowRef],
+    ) -> Result<Vec<EffectRowInfoRef>, ProjectionError> {
+        self.ensure_edges(rows.len())?;
+        let scope = self.scope(owner, &[])?;
+        rows.iter()
+            .map(|row| {
+                if let Some(tail) = &row.tail {
+                    return Err(ProjectionError::UnresolvedBinder(tail.clone()));
+                }
+                self.row_ref(row.clone(), scope)
+            })
+            .collect()
+    }
+
     pub(crate) fn project_scoped_types(
         &mut self,
         owner: &GenericOwner,
@@ -407,6 +424,53 @@ impl<'a> DefinitionDescriptorProjector<'a> {
     }
 
     pub fn finish_native(mut self) -> Result<NativeDescriptorProjection, ProjectionError> {
+        self.materialize_pending()?;
+        let mut type_origins = self
+            .memo
+            .iter()
+            .map(|((local, scope), descriptor)| {
+                let scope = self.scopes.get(*scope).ok_or_else(|| {
+                    ProjectionError::Invalid("native type origin has no generic scope".into())
+                })?;
+                Ok(NativeTypeOrigin {
+                    local: *local,
+                    scope: scope.owner.clone(),
+                    descriptor: *descriptor,
+                })
+            })
+            .collect::<Result<Vec<_>, ProjectionError>>()?;
+        type_origins.sort_by(|a, b| (&a.scope, a.local).cmp(&(&b.scope, b.local)));
+        let input = DescriptorGraphInput {
+            types: self
+                .types
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("descriptor type was not materialized".into())
+                })?,
+            rows: self
+                .rows
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("descriptor row was not materialized".into())
+                })?,
+            binders: self.binders,
+            traces: self
+                .traces
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("descriptor trace was not materialized".into())
+                })?,
+        };
+        Ok(NativeDescriptorProjection {
+            graph: DescriptorGraph::new(input, self.limits)?,
+            type_origins,
+        })
+    }
+
+    pub(super) fn materialize_pending(&mut self) -> Result<(), ProjectionError> {
         while let Some(work) = self.work.pop() {
             match work {
                 Work::Type {
@@ -451,49 +515,7 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 }
             }
         }
-        let mut type_origins = self
-            .memo
-            .iter()
-            .map(|((local, scope), descriptor)| {
-                let scope = self.scopes.get(*scope).ok_or_else(|| {
-                    ProjectionError::Invalid("native type origin has no generic scope".into())
-                })?;
-                Ok(NativeTypeOrigin {
-                    local: *local,
-                    scope: scope.owner.clone(),
-                    descriptor: *descriptor,
-                })
-            })
-            .collect::<Result<Vec<_>, ProjectionError>>()?;
-        type_origins.sort_by(|a, b| (&a.scope, a.local).cmp(&(&b.scope, b.local)));
-        let input = DescriptorGraphInput {
-            types: self
-                .types
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("descriptor type was not materialized".into())
-                })?,
-            rows: self
-                .rows
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("descriptor row was not materialized".into())
-                })?,
-            binders: self.binders,
-            traces: self
-                .traces
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("descriptor trace was not materialized".into())
-                })?,
-        };
-        Ok(NativeDescriptorProjection {
-            graph: DescriptorGraph::new(input, self.limits)?,
-            type_origins,
-        })
+        Ok(())
     }
 
     pub(super) fn reserve_type(&mut self) -> Result<TypeInfoRef, ProjectionError> {

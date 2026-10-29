@@ -13,6 +13,7 @@ pub(super) struct ReflectionSolveInput<'a> {
     pub store: &'a TypeStore,
     pub facts: &'a TypeFacts,
     pub binding: &'a ReflectionBinding,
+    pub callable_descriptor: Option<crate::TypeId>,
     pub members: &'a [String],
     pub origin: ConstraintOrigin,
     pub solved: &'a SolverReport,
@@ -126,13 +127,33 @@ pub(super) fn solve(
                 CheckedReflectionTarget::Callable {
                     declaration: *symbol,
                 },
-                callable_type()?,
+                input.callable_descriptor.ok_or_else(|| {
+                    missing("flow reflection is missing its typed CallableDef contract")
+                })?,
             )
         }
         ReflectionBinding::Value { binding, ty } => {
             let component = resolve_known_substitutions(input.store, input.solved, *ty);
+            if matches!(input.store.get(component), Some(crate::Type::Function(_))) {
+                if member.is_some() {
+                    return Err(invalid(
+                        "an ordinary flow value has no reflected method members",
+                    ));
+                }
+                return Ok(CheckedReflectionFact {
+                    target: CheckedReflectionTarget::CallableValue {
+                        binding: *binding,
+                        signature: component,
+                    },
+                    descriptor_type: input.callable_descriptor.ok_or_else(|| {
+                        missing("flow value reflection is missing its typed CallableDef contract")
+                    })?,
+                    selected_spec: None,
+                    access_module: input.access_module,
+                });
+            }
             let agent = input.facts.agent_signature(component).ok_or_else(|| {
-                invalid("only values of a checked nominal agent type can be reflected")
+                invalid("only checked ordinary flow or nominal agent values can be reflected")
             })?;
             let method = member
                 .map(|member| {

@@ -9,6 +9,7 @@ mod scheme;
 mod store;
 mod substitution;
 
+pub(crate) use store::TypeBaseBuildError;
 pub use store::{SharedTypeBase, TypeBaseId, TypeInterner, TypeLookupIndex, TypeStore};
 
 pub use display::display_type;
@@ -22,9 +23,9 @@ pub use representation::{TypeRepresentationMaterializer, materialize_representat
 pub use row::{EffectArgRef, EffectRef, EffectRowRef};
 pub use scheme::{TypeConstructorId, TypeScheme, TypeVarId};
 pub use substitution::{
-    TypeRelocationInput, TypeRelocationMaterializationInput, TypeSubstitutionEngine,
-    TypeSubstitutionError, substitute_effect_row_params, substitute_named_params,
-    substitute_named_params_in_store, substitute_type_params,
+    TypeRelocationInput, TypeRelocationMaterializationInput, TypeSubstitutionBudget,
+    TypeSubstitutionEngine, TypeSubstitutionError, substitute_effect_row_params,
+    substitute_named_params, substitute_named_params_in_store, substitute_type_params,
 };
 
 #[derive(

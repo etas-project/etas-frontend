@@ -86,6 +86,7 @@ pub(crate) struct EffectState {
     pub(crate) local_latent_containers: LatentEnv,
     pub(crate) handler_depth: usize,
     pub(crate) latent_definition_depth: usize,
+    pub(crate) resume_count: usize,
     pub(crate) incomplete: bool,
     pub(crate) exits: crate::CallableExitSummary,
 }
@@ -122,6 +123,7 @@ impl PartialOrder for EffectState {
                 .less_equal(&other.local_latent_containers)
             && self.handler_depth == other.handler_depth
             && self.latent_definition_depth == other.latent_definition_depth
+            && self.resume_count <= other.resume_count
             && (!self.incomplete || other.incomplete)
             && self.exits == other.exits
     }
@@ -154,6 +156,9 @@ impl JoinSemiLattice for EffectState {
         changed |= self
             .local_latent_containers
             .join_assign(&other.local_latent_containers);
+        let resumes = self.resume_count.max(other.resume_count);
+        changed |= resumes != self.resume_count;
+        self.resume_count = resumes;
         if unit_conflict
             || owner_conflict
             || self.handler_depth != other.handler_depth
@@ -183,6 +188,7 @@ impl EffectState {
             && self.local_latent_containers == LatentEnv::default()
             && self.handler_depth == 0
             && self.latent_definition_depth == 0
+            && self.resume_count == 0
             && !self.incomplete
             && self.exits == crate::CallableExitSummary::default()
     }

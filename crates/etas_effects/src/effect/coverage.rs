@@ -10,6 +10,39 @@ pub struct EffectCoverage<'a> {
 }
 
 impl EffectCoverage<'_> {
+    /// Proves disjointness conservatively, without relying on selector values.
+    pub fn rows_disjoint(&self, left: &EffectRow, right: &EffectRow) -> bool {
+        if left.open.is_some() || right.open.is_some() {
+            return false;
+        }
+        let tag = |effect: &Effect| {
+            let tag = match effect {
+                Effect::Tag(tag) | Effect::Applied { tag, .. } => Some(*tag),
+                Effect::Action(action) => {
+                    self.registry.action_signature(action).map(|_| action.tag)
+                }
+                Effect::AppliedAction(action) => self
+                    .registry
+                    .action_signature(&action.action)
+                    .map(|_| action.action.tag),
+                Effect::Error(_) => self.registry.tag_by_core(super::CoreEffect::Error),
+                Effect::Var(_) => None,
+            }?;
+            self.registry.tag_name(tag).map(|_| tag)
+        };
+        left.effects.iter().all(|left| {
+            let Some(left) = tag(left) else { return false };
+            right.effects.iter().all(|right| {
+                let Some(right) = tag(right) else {
+                    return false;
+                };
+                left != right
+                    && !self.registry.tag_extends(left, right)
+                    && !self.registry.tag_extends(right, left)
+            })
+        })
+    }
+
     pub fn covers(&self, allowed: &Effect, actual: &Effect) -> bool {
         match (allowed, actual) {
             (Effect::Tag(allowed), Effect::Tag(actual)) => self.tag_covers(*allowed, *actual),

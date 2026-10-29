@@ -30,6 +30,7 @@ pub fn collect_nominal_types(
                     continue;
                 };
                 let component = ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                    read_only_erased_view: false,
                     name,
                     params: Vec::new(),
                     representation: None,
@@ -75,6 +76,7 @@ fn collect_type_decl(
         })
         .collect::<Vec<_>>();
     let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name,
         params: params.clone(),
         representation,

@@ -509,6 +509,10 @@ where
         <S as HirAnalysisSemantics>::begin_try_operand(self.semantics, expr, state)
     }
 
+    fn begin_handle_body(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::begin_handle_body(self.semantics, expr, state)
+    }
+
     fn handle_expr(
         &mut self,
         expr: HirExprId,

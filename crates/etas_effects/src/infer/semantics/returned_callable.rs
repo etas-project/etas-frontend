@@ -15,6 +15,28 @@ impl EffectSemantics<'_> {
         let mut sources = BTreeSet::new();
         for source in returned {
             let parameter = match source {
+                crate::CallableReturnSource::FrozenContract {
+                    unit,
+                    reference,
+                    environment,
+                } => {
+                    let environment = environment
+                        .map(|environment| {
+                            self.instantiate_callable_environment(
+                                environment,
+                                application,
+                                bindings,
+                                state,
+                            )
+                        })
+                        .transpose()?;
+                    sources.insert(LatentSource::FrozenContract {
+                        unit: *unit,
+                        reference: *reference,
+                        environment,
+                    });
+                    continue;
+                }
                 crate::CallableReturnSource::Captured { unit, environment } => {
                     let environment = self.instantiate_callable_environment(
                         *environment,

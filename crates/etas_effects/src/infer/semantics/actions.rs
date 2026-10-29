@@ -57,16 +57,7 @@ impl EffectSemantics<'_> {
 
         let mut performed = crate::EffectSummary::local();
         let request_instance = if effect.is_action() {
-            let parameters = match action.action_symbol {
-                ResolveResult::Resolved(symbol) => self
-                    .type_symbols
-                    .symbol_fact(self.hir, &self.types.facts, symbol)
-                    .and_then(|fact| match fact {
-                        SymbolTypeFact::EffectAction { signature } => Some(signature),
-                        _ => None,
-                    }),
-                _ => None,
-            };
+            let parameters = self.checked_perform_signature(expr, action);
             let Some(signature) = parameters else {
                 return self.incomplete_at(
                     span,
@@ -98,24 +89,14 @@ impl EffectSemantics<'_> {
             _ => false,
         };
         if has_default {
-            let ResolveResult::Resolved(symbol) = action.action_symbol else {
-                return self.incomplete_at(
-                    span,
-                    "default handler requires a resolved action",
-                    state,
-                );
-            };
-            let Some(SymbolTypeFact::EffectAction { signature }) =
-                self.type_symbols
-                    .symbol_fact(self.hir, &self.types.facts, symbol)
-            else {
+            let Some(signature) = self.checked_perform_signature(expr, action) else {
                 return self.incomplete_at(
                     span,
                     "default handler requires a checked action signature",
                     state,
                 );
             };
-            let Some(row) = &signature.default_handler_effects else {
+            let Some(row) = &signature.effects else {
                 return self.incomplete_at(
                     span,
                     "default handler has no checked produced-effect row",
@@ -187,6 +168,69 @@ impl EffectSemantics<'_> {
             },
         );
         state
+    }
+
+    fn checked_perform_signature(
+        &self,
+        expr: HirExprId,
+        action: &ResolvedActionRef,
+    ) -> Option<etas_types::CallableSignature> {
+        let ResolveResult::Resolved(symbol) = action.action_symbol else {
+            return None;
+        };
+        let standard = self
+            .hir
+            .standard_action_targets
+            .get(&symbol)
+            .copied()
+            .or_else(|| {
+                let SymbolDef::ImportAlias { path, .. } = &self.hir.symbols.get(symbol)?.def else {
+                    return None;
+                };
+                self.std_registry
+                    .lookup_qualified(path)
+                    .map(|symbol| symbol.id)
+            });
+        if let Some(fact) = self.types.facts.action_calls.get(&expr) {
+            let declaration = self
+                .std_registry
+                .action_declarations(fact.target)
+                .nth(fact.overload)?;
+            if fact.action_symbol != symbol
+                || standard != Some(fact.target)
+                || fact
+                    .signature
+                    .generic_params
+                    .iter()
+                    .map(|param| &param.name)
+                    .collect::<Vec<_>>()
+                    != declaration
+                        .type_params
+                        .iter()
+                        .map(|param| &param.name)
+                        .collect::<Vec<_>>()
+            {
+                return None;
+            }
+            return Some(fact.signature.clone());
+        }
+        if standard.is_some_and(|target| self.std_registry.action_declarations(target).count() > 1)
+        {
+            return None;
+        }
+        let SymbolTypeFact::EffectAction { signature } =
+            self.type_symbols
+                .symbol_fact(self.hir, &self.types.facts, symbol)?
+        else {
+            return None;
+        };
+        Some(etas_types::CallableSignature {
+            generic_params: signature.generic_params.clone(),
+            params: signature.params.clone(),
+            output: signature.output,
+            effects: signature.default_handler_effects.clone(),
+            requested_actions: None,
+        })
     }
 
     pub(crate) fn effect_from_action_ref(&self, action: &ResolvedActionRef) -> Option<Effect> {

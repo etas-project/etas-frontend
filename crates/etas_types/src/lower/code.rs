@@ -11,3 +11,15 @@ pub(crate) fn agent_definition_type(
         args: vec![component],
     }))
 }
+
+pub(crate) fn callable_definition_type(
+    interner: &mut TypeInterner,
+    code: &KnownCodeTypes,
+    callable: TypeId,
+) -> Option<TypeId> {
+    let constructor = code.callable_definition?;
+    Some(interner.intern(Type::Applied {
+        constructor: TypeConstructorId(constructor.0),
+        args: vec![callable],
+    }))
+}

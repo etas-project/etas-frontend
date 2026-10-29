@@ -11,6 +11,7 @@ pub struct TypePipelineContext<'a> {
     pub signature_facts: TypeFacts,
     pub symbols: Arc<TypeSymbolIndex>,
     pub(crate) signature_base: Option<&'a crate::SignatureEnvironment>,
+    pub(crate) body_parameters: Option<crate::pipeline::body::instantiation::BodyParameters>,
     pub diagnostics: Vec<Diagnostic>,
     pub lowering_type_stack: Vec<etas_hir::SymbolId>,
     pub(crate) type_applications: Vec<crate::lower::type_application::TypeApplication>,
@@ -131,6 +132,7 @@ impl<'a> TypePipelineContext<'a> {
             signature_facts: TypeFacts::default(),
             symbols: Arc::new(TypeSymbolIndex::build(hir)),
             signature_base: None,
+            body_parameters: None,
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
@@ -171,6 +173,7 @@ impl<'a> TypePipelineContext<'a> {
             signature_facts: TypeFacts::default(),
             symbols: base.symbols.clone(),
             signature_base: Some(base),
+            body_parameters: None,
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
@@ -189,7 +192,10 @@ impl<'a> TypePipelineContext<'a> {
     }
 
     pub(crate) fn symbol_type(&self, symbol: etas_hir::SymbolId) -> Option<&crate::SymbolTypeFact> {
-        self.lookup(|facts| &facts.symbol_types, &symbol)
+        self.body_parameters
+            .as_ref()
+            .and_then(|parameters| parameters.symbol_types.get(&symbol))
+            .or_else(|| self.lookup(|facts| &facts.symbol_types, &symbol))
     }
 
     pub(crate) fn reflection_declaration_identity(
@@ -224,7 +230,39 @@ impl<'a> TypePipelineContext<'a> {
         &self,
         item: etas_hir::HirItemId,
     ) -> Option<&crate::ItemSignature> {
-        self.lookup(|facts| &facts.item_signatures, &item)
+        self.body_parameters
+            .as_ref()
+            .filter(|parameters| parameters.owner == item)
+            .map(|parameters| &parameters.signature)
+            .or_else(|| self.lookup(|facts| &facts.item_signatures, &item))
+    }
+
+    pub(crate) fn bound_type_parameter(&self, symbol: etas_hir::SymbolId) -> Option<crate::TypeId> {
+        self.body_parameters.as_ref()?.types.get(&symbol).copied()
+    }
+
+    pub(crate) fn bound_effect_parameter(
+        &self,
+        symbol: etas_hir::SymbolId,
+    ) -> Option<&crate::EffectRowRef> {
+        self.body_parameters.as_ref()?.rows.get(&symbol)
+    }
+
+    pub(crate) fn instantiate_annotation_type(
+        &mut self,
+        ty: crate::TypeId,
+    ) -> Result<crate::TypeId, crate::TypeSubstitutionError> {
+        let Some(parameters) = &self.body_parameters else {
+            return Ok(ty);
+        };
+        crate::TypeSubstitutionEngine::materializing(
+            &mut self.interner,
+            &std::collections::HashMap::new(),
+            None,
+        )
+        .with_source_parameters(&parameters.types)
+        .with_effect_arguments(&parameters.row_names)
+        .substitute(ty)
     }
 
     pub(crate) fn agent_signature(

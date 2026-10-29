@@ -51,6 +51,12 @@ pub enum CallableGenericValue {
     etas_core::RetainedSize,
 )]
 pub enum CallableValueOrigin {
+    /// The caller-visible transformer of a definition, not an edited body's analysis.
+    FrozenContract {
+        unit: EffectUnit,
+        reference: Option<HirExprId>,
+        environment: Option<CallableEnvironmentId>,
+    },
     Metadata(MetadataCallableSource),
     Unit(EffectUnit),
     Captured {

@@ -103,6 +103,39 @@ fn handled_new_requests_do_not_fit_an_empty_frozen_action_bound() {
 }
 
 #[test]
+fn handler_factory_trace_order_is_enforced_by_the_frozen_contract() {
+    let frozen = freeze(
+        r#"module app;
+effect Gate { action ask() -> bool; }
+let gate: ![Gate => [] for bool] = handler { Gate.ask() => { resume true; } };
+flow choose(h: ![Gate => [] for bool]) -> ![Gate => [] for bool] ![Console.stdout_write] {
+    perform Console.stdout_write("factory");
+    return h;
+}
+agent Worker() -> bool ![Console.stdout_write] {
+    return handle { perform Gate.ask() } with choose(gate);
+}
+flow inspect() -> unit { let d = ^Worker; return; }"#,
+        false,
+    );
+    let analysis = analyze(
+        frozen,
+        r#"let value = handle { perform Gate.ask() } with gate;
+perform Console.stdout_write("factory");
+return value;"#,
+    );
+    assert!(
+        analysis.output().checked.is_some(),
+        "{:?}",
+        analysis.output().diagnostics
+    );
+    assert!(matches!(
+        relation(&analysis, ContractComponent::ActionTrace),
+        ContractRelation::Rejected(ContractRejection::ActionTraceNotContained(_))
+    ));
+}
+
+#[test]
 fn candidate_cannot_change_payload_generic_instances_behind_the_same_action() {
     let frozen = freeze(
         r#"module app;

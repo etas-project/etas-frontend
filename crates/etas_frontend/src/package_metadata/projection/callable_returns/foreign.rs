@@ -159,16 +159,30 @@ impl Builder<'_, '_> {
             let mut output = BTreeSet::new();
             for source in returned {
                 match *source {
-                    CallableValueSource::Value(value) => {
-                        output.insert(CallableValueSource::Value(self.reserve_foreign(
-                            ForeignInstance {
-                                source: etas_effects::MetadataCallableSource {
-                                    value,
-                                    ..instance.source
+                    CallableValueSource::Value(value)
+                    | CallableValueSource::FrozenContract(value) => {
+                        let index = self.reserve_foreign(ForeignInstance {
+                            source: etas_effects::MetadataCallableSource {
+                                value,
+                                analysis: if matches!(
+                                    source,
+                                    CallableValueSource::FrozenContract(_)
+                                ) {
+                                    etas_effects::CallableAnalysisKind::FrozenContract
+                                } else {
+                                    etas_effects::CallableAnalysisKind::CheckedRevision
                                 },
-                                ..instance
+                                ..instance.source
                             },
-                        )?));
+                            ..instance
+                        })?;
+                        output.insert(
+                            if matches!(source, CallableValueSource::FrozenContract(_)) {
+                                CallableValueSource::FrozenContract(index)
+                            } else {
+                                CallableValueSource::Value(index)
+                            },
+                        );
                     }
                     CallableValueSource::Parameter(parameter) => {
                         if parameter.scope == CallableValueScope::Value(instance.source.value) {

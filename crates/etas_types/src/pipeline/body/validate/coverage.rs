@@ -177,17 +177,15 @@ impl Coverage<'_, '_> {
                         return None;
                     }
                 };
-                // Projection unfolds a single record layer; recursive fields remain identities.
-                if let Some(Type::Record(record)) =
-                    self.ctx.interner.store().get(representation).cloned()
-                {
-                    Some(vec![Constructor {
+                // Projection unfolds one representation layer; recursive fields remain identities.
+                match self.ctx.interner.store().get(representation).cloned() {
+                    Some(Type::Record(record)) => Some(vec![Constructor {
                         tag: Tag::Structural("record"),
                         fields: record.fields.iter().map(|f| f.ty).collect(),
                         names: Some(record.fields.into_iter().map(|f| f.name).collect()),
-                    }])
-                } else {
-                    None
+                    }]),
+                    Some(Type::Primitive(PrimitiveType::Unit)) => Some(vec![ctor("tuple", vec![])]),
+                    _ => None,
                 }
             }
             Type::Enum(_) => {

@@ -184,7 +184,8 @@ fn interrupted_lambda_and_handler_restore_their_local_collection_scopes() {
         state.inferred_returns = Some(Vec::new());
         state.handler_depth = 2;
         state.handler_resume_stack = vec![unit];
-        state.handler_finish_stack = vec![unit];
+        state.handler_finish_stack = vec![Some(unit)];
+        state.handler_finish_candidates = vec![Vec::new()];
         let expected = match hir.exprs[expr] {
             HirExpr::Handler { .. } => {
                 ctx.interner
@@ -221,7 +222,8 @@ fn interrupted_lambda_and_handler_restore_their_local_collection_scopes() {
         assert_eq!(state.inferred_returns, Some(Vec::new()));
         assert_eq!(state.handler_depth, 2);
         assert_eq!(state.handler_resume_stack, vec![unit]);
-        assert_eq!(state.handler_finish_stack, vec![unit]);
+        assert_eq!(state.handler_finish_stack, vec![Some(unit)]);
+        assert_eq!(state.handler_finish_candidates, vec![Vec::new()]);
         assert!(!state.provisional.expr_types.is_empty());
         assert!(!state.provisional.expr_types.contains_key(&expr));
     }

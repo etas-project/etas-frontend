@@ -24,6 +24,7 @@ pub struct KnownStdTypes {
     pub index_error: Option<TypeId>,
     pub runtime_types: std::collections::BTreeMap<etas_std::RuntimeTypeRole, TypeId>,
     pub runtime_values: std::collections::BTreeMap<etas_std::StdValueRole, TypeId>,
+    pub json_value: Option<TypeId>,
     pub priority_queue: Option<TypeId>,
     pub ordered_map: Option<TypeId>,
     pub ordered_set: Option<TypeId>,

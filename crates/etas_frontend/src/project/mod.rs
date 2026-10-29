@@ -1,4 +1,9 @@
+mod callable_application;
 mod callable_graph;
+pub use callable_application::{
+    AppliedCallableBehavior, CallableApplicationError, CallableBehaviorError,
+    CheckedCallableApplication,
+};
 mod checked_reachability;
 pub(crate) use callable_graph::{lower_callable_graph, lower_callable_graph_in_scope};
 mod context;

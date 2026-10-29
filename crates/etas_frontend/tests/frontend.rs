@@ -135,6 +135,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                behavior: None,
                 handler_requests: None,
                 returned_callables: None,
                 default_handler_effects: None,
@@ -4479,6 +4480,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                behavior: None,
                 handler_requests: None,
                 returned_callables: None,
                 default_handler_effects: None,
@@ -5090,6 +5092,7 @@ fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
 
 fn empty_external_summary(path: &[&str]) -> ProjectExternalEffectSummaryInput {
     ProjectExternalEffectSummaryInput {
+        behavior: None,
         handler_requests: None,
         returned_callables: None,
         default_handler_effects: None,
@@ -7831,6 +7834,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -7973,6 +7977,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8248,6 +8253,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8411,6 +8417,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8545,6 +8552,7 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8745,6 +8753,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8877,6 +8886,7 @@ fn frontend_check_project_does_not_realize_an_unused_external_function_argument(
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8993,6 +9003,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9110,6 +9121,7 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9242,6 +9254,7 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9376,6 +9389,7 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9508,6 +9522,7 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,

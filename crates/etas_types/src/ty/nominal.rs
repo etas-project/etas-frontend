@@ -15,6 +15,8 @@ pub struct NominalTypeRef {
     pub name: String,
     pub params: Vec<String>,
     pub representation: Option<TypeId>,
+    /// Explicit declaration permission, never inferred from an omitted argument.
+    pub read_only_erased_view: bool,
 }
 
 #[derive(

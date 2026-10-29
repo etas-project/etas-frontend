@@ -12,6 +12,220 @@ fn check(text: &str) -> (etas_hir::HirProgram, etas_types::TypeOutput) {
 }
 
 #[test]
+fn ordinary_flow_reflection_retains_its_arrow_contract() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow normalize(text: string) -> string ![] { return text; } flow inspect() -> CallableDef<(string) -> string ![]> { return ^normalize; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let fact = output.facts.reflections.values().next().unwrap();
+    let Some(Type::Applied { constructor, args }) = output.store.get(fact.descriptor_type) else {
+        panic!("flow reflection must preserve its callable type");
+    };
+    assert_eq!(
+        Some(etas_types::TypeId(constructor.0)),
+        output.facts.known_std_types.code.callable_definition
+    );
+    assert!(
+        matches!(args.as_slice(), [ty] if matches!(output.store.get(*ty), Some(Type::Function(_))))
+    );
+    let erased = etas_types::TypeId(constructor.0);
+    let mut equality = etas_types::TypeUnifier::new(&output.store);
+    assert!(equality.unify(fact.descriptor_type, erased).is_err());
+}
+
+#[test]
+fn ordinary_flow_binding_reflection_retains_the_binding_type() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow normalize(text: string) -> string ![] { return text; } flow inspect() -> CallableDef<(string) -> string ![]> { var current = normalize; return ^current; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn typed_flow_definition_selects_check_compile_and_edit_overloads() {
+    let (_, output) = check(
+        "import std.compiler.{CallableDef, SyntaxBlock, check, compile}; flow normalize(text: string) -> string ![] { return text; } flow revise(body: SyntaxBlock) -> (string) -> string ![] { let draft = (^normalize).with_body(body); let report = check(draft); return compile(draft); }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let calls = &output.facts.std_intrinsic_calls;
+    assert_eq!(calls.len(), 3);
+    for fact in calls.values() {
+        assert_eq!(fact.overload, 1, "{fact:?}");
+        let Some(Type::Function(signature)) = output.store.get(fact.callable_type) else {
+            panic!("checked overload signature");
+        };
+        assert!(
+            matches!(output.store.get(signature.input[0]), Some(Type::Applied { constructor, args })
+            if Some(etas_types::TypeId(constructor.0)) == output.facts.known_std_types.code.callable_definition
+                && matches!(args.as_slice(), [ty] if matches!(output.store.get(*ty), Some(Type::Function(_)))))
+        );
+    }
+}
+
+#[test]
+fn qualified_and_aliased_compiler_calls_select_from_descriptor_input() {
+    for (import, call) in [
+        ("import std.compiler;", "compiler.compile(^normalize)"),
+        ("import std.compiler.compile as build;", "build(^normalize)"),
+    ] {
+        let (_, output) = check(&format!(
+            "{import} flow normalize(text: string) -> string ![] {{ return text; }} flow revise() -> (string) -> string ![] {{ return {call}; }}"
+        ));
+        assert!(
+            output.diagnostics.is_empty(),
+            "{call}: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            output
+                .facts
+                .std_intrinsic_calls
+                .values()
+                .any(|fact| fact.overload == 1)
+        );
+    }
+}
+
+#[test]
+fn erased_definition_cannot_select_an_editing_or_compilation_overload() {
+    for expression in ["compile(info)", "info.with_body(body)", "check(info)"] {
+        let (_, output) = check(&format!(
+            "import std.compiler.{{CallableDef, SyntaxBlock, compile, check}}; flow invalid(info: CallableDef, body: SyntaxBlock) -> (string) -> string ![] {{ return {expression}; }}"
+        ));
+        assert!(!output.diagnostics.is_empty(), "{expression}");
+    }
+}
+
+#[test]
+fn compiler_overload_does_not_choose_a_callable_from_the_expected_result() {
+    let (_, output) = check(
+        "import std.compiler.compile; flow normalize(text: string) -> string ![] { return text; } flow invalid() -> (i32) -> i32 ![] { return compile(^normalize); }",
+    );
+    assert!(!output.diagnostics.is_empty());
+}
+
+#[test]
+fn agent_definition_still_selects_its_nominal_compiler_overload() {
+    let (_, output) = check(
+        "import std.compiler.compile; agent Worker(input: string) -> string ![] { return input; } flow build() -> Worker { return compile(^Worker); }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(
+        output
+            .facts
+            .std_intrinsic_calls
+            .values()
+            .next()
+            .unwrap()
+            .overload,
+        0
+    );
+}
+
+#[test]
+fn callable_descriptor_erasure_accepts_heterogeneous_flow_contracts() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow normalize(text: string) -> string ![] { return text; } flow count(value: i32) -> i32 ![] { return value; } flow inspect() -> Array<CallableDef> { return [^normalize, ^count]; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn erased_callable_descriptor_cannot_recover_a_callable_contract() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow normalize(text: string) -> string ![] { return text; } flow bad() -> CallableDef<(string) -> string ![]> { let info: CallableDef = ^normalize; return info; }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn agent_method_descriptor_cannot_become_an_editable_free_flow() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; agent Worker(text: string) -> string ![] { return text; } flow bad() -> CallableDef<(string) -> string ![]> { return ^Worker.run; }",
+    );
+    assert!(!output.diagnostics.is_empty());
+}
+
+#[test]
+fn callable_definition_contract_preserves_escaping_effects() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow emit(text: string) -> string ![Console.stdout_write] { perform Console.stdout_write(text); return text; } flow bad() -> CallableDef<(string) -> string ![]> { return ^emit; }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn read_only_erasure_does_not_enable_missing_generic_arguments_elsewhere() {
+    let (_, output) =
+        check("type Generic<T> = { value: T }; flow bad(value: Generic) -> unit { return; }");
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::ArityMismatch)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn flow_value_reflection_keeps_in_scope_type_parameters() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow inspect<T>(current: (T) -> T ![]) -> CallableDef<(T) -> T ![]> { return ^current; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn callable_definition_type_rejects_non_callable_contract_arguments() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow bad(value: CallableDef<i32>) -> unit { return; }",
+    );
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn callable_descriptor_parameter_erasure_does_not_change_function_variance() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow typed(info: CallableDef<(string) -> string ![]>) -> unit { return; } flow bad() -> (CallableDef) -> unit ![] { return typed; }",
+    );
+    assert!(!output.diagnostics.is_empty());
+}
+
+#[test]
+fn callable_descriptor_erasure_is_not_type_equality() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow normalize(text: string) -> string ![] { return text; } flow bad() -> unit { let typed = ^normalize; let erased: CallableDef = typed; let restored: CallableDef<(string) -> string ![]> = erased; return; }",
+    );
+    assert!(output.diagnostics.iter().any(|diagnostic| diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::Mismatch)), "{:?}", output.diagnostics);
+}
+
+#[test]
 fn definition_descriptor_fields_are_read_only_and_not_executable_values() {
     for statement in [
         "var definition = ^Worker; definition.signature = None;",
@@ -282,12 +496,8 @@ fn flow_reflection_is_a_callable_descriptor_not_an_agent_or_function_value() {
         fact.target,
         CheckedReflectionTarget::Callable { .. }
     ));
-    assert_eq!(
-        Some(fact.descriptor_type),
-        output.facts.known_std_types.code.callable_definition
-    );
     assert!(
-        matches!(output.store.get(fact.descriptor_type), Some(Type::Nominal(nominal)) if nominal.name == "std.compiler.CallableDef")
+        matches!(output.store.get(fact.descriptor_type), Some(Type::Applied { constructor, args }) if Some(etas_types::TypeId(constructor.0)) == output.facts.known_std_types.code.callable_definition && args.len() == 1)
     );
 }
 
@@ -379,7 +589,6 @@ fn rejects_wrong_agent_identity_nonagent_values_and_bare_entry_selection() {
         "import std.compiler.AgentDef; agent A; agent B; flow bad() -> AgentDef<B> { return ^A; }",
         "flow bad(n: i32) -> unit { let d = ^n; return; }",
         "agent A; flow bad() -> unit { let d = ^A.run; return; }",
-        "flow f() -> unit { return; } flow bad() -> unit { let x = f; let d = ^x; return; }",
         "import std.compiler.AgentDef; agent A; flow bad() -> AgentDef<A> { return AgentDef<A> {}; }",
         "import std.compiler.AgentDef; agent A; flow bad() -> AgentDef<A> { return AgentDef<A>(); }",
         "import std.compiler.CallableDef; flow bad() -> CallableDef { return CallableDef(); }",
@@ -420,10 +629,10 @@ fn immutable_definition_edit_has_a_materialized_registry_call_abi() {
         "import std.compiler.SyntaxBlock; agent Worker; flow edit(body: SyntaxBlock) -> unit { let d = ^Worker; let changed = d.with_body(body); let text = changed.body; return; }",
     );
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let fact = output.facts.std_method_calls.values().next().unwrap();
+    let fact = output.facts.std_intrinsic_calls.values().next().unwrap();
     assert_eq!(fact.qualified_path, ["std", "compiler", "with_body"]);
     assert_eq!(fact.intrinsic, etas_std::intrinsic::runtime::CODE_WITH_BODY);
-    let Some(Type::Function(signature)) = output.store.get(fact.signature) else {
+    let Some(Type::Function(signature)) = output.store.get(fact.callable_type) else {
         panic!("method ABI")
     };
     let descriptor = output

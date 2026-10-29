@@ -142,7 +142,15 @@ pub fn std_method_candidates<E>(
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
-        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, true))
+        .flat_map(|symbol| {
+            registry
+                .flow_declarations(symbol.id)
+                .enumerate()
+                .filter_map(|(overload, flow)| {
+                    std_method_candidate(ctx, &registry, symbol, flow, overload, true)
+                })
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -154,7 +162,15 @@ pub fn raw_std_method_candidates<E>(
     registry
         .symbols()
         .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
-        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, false))
+        .flat_map(|symbol| {
+            registry
+                .flow_declarations(symbol.id)
+                .enumerate()
+                .filter_map(|(overload, flow)| {
+                    std_method_candidate(ctx, &registry, symbol, flow, overload, false)
+                })
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 
@@ -162,32 +178,36 @@ fn std_method_candidate<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     registry: &StdRegistry,
     symbol: &StdSymbol,
+    flow: &etas_std::FlowDecl,
+    overload: usize,
     instantiate: bool,
 ) -> Option<CallableCandidate> {
-    let fact = lower_std_symbol(ctx.ctx, registry, etas_hir::SymbolId(0), symbol);
+    let scope = symbol.qualified_path.split_last().map(|(_, scope)| scope);
+    let fact = SymbolTypeFact::Flow {
+        signature: crate::lower::std::lower_std_flow_signature(ctx.ctx, registry, flow, scope),
+    };
     let mut candidate = callable_candidate_from_fact(ctx, fact, instantiate)?;
-    if let StdDecl::Flow(flow) = &symbol.decl
-        && flow.source_method.as_ref().is_some_and(|method| {
-            method.operation == etas_std::FlowSourceMethodOperation::CheckedIndex
-        })
+    if flow
+        .source_method
+        .as_ref()
+        .is_some_and(|method| method.operation == etas_std::FlowSourceMethodOperation::CheckedIndex)
     {
         candidate.operation = crate::CallableCandidateOperation::CheckedIndex {
             error: ctx.ctx.known_std_types().index_error,
         };
     }
-    if let StdDecl::Flow(flow) = &symbol.decl
-        && flow.source_method.as_ref().is_some_and(|method| {
-            method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
-                || (method.kind == FlowSourceMethodKind::TypeMember
-                    && symbol.intrinsic.as_ref().is_some_and(|descriptor| {
-                        matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))
-                    }))
-        })
-    {
+    if flow.source_method.as_ref().is_some_and(|method| {
+        method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
+            || (method.kind == FlowSourceMethodKind::TypeMember
+                && symbol.intrinsic.as_ref().is_some_and(|descriptor| {
+                    matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))
+                }))
+    }) {
         let descriptor = symbol.intrinsic.as_ref()?;
         candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
             qualified_path: symbol.qualified_path.clone(),
             intrinsic: descriptor.id.0,
+            overload,
             has_receiver: flow
                 .source_method
                 .as_ref()
@@ -263,7 +283,80 @@ pub fn std_type_member_candidates_for_symbol<E>(
             std_symbol_is_type_member_candidate(symbol, member)
                 && std_source_method_receiver_matches(symbol, receiver)
         })
-        .filter_map(|symbol| std_method_candidate(ctx, &registry, symbol, instantiate_schematics))
+        .flat_map(|symbol| {
+            registry
+                .flow_declarations(symbol.id)
+                .enumerate()
+                .filter_map(|(overload, flow)| {
+                    std_method_candidate(
+                        ctx,
+                        &registry,
+                        symbol,
+                        flow,
+                        overload,
+                        instantiate_schematics,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+pub(super) fn std_overload_candidates<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    callee: etas_hir::HirExprId,
+) -> Option<Vec<CallableCandidate>> {
+    let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
+        return None;
+    };
+    let registry = ctx.ctx.std_registry.clone();
+    let symbol = match &path.resolution {
+        ResolveResult::Resolved(symbol) => {
+            let symbol = ctx
+                .ctx
+                .symbols
+                .canonical_symbol(ctx.ctx.hir, *symbol)
+                .unwrap_or(*symbol);
+            let SymbolDef::ImportAlias { path, .. } = &ctx.ctx.hir.symbols.get(symbol)?.def else {
+                return None;
+            };
+            registry.lookup_qualified(path)?
+        }
+        ResolveResult::PartiallyResolved(partial) => {
+            let prefix = ctx.ctx.hir.symbols.get(partial.resolved_prefix?)?;
+            let SymbolDef::ImportAlias { path, .. } = &prefix.def else {
+                return None;
+            };
+            let mut qualified = path.clone();
+            qualified.extend(partial.remaining.iter().cloned());
+            registry.lookup_qualified(&qualified)?
+        }
+        _ => return None,
+    };
+    if registry.flow_declarations(symbol.id).count() < 2 {
+        return None;
+    }
+    let descriptor = symbol.intrinsic.as_ref()?;
+    registry
+        .flow_declarations(symbol.id)
+        .enumerate()
+        .map(|(overload, flow)| {
+            let signature = crate::lower::std::lower_std_flow_signature(
+                ctx.ctx,
+                &registry,
+                flow,
+                symbol.qualified_path.split_last().map(|(_, scope)| scope),
+            );
+            let mut candidate =
+                callable_candidate_from_fact(ctx, SymbolTypeFact::Flow { signature }, true)?;
+            candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
+                qualified_path: symbol.qualified_path.clone(),
+                intrinsic: descriptor.id.0,
+                overload,
+                has_receiver: false,
+            };
+            Some(candidate)
+        })
         .collect()
 }
 

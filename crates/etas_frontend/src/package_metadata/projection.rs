@@ -1112,6 +1112,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 )?,
             };
             summaries.push(MetadataEffectSummary {
+                behavior: callable_returns::behavior(summary),
                 handler_requests: self.request_template_metadata(
                     &summary.handler_requests,
                     &type_generic_names,

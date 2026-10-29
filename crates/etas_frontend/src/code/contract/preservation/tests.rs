@@ -52,7 +52,7 @@ fn only_an_unedited_native_body_has_a_preservation_proof() {
     for (id, _) in overlay.frozen().contract().callables() {
         assert_eq!(
             proof.preserves(id, &catalog).unwrap(),
-            overlay.frozen().contract().header().default_entry.as_ref() != Some(id)
+            overlay.frozen().contract().entry() != Some(id)
         );
     }
 }

@@ -504,6 +504,7 @@ pub fn lower_external_type_declaration(
         }
         None => {
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                read_only_erased_view: false,
                 name: path.join("."),
                 params: params.iter().map(|param| param.name.clone()).collect(),
                 representation: None,
@@ -525,6 +526,7 @@ fn complete_external_nominal(
         id
     } else {
         ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: path.join("."),
             params: params.iter().map(|param| param.name.clone()).collect(),
             representation,

@@ -1,5 +1,7 @@
 mod projection;
+mod reference_bindings;
 mod relocate;
+pub(crate) use reference_bindings::{ReferenceBindings, relocate_reference_bindings};
 
 use crate::code::{
     descriptor::{DescriptorInput, ProjectionError},
@@ -19,6 +21,7 @@ pub(crate) struct FrozenCalls<'a> {
     pub modules: &'a crate::ModuleIndex,
     pub std_registry: &'a etas_std::StdRegistry,
     pub limits: etas_code::descriptor::DescriptorLimits,
+    pub reachable_items: &'a std::collections::BTreeSet<HirItemId>,
 }
 
 impl etas_effects::FrozenCallableSummaryProvider for FrozenCalls<'_> {
@@ -66,6 +69,9 @@ impl FrozenCalls<'_> {
             let target = to.callables.get(id).copied().ok_or_else(|| {
                 invalid("frozen callable is absent from the candidate declaration world")
             })?;
+            if !self.reachable_items.contains(&target) {
+                continue;
+            }
             let scope = projection::owner(id)?;
             let summary = match original.effects.item_effects.get(source) {
                 Some(summary) => {

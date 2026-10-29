@@ -1021,6 +1021,7 @@ pub struct ProjectExternalRecordFieldInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalEffectSummaryInput {
+    pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
     pub handler_requests: Option<ProjectExternalRequestInstantiationInput>,
     pub returned_callables: Option<etas_package_metadata::CallableValueGraph>,
     pub default_handler_effects: Option<ProjectExternalDefaultHandlerEffectsInput>,
@@ -1042,6 +1043,13 @@ pub struct ProjectExternalRequestInstantiationInput {
 pub struct ProjectExternalActionRequestInput {
     pub action: ProjectExternalEffectRefInput,
     pub type_bindings: Option<Vec<(String, ProjectExternalTypeInput)>>,
+    pub signature: Option<ProjectExternalActionRequestSignatureInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalActionRequestSignatureInput {
+    pub params: Vec<ProjectExternalTypeInput>,
+    pub output: ProjectExternalTypeInput,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]

@@ -68,6 +68,7 @@ struct TraceSemantics {
     terminal_exprs: BTreeSet<HirExprId>,
     match_entries: Vec<(HirExprId, HirExprId, HirPatId, usize)>,
     match_event: Option<&'static str>,
+    symbolic_match_entries: Vec<(HirExprId, HirPatId, bool)>,
 }
 
 impl TraceSemantics {
@@ -89,6 +90,7 @@ impl TraceSemantics {
             terminal_exprs: BTreeSet::new(),
             match_entries: Vec::new(),
             match_event: None,
+            symbolic_match_entries: Vec::new(),
         }
     }
 
@@ -176,6 +178,14 @@ impl HirAnalysisSemantics for TraceSemantics {
         assert!(self.completed_exprs.contains(&scrutinee));
         self.match_entries
             .push((expr, scrutinee, pattern, self.started_exprs.len()));
+        let has_scrutinee = state.events.contains("scrutinee");
+        self.symbolic_match_entries
+            .push((scrutinee, pattern, has_scrutinee));
+        let state = if has_scrutinee {
+            state.with_event("match-entry")
+        } else {
+            state
+        };
         match self.match_event {
             Some(event) => state.with_event(event),
             None => state,
@@ -402,6 +412,52 @@ fn cancellation_checkpoint(
     } else {
         Ok(())
     }
+}
+
+#[test]
+fn match_arm_binding_hook_receives_the_scrutinee_state_before_each_branch() {
+    let mut builder = HirBuilder::default();
+    let scrutinee = builder.literal();
+    let first = builder.literal();
+    let second = builder.literal();
+    let block = builder.block(Vec::new(), Some(second));
+    let patterns = [0, 1].map(|_| {
+        builder
+            .program
+            .pats
+            .alloc(etas_hir::HirPat::Wildcard { span: span() })
+    });
+    let matched = builder.expr(HirExpr::Match {
+        scrutinee,
+        arms: vec![
+            etas_hir::HirMatchArm {
+                pat: patterns[0],
+                body: etas_hir::HirMatchArmBody::Expr(first),
+                scope: ScopeId(0),
+                span: span(),
+            },
+            etas_hir::HirMatchArm {
+                pat: patterns[1],
+                body: etas_hir::HirMatchArmBody::Block(block),
+                scope: ScopeId(0),
+                span: span(),
+            },
+        ],
+        span: span(),
+    });
+    let root = builder.block(Vec::new(), Some(matched));
+    let semantics =
+        TraceSemantics::new(builder.finish_with_roots([root])).event(scrutinee, "scrutinee");
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let output = interpreter.expr(matched, EventDomain::initial());
+    assert!(output.events.contains("match-entry"));
+    assert_eq!(
+        interpreter.semantics().symbolic_match_entries,
+        [
+            (scrutinee, patterns[0], true),
+            (scrutinee, patterns[1], true)
+        ]
+    );
 }
 
 #[test]

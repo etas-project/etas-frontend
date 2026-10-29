@@ -13,6 +13,8 @@ use crate::{
 mod artifacts;
 mod context;
 mod passes;
+mod prepared_registry;
+pub use prepared_registry::PreparedEffectRegistry;
 
 use context::{EffectPipelineContext, effect_pipeline};
 
@@ -27,6 +29,8 @@ use context::{EffectPipelineContext, effect_pipeline};
     etas_core::RetainedSize,
 )]
 pub struct ExternalEffectSummaryMetadata {
+    #[serde(default)]
+    pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
     pub handler_requests: Option<ExternalRequestInstantiationMetadata>,
     pub callable_graph_key: Option<etas_code::CodeFingerprint>,
     pub returned_callables: Option<etas_package_metadata::CallableValueGraph>,
@@ -94,6 +98,7 @@ pub struct ExternalRequestInstantiationMetadata {
 pub struct ExternalActionRequestMetadata {
     pub action: ExternalEffectMetadata,
     pub type_bindings: Option<Vec<(String, etas_types::TypeId)>>,
+    pub signature: Option<etas_types::ActionRequestSignature>,
 }
 
 #[derive(
@@ -381,21 +386,35 @@ impl RunEffectPipeline {
     pub fn run(
         input: EffectPipelineInput<'_>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        Self::run_with_control(input, None)
+        Self::run_with_control(input, None, context::RegistrySource::CheckedTypes)
     }
 
     pub fn run_controlled(
         input: EffectPipelineInput<'_>,
         control: std::sync::Arc<dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        Self::run_with_control(input, Some(control))
+        Self::run_with_control(input, Some(control), context::RegistrySource::CheckedTypes)
+    }
+
+    pub fn run_prepared(
+        input: EffectPipelineInput<'_>,
+        prepared: PreparedEffectRegistry,
+        control: Option<std::sync::Arc<dyn etas_utils::PipelineExecutionControl>>,
+    ) -> Result<EffectPipelineOutput, EffectPipelineError> {
+        Self::run_with_control(
+            input,
+            control,
+            context::RegistrySource::Prepared(Box::new(prepared)),
+        )
     }
 
     fn run_with_control(
         input: EffectPipelineInput<'_>,
         control: Option<std::sync::Arc<dyn etas_utils::PipelineExecutionControl>>,
+        registry_source: context::RegistrySource,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
         let mut context = EffectPipelineContext::new(input);
+        context.registry_source = registry_source;
         let mut pipeline = effect_pipeline();
         let mut manager = PassManager::with_config(PipelineConfig::default().with_timing(true));
         if let Some(control) = control {

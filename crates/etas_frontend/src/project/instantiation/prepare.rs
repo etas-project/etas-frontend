@@ -24,6 +24,7 @@ impl From<etas_types::TypeSubstitutionError> for InstantiationError {
                 Self::Interrupted(interruption)
             }
             etas_types::TypeSubstitutionError::ExpansionDepth(_)
+            | etas_types::TypeSubstitutionError::WorkLimit { .. }
             | etas_types::TypeSubstitutionError::RepresentationLimit(_) => {
                 Self::Interrupted(PipelineInterruption {
                     kind: PipelineInterruptionKind::ResourceLimit,
@@ -113,12 +114,12 @@ pub(crate) fn prepare(
             .ok_or("checked expression type has no body owner".to_owned())?;
         roots.entry(*owner).or_default().push(*ty);
     }
-    for (expr, method) in &types.facts.std_method_calls {
+    for (expr, method) in &types.facts.std_intrinsic_calls {
         let owner = index
             .expr_item
             .get(expr)
             .ok_or("checked intrinsic has no body owner".to_owned())?;
-        roots.entry(*owner).or_default().push(method.signature);
+        roots.entry(*owner).or_default().push(method.callable_type);
     }
     for roots in roots.values_mut() {
         roots.sort();
@@ -172,14 +173,30 @@ pub(crate) fn prepare(
                     .with_effect_arguments(&row_bindings)
                     .with_expansion_depth(limits.max_expansion_depth)
                     .with_execution_control(control);
+            let mut callable_type = None;
             if let Some(signature) = template {
-                for ty in signature.params.iter().copied().chain([signature.output]) {
-                    materialized.push(
-                        substitution
-                            .substitute(ty)
-                            .map_err(InstantiationError::from)?,
-                    );
-                }
+                let params = signature
+                    .params
+                    .iter()
+                    .map(|ty| substitution.substitute(*ty))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(InstantiationError::from)?;
+                let output = substitution
+                    .substitute(signature.output)
+                    .map_err(InstantiationError::from)?;
+                let effects = signature
+                    .effects
+                    .clone()
+                    .map(|row| substitution.substitute_effect_row(row))
+                    .transpose()
+                    .map_err(InstantiationError::from)?;
+                materialized.extend(params.iter().copied());
+                materialized.push(output);
+                callable_type = Some(etas_types::FlowType {
+                    input: params,
+                    output,
+                    effects,
+                });
                 for row in signature.effects.iter().chain(&signature.requested_actions) {
                     let row = substitution
                         .substitute_effect_row(row.clone())
@@ -232,9 +249,12 @@ pub(crate) fn prepare(
                 }
             }
             if !instance.arguments.is_empty() {
-                plan.instances.push(instance);
+                plan.push(instance);
             }
             drop(substitution);
+            if let Some(callable) = callable_type {
+                materialized.push(interner.intern(etas_types::Type::Function(callable)));
+            }
             let names = HashMap::new();
             let mut validation = TypeSubstitutionEngine::existing(interner.store(), &names)
                 .with_expansion_depth(limits.max_expansion_depth)

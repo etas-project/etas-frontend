@@ -146,6 +146,7 @@ pub fn apply_external_signature_input(
             let component = ctx
                 .interner
                 .intern(crate::Type::Nominal(crate::NominalTypeRef {
+                    read_only_erased_view: false,
                     name: item.path.join("."),
                     params: Vec::new(),
                     representation: None,

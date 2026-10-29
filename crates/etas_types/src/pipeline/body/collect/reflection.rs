@@ -39,11 +39,30 @@ pub(super) fn collect_reflection<E>(
             Vec::new(),
         ),
     };
+    let callable_type = match &binding {
+        ReflectionBinding::CallableDeclaration(symbol) => {
+            let fact = ctx.ctx.symbol_fact(*symbol).cloned();
+            fact.and_then(|fact| super::expr::value_type_from_fact(ctx, fact))
+        }
+        ReflectionBinding::Value { ty, .. } => Some(*ty),
+        _ => None,
+    };
+    let code = ctx
+        .ctx
+        .signature_base
+        .map_or(&ctx.ctx.signature_facts.known_std_types.code, |base| {
+            &base.facts.known_std_types.code
+        })
+        .clone();
+    let callable_descriptor = callable_type.and_then(|ty| {
+        crate::lower::code::callable_definition_type(&mut ctx.ctx.interner, &code, ty)
+    });
     let output = ctx.fresh_type_var();
     ctx.emit(TypeConstraint::Reflection {
         expr,
         access_module: ctx.ctx.hir.item_module(ctx.state.item),
         binding,
+        callable_descriptor,
         members,
         output,
         origin: ConstraintOrigin {

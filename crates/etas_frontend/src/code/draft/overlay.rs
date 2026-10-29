@@ -116,9 +116,8 @@ impl DefaultBodyOverlay {
         let exposure = checked.definition_sources.exposure(item);
         let callable = frozen
             .contract()
-            .header()
-            .default_entry
-            .clone()
+            .entry()
+            .cloned()
             .ok_or(OverlayError::InvalidFrozenSlot)?;
         let syntax_identity = syntax
             .compilation_body_identity(&body, callable.fingerprint())

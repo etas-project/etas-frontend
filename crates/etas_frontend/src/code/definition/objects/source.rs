@@ -1,22 +1,22 @@
 use etas_code::{
     definition::{
-        AGENT_SOURCE_BUNDLE_SCHEMA, AgentDefinition, AgentDefinitionRef, AgentSourceBundle,
-        BaseRevisionInput, DefinitionAnalysisState, DefinitionOperationError, SourceBundleError,
-        SourceBundleLimits,
+        BaseRevisionInput, DEFINITION_SOURCE_BUNDLE_SCHEMA, DefinitionAnalysisState,
+        DefinitionOperationError, DefinitionRef, DefinitionSnapshot, DefinitionSourceBundle,
+        SourceBundleError, SourceBundleLimits,
     },
     syntax::SyntaxOperationError,
 };
 
-use super::{NativeAgentDefinition, NativeDefinitionError, NativeDefinitionStore};
+use super::{NativeDefinition, NativeDefinitionError, NativeDefinitionStore};
 
 impl NativeDefinitionStore {
     /// Exports only source already available through this definition's view.
     /// It never obtains a hidden body from the compiler's private environment.
     pub fn save_source(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         limits: SourceBundleLimits,
-    ) -> Result<AgentSourceBundle, NativeDefinitionError> {
+    ) -> Result<DefinitionSourceBundle, NativeDefinitionError> {
         let view = self.resolve(definition)?;
         view.environment()?;
         let body = view
@@ -28,8 +28,8 @@ impl NativeDefinitionStore {
             .map_err(|error| {
                 NativeDefinitionError::Operation(DefinitionOperationError::Syntax(error))
             })?;
-        let bundle = AgentSourceBundle {
-            schema: AGENT_SOURCE_BUNDLE_SCHEMA,
+        let bundle = DefinitionSourceBundle {
+            schema: DEFINITION_SOURCE_BUNDLE_SCHEMA,
             target: view.identity().clone(),
             revision_key: view.revision().key(),
             revision: view.revision().inputs().clone(),
@@ -46,30 +46,30 @@ impl NativeDefinitionStore {
 
     pub fn restore_source_draft(
         &self,
-        expected: &AgentDefinitionRef,
-        source: &AgentSourceBundle,
+        expected: &DefinitionRef,
+        source: &DefinitionSourceBundle,
         limits: SourceBundleLimits,
-    ) -> Result<AgentDefinitionRef, NativeDefinitionError> {
+    ) -> Result<DefinitionRef, NativeDefinitionError> {
         self.restore_source_draft_impl(expected, source, limits, None)
     }
 
     pub fn restore_source_draft_controlled(
         &self,
-        expected: &AgentDefinitionRef,
-        source: &AgentSourceBundle,
+        expected: &DefinitionRef,
+        source: &DefinitionSourceBundle,
         limits: SourceBundleLimits,
         control: &dyn etas_utils::PipelineExecutionControl,
-    ) -> Result<AgentDefinitionRef, NativeDefinitionError> {
+    ) -> Result<DefinitionRef, NativeDefinitionError> {
         self.restore_source_draft_impl(expected, source, limits, Some(control))
     }
 
     fn restore_source_draft_impl(
         &self,
-        expected: &AgentDefinitionRef,
-        source: &AgentSourceBundle,
+        expected: &DefinitionRef,
+        source: &DefinitionSourceBundle,
         limits: SourceBundleLimits,
         control: Option<&dyn etas_utils::PipelineExecutionControl>,
-    ) -> Result<AgentDefinitionRef, NativeDefinitionError> {
+    ) -> Result<DefinitionRef, NativeDefinitionError> {
         let checkpoint = || -> Result<(), NativeDefinitionError> {
             if let Some(control) = control {
                 control.checkpoint().map_err(|error| {
@@ -123,7 +123,7 @@ impl NativeDefinitionStore {
         .map_err(|error| {
             NativeDefinitionError::Operation(DefinitionOperationError::Syntax(error))
         })?;
-        let data = AgentDefinition::from_base(
+        let data = DefinitionSnapshot::from_base(
             original.0.data.shared_base(),
             BaseRevisionInput {
                 body: Some(body),
@@ -138,8 +138,12 @@ impl NativeDefinitionStore {
             return Err(NativeDefinitionError::CandidateInputMismatch);
         }
         checkpoint()?;
-        self.publish(NativeAgentDefinition {
+        let method_snapshots = original
+            .revised_method_snapshots(data.revision())
+            .map_err(NativeDefinitionError::Projection)?;
+        self.publish(NativeDefinition {
             data,
+            method_snapshots,
             environment: original.0.environment.clone(),
             auxiliary: DefinitionAnalysisState::Unavailable {
                 reason: etas_code::definition::AnalysisUnavailableReason::NotAnalyzed,

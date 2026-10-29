@@ -6,7 +6,23 @@ impl EffectSemantics<'_> {
         &self,
         key: CallableSummaryKey,
     ) -> Result<CallableSummaryPlan, EffectSpecializationError> {
-        match key.source {
+        let source = match key.source {
+            LatentSource::FrozenContract {
+                unit,
+                reference,
+                environment,
+            } => match (reference, environment) {
+                (Some(value), environment) => LatentSource::Reference {
+                    unit,
+                    value,
+                    environment,
+                },
+                (None, Some(environment)) => LatentSource::Captured { unit, environment },
+                (None, None) => LatentSource::Unit(unit),
+            },
+            source => source,
+        };
+        match source {
             LatentSource::Captured { unit, environment } => {
                 self.prepare_native_value_summary(unit, environment, key.span(), key.mode)
             }

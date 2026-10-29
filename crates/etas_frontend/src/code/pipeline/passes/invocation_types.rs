@@ -93,9 +93,32 @@ fn materialize(
     control: Option<&dyn PipelineExecutionControl>,
 ) -> Result<instantiation::PreparedInstantiations, InstantiationError> {
     let source = frozen.checked();
-    if source.native_instantiations.instances.is_empty() {
+    let mut interner = TypeInterner::from_store((*target.type_store).clone());
+    // Callable interfaces are runtime ABI roots even when an unrelated caller
+    // body is intentionally outside candidate reachability.
+    for signature in target.types.item_signatures.values() {
+        if let Some(control) = control {
+            control
+                .checkpoint()
+                .map_err(InstantiationError::Interrupted)?;
+        }
+        let signature = match signature {
+            etas_types::ItemSignature::Flow(signature)
+            | etas_types::ItemSignature::Tool(signature) => Some(signature),
+            etas_types::ItemSignature::Agent(signature) => signature.callable(),
+            etas_types::ItemSignature::TopLevelLet(_) => None,
+        };
+        if let Some(signature) = signature {
+            interner.intern(etas_types::Type::Function(etas_types::FlowType {
+                input: signature.params.clone(),
+                output: signature.output,
+                effects: signature.effects.clone(),
+            }));
+        }
+    }
+    if source.native_instantiations.instances().is_empty() {
         return Ok(instantiation::PreparedInstantiations {
-            store: target.type_store.clone(),
+            store: Arc::new(interner.into_store()),
             plan: target.native_instantiations.clone(),
         });
     }
@@ -121,9 +144,10 @@ fn materialize(
         .native_callables()
         .map(|(id, item)| (item, id))
         .collect::<HashMap<_, _>>();
-    let mut interner = TypeInterner::from_store((*target.type_store).clone());
     let mut seeds = Vec::new();
-    for instance in &source.native_instantiations.instances {
+    let budget =
+        etas_types::TypeSubstitutionBudget::new(limits.max_nodes, limits.max_edges, control);
+    for instance in source.native_instantiations.instances() {
         if let Some(control) = control {
             control
                 .checkpoint()
@@ -157,7 +181,8 @@ fn materialize(
                 declaration_types: correspondence.declarations(),
                 effect_names: correspondence.effect_names(),
             })
-            .with_expansion_depth(limits.max_expansion_depth);
+            .with_expansion_depth(limits.max_expansion_depth)
+            .with_budget(&budget);
         let arguments = instance
             .arguments
             .iter()

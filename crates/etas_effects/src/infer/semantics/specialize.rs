@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 mod completion;
 mod parameter_calls;
+mod summary_mapper;
 mod trace;
 pub(crate) use parameter_calls::{TraceArgumentBinding, TraceArgumentBindings};
 pub(crate) use trace::{ParameterCallSubstitution, substitute_parameter_calls};
@@ -254,7 +255,9 @@ impl EffectSemantics<'_> {
             for exit in &mut exits.exits {
                 exit.trace =
                     self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
-                if let crate::CallableOutcome::Returned { observation, .. } = &mut exit.outcome
+                if let crate::CallableOutcome::Returned { observation, .. }
+                | crate::CallableOutcome::HandlerFinished { observation, .. }
+                | crate::CallableOutcome::HandlerResumed { observation, .. } = &mut exit.outcome
                     && let crate::ReturnObservation::CallableSources(parameters) = observation
                 {
                     let sources = self.returned_callable_bindings(
@@ -272,6 +275,7 @@ impl EffectSemantics<'_> {
             }
         }
         self.solve_callback_completion(&mut specialized, &trace_bindings, &type_bindings, state)?;
+        self.forward_callback_outcomes(&mut specialized, &trace_bindings, &params, state)?;
         Ok(specialized)
     }
 
@@ -333,91 +337,17 @@ impl EffectSemantics<'_> {
         if bindings.is_empty() && type_bindings.is_empty() && effect_row_bindings.is_empty() {
             return Ok(summary.clone());
         }
-        let mut specialized = summary.clone();
-        specialized.handler_requests =
-            self.specialize_request_types(&summary.handler_requests, type_bindings)?;
-        specialized.escaping_effects = self.specialize_effect_row(
-            &summary.escaping_effects,
-            bindings,
-            type_bindings,
-            effect_row_bindings,
-        )?;
-        if let Some(defaults) = &mut specialized.default_handler_effects {
-            defaults.direct = self.specialize_effect_row(
-                &defaults.direct,
+        let names = type_bindings.iter().cloned().collect();
+        crate::substitution::map_summary(
+            &mut summary_mapper::CallSummaryMapper {
+                semantics: self,
                 bindings,
                 type_bindings,
-                effect_row_bindings,
-            )?;
-            for handler in &mut defaults.handlers {
-                let row = self.specialize_effect_row(
-                    &EffectRow::closed(crate::EffectSet::one(handler.action.clone())),
-                    bindings,
-                    type_bindings,
-                    effect_row_bindings,
-                )?;
-                let mut actions = row.effects.iter();
-                handler.action = actions
-                    .next()
-                    .cloned()
-                    .filter(|effect| effect.is_action())
-                    .ok_or(EffectSpecializationError::InvalidDefaultHandlerAction)?;
-                if actions.next().is_some() || row.open.is_some() {
-                    return Err(EffectSpecializationError::InvalidDefaultHandlerAction);
-                }
-                handler.produced = self.specialize_effect_row(
-                    &handler.produced,
-                    bindings,
-                    type_bindings,
-                    effect_row_bindings,
-                )?;
-            }
-            specialized.refresh_escaping_effects();
-        }
-        specialized.requested_actions = self.specialize_effect_row(
-            &summary.requested_actions,
-            bindings,
-            type_bindings,
-            effect_row_bindings,
-        )?;
-        specialized.default_actions = self.specialize_effect_row(
-            &summary.default_actions,
-            bindings,
-            type_bindings,
-            effect_row_bindings,
-        )?;
-        specialized.handled_actions = self.specialize_effect_row(
-            &summary.handled_actions,
-            bindings,
-            type_bindings,
-            effect_row_bindings,
-        )?;
-        specialized.action_trace =
-            self.specialize_action_trace(&summary.action_trace, bindings, type_bindings)?;
-        if let Some(exits) = &mut specialized.exits {
-            let substitutions = type_bindings.iter().cloned().collect();
-            for exit in &mut exits.exits {
-                match &mut exit.outcome {
-                    crate::CallableOutcome::Returned { ty, .. } => {
-                        *ty = etas_types::substitute_named_params_in_store(
-                            &self.types.store,
-                            *ty,
-                            &substitutions,
-                        )?;
-                    }
-                    crate::CallableOutcome::Raised { error } => {
-                        *error = etas_types::substitute_named_params_in_store(
-                            &self.types.store,
-                            *error,
-                            &substitutions,
-                        )?;
-                    }
-                    crate::CallableOutcome::NonReturn => {}
-                }
-                exit.trace = self.specialize_action_trace(&exit.trace, bindings, type_bindings)?;
-            }
-        }
-        Ok(specialized)
+                rows: effect_row_bindings,
+                types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names),
+            },
+            summary,
+        )
     }
 
     pub(crate) fn unit_params(&self, unit: EffectUnit) -> Option<Vec<etas_hir::SymbolId>> {
@@ -516,60 +446,6 @@ impl EffectSemantics<'_> {
                 )?))
             }
             other => Ok(other),
-        }
-    }
-
-    pub(crate) fn specialize_action_trace(
-        &self,
-        trace: &ActionTraceDomain,
-        bindings: &[(String, HirExprId)],
-        type_bindings: &[(String, TypeId)],
-    ) -> Result<ActionTraceDomain, EffectSpecializationError> {
-        match trace {
-            ActionTraceDomain::Empty => Ok(ActionTraceDomain::Empty),
-            ActionTraceDomain::Event(event) => {
-                let mut event = event.clone();
-                event.action = self.specialize_effect(event.action, bindings, type_bindings)?;
-                Ok(ActionTraceDomain::Event(event))
-            }
-            ActionTraceDomain::ParameterCall { .. } => Ok(trace.clone()),
-            ActionTraceDomain::Seq(items) => Ok(ActionTraceDomain::Seq(
-                items
-                    .iter()
-                    .map(|item| self.specialize_action_trace(item, bindings, type_bindings))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            ActionTraceDomain::Choice(items) => Ok(ActionTraceDomain::Choice(
-                items
-                    .iter()
-                    .map(|item| self.specialize_action_trace(item, bindings, type_bindings))
-                    .collect::<Result<Vec<_>, _>>()?,
-            )),
-            ActionTraceDomain::Repeat(item) => Ok(ActionTraceDomain::Repeat(Box::new(
-                self.specialize_action_trace(item, bindings, type_bindings)?,
-            ))),
-            ActionTraceDomain::UnknownOrder(actions) => {
-                Ok(ActionTraceDomain::UnknownOrder(EffectSet::from_iter(
-                    actions
-                        .iter()
-                        .cloned()
-                        .map(|effect| self.specialize_effect(effect, bindings, type_bindings))
-                        .collect::<Result<Vec<_>, _>>()?,
-                )))
-            }
-            ActionTraceDomain::Widened {
-                actions,
-                parameter_calls,
-            } => Ok(ActionTraceDomain::Widened {
-                actions: EffectSet::from_iter(
-                    actions
-                        .iter()
-                        .cloned()
-                        .map(|effect| self.specialize_effect(effect, bindings, type_bindings))
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-                parameter_calls: parameter_calls.clone(),
-            }),
         }
     }
 

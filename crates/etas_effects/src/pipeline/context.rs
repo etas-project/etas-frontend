@@ -10,8 +10,15 @@ use crate::{
 use super::passes::build_effect_pipeline;
 use super::{EffectPipelineArtifacts, EffectPipelineInput, EffectPipelineOutput};
 
+pub(super) enum RegistrySource {
+    CheckedTypes,
+    Prepared(Box<super::PreparedEffectRegistry>),
+    Consumed,
+}
+
 pub(super) struct EffectPipelineContext<'a> {
     pub(super) input: EffectPipelineInput<'a>,
+    pub(super) registry_source: RegistrySource,
     pub(super) analysis_context: HirAnalysisContext,
     pub(super) registry: Option<EffectRegistry>,
     pub(super) frozen_calls: Option<std::sync::Arc<crate::FrozenCallableEnvironment>>,
@@ -32,6 +39,7 @@ impl<'a> EffectPipelineContext<'a> {
         Self {
             analysis_context: HirAnalysisContext::new(input.hir),
             input,
+            registry_source: RegistrySource::CheckedTypes,
             registry: None,
             frozen_calls: None,
             units: None,

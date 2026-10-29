@@ -954,6 +954,34 @@ fn validate_effect_summaries(
             })
             .unwrap_or_default();
         validate_action_trace(&summary.action_trace, scope, parameter_names)?;
+        if let Some(behavior) = &summary.behavior {
+            if behavior
+                .independent_determinism
+                .is_some_and(|value| value > behavior.determinism)
+            {
+                return Err("external independent determinism exceeds its summary".into());
+            }
+            let mut traces = vec![&summary.action_trace];
+            let mut parameter_calls = false;
+            while let Some(trace) = traces.pop() {
+                match trace {
+                    ProjectExternalActionTraceInput::ParameterCall { .. } => parameter_calls = true,
+                    ProjectExternalActionTraceInput::Seq(parts)
+                    | ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
+                    ProjectExternalActionTraceInput::Repeat(part) => traces.push(part),
+                    ProjectExternalActionTraceInput::Widened {
+                        parameter_calls: calls,
+                        ..
+                    } => {
+                        parameter_calls |= !calls.is_empty();
+                    }
+                    _ => {}
+                }
+            }
+            if parameter_calls && behavior.independent_determinism.is_none() {
+                return Err("external parameter trace is missing independent determinism".into());
+            }
+        }
         if let Some(requests) = &summary.handler_requests {
             requests::validate(requests, scope, parameter_names)?;
         }

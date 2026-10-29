@@ -18,6 +18,8 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(super) argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
+    pub(crate) analysis_units: std::sync::Arc<std::collections::BTreeSet<EffectUnit>>,
     pub(crate) frozen_graphs: std::sync::Arc<
         std::collections::BTreeMap<
             etas_code::CodeFingerprint,
@@ -100,26 +102,36 @@ impl<'a> EffectSemantics<'a> {
                 &units,
                 &context,
             ));
-        Self::from_input(crate::infer::analysis::EffectAnalysisInput {
-            frozen_graphs: Default::default(),
-            callable_environments: Default::default(),
-            global_values: Default::default(),
-            call_results: Default::default(),
-            captured_values: Default::default(),
-            frozen_calls: Default::default(),
-            parameter_effects: Default::default(),
-            frozen_parameter_effects: Default::default(),
-            hir,
-            types,
-            std_registry,
-            registry,
-            tool_bindings,
-            external_summaries,
-            memory_provenance,
-        })
+        let argument_writes =
+            std::sync::Arc::new(super::argument_values::ArgumentWrites::build(hir, None).unwrap());
+        let mut semantics = Self::from_input(
+            crate::infer::analysis::EffectAnalysisInput {
+                frozen_graphs: Default::default(),
+                callable_environments: Default::default(),
+                global_values: Default::default(),
+                call_results: Default::default(),
+                captured_values: Default::default(),
+                frozen_calls: Default::default(),
+                parameter_effects: Default::default(),
+                frozen_parameter_effects: Default::default(),
+                hir,
+                types,
+                std_registry,
+                registry,
+                tool_bindings,
+                external_summaries,
+                memory_provenance,
+            },
+            argument_writes,
+        );
+        semantics.analysis_units = std::sync::Arc::new(units.into_iter().collect());
+        semantics
     }
 
-    pub(crate) fn from_input(input: crate::infer::analysis::EffectAnalysisInput<'a>) -> Self {
+    pub(crate) fn from_input(
+        input: crate::infer::analysis::EffectAnalysisInput<'a>,
+        argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
+    ) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
             frozen_graphs,
             callable_environments,
@@ -138,6 +150,8 @@ impl<'a> EffectSemantics<'a> {
             memory_provenance,
         } = input;
         let mut semantics = Self {
+            argument_writes,
+            analysis_units: Default::default(),
             frozen_graphs,
             generic_effect_rows: Default::default(),
             symbol_lexical_scopes: {
@@ -738,6 +752,7 @@ mod tests {
     #[test]
     pub(crate) fn external_summary_import_root_matches_multi_segment_prefix() {
         let summary = crate::ExternalEffectSummaryMetadata {
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             callable_graph_key: None,

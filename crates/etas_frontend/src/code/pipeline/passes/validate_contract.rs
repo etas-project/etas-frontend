@@ -64,18 +64,24 @@ impl Pass<ProjectContext> for ValidateCandidateContractPass {
             Some(checked) => match crate::code::contract::analyze(
                 &candidate.overlay,
                 checked,
-                match descriptors.catalog.as_deref() {
-                    Some(catalog) if std::sync::Arc::ptr_eq(catalog.checked_program(), checked) => {
-                        catalog
-                    }
-                    _ => {
-                        return PassResult::failed(
-                            "candidate descriptors belong to a different checked program",
-                        );
-                    }
-                },
+                (
+                    match descriptors.catalog.as_deref() {
+                        Some(catalog)
+                            if std::sync::Arc::ptr_eq(catalog.checked_program(), checked) =>
+                        {
+                            catalog
+                        }
+                        _ => {
+                            return PassResult::failed(
+                                "candidate descriptors belong to a different checked program",
+                            );
+                        }
+                    },
+                    descriptors.applied_contract.as_deref(),
+                ),
                 snapshot,
                 Default::default(),
+                candidate.descriptor_limits,
                 candidate.baseline.as_ref(),
             ) {
                 Ok(analysis) => analysis,

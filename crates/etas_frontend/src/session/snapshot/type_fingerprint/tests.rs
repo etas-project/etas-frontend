@@ -10,6 +10,7 @@ fn recursive(offset: usize, value: PrimitiveType) -> (TypeStore, TypeId) {
         }));
     }
     let node = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "app.Node".into(),
         params: vec![],
         representation: Some(TypeId(offset as u32 + 3)),
@@ -94,6 +95,7 @@ fn applied_constructors_use_identity_not_arena_numbers() {
     let applied = |offset, name: &str| {
         let (mut types, _) = recursive(offset, PrimitiveType::I32);
         let constructor = types.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: name.into(),
             params: vec!["T".into()],
             representation: None,

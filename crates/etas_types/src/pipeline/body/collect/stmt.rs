@@ -207,7 +207,7 @@ pub fn collect_stmt<E>(
             unit
         }
         HirStmt::Finish { value, span } => {
-            let expected = ctx.state.handler_finish_stack.last().copied();
+            let expected = ctx.state.handler_finish_stack.last().copied().flatten();
             let actual = collect_expr(ctx, value, expected)?;
             if ctx.state.handler_depth == 0 {
                 ctx.validate(crate::ValidationRequest::Diagnostic {
@@ -215,13 +215,18 @@ pub fn collect_stmt<E>(
                     span,
                     message: "finish is only valid inside a handler arm".to_owned(),
                 });
-            } else if let Some(expected) = expected {
-                ctx.emit(TypeConstraint::Assignable {
-                    from: actual,
-                    to: expected,
-                    origin: ConstraintOrigin { span },
-                    reason: AssignabilityReason::Finish,
-                });
+            } else {
+                if let Some(candidates) = ctx.state.handler_finish_candidates.last_mut() {
+                    candidates.push((actual, ConstraintOrigin { span }));
+                }
+                if let Some(expected) = expected {
+                    ctx.emit(TypeConstraint::Assignable {
+                        from: actual,
+                        to: expected,
+                        origin: ConstraintOrigin { span },
+                        reason: AssignabilityReason::Finish,
+                    });
+                }
             }
             ctx.primitive(PrimitiveType::Never)
         }

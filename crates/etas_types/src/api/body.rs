@@ -4,7 +4,34 @@ use etas_core::Diagnostic;
 use etas_hir::{HirItemId, HirProgram};
 
 use crate::ty::{SharedTypeBase, TypeBaseId};
-use crate::{SpecFacts, Type, TypeFacts, TypeOutput, pipeline::symbols::TypeSymbolIndex};
+use crate::{
+    SpecFacts, Type, TypeFacts, TypeOutput, TypeStore, pipeline::symbols::TypeSymbolIndex,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignatureBaseExtensionError {
+    ForeignBase,
+    TypeLimit { limit: usize },
+    Interrupted(etas_utils::PipelineInterruption),
+}
+
+impl std::fmt::Display for SignatureBaseExtensionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ForeignBase => f.write_str("extended types do not belong to this signature base"),
+            Self::TypeLimit { limit } => {
+                write!(f, "extended type base exceeds its {limit} type limit")
+            }
+            Self::Interrupted(interruption) => write!(
+                f,
+                "extended type base construction interrupted: {}",
+                interruption.reason
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SignatureBaseExtensionError {}
 
 /// Prepared once per signature revision, shared by all body checks.
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -29,6 +56,50 @@ impl SignatureEnvironment {
 
     pub fn type_base(&self) -> &SharedTypeBase {
         &self.types
+    }
+
+    pub fn owns_signature_facts(&self, facts: &Arc<TypeFacts>) -> bool {
+        Arc::ptr_eq(&self.facts, facts)
+    }
+
+    /// Freeze appended types from this exact base with cooperative cancellation
+    /// and a type-count limit. Byte and node budgets remain the caller's responsibility.
+    pub fn extend_type_base_controlled(
+        &self,
+        extended: TypeStore,
+        max_types: usize,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<Self, SignatureBaseExtensionError> {
+        control
+            .checkpoint()
+            .map_err(SignatureBaseExtensionError::Interrupted)?;
+        if !extended.base().is_some_and(|base| base.ptr_eq(&self.types)) {
+            return Err(SignatureBaseExtensionError::ForeignBase);
+        }
+        if extended.len() > max_types {
+            return Err(SignatureBaseExtensionError::TypeLimit { limit: max_types });
+        }
+        if extended.len() == self.types.len() {
+            return Ok(self.clone());
+        }
+        let types =
+            SharedTypeBase::new_controlled(extended, max_types, control).map_err(|error| {
+                match error {
+                    crate::ty::TypeBaseBuildError::TypeLimit { limit } => {
+                        SignatureBaseExtensionError::TypeLimit { limit }
+                    }
+                    crate::ty::TypeBaseBuildError::Interrupted(interruption) => {
+                        SignatureBaseExtensionError::Interrupted(interruption)
+                    }
+                }
+            })?;
+        Ok(Self {
+            types,
+            facts: self.facts.clone(),
+            specs: self.specs.clone(),
+            symbols: self.symbols.clone(),
+            diagnostics: self.diagnostics.clone(),
+        })
     }
 
     pub fn accepts(&self, body: &BodyTypeOutput) -> bool {

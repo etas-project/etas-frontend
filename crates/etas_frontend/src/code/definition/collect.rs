@@ -43,7 +43,19 @@ pub(super) fn build_exported(
         .values()
         .map(|agent| agent.header.clone())
         .collect::<Vec<_>>();
-    let (snapshots, bodies) = super::snapshots::export(source, origins, limits, &agents)?;
+    let flows = catalog
+        .callables
+        .values()
+        .filter(|callable| {
+            callable
+                .header
+                .id
+                .as_declaration()
+                .is_some_and(|identity| identity.kind() == etas_code::DefinitionKind::Flow)
+        })
+        .map(|callable| callable.header.clone())
+        .collect::<Vec<_>>();
+    let (snapshots, bodies) = super::snapshots::export(source, origins, limits, &agents, &flows)?;
     let set = DefinitionDescriptorSet {
         graph: catalog.graph.data().clone(),
         declarations,

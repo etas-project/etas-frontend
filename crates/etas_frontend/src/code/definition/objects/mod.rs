@@ -1,8 +1,10 @@
+mod applications;
 mod bindings;
 mod checked;
 mod diff;
 mod edit;
 mod external;
+mod methods;
 mod reflect;
 mod source;
 mod store;
@@ -13,18 +15,18 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use etas_code::{
     CallableId, CodeFingerprint,
     definition::{
-        AgentDefinition, AgentDefinitionLease, DefinitionAnalysisState, DefinitionError,
-        DefinitionOperationError,
+        DefinitionAnalysisState, DefinitionError, DefinitionLease, DefinitionOperationError,
+        DefinitionSnapshot,
     },
     descriptor::CallableAnalysisInfo,
 };
 
-use super::{FrozenAgentContract, FrozenDefinitionEnvironment};
+use super::{FrozenDefinitionContract, FrozenDefinitionEnvironment};
 
 pub use bindings::{FrozenReflectionBindings, NativeCallableReflection, NativeSourceReflection};
 pub use store::NativeDefinitionStore;
 use store::SourceReflectionKey;
-pub use view::{NativeAgentDefinitionView, NativeAgentMethodView};
+pub use view::{NativeAgentMethodView, NativeDefinitionView, NativeMethodSnapshot};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeDefinitionLimits {
@@ -50,6 +52,7 @@ pub enum NativeDefinitionError {
     MissingSourceEnvironment,
     CandidateInputMismatch,
     MissingBodySource,
+    WrongDefinitionKind,
     SourceBundle(etas_code::definition::SourceBundleError),
     Overlay(crate::code::draft::OverlayError),
 }
@@ -67,10 +70,11 @@ impl From<DefinitionOperationError> for NativeDefinitionError {
 }
 
 #[derive(etas_core::RetainedSize)]
-struct NativeAgentDefinition {
-    data: AgentDefinition<FrozenAgentContract, CallableAnalysisInfo>,
+struct NativeDefinition {
+    data: DefinitionSnapshot<FrozenDefinitionContract, CallableAnalysisInfo>,
     environment: DefinitionEnvironment,
     auxiliary: DefinitionAnalysisState<BTreeMap<CallableId, CallableAnalysisInfo>>,
+    method_snapshots: BTreeMap<CallableId, Arc<etas_code::descriptor::DefinitionSnapshotInfo>>,
     analysis_configuration: CodeFingerprint,
     analysis_graph: etas_code::descriptor::DescriptorGraph,
     reflection_body_access: bool,
@@ -93,16 +97,16 @@ enum DefinitionProvenance {
     Checked { snapshot: CodeFingerprint },
 }
 
-impl fmt::Debug for NativeAgentDefinition {
+impl fmt::Debug for NativeDefinition {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NativeAgentDefinition")
+        f.debug_struct("NativeDefinition")
             .field("identity", &self.data.base().identity())
             .field("revision", self.data.revision())
             .finish_non_exhaustive()
     }
 }
 
-impl AgentDefinitionLease for NativeAgentDefinition {
+impl DefinitionLease for NativeDefinition {
     fn identity(&self) -> &etas_code::DefinitionKey {
         self.data.base().identity()
     }

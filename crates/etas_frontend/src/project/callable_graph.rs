@@ -78,6 +78,20 @@ fn request_template(
             .map(|instance| {
                 Ok(etas_effects::ExternalActionRequestMetadata {
                     action: effect(&instance.action, resolver)?,
+                    signature: instance
+                        .signature
+                        .as_ref()
+                        .map(|signature| {
+                            Ok::<_, String>(etas_types::ActionRequestSignature {
+                                params: signature
+                                    .params
+                                    .iter()
+                                    .map(|ty| type_id(ty, resolver))
+                                    .collect::<Result<_, _>>()?,
+                                output: type_id(&signature.output, resolver)?,
+                            })
+                        })
+                        .transpose()?,
                     type_bindings: instance
                         .type_bindings
                         .as_ref()

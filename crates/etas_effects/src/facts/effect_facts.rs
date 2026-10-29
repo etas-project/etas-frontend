@@ -334,6 +334,7 @@ pub struct HandlerValueFact {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct HandlerArmFact {
+    pub unit: EffectUnit,
     pub action: HandlerActionFact,
     pub resumable: bool,
     pub resumes: ResumeSummary,

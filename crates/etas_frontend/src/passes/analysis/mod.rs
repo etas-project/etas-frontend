@@ -23,7 +23,7 @@ pub use infer_callable_outputs::InferCallableOutputsPass;
 mod type_reuse;
 pub use type_environment::PrepareBodyTypeEnvironmentPass;
 
-pub use effect_check::RunEffectPipelinePass;
+pub use effect_check::{PrepareEffectRegistryPass, RunEffectPipelinePass};
 pub use external_metadata_validation::ValidateExternalEnvironmentPass;
 pub use loop_progress::AnalyzeLoopProgressPass;
 pub use top_level_let::ValidateTopLevelLetPass;

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use etas_hir::{HirExpr, HirExprId, ResolveResult, SymbolDef, SymbolId};
 
+use crate::constraint::ty::HandlerActionCandidate;
 use crate::{
     CallableGenericParamKind, ConstraintOrigin, EffectActionSignature, Type, TypeConstraint,
     TypeId, pipeline::context::BodyCollectContext,
@@ -35,17 +36,62 @@ pub(super) fn collect_handle<E>(
     let body_ty = super::expr::collect_expr(ctx, body, expected);
     ctx.state.request_scope_depth -= 1;
     let body_ty = body_ty?;
+    let result = expected.unwrap_or_else(|| ctx.fresh_type_var());
+    let result_hint = expected
+        .or_else(|| {
+            ctx.ctx
+                .interner
+                .store()
+                .get(body_ty)
+                .is_some_and(|ty| {
+                    !matches!(
+                        ty,
+                        Type::Var(_) | Type::Primitive(crate::PrimitiveType::Never)
+                    )
+                })
+                .then_some(body_ty)
+        })
+        .unwrap_or(result);
+    ctx.emit(TypeConstraint::Assignable {
+        from: body_ty,
+        to: result,
+        origin: ConstraintOrigin { span },
+        reason: crate::AssignabilityReason::Branch,
+    });
     let requests = ctx.state.action_requests.drain(start..).collect::<Vec<_>>();
+    let expected_handler = ctx.ctx.interner.intern(Type::Handler(crate::HandlerType {
+        handled: crate::EffectRowRef {
+            effects: Vec::new(),
+            tail: None,
+        },
+        produced: crate::HandlerProducedEffects::Infer,
+        result: Some(result_hint),
+    }));
     let handler_ty = if let HirExpr::Handler { handlers, span } = ctx.ctx.hir.exprs[handler].clone()
     {
-        let ty = super::handler::collect_handler_for_requests(
+        let collected = super::handler::collect_handler_for_requests(
             ctx,
             &handlers,
             span,
-            None,
+            Some(expected_handler),
             &requests,
             Some(body),
         )?;
+        if expected.is_none() {
+            let mut candidates = collected
+                .finishes
+                .into_iter()
+                .map(|(ty, _)| ty)
+                .collect::<Vec<_>>();
+            candidates.push(body_ty);
+            let never = ctx.primitive(crate::PrimitiveType::Never);
+            ctx.emit(TypeConstraint::ControlResult {
+                output: result,
+                candidates,
+                never,
+                origin: ConstraintOrigin { span },
+            });
+        }
         let targets = handlers
             .iter()
             .filter_map(|arm| {
@@ -81,10 +127,21 @@ pub(super) fn collect_handle<E>(
                 ActionRequest::Known { action, .. } => !targets.contains(action),
                 ActionRequest::Opaque { .. } => true,
             }));
-        ctx.record_expr_type(handler, ty)
+        ctx.record_expr_type(handler, collected.ty)
     } else {
         ctx.state.action_requests.extend(requests);
-        super::expr::collect_expr(ctx, handler, None)?
+        let ty = super::expr::collect_expr(ctx, handler, None)?;
+        if let Some(Type::Handler(handler)) = ctx.ctx.interner.store().get(ty)
+            && let Some(finished) = handler.result
+        {
+            ctx.emit(TypeConstraint::Assignable {
+                from: finished,
+                to: result,
+                origin: ConstraintOrigin { span },
+                reason: crate::AssignabilityReason::Finish,
+            });
+        }
+        ty
     };
     if !matches!(
         ctx.ctx.interner.store().get(handler_ty),
@@ -96,7 +153,7 @@ pub(super) fn collect_handle<E>(
             message: "handle expects a handler value".to_owned(),
         });
     }
-    Ok(body_ty)
+    Ok(result)
 }
 
 pub(super) fn record_request<E>(
@@ -210,6 +267,96 @@ pub(super) fn instantiate<E>(
     scope: Option<(etas_hir::HirHandlerArmId, HirExprId)>,
     span: etas_core::Span,
 ) -> Option<EffectActionSignature> {
+    let HandlerActionCandidate {
+        signature,
+        parameters,
+    } = prepare_instantiation(ctx, signature, span)?;
+    if parameters.is_empty() {
+        return Some(signature);
+    }
+    let opaque = requests
+        .iter()
+        .any(|request| matches!(request, ActionRequest::Opaque { .. }));
+    let request_calls = if opaque {
+        Vec::new()
+    } else {
+        matching_requests(action, requests)
+    };
+    ctx.emit(TypeConstraint::HandlerInstantiation {
+        parameters,
+        requests: request_calls,
+        deferred: scope.filter(|_| opaque),
+        origin: ConstraintOrigin { span },
+    });
+    Some(signature)
+}
+
+fn matching_requests(action: ActionIdentity, requests: &[ActionRequest]) -> Vec<HirExprId> {
+    requests
+        .iter()
+        .filter_map(|request| match request {
+            ActionRequest::Known {
+                action: target,
+                call,
+            } if *target == action => Some(*call),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(super) fn instantiate_overloads<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    signatures: Vec<EffectActionSignature>,
+    requests: &[ActionRequest],
+    action: ActionIdentity,
+    scope: Option<(etas_hir::HirHandlerArmId, HirExprId)>,
+    span: etas_core::Span,
+) -> Option<EffectActionSignature> {
+    let template = signatures.first()?.clone();
+    let mut candidates = Vec::new();
+    for signature in signatures {
+        if signature.params.len() != template.params.len()
+            || signature.effect_args != template.effect_args
+            || signature.selector_defaults != template.selector_defaults
+        {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: "overloaded handler requires a consistent action payload arity and selector contract".into(),
+            });
+            return None;
+        }
+        candidates.push(prepare_instantiation(ctx, signature, span)?);
+    }
+    let signature = EffectActionSignature {
+        generic_params: Vec::new(),
+        params: template
+            .params
+            .iter()
+            .map(|_| ctx.fresh_type_var())
+            .collect(),
+        output: ctx.fresh_type_var(),
+        ..template
+    };
+    let opaque = requests
+        .iter()
+        .any(|request| matches!(request, ActionRequest::Opaque { .. }));
+    ctx.emit(TypeConstraint::HandlerOverloadInstantiation {
+        candidates,
+        requests: matching_requests(action, requests),
+        params: signature.params.clone(),
+        output: signature.output,
+        deferred: scope.filter(|_| opaque),
+        origin: ConstraintOrigin { span },
+    });
+    Some(signature)
+}
+
+fn prepare_instantiation<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    signature: EffectActionSignature,
+    span: etas_core::Span,
+) -> Option<HandlerActionCandidate> {
     let parameters = signature
         .generic_params
         .iter()
@@ -232,25 +379,11 @@ pub(super) fn instantiate<E>(
         })
         .collect::<Vec<_>>();
     if parameters.is_empty() {
-        return Some(signature);
+        return Some(HandlerActionCandidate {
+            signature,
+            parameters,
+        });
     }
-    let opaque = requests
-        .iter()
-        .any(|request| matches!(request, ActionRequest::Opaque { .. }));
-    let request_calls = if opaque {
-        Vec::new()
-    } else {
-        requests
-            .iter()
-            .filter_map(|request| match request {
-                ActionRequest::Known {
-                    action: target,
-                    call,
-                } if *target == action => Some(*call),
-                _ => None,
-            })
-            .collect()
-    };
     let bindings = parameters
         .iter()
         .map(|(name, variable, _)| (name.clone(), *variable))
@@ -258,11 +391,8 @@ pub(super) fn instantiate<E>(
     let defaults = signature.selector_defaults.clone();
     let signature =
         super::action_selector::apply_substitutions(ctx, signature, defaults, &bindings, span)?;
-    ctx.emit(TypeConstraint::HandlerInstantiation {
+    Some(HandlerActionCandidate {
+        signature,
         parameters,
-        requests: request_calls,
-        deferred: scope.filter(|_| opaque),
-        origin: ConstraintOrigin { span },
-    });
-    Some(signature)
+    })
 }

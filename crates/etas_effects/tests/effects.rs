@@ -22,6 +22,8 @@ mod callback_completion;
 mod callback_identity;
 #[path = "effects/completion.rs"]
 mod completion;
+#[path = "effects/parameter_exit.rs"]
+mod parameter_exit;
 #[path = "effects/parameter_inference.rs"]
 mod parameter_inference;
 #[path = "effects/returned_anonymous.rs"]
@@ -373,6 +375,40 @@ fn effect_coverage_does_not_let_action_cover_sibling_action() {
         !coverage.covers(&stdout, &stdin),
         "a concrete action pattern must not cover sibling actions through tag coverage"
     );
+}
+
+#[test]
+fn effect_row_disjointness_requires_closed_nonoverlapping_effect_families() {
+    let registry = EffectRegistry::with_standard_effects();
+    let types = etas_types::TypeStore::new();
+    let coverage = etas_effects::EffectCoverage {
+        registry: &registry,
+        types: &types,
+    };
+    let console = etas_effects::EffectRow::closed(
+        [Effect::Action(ActionRef {
+            tag: CONSOLE_TAG,
+            action: CONSOLE_STDOUT_WRITE_ACTION,
+        })]
+        .into_iter()
+        .collect(),
+    );
+    let error = etas_effects::EffectRow::closed(
+        [Effect::Error(etas_types::TypeId(0))].into_iter().collect(),
+    );
+    assert!(coverage.rows_disjoint(&console, &error));
+    assert!(!coverage.rows_disjoint(&console, &console));
+    let open = etas_effects::EffectRow {
+        effects: Default::default(),
+        open: Some(etas_effects::EffectVarId(1)),
+    };
+    assert!(!coverage.rows_disjoint(&console, &open));
+    let invalid = etas_effects::EffectRow::closed(
+        [Effect::Tag(etas_effects::EffectTagId(u32::MAX))]
+            .into_iter()
+            .collect(),
+    );
+    assert!(!coverage.rows_disjoint(&console, &invalid));
 }
 
 #[test]
@@ -5303,8 +5339,8 @@ flow main(stream: TcpStream) -> StreamRead ![Error<StreamError>]
     assert!(
         matches!(
             types.store.get(*selector_ty),
-            Some(etas_types::Type::Named(named))
-                if named.name == "std.net.tcp.TcpStream"
+            Some(etas_types::Type::Nominal(nominal))
+                if nominal.name == "std.net.tcp.TcpStream"
         ),
         "unexpected checked Stream.read selector type: {:?}",
         types.store.get(*selector_ty)
@@ -5669,6 +5705,29 @@ flow main() -> unit ![Console.stdout_write] {
         count_parameter_calls(&generic_summary.action_trace, "f"),
         2,
         "{generic_summary:?}"
+    );
+    let exits = generic_summary.exits.as_ref().expect("generic exits");
+    assert_eq!(exits.parameter_exits.len(), 2, "{exits:?}");
+    assert!(
+        exits
+            .parameter_exits
+            .iter()
+            .all(|exit| exit.arguments.as_deref() == Some(&[]))
+    );
+    let mut prefix_calls = exits
+        .parameter_exits
+        .iter()
+        .map(|exit| count_parameter_calls(&exit.prefix, "f"))
+        .collect::<Vec<_>>();
+    prefix_calls.sort_unstable();
+    assert_eq!(prefix_calls, [0, 1]);
+    assert_eq!(
+        exits
+            .gaps
+            .iter()
+            .filter(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::ParameterCall { .. }))
+            .count(),
+        2
     );
     let summary = output
         .facts

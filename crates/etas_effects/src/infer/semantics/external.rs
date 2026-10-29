@@ -156,7 +156,7 @@ impl EffectSemantics<'_> {
                 )
             })
             .collect::<Vec<_>>();
-        self.external_callable_summary(
+        let mut summary = self.external_callable_summary(
             crate::pipeline::ExternalCallableEffectView {
                 handler_requests: metadata.handler_requests.as_ref(),
                 parameter_targets: &parameter_targets,
@@ -167,7 +167,13 @@ impl EffectSemantics<'_> {
                 action_trace: &metadata.action_trace,
             },
             span,
-        )
+        )?;
+        if let Some(behavior) = &metadata.behavior {
+            if !super::metadata_callable::apply_metadata_behavior(&mut summary, behavior) {
+                return None;
+            }
+        }
+        Some(summary)
     }
 
     pub(crate) fn external_callable_summary(
@@ -176,6 +182,8 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         let mut summary = EffectSummary::local();
+        // Existing external effect metadata does not provide this decomposition.
+        summary.independent_determinism = None;
         let handler_requests = match metadata.handler_requests {
             None => crate::RequestInstantiationSummary::Unavailable,
             Some(requests) => crate::RequestInstantiationSummary::Available {
@@ -186,6 +194,7 @@ impl EffectSemantics<'_> {
                         Some(crate::ActionRequestInstance {
                             action: self.external_effect_from_metadata(&instance.action)?,
                             type_bindings: instance.type_bindings.clone(),
+                            signature: instance.signature.clone(),
                         })
                     })
                     .collect::<Option<_>>()?,

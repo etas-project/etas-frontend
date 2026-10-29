@@ -1,8 +1,10 @@
 mod body;
+mod instantiation;
 mod output;
 mod request;
 
-pub use body::{BodyTypeOutput, SignatureEnvironment};
+pub use body::{BodyTypeOutput, SignatureBaseExtensionError, SignatureEnvironment};
+pub use instantiation::{BodyInstantiationError, InstantiatedBodyOutput};
 pub use output::TypeOutput;
 pub use request::{
     AnnotationValidationMode, CheckBodyRequest, CheckProjectRequest, CheckSignaturesRequest,

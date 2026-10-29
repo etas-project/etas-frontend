@@ -7,6 +7,15 @@ pub(super) fn collect(
     for summary in &metadata.effect_summaries {
         if let Some(requests) = &summary.handler_requests {
             for action in &requests.actions {
+                if let Some(signature) = &action.signature {
+                    types.extend(
+                        signature
+                            .params
+                            .iter()
+                            .chain(std::iter::once(&signature.output))
+                            .map(convert_external_type),
+                    );
+                }
                 for (_, ty) in action.type_bindings.iter().flatten() {
                     types.push(convert_external_type(ty));
                 }
@@ -35,6 +44,15 @@ pub(super) fn collect(
                 }
                 if let Some(requests) = &node.handler_requests {
                     for action in &requests.actions {
+                        if let Some(signature) = &action.signature {
+                            for ty in signature
+                                .params
+                                .iter()
+                                .chain(std::iter::once(&signature.output))
+                            {
+                                add(&mut types, ty)?;
+                            }
+                        }
                         for binding in action.type_bindings.iter().flatten() {
                             add(&mut types, &binding.ty)?;
                         }

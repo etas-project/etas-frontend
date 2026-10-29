@@ -4,7 +4,8 @@ use std::sync::Arc;
 use etas_code::{
     CallableId,
     descriptor::{
-        AgentHeaderInfo, AgentSnapshotInfo, CallableHeaderInfo, DescriptorGraph, DescriptorLimits,
+        AgentHeaderInfo, CallableHeaderInfo, DefinitionSnapshotInfo, DescriptorGraph,
+        DescriptorLimits,
     },
 };
 use etas_types::{CheckedReflectionTarget, SymbolTypeFact};
@@ -16,9 +17,10 @@ use crate::code::descriptor::ProjectionError;
 pub(in crate::code::definition) struct ExternalAgent {
     pub header: AgentHeaderInfo,
     pub graph: DescriptorGraph,
-    pub snapshot: Option<AgentSnapshotInfo>,
+    pub snapshot: Option<DefinitionSnapshotInfo>,
     pub callables: BTreeMap<CallableId, CallableHeaderInfo>,
     pub bodies: BTreeMap<CallableId, Arc<etas_code::descriptor::CallableBodyInfo>>,
+    pub method_snapshots: BTreeMap<CallableId, DefinitionSnapshotInfo>,
     pub component: etas_types::TypeId,
 }
 
@@ -76,6 +78,13 @@ impl DefinitionCatalog {
                     .map(|body| (&body.callable, body))
                     .collect::<BTreeMap<_, _>>()
             });
+            let method_snapshots = headers.snapshots.as_ref().map(|snapshots| {
+                snapshots
+                    .methods
+                    .iter()
+                    .map(|snapshot| (&snapshot.revision.definition, snapshot))
+                    .collect::<BTreeMap<_, _>>()
+            });
             for header in selected {
                 let methods = header
                     .default_entry
@@ -102,6 +111,10 @@ impl DefinitionCatalog {
                         header: header.clone(),
                         graph: graph.clone(),
                         body,
+                        snapshot: method_snapshots
+                            .as_ref()
+                            .and_then(|snapshots| snapshots.get(id))
+                            .map(|snapshot| (*snapshot).clone()),
                     };
                     if let Some(existing) = self.external_callables.get(id)
                         && existing != &external
@@ -110,6 +123,15 @@ impl DefinitionCatalog {
                     }
                     self.external_callables.insert(id.clone(), external);
                 }
+                let selected_snapshots = methods
+                    .keys()
+                    .filter_map(|id| {
+                        method_snapshots
+                            .as_ref()?
+                            .get(id)
+                            .map(|snapshot| (id.clone(), (*snapshot).clone()))
+                    })
+                    .collect();
                 let record = ExternalAgent {
                     header: header.clone(),
                     graph: graph.clone(),
@@ -119,6 +141,7 @@ impl DefinitionCatalog {
                         .map(|snapshot| (*snapshot).clone()),
                     callables: methods,
                     bodies: selected_bodies,
+                    method_snapshots: selected_snapshots,
                     component: pending[&header.identity],
                 };
                 if let Some(existing) = self.external_agents.get(&header.identity)

@@ -31,8 +31,9 @@ pub(super) fn materialize(
             roots.extend([projection.receiver, projection.output]);
         }
     }
-    for method in facts.std_method_calls.values() {
-        roots.push(method.signature);
+    for call in facts.std_intrinsic_calls.values() {
+        roots.push(call.callable_type);
+        callable_roots(&call.signature, &mut roots);
     }
     roots.sort_unstable();
     roots.dedup();

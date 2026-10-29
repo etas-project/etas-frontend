@@ -38,13 +38,25 @@ impl EffectSemantics<'_> {
             }
         }
         for key in self.callable_summaries.borrow().summaries.keys() {
-            if let LatentSource::Captured { unit, environment } = key.source {
+            if let LatentSource::FrozenContract {
+                unit,
+                reference: None,
+                environment: Some(environment),
+            }
+            | LatentSource::Captured { unit, environment } = key.source
+            {
                 instances.insert(CapturedCallableId { unit, environment });
             }
         }
         for environment in self.callable_environments.borrow().values() {
             for source in environment.parameters.values().flatten() {
-                if let LatentSource::Captured { unit, environment } = source {
+                if let LatentSource::FrozenContract {
+                    unit,
+                    reference: None,
+                    environment: Some(environment),
+                }
+                | LatentSource::Captured { unit, environment } = source
+                {
                     instances.insert(CapturedCallableId {
                         unit: *unit,
                         environment: *environment,
@@ -60,7 +72,13 @@ impl EffectSemantics<'_> {
                 } = &exit.outcome
                 {
                     for source in sources {
-                        if let CallableReturnSource::Captured { unit, environment } = source {
+                        if let CallableReturnSource::FrozenContract {
+                            unit,
+                            reference: None,
+                            environment: Some(environment),
+                        }
+                        | CallableReturnSource::Captured { unit, environment } = source
+                        {
                             instances.insert(CapturedCallableId {
                                 unit: *unit,
                                 environment: *environment,

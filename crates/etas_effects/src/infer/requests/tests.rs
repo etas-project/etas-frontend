@@ -12,8 +12,14 @@ fn unavailable_evidence_is_not_an_empty_checked_request_set() {
 #[test]
 fn lexical_handler_masks_survive_widening() {
     let action = Effect::Tag(crate::EffectTagId(200));
-    let mut requests =
-        RequestInstantiationSummary::action(action.clone(), vec![("T".into(), TypeId(7))]);
+    let mut requests = RequestInstantiationSummary::action(
+        action.clone(),
+        vec![("T".into(), TypeId(7))],
+        etas_types::ActionRequestSignature {
+            params: vec![TypeId(7)],
+            output: TypeId(7),
+        },
+    );
     requests.union_assign(&RequestInstantiationSummary::parameter(
         ParameterCallTarget::Native(etas_hir::SymbolId(8)),
         "callback".into(),

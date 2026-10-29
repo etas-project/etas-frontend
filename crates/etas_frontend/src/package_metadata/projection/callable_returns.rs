@@ -422,7 +422,7 @@ mod generics;
 mod references;
 mod sources;
 mod summary;
-use behavior::behavior;
+pub(super) use behavior::behavior;
 
 pub(super) fn invalid(reason: &str) -> PackageMetadataError {
     PackageMetadataError::InvalidMetadataType {

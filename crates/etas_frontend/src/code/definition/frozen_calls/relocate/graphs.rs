@@ -48,7 +48,7 @@ impl Relocation<'_> {
                 let Some(exits) = &summary.exits else {
                     return Ok(None);
                 };
-                if !exits.gaps.is_empty() {
+                if !exits.gaps.is_empty() || !exits.parameter_exits.is_empty() {
                     return Ok(None);
                 }
                 let mut relocated = CallableExitSummary::default();
@@ -72,6 +72,12 @@ impl Relocation<'_> {
                             error: self.ty(scope, *error)?,
                         },
                         CallableOutcome::NonReturn => CallableOutcome::NonReturn,
+                        CallableOutcome::HandlerFinished { .. }
+                        | CallableOutcome::HandlerResumed { .. } => {
+                            return Err(invalid(
+                                "handler-local control cannot escape into a frozen callable graph",
+                            ));
+                        }
                     };
                     relocated.exits.push(ExitTraceFact {
                         outcome,
@@ -114,6 +120,15 @@ impl Relocation<'_> {
                 if let Some(requests) = &mut value.handler_requests {
                     for action in &mut requests.actions {
                         self.graph_effect(&mut action.action, scope)?;
+                        if let Some(signature) = &mut action.signature {
+                            for ty in signature
+                                .params
+                                .iter_mut()
+                                .chain(std::iter::once(&mut signature.output))
+                            {
+                                *ty = self.ty(scope, *ty)?;
+                            }
+                        }
                         for (_, ty) in action.type_bindings.iter_mut().flatten() {
                             *ty = self.ty(scope, *ty)?;
                         }
@@ -188,11 +203,20 @@ impl Relocation<'_> {
             .sources
             .iter()
             .map(|source| match source {
-                etas_package_metadata::CallableValueSource::Value(value) => {
+                etas_package_metadata::CallableValueSource::Value(value)
+                | etas_package_metadata::CallableValueSource::FrozenContract(value) => {
                     Ok(CallableReturnSource::Metadata(MetadataCallableSource {
                         graph: key,
                         value: *value,
                         environment: None,
+                        analysis: if matches!(
+                            source,
+                            etas_package_metadata::CallableValueSource::FrozenContract(_)
+                        ) {
+                            etas_effects::CallableAnalysisKind::FrozenContract
+                        } else {
+                            etas_effects::CallableAnalysisKind::CheckedRevision
+                        },
                     }))
                 }
                 etas_package_metadata::CallableValueSource::Parameter(parameter) => {

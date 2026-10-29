@@ -130,7 +130,11 @@ impl EffectSemantics<'_> {
                         }
                     }
                 }
-                LatentSource::Captured { environment, .. } => {
+                LatentSource::FrozenContract {
+                    environment: Some(environment),
+                    ..
+                }
+                | LatentSource::Captured { environment, .. } => {
                     for origins in self
                         .callable_environment(environment)?
                         .parameters

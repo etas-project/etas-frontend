@@ -3,10 +3,12 @@ use crate::{EffectRowRef, TypeId};
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
-pub struct CheckedStdMethodFact {
+pub struct CheckedStdCallFact {
     pub qualified_path: Vec<String>,
     pub intrinsic: u32,
-    pub signature: TypeId,
+    pub overload: usize,
+    pub callable_type: TypeId,
+    pub signature: crate::CallableSignature,
 }
 
 #[derive(

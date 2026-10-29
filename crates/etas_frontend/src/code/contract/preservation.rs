@@ -16,6 +16,48 @@ pub(crate) struct BodyPreservation<'a> {
 }
 
 impl<'a> BodyPreservation<'a> {
+    pub(super) fn frozen(&self) -> &crate::code::definition::FrozenDefinitionEnvironment {
+        self.overlay.frozen()
+    }
+
+    pub(super) fn candidate(&self) -> &CheckedProgram {
+        self.candidate
+    }
+
+    pub(super) fn relocate_reference_bindings(
+        &self,
+        owner: &CallableId,
+        references: &[&etas_effects::CallableReturnReference],
+        limits: etas_code::descriptor::DescriptorLimits,
+    ) -> Result<Vec<crate::code::definition::ReferenceBindings>, ProjectionError> {
+        crate::code::definition::relocate_reference_bindings(
+            self.overlay,
+            self.candidate,
+            owner,
+            references,
+            limits,
+        )
+    }
+
+    pub(super) fn preserves_source_item(
+        &self,
+        original: etas_hir::HirItemId,
+        candidate: etas_hir::HirItemId,
+    ) -> bool {
+        if self.dependency_completion {
+            return false;
+        }
+        let original = self
+            .overlay
+            .frozen()
+            .checked()
+            .definition_sources
+            .body(original);
+        let candidate = self.candidate.definition_sources.body(candidate);
+        matches!((original, candidate), (Some(before), Some(after))
+            if before == after && after != self.overlay.slot())
+    }
+
     pub(crate) fn verify(
         overlay: &'a DefaultBodyOverlay,
         candidate: &'a CheckedProgram,
@@ -108,15 +150,7 @@ impl<'a> BodyPreservation<'a> {
             // comparison; source text equality alone is not metadata evidence.
             return Ok(false);
         }
-        if self
-            .overlay
-            .frozen()
-            .contract()
-            .header()
-            .default_entry
-            .as_ref()
-            == Some(id)
-        {
+        if self.overlay.frozen().contract().entry() == Some(id) {
             // This bit is produced by comparing actual native source bytes and
             // body form under the archive/overlay ownership verified above.
             // No saved report or caller-provided content hash can establish it.

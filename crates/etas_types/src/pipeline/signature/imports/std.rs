@@ -70,6 +70,9 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    ctx.signature_facts.known_std_types.json_value = registry
+        .lookup_qualified(&["std", "json", "JsonValue"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.priority_queue = registry
         .lookup_qualified(&["std", "collections", "PriorityQueue"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
@@ -100,11 +103,6 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
                     ty: crate::lower::std::lower_std_type(ctx, registry, &field.ty),
                 })
                 .collect::<Vec<_>>();
-            let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
-            ctx.signature_facts
-                .known_std_types
-                .projected_fields
-                .insert(local, fields.clone());
             if let Some(canonical) = lower_std_type_symbol(ctx, registry, symbol) {
                 ctx.signature_facts
                     .known_std_types
@@ -115,11 +113,6 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && declaration.construction == etas_std::StdTypeConstruction::IntrinsicOnly
         {
-            let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
-            ctx.signature_facts
-                .known_std_types
-                .intrinsic_only_constructors
-                .insert(local);
             if let Some(canonical) = lower_std_type_symbol(ctx, registry, symbol) {
                 ctx.signature_facts
                     .known_std_types
@@ -133,11 +126,6 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
             && declaration.canonical_type.is_none()
             && !declaration.derivable
         {
-            let local = crate::lower::std::lower_std_type_decl(ctx, registry, declaration);
-            ctx.signature_facts
-                .known_std_types
-                .opaque_values
-                .insert(local);
             if let Some(canonical) = lower_std_type_symbol(ctx, registry, symbol) {
                 ctx.signature_facts
                     .known_std_types

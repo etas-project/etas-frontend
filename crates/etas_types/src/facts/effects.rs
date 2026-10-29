@@ -1,6 +1,32 @@
 use crate::{EffectArgRef, TypeId};
 
 #[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub struct ActionRequestSignature {
+    pub params: Vec<TypeId>,
+    pub output: TypeId,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct CheckedActionCallFact {
+    pub action_symbol: etas_hir::SymbolId,
+    pub target: etas_std::StdSymbolId,
+    pub overload: usize,
+    pub signature: crate::CallableSignature,
+}
+
+#[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct CheckedHandlerActionFact {
@@ -18,7 +44,17 @@ pub struct CheckedHandlerActionFact {
 pub struct DeferredHandlerInstantiation {
     pub body: etas_hir::HirExprId,
     pub parameters: Vec<HandlerTypeBinding>,
+    pub overload: Option<DeferredHandlerOverload>,
     pub span: etas_core::Span,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct DeferredHandlerOverload {
+    pub candidates: Vec<ActionRequestSignature>,
+    pub params: Vec<TypeId>,
+    pub output: TypeId,
 }
 
 #[derive(

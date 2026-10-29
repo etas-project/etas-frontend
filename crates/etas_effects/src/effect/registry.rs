@@ -904,7 +904,7 @@ impl EffectRegistry {
         }
     }
 
-    fn register_memory_places<'a>(
+    pub(crate) fn register_memory_places<'a>(
         &mut self,
         types: impl Iterator<Item = (etas_types::TypeId, &'a etas_types::Type)>,
     ) {

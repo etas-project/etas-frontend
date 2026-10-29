@@ -15,10 +15,71 @@ use self::external_metadata::{
 };
 use crate::incremental::CheckScope;
 use crate::passes::artifacts::{
-    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, PROJECT_ENTRY,
-    RESOLVED_IMPORTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
+    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, PREPARED_EFFECT_REGISTRY,
+    PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS, TYPE_ENVIRONMENT, TYPE_OUTPUT,
+    VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
 };
 use crate::{ProjectContext, UnitKind, UnitTarget};
+
+pub struct PrepareEffectRegistryPass;
+
+impl Pass<ProjectContext> for PrepareEffectRegistryPass {
+    fn descriptor(&self) -> PassDescriptor {
+        PassDescriptor::new("PrepareEffectRegistryPass", PassKind::Analysis)
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                SIGNATURE_FACTS,
+                TYPE_ENVIRONMENT,
+                RESOLVED_IMPORTS,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
+            ]))
+            .produces(global_with_diagnostics([PREPARED_EFFECT_REGISTRY]))
+    }
+
+    fn run(
+        &mut self,
+        context: &mut ProjectContext,
+        _pass_context: &PassContext<ProjectContext>,
+        manager: &mut PassManager<ProjectContext>,
+    ) -> PassResult {
+        let (Some(hir), Some(signatures), Some(type_environment), Some(imports), Some(environment)) = (
+            context.hir.as_ref(),
+            context.signature_types.as_ref(),
+            context.type_environment.as_ref(),
+            context.resolved_imports.as_ref(),
+            context.validated_external_environment.as_ref(),
+        ) else {
+            return PassResult::failed(
+                "effect registry preparation requires checked signature and import artifacts",
+            );
+        };
+        let environment = environment.environment();
+        let anchors = ExternalImportAnchorIndex::build(imports, environment);
+        let mut diagnostics = Vec::new();
+        let metadata =
+            match external_effect_metadata(environment, signatures, &anchors, &mut diagnostics) {
+                Ok(metadata) => metadata,
+                Err(error) => return PassResult::failed(error),
+            };
+        let prepared = match etas_effects::PreparedEffectRegistry::build(
+            &hir.hir,
+            signatures,
+            type_environment,
+            context.std_registry.clone(),
+            std::sync::Arc::new(metadata),
+            manager.execution_control(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => return pipeline_failure(error),
+        };
+        context.diagnostics.extend(diagnostics);
+        context.prepared_effect_registry = Some(prepared);
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::one(PREPARED_EFFECT_REGISTRY),
+        )
+    }
+}
 
 pub struct RunEffectPipelinePass;
 
@@ -29,6 +90,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 HIR_OUTPUT,
                 MODULE_INDEX,
                 TYPE_OUTPUT,
+                PREPARED_EFFECT_REGISTRY,
                 RESOLVED_IMPORTS,
                 VALIDATED_EXTERNAL_ENVIRONMENT,
                 PROJECT_ENTRY,
@@ -66,15 +128,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         };
         let external_anchors = ExternalImportAnchorIndex::build(resolved_imports, environment);
         let mut external_metadata_diagnostics = Vec::new();
-        let external_effect_metadata = match external_effect_metadata(
-            environment,
-            types,
-            &external_anchors,
-            &mut external_metadata_diagnostics,
-        ) {
-            Ok(metadata) => metadata,
-            Err(error) => return PassResult::failed(error),
+        let Some(prepared) = context.prepared_effect_registry.take() else {
+            return PassResult::failed("effect checking requires the prepared effect registry");
         };
+        let external_effect_metadata = prepared.dependencies().clone();
         let external_summaries = external_effect_summaries(
             environment,
             types,
@@ -98,6 +155,11 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 let Some(modules) = context.modules.as_ref() else {
                     return PassResult::failed("frozen callable binding requires the module index");
                 };
+                let Some(reachable_items) = reachable_items else {
+                    return PassResult::failed(
+                        "frozen callable binding requires checked candidate reachability",
+                    );
+                };
                 Some(crate::code::definition::FrozenCalls {
                     overlay: &candidate.overlay,
                     hir: &hir.hir,
@@ -106,6 +168,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                     modules,
                     std_registry: context.std_registry.as_ref(),
                     limits: candidate.descriptor_limits,
+                    reachable_items,
                 })
             }
             None => None,
@@ -117,17 +180,18 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             hir: &hir.hir,
             types,
             std_registry: context.std_registry.as_ref(),
-            dependency_metadata: Some(&external_effect_metadata),
+            dependency_metadata: Some(external_effect_metadata.as_ref()),
             tool_bindings: &tool_bindings,
             external_summaries: &external_summaries,
             external_trace_specs: &external_trace_specs,
             external_artifact_anchors: &external_artifact_anchors,
             reachable_items,
         };
-        let result = match manager.execution_control_handle() {
-            Some(control) => etas_effects::RunEffectPipeline::run_controlled(input, control),
-            None => etas_effects::RunEffectPipeline::run(input),
-        };
+        let result = etas_effects::RunEffectPipeline::run_prepared(
+            input,
+            prepared,
+            manager.execution_control_handle(),
+        );
         let pipeline_output = match result {
             Ok(output) => output,
             Err(error) => return pipeline_failure(error),

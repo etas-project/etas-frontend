@@ -25,6 +25,68 @@ pub fn collect_perform<E>(
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
+    if let ResolveResult::Resolved(symbol) = action.action_symbol
+        && let Some((target, signatures)) = super::action_selector::overload_signatures(ctx, symbol)
+    {
+        let mut candidates = Vec::new();
+        for (overload, signature) in signatures {
+            let Some(signature) =
+                specialize_action_signature(ctx, signature, &action.effect.args, span)
+            else {
+                continue;
+            };
+            validate_action_selector_arity_and_kinds(
+                ctx,
+                &signature,
+                generic_args,
+                span,
+                "performed action",
+            );
+            let Some(signature) =
+                specialize_action_signature_from_generic_args(ctx, signature, generic_args, span)
+            else {
+                continue;
+            };
+            let callable = crate::CallableSignature {
+                generic_params: signature.generic_params,
+                params: signature.params,
+                output: signature.output,
+                effects: signature.default_handler_effects,
+                requested_actions: None,
+            };
+            if let Some(mut candidate) =
+                super::expr::callable_candidate_from_signature(ctx, callable, true)
+            {
+                candidate.operation = crate::CallableCandidateOperation::EffectAction {
+                    symbol,
+                    target,
+                    overload,
+                };
+                candidates.push(candidate);
+            }
+        }
+        let mut argument_types = Vec::with_capacity(args.len());
+        for argument in args {
+            argument_types.push(collect_arg(ctx, argument, None)?);
+        }
+        let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
+        let callee = ctx.fresh_type_var();
+        let probes = candidates.iter().map(|_| ctx.fresh_type_var()).collect();
+        ctx.emit(TypeConstraint::OverloadedCall {
+            expr,
+            callee,
+            candidates,
+            probes,
+            generic_args: Vec::new(),
+            arg_exprs: super::call::call_arg_exprs(args),
+            args: argument_types,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+        let action = super::handler_request::action_identity(ctx, symbol);
+        super::handler_request::record_request(ctx, action, expr);
+        return Ok(output);
+    }
     let Some(signature) = action_signature(ctx, action) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::UnknownType,

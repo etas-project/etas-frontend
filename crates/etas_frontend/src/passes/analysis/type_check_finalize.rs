@@ -33,7 +33,22 @@ impl Pass<ProjectContext> for FinalizeTypeFactsPass {
         let bodies = units
             .iter()
             .map(|unit| context.type_body_outputs[unit].as_ref());
-        match etas_types::finalize_body_deltas(base, bodies) {
+        let bound = context
+            .candidate
+            .as_ref()
+            .and_then(|candidate| candidate.bound_body.as_ref());
+        let result = match bound {
+            Some(bound) => etas_types::finalize_body_deltas_with_application(base, bodies, bound),
+            None if context
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.bound_application.is_some()) =>
+            {
+                return PassResult::failed("bound candidate body was not checked");
+            }
+            None => etas_types::finalize_body_deltas(base, bodies),
+        };
+        match result {
             Ok(output) => context.types = Some(output),
             Err(error) => return PassResult::failed(error),
         }

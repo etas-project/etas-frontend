@@ -44,6 +44,9 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Option<Vec<LatentSource>> {
+        if let Some(sources) = self.definition_contract_sources(state, expr) {
+            return Some(sources);
+        }
         if self.inputs.std_callable_values.contains_key(&expr) {
             return Some(vec![LatentSource::StdReference {
                 value: expr,
@@ -138,9 +141,9 @@ impl EffectSemantics<'_> {
                     }
                 }))
             }
-            HirExpr::Index { base, .. } | HirExpr::Field { base, .. } => {
-                self.latent_sources_for_expr(state, *base)
-            }
+            HirExpr::Try { expr: base, .. }
+            | HirExpr::Index { base, .. }
+            | HirExpr::Field { base, .. } => self.latent_sources_for_expr(state, *base),
             HirExpr::Call { callee, args, .. } if self.is_latent_transparent_call(*callee) => args
                 .first()
                 .and_then(arg_expr)
@@ -236,9 +239,15 @@ impl EffectSemantics<'_> {
                 .ok_or("callable pattern has no checked HIR node")?;
             match pat_data {
                 HirPat::Binding { symbol, .. } => {
-                    state
-                        .local_latent_values
-                        .record_symbol_sources(*symbol, sources.clone());
+                    if self.symbol_type_contains_flow(*symbol)
+                        || self
+                            .symbol_value_type(*symbol)
+                            .is_some_and(|ty| self.symbolic_contract_value(ty, &sources))
+                    {
+                        state
+                            .local_latent_values
+                            .record_symbol_sources(*symbol, sources.clone());
+                    }
                 }
                 HirPat::Tuple { elems, .. } | HirPat::Variant { args: elems, .. } => {
                     pending.extend(elems)
@@ -483,6 +492,9 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn expr_type_contains_flow(&self, expr: HirExprId) -> bool {
+        if self.types.facts.definition_operations.contains_key(&expr) {
+            return true;
+        }
         self.types
             .facts
             .expr_types
@@ -496,6 +508,9 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn type_contains_flow(&self, ty: etas_types::TypeId) -> bool {
+        if self.descriptor_contract_type(ty).is_some() {
+            return true;
+        }
         if let Some(found) = self.flow_type_presence.borrow().get(&ty) {
             return *found;
         }
@@ -505,6 +520,10 @@ impl EffectSemantics<'_> {
         while let Some(ty) = pending.pop() {
             if !visited.insert(ty) {
                 continue;
+            }
+            if self.descriptor_contract_type(ty).is_some() {
+                self.flow_type_presence.borrow_mut().insert(root, true);
+                return true;
             }
             if let Some(found) = self.flow_type_presence.borrow().get(&ty).copied() {
                 if found {

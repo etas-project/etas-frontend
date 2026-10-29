@@ -2,9 +2,6 @@ use super::{EffectSemantics, EffectState, HirExpr, HirExprId, LatentSource};
 
 impl EffectSemantics<'_> {
     pub(crate) fn record_structural_latent_result(&self, expr: HirExprId, state: &mut EffectState) {
-        if !self.expr_type_contains_flow(expr) {
-            return;
-        }
         let mut values = Vec::new();
         let mut blocks = Vec::new();
         match self.hir.exprs.get(expr) {
@@ -40,6 +37,16 @@ impl EffectSemantics<'_> {
             {
                 values.push(value);
             }
+        }
+        if !self.expr_type_contains_flow(expr)
+            && !self.types.facts.expr_types.get(&expr).is_some_and(|ty| {
+                values.iter().any(|value| {
+                    self.latent_sources_for_expr(state, *value)
+                        .is_some_and(|sources| self.symbolic_contract_value(*ty, &sources))
+                })
+            })
+        {
+            return;
         }
         let mut sources = std::collections::BTreeSet::new();
         if values.is_empty() {

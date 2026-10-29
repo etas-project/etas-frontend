@@ -191,9 +191,16 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
                     args: args.into_iter().map(|ty| self.ty(ty)).collect(),
                 })
             }
+            // Body-local inference identities must not alias another body's pending proof.
+            Type::Var(variable) => match u32::try_from(self.target.store().len()) {
+                Ok(index) => Type::Var(crate::TypeVarId(index)),
+                Err(_) => {
+                    self.error = Some("merged type variable identity space is exhausted".into());
+                    Type::Var(variable)
+                }
+            },
             Type::Primitive(_)
             | Type::IntegerLiteral { .. }
-            | Type::Var(_)
             | Type::Enum(_)
             | Type::Named(_)
             | Type::Prompt
@@ -502,8 +509,15 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .into_iter()
         .map(|(ty, identity)| (remapper.ty(ty), identity))
         .collect();
-    for method in facts.std_method_calls.values_mut() {
-        method.signature = remapper.ty(method.signature);
+    for method in facts.std_intrinsic_calls.values_mut() {
+        method.callable_type = remapper.ty(method.callable_type);
+        remapper.callable(&mut method.signature);
+    }
+    for fact in facts.definition_operations.values_mut() {
+        fact.contract_type = remapper.ty(fact.contract_type);
+    }
+    for fact in facts.action_calls.values_mut() {
+        remapper.callable(&mut fact.signature);
     }
     for method in facts.agent_methods.values_mut() {
         method.component = remapper.ty(method.component);
@@ -520,6 +534,24 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     for fact in facts.deferred_handler_instantiations.values_mut() {
+        if let Some(overload) = &mut fact.overload {
+            for ty in overload
+                .params
+                .iter_mut()
+                .chain(std::iter::once(&mut overload.output))
+            {
+                *ty = remapper.ty(*ty);
+            }
+            for signature in &mut overload.candidates {
+                for ty in signature
+                    .params
+                    .iter_mut()
+                    .chain(std::iter::once(&mut signature.output))
+                {
+                    *ty = remapper.ty(*ty);
+                }
+            }
+        }
         for parameter in &mut fact.parameters {
             parameter.candidate = remapper.ty(parameter.candidate);
             parameter.rigid = remapper.ty(parameter.rigid);
@@ -544,6 +576,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             }
             crate::CheckedReflectionTarget::Callable { .. }
             | crate::CheckedReflectionTarget::ExternalCallable { .. } => {}
+            crate::CheckedReflectionTarget::CallableValue { signature, .. } => {
+                *signature = remapper.ty(*signature);
+            }
         }
     }
     facts.agent_components = std::mem::take(&mut facts.agent_components)
@@ -589,6 +624,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     for ty in facts.known_std_types.runtime_values.values_mut() {
         *ty = remapper.ty(*ty);
     }
+    facts.known_std_types.json_value = facts.known_std_types.json_value.map(|ty| remapper.ty(ty));
     facts.known_std_types.priority_queue = facts
         .known_std_types
         .priority_queue

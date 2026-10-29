@@ -26,7 +26,8 @@ impl EffectSemantics<'_> {
         {
             for source in sources {
                 match source {
-                    super::state::LatentSource::Unit(unit)
+                    super::state::LatentSource::FrozenContract { unit, .. }
+                    | super::state::LatentSource::Unit(unit)
                     | super::state::LatentSource::Reference { unit, .. }
                     | super::state::LatentSource::Captured { unit, .. } => {
                         self.inputs

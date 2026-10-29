@@ -171,6 +171,38 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Some(fact) = self.types.facts.reflections.get(&expr) {
+            use etas_types::facts::reflection::CheckedReflectionTarget;
+            let declaration = match fact.target {
+                CheckedReflectionTarget::Callable { declaration }
+                | CheckedReflectionTarget::Agent { declaration, .. }
+                | CheckedReflectionTarget::AgentDefaultEntry { declaration, .. } => {
+                    Some(declaration)
+                }
+                _ => None,
+            };
+            if let Some(symbol) =
+                declaration.and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
+                && let Some(SymbolDef::Item { item }) =
+                    self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
+            {
+                let unit = if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Agent(_)))
+                {
+                    match self.agent_default_call_target(*item) {
+                        CallTarget::Direct(unit) => Some(unit),
+                        _ => None,
+                    }
+                } else {
+                    Some(EffectUnit::Item(*item))
+                };
+                if let Some(unit) = unit
+                    && self.analysis_units.contains(&unit)
+                    && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
+                {
+                    return vec![unit];
+                }
+            }
+        }
         if matches!(self.hir.exprs.get(expr), Some(HirExpr::StageCompose { .. }))
             && let Some(owner) = context.unit.owner()
             && let Some(unit) = self.anonymous_flow_unit_for_expr(owner, expr)
@@ -238,7 +270,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 _ => captures.values.values().flatten().copied().collect(),
             };
             for source in sources {
-                if let LatentSource::Unit(unit) | LatentSource::Reference { unit, .. } = source
+                if let LatentSource::FrozenContract { unit, .. }
+                | LatentSource::Unit(unit)
+                | LatentSource::Reference { unit, .. } = source
                     && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
                 {
                     dependencies.insert(unit);
@@ -296,6 +330,10 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         }
         let summary = match self.specialize_summary_for_call(callee, &site, &state, summary, None) {
             Ok(summary) => summary,
+            Err(super::specialize::EffectSpecializationError::Interrupted(interruption)) => {
+                self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                return state;
+            }
             Err(error) => {
                 return self.incomplete_at(
                     site.span,
@@ -352,11 +390,33 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         }
                         _ => {}
                     }
-                } else if let LatentSource::Unit(unit)
+                } else if let LatentSource::FrozenContract { unit, .. }
+                | LatentSource::Unit(unit)
                 | LatentSource::Reference { unit, .. }
                 | LatentSource::Captured { unit, .. } = source
                 {
                     let environment = match source {
+                        LatentSource::FrozenContract {
+                            unit,
+                            reference: Some(value),
+                            environment,
+                        } => {
+                            match self.reference_invocation_environment(LatentSource::Reference {
+                                unit,
+                                value,
+                                environment,
+                            }) {
+                                Ok(environment) => environment,
+                                Err(error) => {
+                                    return self.incomplete_at(site.span, error.to_string(), state);
+                                }
+                            }
+                        }
+                        LatentSource::FrozenContract {
+                            reference: None,
+                            environment,
+                            ..
+                        } => environment,
                         LatentSource::Captured { environment, .. } => Some(environment),
                         LatentSource::Reference { .. } => {
                             match self.reference_invocation_environment(source) {
@@ -423,6 +483,59 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             target: crate::ParameterCallTarget::Native(symbol),
                             output,
                             source: site.span.into(),
+                        });
+                        let arguments = match self.hir.exprs.get(site.call) {
+                            Some(etas_hir::HirExpr::Call { args, .. }) => args
+                                .iter()
+                                .map(|arg| {
+                                    let (name, value) = match arg {
+                                        etas_hir::HirArg::Positional(value) => (None, *value),
+                                        etas_hir::HirArg::Named { name, value, .. } => {
+                                            (Some(name.clone()), *value)
+                                        }
+                                    };
+                                    let ty = *self.types.facts.expr_types.get(&value)?;
+                                    let expression = self.hir.exprs.get(value)?;
+                                    let checked_value =
+                                        super::argument_values::checked_literal_value(
+                                            self.hir, self.types, expression, ty,
+                                        )
+                                        .or_else(|| {
+                                            self.argument_writes.input_value(
+                                                self.hir,
+                                                self.types,
+                                                context.unit,
+                                                expression,
+                                                ty,
+                                            )
+                                        });
+                                    Some(crate::ParameterExitArgument {
+                                        name,
+                                        ty,
+                                        source: expression.span(&self.hir.blocks).into(),
+                                        value: checked_value,
+                                    })
+                                })
+                                .collect(),
+                            _ => None,
+                        };
+                        let (handler_free, enclosing_handled) =
+                            match self.enclosing_handled_row(site.call) {
+                                Ok(value) => value,
+                                Err(interruption) => {
+                                    self.callable_summaries.borrow_mut().interruption =
+                                        Some(interruption);
+                                    return state;
+                                }
+                            };
+                        state.exits.record_parameter_exit(crate::ParameterExitFact {
+                            target: crate::ParameterCallTarget::Native(symbol),
+                            output,
+                            source: site.span.into(),
+                            arguments,
+                            handler_free,
+                            enclosing_handled,
+                            prefix: state.summary.action_trace.clone(),
                         });
                     } else {
                         other_unproved_control = true;

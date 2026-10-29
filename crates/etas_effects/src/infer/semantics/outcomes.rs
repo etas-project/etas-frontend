@@ -11,11 +11,94 @@ use crate::{
 mod completion;
 
 impl EffectSemantics<'_> {
+    pub(crate) fn record_resume_value(&self, value: Option<HirExprId>, state: &mut EffectState) {
+        let outcome = match value {
+            Some(value) => self
+                .checked_control_value(value, state)
+                .map(|(ty, observation)| CallableOutcome::HandlerResumed { ty, observation }),
+            None => match state.unit {
+                Some(EffectUnit::HandlerArm { arm, .. }) => self
+                    .types
+                    .facts
+                    .handler_actions
+                    .get(&arm)
+                    .map(|fact| fact.output)
+                    .filter(|ty| {
+                        matches!(
+                            self.types.store.get(*ty),
+                            Some(Type::Primitive(PrimitiveType::Unit))
+                        )
+                    })
+                    .map(|ty| CallableOutcome::HandlerResumed {
+                        ty,
+                        observation: ReturnObservation::Unit,
+                    }),
+                _ => None,
+            },
+        };
+        match outcome {
+            Some(outcome) => {
+                state
+                    .exits
+                    .record(outcome, state.summary.action_trace.clone());
+            }
+            None => {
+                state.exits.gaps.insert(Gap::MissingReturnObservation);
+            }
+        }
+    }
+
+    pub(crate) fn record_finish_value(&self, value: HirExprId, state: &mut EffectState) {
+        let Some(ty) = self.types.facts.expr_types.get(&value).copied() else {
+            state.exits.gaps.insert(Gap::MissingReturnType);
+            return;
+        };
+        let Some((_, observation)) = self.checked_control_value(value, state) else {
+            state.exits.gaps.insert(Gap::MissingReturnObservation);
+            return;
+        };
+        state.exits.record(
+            CallableOutcome::HandlerFinished { ty, observation },
+            state.summary.action_trace.clone(),
+        );
+    }
+
+    fn checked_control_value(
+        &self,
+        value: HirExprId,
+        state: &EffectState,
+    ) -> Option<(TypeId, ReturnObservation)> {
+        let ty = self.types.facts.expr_types.get(&value).copied()?;
+        let sources = self.latent_sources_for_expr(state, value);
+        let observation = if self.expr_type_contains_flow(value)
+            || sources
+                .as_ref()
+                .is_some_and(|sources| self.symbolic_contract_value(ty, sources))
+        {
+            sources
+                .and_then(|sources| self.returned_callable_sources(state, &sources))
+                .map(ReturnObservation::CallableSources)
+        } else {
+            self.return_observation(value)
+                .and_then(|outcome| match outcome {
+                    CallableOutcome::Returned { observation, .. } => Some(observation),
+                    _ => None,
+                })
+        };
+        Some((ty, observation?))
+    }
+
     pub(crate) fn record_return(&self, value: Option<HirExprId>, state: &mut EffectState) {
         if let Some(value) = value
             && let Some(sources) = self.latent_sources_for_expr(state, value)
+            && (self.expr_type_contains_flow(value)
+                || self
+                    .types
+                    .facts
+                    .expr_types
+                    .get(&value)
+                    .is_some_and(|ty| self.symbolic_contract_value(*ty, &sources)))
             && let Some(sources) = self.returned_callable_sources(state, &sources)
-            && self.expr_type_contains_flow(value)
         {
             let Some(ty) = state.unit.and_then(|unit| self.unit_output_type(unit)) else {
                 state.exits.gaps.insert(Gap::MissingReturnType);
@@ -75,6 +158,15 @@ impl EffectSemantics<'_> {
         let mut returned = std::collections::BTreeSet::new();
         for source in sources {
             let source = match source {
+                super::state::LatentSource::FrozenContract {
+                    unit,
+                    reference,
+                    environment,
+                } => crate::CallableReturnSource::FrozenContract {
+                    unit: *unit,
+                    reference: *reference,
+                    environment: *environment,
+                },
                 super::state::LatentSource::Captured { unit, environment } => {
                     crate::CallableReturnSource::Captured {
                         unit: *unit,
@@ -266,6 +358,12 @@ impl EffectSemantics<'_> {
         }
         if let Some(state) = control.normal_state() {
             result.gaps.extend(state.exits.gaps.iter().cloned());
+            result
+                .handler_gaps
+                .extend(state.exits.handler_gaps.iter().cloned());
+            for exit in &state.exits.parameter_exits {
+                result.record_parameter_exit(exit.clone());
+            }
             let value = match unit.analysis_body_with_context(&self.context) {
                 HirAnalysisBody::Expr(expr) => self.return_observation(expr),
                 HirAnalysisBody::Block(block) => match self
@@ -304,17 +402,30 @@ impl EffectSemantics<'_> {
                 result.gaps.insert(Gap::InvalidControlExit);
             }
         }
-        for state in [
-            control.break_state(),
-            control.continue_state(),
-            control.resume_state(),
-            control.finish_state(),
-        ]
-        .into_iter()
-        .flatten()
+        for state in [control.break_state(), control.continue_state()]
+            .into_iter()
+            .flatten()
         {
             result.gaps.extend(state.exits.gaps.iter().cloned());
+            result
+                .handler_gaps
+                .extend(state.exits.handler_gaps.iter().cloned());
+            for exit in &state.exits.parameter_exits {
+                result.record_parameter_exit(exit.clone());
+            }
             result.gaps.insert(Gap::InvalidControlExit);
+        }
+        if let Some(state) = control.resume_state() {
+            result.join_assign(&state.exits);
+            if !matches!(unit, EffectUnit::HandlerArm { .. }) {
+                result.gaps.insert(Gap::InvalidControlExit);
+            }
+        }
+        if let Some(state) = control.finish_state() {
+            result.join_assign(&state.exits);
+            if !matches!(unit, EffectUnit::HandlerArm { .. }) {
+                result.gaps.insert(Gap::InvalidControlExit);
+            }
         }
         if result.exits.is_empty() && result.gaps.is_empty() {
             result.gaps.insert(Gap::InvalidControlExit);
@@ -368,6 +479,59 @@ impl EffectSemantics<'_> {
         summary: &crate::EffectSummary,
         state: &mut EffectState,
     ) {
+        if let Some(exits) = &summary.exits
+            && !exits.parameter_exits.is_empty()
+            && !exits.exits.is_empty()
+            && exits.exits.iter().all(|exit| matches!(exit.outcome, CallableOutcome::Returned { .. }))
+            && exits.gaps.iter().all(|gap| matches!(gap, Gap::ParameterCall { .. } | Gap::Handler(_)))
+            && exits.parameter_exits.iter().all(|exit| {
+                matches!(exit.target, crate::ParameterCallTarget::Native(symbol)
+                    if self.hir.symbols.get(symbol).is_some_and(|data| matches!(data.def, etas_hir::SymbolDef::Param { owner, .. } if state.owner == Some(owner))))
+                    && exits.gaps.contains(&Gap::ParameterCall {
+                        target: exit.target,
+                        output: exit.output,
+                        source: exit.source.clone(),
+                    })
+            })
+            && exits.gaps.iter().filter(|gap| matches!(gap, Gap::ParameterCall { .. })).all(|gap| exits.parameter_exits.iter().any(|exit| matches!(gap, Gap::ParameterCall { target, output, source } if *target == exit.target && *output == exit.output && *source == exit.source)))
+        {
+            let (outer_free, outer_handled) = match self.enclosing_handled_row(call) {
+                Ok(value) => value,
+                Err(interruption) => {
+                    self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                    return;
+                }
+            };
+            state.exits.gaps.extend(exits.gaps.iter().cloned());
+            state.exits.handler_gaps.extend(exits.handler_gaps.iter().cloned());
+            for exit in &exits.parameter_exits {
+                if let Some(control) = self.query_control
+                    && let Err(interruption) = control.checkpoint()
+                {
+                    self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                    return;
+                }
+                let mut exit = exit.clone();
+                exit.handler_free = match (exit.handler_free, outer_free) {
+                    (Some(true), Some(true)) => Some(true),
+                    (Some(false), _) | (_, Some(false)) => Some(false),
+                    _ => None,
+                };
+                exit.enclosing_handled = match (exit.enclosing_handled, &outer_handled) {
+                    (Some(mut inner), Some(outer))
+                        if !(inner.open.is_some() && outer.open.is_some() && inner.open != outer.open) => {
+                            inner.union_assign(outer);
+                            Some(inner)
+                        }
+                    _ => None,
+                };
+                let mut prefix = state.summary.action_trace.clone();
+                prefix.seq_assign(exit.prefix);
+                exit.prefix = prefix;
+                state.exits.record_parameter_exit(exit);
+            }
+            return;
+        }
         if let Some(unit) = state.unit
             && let Some(exits) = &summary.exits
             && (exits.has_only_terminal_exits()

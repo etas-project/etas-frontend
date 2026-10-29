@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub fn lower_effect_row(ctx: &mut TypePipelineContext<'_>, row: &HirEffectRow) -> EffectRowRef {
-    EffectRowRef {
+    let mut lowered = EffectRowRef {
         effects: row
             .effects
             .iter()
@@ -21,7 +21,18 @@ pub fn lower_effect_row(ctx: &mut TypePipelineContext<'_>, row: &HirEffectRow) -
             .tail
             .as_ref()
             .and_then(|tail| tail.segments.last().map(|segment| segment.name.clone())),
+    };
+    if let Some(ResolveResult::Resolved(symbol)) = row.tail.as_ref().map(|tail| &tail.resolution)
+        && let Some(argument) = ctx.bound_effect_parameter(*symbol)
+    {
+        for effect in &argument.effects {
+            if !lowered.effects.contains(effect) {
+                lowered.effects.push(effect.clone());
+            }
+        }
+        lowered.tail = argument.tail.clone();
     }
+    lowered
 }
 
 fn lower_effect_ref(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -> Option<EffectRef> {
@@ -348,6 +359,9 @@ fn type_arg_from_path(
     path: &etas_hir::ResolvedPath,
 ) -> Option<TypeId> {
     let symbol = resolved_static_type_selector_symbol(path, Some)?;
+    if let Some(bound) = ctx.bound_type_parameter(symbol) {
+        return Some(bound);
+    }
     if let Some(symbol_data) = ctx.hir.symbols.get(symbol)
         && let SymbolDef::TypeParam { .. } = symbol_data.def
     {

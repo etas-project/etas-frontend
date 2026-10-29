@@ -193,7 +193,7 @@ fn frozen_tool_surface_uses_declaration_identity_not_import_spelling() {
         let frozen = catalog(&checked)
             .freeze_agent(reflections(&checked)[0])
             .unwrap();
-        let tools = &frozen.contract().header().tools;
+        let tools = &frozen.contract().agent_header().unwrap().tools;
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].declaration(), [name]);
         assert_eq!(tools[0].module(), ["app", "tools"]);

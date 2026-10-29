@@ -11,6 +11,115 @@ pub(super) struct PendingParameter {
     origin: ConstraintOrigin,
 }
 
+pub(super) fn select_request_signature(
+    store: &TypeStore,
+    report: &mut SolverReport,
+    candidates: &[crate::constraint::ty::HandlerActionCandidate],
+    requests: &[etas_hir::HirExprId],
+    origin: ConstraintOrigin,
+) -> Option<usize> {
+    let fail = |report: &mut SolverReport, code, message: String| {
+        report.push(SolverFailure {
+            code,
+            span: origin.span,
+            message,
+        });
+    };
+    if candidates.is_empty() {
+        fail(
+            report,
+            etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+            "handler overload has no checked request input signature".into(),
+        );
+        return None;
+    }
+    if requests.is_empty() {
+        fail(report, etas_core::TypeDiagnosticCode::TypeMismatch, "handler resume payload cannot be specialized without a matching request input signature".into());
+        return None;
+    }
+    let mut selected = None;
+    for request in requests {
+        let signature = report
+            .action_calls
+            .get(request)
+            .map(|fact| &fact.signature)
+            .or_else(|| {
+                report
+                    .std_intrinsic_calls
+                    .get(request)
+                    .map(|fact| &fact.signature)
+            });
+        let Some(signature) = signature else {
+            fail(
+                report,
+                etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                format!("handled request {request:?} has no selected action input signature"),
+            );
+            return None;
+        };
+        let matching = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, candidate)| {
+                if candidate.signature.params.len() != signature.params.len() {
+                    return None;
+                }
+                let mut probe = TypeUnifier::with_known_substitution(store, &report.substitutions);
+                candidate
+                    .signature
+                    .params
+                    .iter()
+                    .zip(&signature.params)
+                    .all(|(expected, actual)| probe.unify(*expected, *actual).is_ok())
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [index] = matching.as_slice() else {
+            fail(
+                report,
+                etas_core::TypeDiagnosticCode::TypeMismatch,
+                "handler request input does not identify exactly one registered action overload"
+                    .into(),
+            );
+            return None;
+        };
+        if selected.is_some_and(|selected| selected != *index) {
+            fail(report, etas_core::TypeDiagnosticCode::TypeMismatch, "handler requests require different action input overloads; one arm cannot assume a single payload ABI".into());
+            return None;
+        }
+        selected = Some(*index);
+    }
+    selected
+}
+
+pub(super) fn bind_signature(
+    store: &TypeStore,
+    report: &mut SolverReport,
+    signature: &crate::EffectActionSignature,
+    params: &[TypeId],
+    output: TypeId,
+    origin: ConstraintOrigin,
+) {
+    let mut unifier = TypeUnifier::with_known_substitution(store, &report.substitutions);
+    if signature.params.len() != params.len()
+        || !signature
+            .params
+            .iter()
+            .zip(params)
+            .all(|(expected, actual)| unifier.unify(*expected, *actual).is_ok())
+        || unifier.unify(signature.output, output).is_err()
+    {
+        report.push(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::TypeMismatch,
+            span: origin.span,
+            message: "handler payload or resume type conflicts with its checked request signature"
+                .into(),
+        });
+        return;
+    }
+    report.substitutions.extend(&unifier.into_substitution());
+}
+
 pub(super) fn finalize_parameters(
     store: &TypeStore,
     report: &mut SolverReport,

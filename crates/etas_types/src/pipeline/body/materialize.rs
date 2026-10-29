@@ -26,6 +26,17 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
+    let definition_operations = match reflection::materialize(ctx, &state) {
+        Ok(facts) => facts,
+        Err(error) => {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                ctx.hir.items[state.item].span(),
+                error,
+            ));
+            return;
+        }
+    };
     state
         .provisional
         .expr_types
@@ -57,6 +68,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         return;
     }
     ctx.signature_facts
+        .definition_operations
+        .extend(definition_operations);
+    ctx.signature_facts
         .expr_types
         .extend(state.provisional.expr_types);
     ctx.signature_facts
@@ -72,8 +86,11 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .agent_inferences
         .extend(state.solver_report.agent_inferences);
     ctx.signature_facts
-        .std_method_calls
-        .extend(state.solver_report.std_method_calls);
+        .std_intrinsic_calls
+        .extend(state.solver_report.std_intrinsic_calls);
+    ctx.signature_facts
+        .action_calls
+        .extend(state.solver_report.action_calls);
     ctx.signature_facts
         .handler_actions
         .extend(state.provisional.handler_actions);
@@ -121,6 +138,8 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .extend(state.provisional.item_signatures);
 }
 
+mod reflection;
+
 fn materialize_callable_references(
     ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
     state: &mut BodyPipelineState,
@@ -166,9 +185,39 @@ fn apply_solver_substitutions(
         return Ok(());
     }
 
-    for fact in state.solver_report.std_method_calls.values_mut() {
-        fact.signature =
-            substitute_type(ctx, &substitutions, &named_substitutions, fact.signature)?;
+    for fact in state.solver_report.std_intrinsic_calls.values_mut() {
+        fact.callable_type = substitute_type(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            fact.callable_type,
+        )?;
+        substitute_callable_signature(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            &mut fact.signature,
+        )?;
+    }
+    for fact in state.solver_report.action_calls.values_mut() {
+        substitute_callable_signature(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            &mut fact.signature,
+        )?;
+    }
+
+    for fact in state.solver_report.reflections.values_mut() {
+        fact.descriptor_type = substitute_type(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            fact.descriptor_type,
+        )?;
+        if let crate::CheckedReflectionTarget::CallableValue { signature, .. } = &mut fact.target {
+            *signature = substitute_type(ctx, &substitutions, &named_substitutions, *signature)?;
+        }
     }
 
     for ty in state.provisional.expr_types.values_mut() {
@@ -241,6 +290,24 @@ fn apply_solver_substitutions(
         .deferred_handler_instantiations
         .values_mut()
     {
+        if let Some(overload) = &mut fact.overload {
+            for ty in overload
+                .params
+                .iter_mut()
+                .chain(std::iter::once(&mut overload.output))
+            {
+                *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
+            }
+            for signature in &mut overload.candidates {
+                for ty in signature
+                    .params
+                    .iter_mut()
+                    .chain(std::iter::once(&mut signature.output))
+                {
+                    *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
+                }
+            }
+        }
         for parameter in &mut fact.parameters {
             parameter.candidate = substitute_type(
                 ctx,

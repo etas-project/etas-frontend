@@ -78,6 +78,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         handler_requests: Some(Default::default()),
         behavior: metadata::CallableValueBehavior {
             determinism: metadata::CallableValueDeterminism::Deterministic,
+            independent_determinism: Some(metadata::CallableValueDeterminism::Deterministic),
             host_requirements: vec![],
             interpreter_features: vec![],
         },
@@ -163,6 +164,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             visibility: "public".into(),
         }],
         effect_summaries: vec![crate::ProjectExternalEffectSummaryInput {
+            behavior: None,
             handler_requests: None,
             item: path,
             public_effects: row.clone(),

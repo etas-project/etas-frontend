@@ -337,11 +337,11 @@ impl<'a> Relocation<'a> {
         })
     }
 
-    fn returned_reference(
+    pub(in crate::code::definition::frozen_calls) fn reference_bindings(
         &self,
         reference: &CallableReturnReference,
         scope: &GenericOwner,
-    ) -> Result<CallableReturnReference, ProjectionError> {
+    ) -> Result<super::ReferenceBindings, ProjectionError> {
         let target = match &reference.target {
             CallableReferenceTarget::Source(item) => {
                 let item =
@@ -364,19 +364,34 @@ impl<'a> Relocation<'a> {
             .iter()
             .map(|(name, row)| Ok((name.clone(), self.reference_row(row, scope)?)))
             .collect::<Result<_, ProjectionError>>()?;
-        Ok(CallableReturnReference {
-            value: *self.native_exprs.get(&reference.value).ok_or_else(|| {
-                invalid("returned reference has no unchanged creation expression")
-            })?,
+        Ok(super::ReferenceBindings {
             owner: *self
                 .returned_items
                 .get(&reference.owner)
                 .ok_or_else(|| invalid("returned reference has no canonical creation owner"))?,
-            environment: reference.environment,
             target,
             signature: self.ty(scope, reference.signature)?,
-            type_bindings,
-            effect_row_bindings,
+            types: type_bindings,
+            rows: effect_row_bindings,
+        })
+    }
+
+    fn returned_reference(
+        &self,
+        reference: &CallableReturnReference,
+        scope: &GenericOwner,
+    ) -> Result<CallableReturnReference, ProjectionError> {
+        let binding = self.reference_bindings(reference, scope)?;
+        Ok(CallableReturnReference {
+            value: *self.native_exprs.get(&reference.value).ok_or_else(|| {
+                invalid("returned reference has no unchanged creation expression")
+            })?,
+            owner: binding.owner,
+            environment: reference.environment,
+            target: binding.target,
+            signature: binding.signature,
+            type_bindings: binding.types,
+            effect_row_bindings: binding.rows,
         })
     }
 
@@ -668,6 +683,27 @@ impl<'a> Relocation<'a> {
             .as_ref()
             .map(|exits| {
                 Ok::<_, ProjectionError>(CallableExitSummary {
+                    handler_gaps: exits.handler_gaps.iter().map(|evidence| {
+                        Ok(etas_effects::HandlerGapEvidence {
+                            source: evidence.source.clone(),
+                            normal_control: evidence.normal_control,
+                            handled: self.row(&evidence.handled, scope)?,
+                            body_escaping: self.row(&evidence.body_escaping, scope)?,
+                        })
+                    }).collect::<Result<_, ProjectionError>>()?,
+                    parameter_exits: exits.parameter_exits.iter().map(|exit| {
+                        Ok(etas_effects::ParameterExitFact {
+                            target: self.parameter_target(exit.target)?,
+                            output: self.ty(scope, exit.output)?,
+                            source: exit.source.clone(),
+                            handler_free: exit.handler_free,
+                            enclosing_handled: exit.enclosing_handled.as_ref().map(|row| self.row(row, scope)).transpose()?,
+                            arguments: exit.arguments.as_ref().map(|arguments| arguments.iter().map(|argument| Ok(etas_effects::ParameterExitArgument {
+                                name: argument.name.clone(), ty: self.ty(scope, argument.ty)?, source: argument.source.clone(), value: argument.value.clone(),
+                            })).collect::<Result<Vec<_>, ProjectionError>>()).transpose()?,
+                            prefix: self.trace(&exit.prefix, scope)?,
+                        })
+                    }).collect::<Result<_, ProjectionError>>()?,
                     exits: exits
                         .exits
                         .iter()
@@ -713,6 +749,7 @@ impl<'a> Relocation<'a> {
                                         error: self.ty(scope, *error)?,
                                     },
                                     CallableOutcome::NonReturn => CallableOutcome::NonReturn,
+                                    CallableOutcome::HandlerFinished { .. } | CallableOutcome::HandlerResumed { .. } => return Err(invalid("handler-local control cannot escape into a frozen callable summary")),
                                 },
                                 trace: self.trace(&exit.trace, scope)?,
                             })
@@ -735,6 +772,7 @@ impl<'a> Relocation<'a> {
                                 OutcomeAnalysisGap::ParameterCall { target, output, source } => OutcomeAnalysisGap::ParameterCall {
                                     target: self.parameter_target(*target)?, output: self.ty(scope, *output)?, source: source.clone(),
                                 },
+                                OutcomeAnalysisGap::Handler(source) => OutcomeAnalysisGap::Handler(source.clone()),
                                 _ => OutcomeAnalysisGap::FrozenCallee(span.into()),
                             })
                         }).collect::<Result<_, ProjectionError>>()?
@@ -756,6 +794,22 @@ impl<'a> Relocation<'a> {
                         .map(|instance| {
                             Ok(ActionRequestInstance {
                                 action: self.effect(&instance.action, scope)?,
+                                signature: instance
+                                    .signature
+                                    .as_ref()
+                                    .map(|signature| {
+                                        Ok::<_, ProjectionError>(
+                                            etas_types::ActionRequestSignature {
+                                                params: signature
+                                                    .params
+                                                    .iter()
+                                                    .map(|ty| self.ty(scope, *ty))
+                                                    .collect::<Result<_, _>>()?,
+                                                output: self.ty(scope, signature.output)?,
+                                            },
+                                        )
+                                    })
+                                    .transpose()?,
                                 type_bindings: instance
                                     .type_bindings
                                     .as_ref()
@@ -799,6 +853,7 @@ impl<'a> Relocation<'a> {
             trace_spec_obligations: self.requirements(&source.trace_spec_obligations, scope)?,
             requirements: self.requirements(&source.requirements, scope)?,
             determinism: source.determinism,
+            independent_determinism: source.independent_determinism,
             support: source.support.clone(),
         })
     }
