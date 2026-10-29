@@ -276,7 +276,8 @@ impl DefinitionDescriptorProjector<'_> {
             return Ok(None);
         };
         if matching.any(|exit| {
-            self.checked_parameter_handler_scopes(exit, exits).as_ref() != Some(&scopes)
+            self.checked_parameter_handler_scopes(exit, exits)
+                .is_none_or(|other| !self.equivalent_handler_scopes(&scopes, &other))
         }) {
             return Ok(None);
         }
@@ -320,6 +321,35 @@ impl DefinitionDescriptorProjector<'_> {
             })
             .collect::<Result<Vec<_>, _>>()
             .map(|scopes| scopes.into_iter().collect())
+    }
+
+    fn equivalent_handler_scopes(
+        &self,
+        left: &[CheckedHandlerScope],
+        right: &[CheckedHandlerScope],
+    ) -> bool {
+        if left.len() != right.len() {
+            return false;
+        }
+        left.iter().zip(right).all(|(left, right)| {
+            if left == right { return true; }
+            let (CheckedHandlerScope::External(left), CheckedHandlerScope::External(right)) = (left, right) else { return false; };
+            let (etas_effects::ParameterHandlerScopeRef::External { graph: left_id, .. },
+                 etas_effects::ParameterHandlerScopeRef::External { graph: right_id, .. }) = (left, right) else { return false; };
+            if left_id != right_id { return false; }
+            let Some(facts) = self.checked.effects else { return false; };
+            let (Some((graph, ParameterHandlerScopeInfo::Handle { arms: left })),
+                 Some((_, ParameterHandlerScopeInfo::Handle { arms: right }))) =
+                (facts.external_handler_scope(*left), facts.external_handler_scope(*right)) else { return false; };
+            let Ok(graph) = etas_code::descriptor::DescriptorGraph::new(graph.clone(), self.limits) else { return false; };
+            left.len() == right.len() && left.iter().zip(right).all(|(left, right)| {
+                left.action == right.action
+                    && std::mem::discriminant(&left.completion) == std::mem::discriminant(&right.completion)
+                    && left.completion.value() == right.completion.value()
+                    && matches!((graph.type_fingerprint(left.completion.result_type()), graph.type_fingerprint(right.completion.result_type())), (Ok(a), Ok(b)) if a == b)
+                    && matches!((graph.trace_fingerprint(left.trace), graph.trace_fingerprint(right.trace)), (Ok(a), Ok(b)) if a == b)
+            })
+        })
     }
 
     fn project_external_handler_scope(

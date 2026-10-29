@@ -77,6 +77,36 @@ impl DefinitionDescriptorProjector<'_> {
         if exits.exits.is_empty() {
             return false;
         }
+        let mut site_prefixes =
+            std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
+        for exit in &exits.parameter_exits {
+            let Some(prefix) = exact_site_count(&exit.prefix, exit.target, exit.source.span())
+            else {
+                return false;
+            };
+            site_prefixes
+                .entry((exit.target, exit.source.clone()))
+                .or_default()
+                .insert(prefix);
+        }
+        for ((target, source), prefixes) in site_prefixes {
+            let Some(count) = exits
+                .exits
+                .first()
+                .and_then(|normal| exact_site_count(&normal.trace, target, source.span()))
+            else {
+                return false;
+            };
+            if count == 0
+                || prefixes.len() != count
+                || prefixes.iter().any(|prefix| *prefix >= count)
+                || exits.exits.iter().any(|normal| {
+                    exact_site_count(&normal.trace, target, source.span()) != Some(count)
+                })
+            {
+                return false;
+            }
+        }
         exits.parameter_exits.iter().all(|exit| {
             let Some(arguments) = exit
                 .arguments
@@ -90,13 +120,6 @@ impl DefinitionDescriptorProjector<'_> {
                 etas_effects::OutcomeAnalysisGap::ParameterCall { target, output, source }
                     if exit.target == *target && exit.output == *output && exit.source == *source)
             }) {
-                return false;
-            }
-            if exact_site_count(&exit.prefix, exit.target, exit.source.span()) != Some(0)
-                || exits.exits.iter().any(|normal| {
-                    exact_site_count(&normal.trace, exit.target, exit.source.span()) != Some(1)
-                })
-            {
                 return false;
             }
             let Some(position) = parameters.iter().position(|symbol| {
