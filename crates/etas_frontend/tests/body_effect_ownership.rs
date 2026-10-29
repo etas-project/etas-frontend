@@ -306,6 +306,7 @@ fn all_effect_stages_share_the_finalized_hir_index() {
     assert!(std::ptr::eq(view.index(), other.view().index()));
     let before = etas_hir::HirTreeIndex::thread_build_count();
     let result = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &hir.hir,
         types: output.types.as_ref().unwrap(),

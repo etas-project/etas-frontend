@@ -145,9 +145,10 @@ impl EffectSemantics<'_> {
             LatentSource::Reference { .. } | LatentSource::StdReference { .. } => {
                 self.reference_summary(source, span)
             }
-            LatentSource::Captured { .. } | LatentSource::Metadata(_) => {
-                self.solve_callable_summary(source, span)
-            }
+            LatentSource::Captured { .. }
+            | LatentSource::Metadata(_)
+            | LatentSource::SpecMethod { .. }
+            | LatentSource::MetadataSpecMethod { .. } => self.solve_callable_summary(source, span),
             _ => self.latent_leaf_summary(source, span).ok_or_else(|| {
                 super::specialize::EffectSpecializationError::InvalidCallableEnvironment {
                     reason: "callable source requires a solved checked effect fact".into(),
@@ -162,7 +163,10 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         match source {
-            LatentSource::Captured { .. } | LatentSource::Metadata(_) => None,
+            LatentSource::Captured { .. }
+            | LatentSource::Metadata(_)
+            | LatentSource::SpecMethod { .. }
+            | LatentSource::MetadataSpecMethod { .. } => None,
             LatentSource::Unavailable { .. } => None,
             LatentSource::EnumConstructor(symbol) => self
                 .checked_enum_constructor(symbol)

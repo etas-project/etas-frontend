@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use etas_hir::HirExprId;
 
@@ -83,8 +86,46 @@ pub fn materialize_effect_row_instantiations(
     if patches.is_empty() {
         return Ok(());
     }
+    let mut interner = crate::TypeInterner::from_store(output.store.as_ref().clone());
+    let mut source_types = HashMap::new();
+    let names = HashMap::new();
+    for patch in patches {
+        let rows = patch.bindings.iter().cloned().collect::<HashMap<_, _>>();
+        let fact = &output.facts.generic_instantiations[&patch.call];
+        for source in fact
+            .deferred_effect_row_obligations
+            .iter()
+            .map(|obligation| obligation.source)
+        {
+            let error = |reason| EffectRowMaterializationError {
+                call: patch.call,
+                reason,
+            };
+            let ty =
+                *output.facts.expr_types.get(&source).ok_or_else(|| {
+                    error("deferred callable source has no checked expression type")
+                })?;
+            let resolved =
+                crate::TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+                    .with_effect_arguments(&rows)
+                    .substitute(ty)
+                    .map_err(|_| {
+                        error("deferred callable type could not materialize its solved rows")
+                    })?;
+            if source_types
+                .insert(source, resolved)
+                .is_some_and(|previous| previous != resolved)
+            {
+                return Err(error(
+                    "deferred callable source has conflicting solved types",
+                ));
+            }
+        }
+    }
     // Validate the whole batch before publishing any completed checked facts.
+    output.store = Arc::new(interner.into_store());
     let facts = Arc::make_mut(&mut output.facts);
+    facts.expr_types.extend(source_types);
     for patch in patches {
         let fact = facts.generic_instantiations.get_mut(&patch.call).ok_or(
             EffectRowMaterializationError {
@@ -117,10 +158,21 @@ mod tests {
     fn pending() -> TypeOutput {
         let mut interner = TypeInterner::new();
         let string = interner.primitive(PrimitiveType::String);
+        let callback = interner.intern(crate::Type::Function(crate::FlowType {
+            input: Vec::new(),
+            output: string,
+            effects: Some(EffectRowRef {
+                effects: Vec::new(),
+                tail: Some("E".into()),
+            }),
+        }));
         let mut output = TypeOutput {
             store: Arc::new(interner.into_store()),
             ..Default::default()
         };
+        Arc::make_mut(&mut output.facts)
+            .expr_types
+            .insert(HirExprId(4), callback);
         Arc::make_mut(&mut output.facts)
             .generic_instantiations
             .insert(
@@ -154,10 +206,18 @@ mod tests {
     fn solved_rows_complete_facts_without_changing_type_bindings_or_previous_snapshots() {
         let mut output = pending();
         let old = output.facts.clone();
+        let old_store = output.store.clone();
         materialize_effect_row_instantiations(&mut output, &[patch("E")]).unwrap();
         let fact = &output.facts.generic_instantiations[&HirExprId(3)];
         assert!(fact.deferred_effect_row_obligations.is_empty());
         assert_eq!(fact.effect_row_bindings, patch("E").bindings);
+        let source = output.facts.expr_types[&HirExprId(4)];
+        assert!(
+            matches!(output.store.get(source), Some(crate::Type::Function(flow)) if flow.effects.as_ref().unwrap().tail.is_none())
+        );
+        assert!(
+            matches!(old_store.get(old.expr_types[&HirExprId(4)]), Some(crate::Type::Function(flow)) if flow.effects.as_ref().unwrap().tail.as_deref() == Some("E"))
+        );
         assert_eq!(
             fact.type_bindings,
             old.generic_instantiations[&HirExprId(3)].type_bindings

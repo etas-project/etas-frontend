@@ -59,6 +59,34 @@ impl DefinitionDescriptorProjector<'_> {
                 outcomes: None,
             });
         };
+        // A generic behavioral dispatch does not yet identify its concrete
+        // requested actions. Portable effect metadata retains that evidence;
+        // this reflection view must not claim its partial sets are solved.
+        let deferred_method = |target| {
+            matches!(
+                target,
+                etas_effects::ParameterCallTarget::SpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+            )
+        };
+        if summary
+            .action_trace
+            .parameter_calls()
+            .iter()
+            .any(|call| deferred_method(call.target))
+            || matches!(&summary.handler_requests, etas_effects::RequestInstantiationSummary::Available { parameters, .. }
+                if parameters.iter().any(|request| deferred_method(request.target)))
+        {
+            return Ok(CallableAnalysisInfo {
+                effects: EffectSummaryInfo {
+                    declared_bound,
+                    ..Default::default()
+                },
+                determinism: None,
+                trace: None,
+                outcomes: None,
+            });
+        }
         let escaping = self.analysis_row(&summary.escaping_effects, scope)?;
         let requested = self.analysis_row(&summary.requested_actions, scope)?;
         let default_handled = self.analysis_row(&summary.default_actions, scope)?;

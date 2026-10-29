@@ -190,6 +190,30 @@ impl EffectSemantics<'_> {
             .latent_leaf_summary(LatentSource::Unit(unit), span)
             .ok_or_else(|| invalid("captured callable has no solved template summary"))?;
         let template = self.specialize_summary_with_bindings(&template, &[], &types, &rows)?;
+        let mut bindings = snapshot
+            .parameters
+            .into_iter()
+            .map(|(target, sources)| (target, TraceArgumentBinding::Origins(sources)))
+            .collect::<TraceArgumentBindings>();
+        let mut invocation_state = EffectState::for_unit(unit);
+        invocation_state.owner = Some(snapshot.owner);
+        self.bind_spec_method_arguments(
+            &template,
+            &mut bindings,
+            environment.application,
+            &invocation_state,
+            &types,
+            &rows,
+        )?;
+        let bindings = bindings
+            .into_iter()
+            .map(|(target, binding)| match binding {
+                TraceArgumentBinding::Origins(sources) => Ok((target, sources)),
+                _ => Err(invalid(
+                    "captured invocation contains an unbound expression",
+                )),
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let own_parameters = self
             .unit_params(unit)
             .ok_or_else(|| invalid("captured callable has no checked parameter interface"))?;
@@ -203,7 +227,7 @@ impl EffectSemantics<'_> {
         Ok(CallableSummaryPlan::Captured(
             CallableSummaryInstantiation {
                 template,
-                bindings: snapshot.parameters,
+                bindings,
                 own_parameters: symbolic_parameters,
                 type_bindings: types,
             },

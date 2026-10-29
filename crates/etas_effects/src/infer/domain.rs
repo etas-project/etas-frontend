@@ -257,6 +257,14 @@ pub struct ParameterCallRef {
 )]
 pub enum ParameterCallTarget {
     Native(etas_hir::SymbolId),
+    SpecMethod {
+        call: etas_hir::HirExprId,
+        environment: crate::facts::CallableEnvironmentId,
+    },
+    MetadataSpecMethod {
+        invocation: etas_code::CodeFingerprint,
+        environment: Option<crate::facts::CallableEnvironmentId>,
+    },
     Interface(u32),
     Graph {
         graph: etas_code::CodeFingerprint,
@@ -331,6 +339,12 @@ impl ActionTraceDomain {
         actions
     }
 
+    pub fn parameter_calls(&self) -> Vec<ParameterCallRef> {
+        let mut calls = BTreeMap::new();
+        self.collect_parameter_calls(&mut calls);
+        calls.into_values().collect()
+    }
+
     fn collect_actions(&self, actions: &mut EffectSet) {
         match self {
             Self::Empty => {}
@@ -357,7 +371,7 @@ impl ActionTraceDomain {
         }
     }
 
-    fn collect_parameter_calls(
+    pub(crate) fn collect_parameter_calls(
         &self,
         calls: &mut BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>,
     ) {
@@ -447,7 +461,7 @@ impl ActionTraceDomain {
                 Self::merge_widened(left, right)
             }
             (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                if matches!(right, Self::ParameterCall { .. } | Self::Widened { .. }) {
+                if matches!(right, Self::Widened { .. }) || !right.parameter_calls().is_empty() {
                     Self::merge_widened(Self::UnknownOrder(left), right)
                 } else {
                     left.union_assign(&right.action_set());
@@ -483,7 +497,7 @@ impl ActionTraceDomain {
                 Self::merge_widened(left, right)
             }
             (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                if matches!(right, Self::ParameterCall { .. } | Self::Widened { .. }) {
+                if matches!(right, Self::Widened { .. }) || !right.parameter_calls().is_empty() {
                     Self::merge_widened(Self::UnknownOrder(left), right)
                 } else {
                     left.union_assign(&right.action_set());

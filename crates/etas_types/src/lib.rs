@@ -15,13 +15,13 @@ pub use api::{
     ExternalCallableSpecSatisfactionInput, ExternalEffectArgInput, ExternalEffectRefInput,
     ExternalEffectRowInput, ExternalFlowSignatureInput, ExternalNamedSignatureInput,
     ExternalPackageKey, ExternalPublicMetadataInput, ExternalRecordFieldInput,
-    ExternalSignatureInput, ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput,
-    ExternalSpecMethodInput, ExternalSpecSignatureInput, ExternalSymbolBindingInput,
-    ExternalToolSignatureInput, ExternalTraceSpecConformanceInput,
-    ExternalTraceSpecConformanceTargetInput, ExternalTypeInput, ExternalTypeSpecSatisfactionInput,
-    ReflectionSignatureInput, SignatureEnvironment, SignaturePipelineInput, SourceSignatureInput,
-    SourceSymbolBindingInput, StdSignatureInput, StdSymbolBindingInput, TypeOutput, check_body,
-    check_project, check_signatures,
+    ExternalSignatureInput, ExternalSpecBoundInput, ExternalSpecImplInput,
+    ExternalSpecImplMethodInput, ExternalSpecKindInput, ExternalSpecMethodInput,
+    ExternalSpecSignatureInput, ExternalSymbolBindingInput, ExternalToolSignatureInput,
+    ExternalTraceSpecConformanceInput, ExternalTraceSpecConformanceTargetInput, ExternalTypeInput,
+    ExternalTypeSpecSatisfactionInput, ReflectionSignatureInput, SignatureEnvironment,
+    SignaturePipelineInput, SourceSignatureInput, SourceSymbolBindingInput, StdSignatureInput,
+    StdSymbolBindingInput, TypeOutput, check_body, check_project, check_signatures,
 };
 pub use constraint::{
     AssignabilityReason, CallableCandidate, CallableCandidateOperation, CallableGenericArg,
@@ -34,7 +34,7 @@ pub use facts::{
     CheckedSliceKind, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
     DeferredEffectRowObligation, DeferredHandlerInstantiation, EffectActionArgKind,
     EffectActionSignature, EnumLayoutFact, EnumVariantLayoutFact,
-    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
+    ExternalCallableSpecSatisfactionFact, ExternalSpecIdentity, ExternalTraceSpecConformanceFact,
     ExternalTraceSpecConformanceTarget, FieldProjectionFact, FlowSignature,
     GenericInstantiationFact, HandlerTypeBinding, ItemSignature, KnownStdTypes, ResourceHandleFact,
     SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity,
@@ -59,6 +59,7 @@ pub use ty::{
     TypeSubstitutionError, TypeVarId, applied_representation, nominal_representation_parts,
     record_fields_with_applied_params, substitute_effect_row_params, substitute_named_params,
     substitute_named_params_in_store, substitute_type_params, type_contains_named_param,
+    type_contains_source_parameter,
 };
 
 pub fn check_program(hir: &etas_hir::HirProgram) -> TypeOutput {

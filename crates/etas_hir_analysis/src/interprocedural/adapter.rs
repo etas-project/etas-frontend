@@ -163,6 +163,21 @@ where
         AnalysisStep::handled(state)
     }
 
+    fn spec_method_call(
+        &mut self,
+        expr: HirExprId,
+        _span: Span,
+        state: Self::Domain,
+    ) -> AnalysisStep<Self::Domain> {
+        if let Some(target) = self
+            .semantics
+            .spec_method_call_target(self.context, expr, &state)
+        {
+            self.graph.add_call(self.context.unit, target);
+        }
+        AnalysisStep::handled(state)
+    }
+
     fn stage_compose(
         &mut self,
         _expr: HirExprId,
@@ -466,6 +481,42 @@ where
             };
         }
         <S as HirAnalysisSemantics>::method_call(self.semantics, expr, span, state)
+    }
+
+    fn spec_method_call(
+        &mut self,
+        expr: HirExprId,
+        span: Span,
+        state: Self::Domain,
+    ) -> AnalysisStep<Self::Domain> {
+        let Some(target) = self
+            .semantics
+            .spec_method_call_target(self.context, expr, &state)
+        else {
+            return self.semantics.spec_method_call(expr, span, state);
+        };
+        let site =
+            CallSite::unresolved(expr, expr, span).with_callee(ResolvedCallee::Direct(target));
+        match self.summaries.get(target) {
+            Some(summary) => AnalysisStep::handled(InterproceduralSemantics::direct_call(
+                self.semantics,
+                self.context,
+                site,
+                target,
+                summary,
+                state,
+            )),
+            None => {
+                push_unique(
+                    self.diagnostics,
+                    InterproceduralDiagnostic::MissingSummary {
+                        call: expr,
+                        callee: target,
+                    },
+                );
+                AnalysisStep::handled(self.semantics.incomplete_call(self.context, site, state))
+            }
+        }
     }
 
     fn stage_compose(

@@ -15,6 +15,28 @@ pub struct CheckedExternalTypeResolver<'a> {
 }
 
 impl<'a> CheckedExternalTypeResolver<'a> {
+    pub fn spec_identity(
+        &self,
+        path: &[String],
+    ) -> Result<crate::ExternalSpecIdentity, ExternalMetadataLoweringError> {
+        let mut identities = self
+            .types
+            .facts
+            .external_specs
+            .signatures
+            .keys()
+            .filter(|identity| identity.path == path);
+        match (identities.next(), identities.next()) {
+            (Some(identity), None) => Ok(identity.clone()),
+            _ => Err(ExternalMetadataLoweringError {
+                message: format!(
+                    "external method evidence has no unique checked spec identity `{}`",
+                    path.join(".")
+                ),
+            }),
+        }
+    }
+
     pub fn new(types: &'a TypeOutput) -> Self {
         Self {
             types,

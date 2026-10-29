@@ -29,6 +29,12 @@ impl<'a> Pass<EffectPipelineContext<'a>> for EmitOutputPass {
             return context.fail(missing(EffectStage::Emit, "validated effect output"));
         };
         let artifacts = EffectPipelineArtifacts {
+            external_implementations: context
+                .input
+                .external_implementations
+                .iter()
+                .map(|method| method.metadata.clone())
+                .collect(),
             registry: std::sync::Arc::new(registry),
             dependency_metadata: context
                 .input

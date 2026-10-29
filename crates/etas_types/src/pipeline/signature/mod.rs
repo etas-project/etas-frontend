@@ -8,6 +8,7 @@ pub mod collect {
     pub mod resource_handles;
     pub mod specs;
     pub mod std_actions;
+    pub mod type_impl_methods;
 }
 pub mod imports;
 pub mod materialize;
@@ -21,6 +22,7 @@ pub mod validate {
     pub mod exported_contracts;
     pub mod flow_spec_satisfaction;
     pub mod spec_impls;
+    pub(super) mod spec_methods;
     pub(super) mod type_applications;
 }
 
@@ -55,8 +57,8 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     publish_signature_prefix(ctx, &state);
     collect::aliases::collect_aliases(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
-    collect::specs::collect_specs(ctx, &mut state);
     collect::specs::record_type_param_bounds(ctx, &mut state);
+    collect::specs::collect_specs(ctx, &mut state);
     collect::aliases::collect_alias_bounds(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
     collect::nominal_types::collect_members(ctx, &mut state);
@@ -65,6 +67,7 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     collect::std_actions::collect_std_actions(ctx, &mut state);
     publish_action_signature_prefix(ctx, &state);
     collect::callables::collect_callables(ctx, &mut state);
+    collect::type_impl_methods::collect_type_impl_methods(ctx, &mut state);
     collect::agent_methods::collect_agent_methods(ctx, &mut state);
     collect::agent_methods::collect_agent_spec_satisfactions(ctx, &mut state);
     solve::aliases::solve_aliases(ctx, &mut state);

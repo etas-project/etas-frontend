@@ -6,6 +6,24 @@ use etas_package_metadata::{
 };
 
 impl ProjectMetadataProjection<'_> {
+    pub(in crate::package_metadata) fn implementation_callable_graph(
+        &self,
+        item: HirItemId,
+    ) -> Result<CallableValueGraph, PackageMetadataError> {
+        let mut builder = Builder::new(self, item);
+        let roots = builder
+            .sources(
+                &[CallableReturnSource::SourceItem(item)].into(),
+                CallableValueScope::Root,
+                None,
+            )?
+            .ok_or_else(|| invalid("spec implementation callable origins are unavailable"))?;
+        let graph = builder
+            .finish(roots)?
+            .ok_or_else(|| invalid("spec implementation callable analysis is unavailable"))?;
+        Ok(std::sync::Arc::unwrap_or_clone(graph.graph))
+    }
+
     pub(in crate::package_metadata) fn returned_callables(
         &self,
         item: HirItemId,
@@ -24,9 +42,19 @@ impl ProjectMetadataProjection<'_> {
         let Some(sources) = sources(summary) else {
             return Ok(None);
         };
-        let mut builder = Builder {
-            projection: self,
-            root: item,
+        let mut builder = Builder::new(self, item);
+        let Some(roots) = builder.sources(&sources, CallableValueScope::Root, None)? else {
+            return Ok(None);
+        };
+        builder.finish(roots)
+    }
+}
+
+impl<'a, 'b> Builder<'a, 'b> {
+    fn new(projection: &'a ProjectMetadataProjection<'b>, root: HirItemId) -> Self {
+        Self {
+            projection,
+            root,
             values: vec![],
             origins: vec![],
             units: BTreeMap::new(),
@@ -35,7 +63,8 @@ impl ProjectMetadataProjection<'_> {
             pending: vec![],
             parameters: [(
                 CallableValueScope::Root,
-                self.callable_param_symbols(item)
+                projection
+                    .callable_param_symbols(root)
                     .iter()
                     .enumerate()
                     .map(|(position, symbol)| (*symbol, position as u32))
@@ -43,18 +72,19 @@ impl ProjectMetadataProjection<'_> {
             )]
             .into(),
             parents: BTreeMap::new(),
-        };
-        let Some(roots) = builder.sources(&sources, CallableValueScope::Root, None)? else {
-            return Ok(None);
-        };
-        while let Some(pending) = builder.pending.pop() {
+        }
+    }
+
+    fn finish(
+        mut self,
+        roots: Vec<CallableValueSource>,
+    ) -> Result<Option<crate::package_metadata::CheckedCallableGraph>, PackageMetadataError> {
+        while let Some(pending) = self.pending.pop() {
             let (index, node) = match pending {
-                Pending::Native(index, unit) => (index, builder.node(index, unit)?),
-                Pending::Metadata(index, instance) => {
-                    (index, builder.foreign_node(index, instance)?)
-                }
+                Pending::Native(index, unit) => (index, self.node(index, unit)?),
+                Pending::Metadata(index, instance) => (index, self.foreign_node(index, instance)?),
                 Pending::Reference(index, reference) => {
-                    (index, builder.reference_node(index, reference)?)
+                    (index, self.reference_node(index, reference)?)
                 }
             };
             let Some(node) = node else {
@@ -62,11 +92,11 @@ impl ProjectMetadataProjection<'_> {
             };
             // The worklist reserves slots before visiting return edges, so
             // recursive references never recursively embed a callable body.
-            builder.values[index as usize] = Some(node);
+            self.values[index as usize] = Some(node);
         }
         let graph = CallableValueGraph {
             sources: roots,
-            values: builder
+            values: self
                 .values
                 .into_iter()
                 .collect::<Option<Vec<_>>>()
@@ -75,7 +105,7 @@ impl ProjectMetadataProjection<'_> {
         etas_package_metadata::validate_callable_value_graph(&graph)?;
         Ok(Some(crate::package_metadata::CheckedCallableGraph {
             graph: std::sync::Arc::new(graph),
-            origins: builder.origins,
+            origins: self.origins,
         }))
     }
 }
@@ -310,6 +340,15 @@ impl Builder<'_, '_> {
         let mut bound_parameters = BTreeSet::new();
         let mut trace_labels = BTreeMap::new();
         for target in trace_parameters {
+            if matches!(
+                target,
+                etas_effects::ParameterCallTarget::SpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+            ) {
+                // These carry their checked receiver/member/generic interface
+                // directly in the trace; they are not callable parameter labels.
+                continue;
+            }
             let etas_effects::ParameterCallTarget::Native(symbol) = target else {
                 return Ok(None);
             };
@@ -417,6 +456,7 @@ fn trace_parameters(trace: &ActionTraceDomain) -> BTreeSet<etas_effects::Paramet
 
 mod behavior;
 mod captured;
+mod evidence;
 mod foreign;
 mod generics;
 mod references;

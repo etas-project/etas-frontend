@@ -71,6 +71,7 @@ pub enum HirExpr {
         spec_path: ResolvedPath,
         spec_args: Vec<HirTypeId>,
         method: String,
+        generic_args: Vec<HirGenericArg>,
         args: Vec<HirArg>,
         span: Span,
     },

@@ -27,6 +27,7 @@ flow base() -> unit ![Console.stdout_write] { perform Console.stdout_write("base
     let std_registry = etas_std::standard_registry();
     let registry = crate::EffectRegistry::with_standard_effects_from(&std_registry);
     let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+        external_implementations: &[],
         frozen_calls: None,
         hir: &hir,
         types: &types,

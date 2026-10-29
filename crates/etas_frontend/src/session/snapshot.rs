@@ -1013,11 +1013,15 @@ impl BodySignatureReferenceCollector<'_> {
             HirExpr::SpecMethodCall {
                 spec_path,
                 spec_args,
+                generic_args,
                 ..
             } => {
                 self.push_path_source_item(spec_path);
                 for arg in spec_args {
                     self.visit_type(*arg);
+                }
+                for arg in generic_args {
+                    self.visit_generic_arg(arg);
                 }
             }
             HirExpr::Perform {

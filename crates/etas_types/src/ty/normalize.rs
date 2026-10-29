@@ -71,6 +71,22 @@ pub fn type_contains_named_param(
     ty: TypeId,
     name: &str,
 ) -> Result<bool, TypeSubstitutionError> {
+    type_contains_named_where(store, ty, |named| named.name == name)
+}
+
+pub fn type_contains_source_parameter(
+    store: &TypeStore,
+    ty: TypeId,
+    parameter: etas_hir::SymbolId,
+) -> Result<bool, TypeSubstitutionError> {
+    type_contains_named_where(store, ty, |named| named.source_parameter == Some(parameter))
+}
+
+fn type_contains_named_where(
+    store: &TypeStore,
+    ty: TypeId,
+    predicate: impl Fn(&super::NamedTypeRef) -> bool,
+) -> Result<bool, TypeSubstitutionError> {
     let mut pending = vec![ty];
     let mut visited = HashSet::new();
     while let Some(ty) = pending.pop() {
@@ -81,7 +97,7 @@ pub fn type_contains_named_param(
             .get(ty)
             .ok_or(TypeSubstitutionError::MissingType(ty))?
         {
-            Type::Named(named) if named.name == name => return Ok(true),
+            Type::Named(named) if predicate(named) => return Ok(true),
             Type::Array(inner)
             | Type::List(inner)
             | Type::Set(inner)

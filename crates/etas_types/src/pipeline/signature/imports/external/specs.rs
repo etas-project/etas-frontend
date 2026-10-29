@@ -21,6 +21,7 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
                     },
                     param_names: signature.param_names.clone(),
                     super_specs: Vec::new(),
+                    methods: Vec::new(),
                 },
             );
         }
@@ -55,6 +56,7 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
                     .collect();
                 supers.push(crate::CheckedSpecBound { spec, args });
             }
+            let methods = lower_external_spec_methods(ctx, metadata.package, span, signature);
             if let Some(fact) = ctx
                 .signature_facts
                 .external_specs
@@ -62,6 +64,7 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
                 .get_mut(&identity)
             {
                 fact.super_specs = supers;
+                fact.methods = methods;
             }
         }
     }

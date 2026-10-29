@@ -484,6 +484,9 @@ pub(crate) fn project_signature_facts(
 }
 
 fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '_>) {
+    for method in facts.type_impl_methods.values_mut() {
+        method.self_type = remapper.ty(method.self_type);
+    }
     facts.type_generics = std::mem::take(&mut facts.type_generics)
         .into_iter()
         .map(|(ty, mut parameters)| {
@@ -675,6 +678,11 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         remapper.spec_signature(signature);
     }
     for signature in facts.external_specs.signatures.values_mut() {
+        for method in &mut signature.methods {
+            if let Some(callable) = &mut method.signature {
+                remapper.callable(callable);
+            }
+        }
         for bound in &mut signature.super_specs {
             for ty in &mut bound.args {
                 *ty = remapper.ty(*ty);
@@ -686,6 +694,13 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         for ty in &mut implementation.args {
             *ty = remapper.ty(*ty);
         }
+    }
+    for method in &mut facts.external_specs.methods {
+        method.self_type = remapper.ty(method.self_type);
+        for ty in &mut method.args {
+            *ty = remapper.ty(*ty);
+        }
+        remapper.callable(&mut method.signature);
     }
     for implementation in &mut facts.spec_impls {
         remapper.spec_impl(implementation);

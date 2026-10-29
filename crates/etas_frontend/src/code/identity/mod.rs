@@ -464,7 +464,9 @@ impl DefinitionIdentityIndex {
                 continue;
             };
             // Impl methods receive implementation-owned CallableIds separately.
-            if checked.agent_methods.contains_key(&symbol) {
+            if checked.agent_methods.contains_key(&symbol)
+                || checked.types.type_impl_methods.contains_key(&symbol)
+            {
                 continue;
             }
             let kind = match item {
@@ -890,6 +892,11 @@ impl DefinitionIdentityIndex {
         {
             index.bind_method(checked, symbol, id)?;
         }
+        for (symbol, id) in
+            super::definition::type_method_identities(checked, &index, origins, limits)?
+        {
+            index.bind_method(checked, symbol, id)?;
+        }
         Ok(index)
     }
 
@@ -899,11 +906,16 @@ impl DefinitionIdentityIndex {
         symbol: SymbolId,
         id: MethodId,
     ) -> Result<(), ProjectionError> {
-        let method = checked
-            .types
-            .agent_methods
-            .get(&symbol)
-            .ok_or(ProjectionError::MissingCallable(symbol))?;
+        let inherent = if let Some(method) = checked.types.type_impl_methods.get(&symbol) {
+            method.inherent
+        } else {
+            checked
+                .types
+                .agent_methods
+                .get(&symbol)
+                .ok_or(ProjectionError::MissingCallable(symbol))?
+                .inherent
+        };
         let path = checked
             .hir
             .declaration_path(symbol)
@@ -919,8 +931,8 @@ impl DefinitionIdentityIndex {
         }
         let callable = CallableId::method(id);
         match self.method_paths.get_mut(&path) {
-            Some(previous) if previous.inherent && !method.inherent => {}
-            Some(previous) if !previous.inherent && method.inherent => {
+            Some(previous) if previous.inherent && !inherent => {}
+            Some(previous) if !previous.inherent && inherent => {
                 *previous = MethodPath {
                     inherent: true,
                     callable: Some(callable),
@@ -939,7 +951,7 @@ impl DefinitionIdentityIndex {
                 self.method_paths.insert(
                     path,
                     MethodPath {
-                        inherent: method.inherent,
+                        inherent,
                         callable: Some(callable),
                     },
                 );

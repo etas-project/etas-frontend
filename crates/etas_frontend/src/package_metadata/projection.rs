@@ -47,14 +47,14 @@ mod type_projection;
 use callable_returns::invalid;
 use type_projection::{metadata_effect_arg, metadata_effect_row_ref, metadata_type};
 
-pub(super) struct ProjectMetadataProjection<'a> {
+pub(crate) struct ProjectMetadataProjection<'a> {
     pub(super) checked: &'a CheckedProject,
     canonical_type_paths: BTreeMap<String, Option<Vec<String>>>,
     effect_registry: &'a EffectRegistry,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
-    pub(super) fn new(checked: &'a CheckedProject) -> Self {
+    pub(crate) fn new(checked: &'a CheckedProject) -> Self {
         Self {
             checked,
             canonical_type_paths: build_canonical_type_paths(checked),
@@ -79,9 +79,18 @@ impl<'a> ProjectMetadataProjection<'a> {
             });
         }
         let external_modules = self.external_modules()?;
-        let mut public_metadata = self.public_metadata(&external_modules)?;
-        if let Some(package) = input.definition_origin {
-            let (origins, identities) = self.definition_identity_input(package)?;
+        let identity_input = input
+            .definition_origin
+            .map(|package| self.definition_identity_input(package))
+            .transpose()?;
+        let mut public_metadata = self.public_metadata(
+            &external_modules,
+            identity_input.as_ref().map(|(_, index)| index),
+        )?;
+        if let Some((origins, identities)) = identity_input {
+            let package = input
+                .definition_origin
+                .ok_or_else(|| invalid("definition package origin is missing"))?;
             public_metadata.definition_origins =
                 Some(self.definition_origins(package, &origins, &identities)?);
             public_metadata.definition_descriptors =
@@ -173,6 +182,7 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn public_metadata(
         &self,
         modules: &[MetadataExternalModule],
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<PublicMetadata, PackageMetadataError> {
         let mut metadata = PublicMetadata {
             modules: modules.to_vec(),
@@ -251,7 +261,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
         metadata.actions = self.action_signatures()?;
         metadata.spec_signatures = self.spec_signatures()?;
-        metadata.spec_impls = self.spec_impls()?;
+        metadata.spec_impls = self.spec_impls(identities)?;
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
         metadata.callable_spec_satisfactions = self.callable_spec_satisfactions()?;
         metadata.trace_spec_conformances = self.trace_spec_conformances()?;
@@ -709,11 +719,18 @@ impl<'a> ProjectMetadataProjection<'a> {
         })
     }
 
-    fn spec_impls(&self) -> Result<Vec<MetadataSpecImpl>, PackageMetadataError> {
+    fn spec_impls(
+        &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<Vec<MetadataSpecImpl>, PackageMetadataError> {
         self.checked
             .types
             .spec_impls
             .iter()
+            .filter(|implementation| !implementation.methods.iter().any(|method| {
+                self.checked.types.agent_methods.get(&method.symbol)
+                    .is_some_and(|method| method.private_to.is_some())
+            }))
             .map(|implementation| {
                 let spec = self
                     .symbol_canonical_path(implementation.spec_symbol)
@@ -731,8 +748,17 @@ impl<'a> ProjectMetadataProjection<'a> {
                     methods: implementation
                         .methods
                         .iter()
-                        .map(|method| method.name.clone())
-                        .collect(),
+                        .map(|method| {
+                            let identity = identities.and_then(|index| index.method(method.symbol)).cloned()
+                                .ok_or_else(|| invalid("spec implementation metadata requires a canonical method identity"))?;
+                            let body = self.checked.types.type_impl_methods.get(&method.symbol).map(|method| method.body)
+                                .or_else(|| self.checked.types.agent_methods.get(&method.symbol).map(|method| method.body))
+                                .ok_or_else(|| invalid("spec implementation method has no checked body ownership"))?;
+                            Ok(etas_package_metadata::SpecImplMethod {
+                                identity, callable: self.implementation_callable_graph(body)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, PackageMetadataError>>()?,
                 })
             })
             .collect()
@@ -889,6 +915,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             })?;
         Ok(MetadataSpecMethod {
             name: method.name.clone(),
+            receiver_param: method.receiver_param,
             path: path.clone(),
             signature: Some(self.metadata_callable_signature_from_callable(
                 path,
@@ -1388,16 +1415,23 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .as_ref()
                         .map(|row| {
                             self.effect_row_metadata(row, type_generic_names, effect_generic_names)
+                                .map_err(|error| PackageMetadataError::InvalidMetadataType {
+                                    reason: format!("latent declared bound for {item:?}: {error}"),
+                                })
                         })
                         .transpose()?
                         .unwrap_or_default();
                     Ok(MetadataLatentFlowSummary {
                         declared_bound,
-                        inferred_effects: self.effect_row_metadata(
-                            &latent.inferred,
-                            type_generic_names,
-                            effect_generic_names,
-                        )?,
+                        inferred_effects: self
+                            .effect_row_metadata(
+                                &latent.inferred,
+                                type_generic_names,
+                                effect_generic_names,
+                            )
+                            .map_err(|error| PackageMetadataError::InvalidMetadataType {
+                                reason: format!("latent inferred row for {item:?}: {error}"),
+                            })?,
                     })
                 })
             })
@@ -1430,9 +1464,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             }
             ActionTraceDomain::ParameterCall { target, .. } => MetadataActionTrace::ParameterCall {
-                parameter: parameters.get(target).cloned().ok_or_else(|| {
-                    invalid("trace call has no checked parameter binding in its exported interface")
-                })?,
+                parameter: self.callable_request_target(*target, parameters)?,
             },
             ActionTraceDomain::Seq(children) => MetadataActionTrace::Seq(
                 children
@@ -1466,12 +1498,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 parameter_calls: parameter_calls
                     .iter()
                     .map(|call| {
-                        parameters.get(&call.target).cloned().ok_or_else(|| {
-                            invalid("widened trace call has no checked exported parameter binding")
-                        })
+                        let target = self.callable_request_target(call.target, parameters)?;
+                        Ok((target.fingerprint()?, target))
                     })
-                    .collect::<Result<BTreeSet<_>, _>>()?
-                    .into_iter()
+                    .collect::<Result<BTreeMap<_, _>, PackageMetadataError>>()?
+                    .into_values()
                     .collect(),
             },
         })

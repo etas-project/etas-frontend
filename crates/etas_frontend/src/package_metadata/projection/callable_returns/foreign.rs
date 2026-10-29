@@ -221,6 +221,15 @@ impl Builder<'_, '_> {
         let mut labels = BTreeMap::new();
         let mut parameters = BTreeMap::new();
         for target in trace_parameters(&summary.action_trace) {
+            if matches!(
+                target,
+                ParameterCallTarget::SpecMethod { .. }
+                    | ParameterCallTarget::MetadataSpecMethod { .. }
+            ) {
+                // The trace projection serializes the checked method descriptor,
+                // not a positional callback label.
+                continue;
+            }
             let parameter = match target {
                 ParameterCallTarget::Native(symbol) => match self.parameter(symbol, scope)? {
                     Some(parameter) => parameter,

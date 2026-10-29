@@ -11,11 +11,41 @@ impl LowerCtx {
         scope: ScopeId,
         item_id: HirItemId,
     ) -> Vec<SymbolId> {
+        self.lower_params_with_receiver(params, scope, item_id, None)
+    }
+
+    pub(super) fn lower_params_with_receiver(
+        &mut self,
+        params: &[ast::Param],
+        scope: ScopeId,
+        item_id: HirItemId,
+        receiver_type: Option<&ast::TypeExpr>,
+    ) -> Vec<SymbolId> {
         params
             .iter()
             .enumerate()
             .map(|(param_index, param)| {
-                let ty = self.lower_type(&param.ty, scope, item_id);
+                let ty = match &param.ty {
+                    ast::ParamType::Explicit(ty) => self.lower_type(ty, scope, item_id),
+                    ast::ParamType::SelfReceiver { span } if param_index == 0 => receiver_type
+                        .map(|ty| self.lower_type(ty, scope, item_id))
+                        .unwrap_or_else(|| {
+                            self.diagnostics.push(etas_core::Diagnostic::type_check(
+                                etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
+                                *span,
+                                "implicit self receiver requires a type or spec method owner",
+                            ));
+                            self.lower_type(&ast::TypeExpr::Error(*span), scope, item_id)
+                        }),
+                    ast::ParamType::SelfReceiver { span } => {
+                        self.diagnostics.push(etas_core::Diagnostic::type_check(
+                            etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
+                            *span,
+                            "implicit self receiver must be the first method parameter",
+                        ));
+                        self.lower_type(&ast::TypeExpr::Error(*span), scope, item_id)
+                    }
+                };
                 self.bind_symbol_with_def(
                     scope,
                     SymbolData {

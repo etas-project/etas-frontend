@@ -14,7 +14,7 @@ mod input;
 mod origins;
 mod projection;
 
-use projection::ProjectMetadataProjection;
+pub(crate) use projection::ProjectMetadataProjection;
 
 pub(crate) use callable_graph::{
     CallableGraphOrigin, CheckedCallableGraph, checked_callable_graph, checked_request_template,

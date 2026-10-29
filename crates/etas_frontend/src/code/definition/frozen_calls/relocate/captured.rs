@@ -8,6 +8,33 @@ impl Relocation<'_> {
         summary: &EffectSummary,
     ) -> Result<BTreeMap<CallableEnvironmentId, CallableEnvironment>, ProjectionError> {
         let mut pending = Vec::new();
+        let mut method_environments = BTreeSet::new();
+        let mut metadata_environments = HashMap::new();
+        let mut traces = vec![&summary.action_trace];
+        traces.extend(
+            summary
+                .exits
+                .iter()
+                .flat_map(|exits| exits.exits.iter().map(|exit| &exit.trace)),
+        );
+        for trace in traces {
+            for reference in trace.parameter_calls() {
+                if let ParameterCallTarget::SpecMethod { environment, .. } = reference.target {
+                    method_environments.insert(environment);
+                    pending.push(environment);
+                }
+            }
+        }
+        if let etas_effects::RequestInstantiationSummary::Available { parameters, .. } =
+            &summary.handler_requests
+        {
+            for request in parameters {
+                if let ParameterCallTarget::SpecMethod { environment, .. } = request.target {
+                    method_environments.insert(environment);
+                    pending.push(environment);
+                }
+            }
+        }
         for exit in summary.exits.iter().flat_map(|exits| &exits.exits) {
             if let CallableOutcome::Returned {
                 observation: ReturnObservation::CallableSources(sources),
@@ -31,8 +58,9 @@ impl Relocation<'_> {
             }
         }
         let mut environments = BTreeMap::new();
+        let mut visited = BTreeSet::new();
         while let Some(id) = pending.pop() {
-            if environments.contains_key(&id) {
+            if !visited.insert(id) {
                 continue;
             }
             if environments.len() >= etas_package_metadata::MAX_METADATA_GRAPH_NODES {
@@ -50,10 +78,38 @@ impl Relocation<'_> {
                 .ok_or_else(|| invalid("captured environment has no canonical target owner"))?;
             let mut parameters = BTreeMap::new();
             for (parameter, origins) in &source.parameters {
-                let parameter = self.parameter_target(*parameter)?;
+                let parameter = match parameter {
+                    ParameterCallTarget::Interface(_) if method_environments.contains(&id) => {
+                        *parameter
+                    }
+                    _ => self.parameter_target(*parameter)?,
+                };
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
                     let origin = match *origin {
+                        CallableValueOrigin::MetadataSpecMethod {
+                            invocation,
+                            environment,
+                        } => {
+                            let (invocation, target_environment) =
+                                self.metadata_method_environment(invocation, environment)?;
+                            if metadata_environments
+                                .insert(environment, (invocation, target_environment))
+                                .is_some_and(|previous| {
+                                    previous != (invocation, target_environment)
+                                })
+                            {
+                                return Err(invalid(
+                                    "frozen method environment has conflicting target identities",
+                                ));
+                            }
+                            method_environments.insert(environment);
+                            pending.push(environment);
+                            CallableValueOrigin::MetadataSpecMethod {
+                                invocation,
+                                environment: target_environment,
+                            }
+                        }
                         CallableValueOrigin::Unit(unit) => {
                             CallableValueOrigin::Unit(self.captured_unit(unit)?)
                         }
@@ -61,6 +117,14 @@ impl Relocation<'_> {
                             pending.push(environment);
                             CallableValueOrigin::Captured {
                                 unit: self.captured_unit(unit)?,
+                                environment,
+                            }
+                        }
+                        CallableValueOrigin::SpecMethod { call, environment } => {
+                            method_environments.insert(environment);
+                            pending.push(environment);
+                            CallableValueOrigin::SpecMethod {
+                                call: self.captured_expr(call)?,
                                 environment,
                             }
                         }
@@ -118,7 +182,11 @@ impl Relocation<'_> {
                 .map(|(id, _)| super::projection::owner(id))
                 .transpose()?;
             let mut generics = BTreeMap::new();
-            for (parameter, value) in &source.generics {
+            for (parameter, value) in source
+                .generics
+                .iter()
+                .filter(|_| !metadata_environments.contains_key(&id))
+            {
                 use etas_effects::facts::{
                     CallableGenericParameter as P, CallableGenericValue as V,
                 };
@@ -140,8 +208,14 @@ impl Relocation<'_> {
                 };
                 generics.insert(parameter, value);
             }
+            let target_id = if let Some((invocation, target_id)) = metadata_environments.get(&id) {
+                generics = self.metadata_method_formals(*invocation, owner)?;
+                *target_id
+            } else {
+                id
+            };
             environments.insert(
-                id,
+                target_id,
                 CallableEnvironment {
                     owner,
                     parameters,
@@ -165,7 +239,7 @@ impl Relocation<'_> {
         .ok_or_else(|| invalid("captured callable has no unchanged canonical target unit"))
     }
 
-    fn captured_expr(
+    pub(super) fn captured_expr(
         &self,
         expr: etas_hir::HirExprId,
     ) -> Result<etas_hir::HirExprId, ProjectionError> {

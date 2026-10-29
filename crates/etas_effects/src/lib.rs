@@ -43,13 +43,15 @@ pub use infer::{
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
     EffectPipelineOutput, ExternalActionRequestMetadata, ExternalActionTraceMetadata,
-    ExternalArtifactAnchor, ExternalCallableValueMetadata,
+    ExternalArtifactAnchor, ExternalCallableRequestTarget, ExternalCallableValueMetadata,
     ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
     ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
     ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,
-    ExternalRequestInstantiationMetadata, ExternalTraceSpecClauseKind,
-    ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
-    ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, RunEffectPipeline,
+    ExternalRequestInstantiationMetadata, ExternalSpecImplementationMetadata,
+    ExternalSpecMethodCallableArgument, ExternalSpecMethodGenericArgument,
+    ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata,
+    ExternalTraceSpecEffectMetadata, ExternalTraceSpecEffectRowMetadata,
+    ExternalTraceSpecSummaryMetadata, RunEffectPipeline,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{

@@ -101,6 +101,7 @@ pub struct TypeSubstitutionEngine<'a> {
     target: SubstitutionTarget<'a>,
     named: Option<&'a HashMap<String, TypeId>>,
     variables: Option<&'a Substitution>,
+    parameters: Option<&'a HashMap<TypeId, TypeId>>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
@@ -120,6 +121,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             target: SubstitutionTarget::Materialize(interner),
             named: Some(named),
             variables,
+            parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -135,6 +137,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             target: SubstitutionTarget::Existing(store),
             named: Some(named),
             variables: None,
+            parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -158,6 +161,13 @@ impl<'a> TypeSubstitutionEngine<'a> {
 
     pub fn with_expansion_depth(mut self, limit: usize) -> Self {
         self.expansion_depth = Some(limit);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
+    pub fn with_type_parameters(mut self, parameters: &'a HashMap<TypeId, TypeId>) -> Self {
+        self.parameters = Some(parameters);
         self.memo.clear();
         self.memo_depths.clear();
         self
@@ -197,6 +207,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             target: SubstitutionTarget::Relocate(input),
             named: None,
             variables: None,
+            parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -212,6 +223,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             target: SubstitutionTarget::RelocateMaterialize(input),
             named: None,
             variables: None,
+            parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -310,7 +322,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return Ok(vec![]);
         }
         if let Some(replacement) = self
-            .replacement(&data)
+            .replacement(ty, &data)
             .filter(|replacement| *replacement != ty)
         {
             if matches!(data, Type::Named(_)) {
@@ -425,7 +437,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return Ok(*mapped);
         }
         if let Some(replacement) = self
-            .replacement(&ty_data)
+            .replacement(ty, &ty_data)
             .filter(|replacement| *replacement != ty)
         {
             if matches!(ty_data, Type::Named(_)) {
@@ -579,12 +591,14 @@ impl<'a> TypeSubstitutionEngine<'a> {
         // Arguments belong to the caller's binder namespace. Only globally
         // unique solver variables may be normalized inside them.
         let named = self.named.take();
+        let parameters = self.parameters.take();
         let rows = self.effect_rows.take();
         let memo = std::mem::take(&mut self.memo);
         let depths = std::mem::take(&mut self.memo_depths);
         let active = std::mem::take(&mut self.active);
         let result = self.substitute(ty);
         self.named = named;
+        self.parameters = parameters;
         self.effect_rows = rows;
         self.memo = memo;
         self.memo_depths = depths;
@@ -592,7 +606,10 @@ impl<'a> TypeSubstitutionEngine<'a> {
         result
     }
 
-    fn replacement(&self, ty: &Type) -> Option<TypeId> {
+    fn replacement(&self, id: TypeId, ty: &Type) -> Option<TypeId> {
+        if let Some(replacement) = self.parameters.and_then(|params| params.get(&id)) {
+            return Some(*replacement);
+        }
         match ty {
             Type::Named(name) => self.named.and_then(|named| named.get(&name.name).copied()),
             Type::Var(var) => self.variables.and_then(|variables| variables.get(*var)),
@@ -1260,5 +1277,30 @@ mod tests {
             Err(TypeSubstitutionError::Interrupted(_))
         ));
         assert_eq!(control.0.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn checked_parameter_substitution_preserves_identically_named_caller_binders() {
+        let mut interner = TypeInterner::new();
+        let callee = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(etas_hir::SymbolId(1)),
+            name: "T".into(),
+        }));
+        let caller = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(etas_hir::SymbolId(2)),
+            name: "T".into(),
+        }));
+        let concrete = interner.primitive(PrimitiveType::I32);
+        let signature = interner.intern(Type::Tuple(vec![callee, caller]));
+        let parameters = HashMap::from([(callee, concrete)]);
+        let names = HashMap::new();
+        let result = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_type_parameters(&parameters)
+            .substitute(signature)
+            .unwrap();
+        assert_eq!(
+            interner.store().get(result),
+            Some(&Type::Tuple(vec![concrete, caller]))
+        );
     }
 }

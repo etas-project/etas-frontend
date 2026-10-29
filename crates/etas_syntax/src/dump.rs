@@ -794,9 +794,17 @@ impl AstDump for ast::ProtocolMsg {
 
 impl AstDump for ast::Param {
     fn dump(&self, f: &mut AstDumpWriter) {
-        f.node("Param", self.span, name_fields(f, &self.name), |f| {
-            self.ty.dump(f)
-        });
+        f.node(
+            "Param",
+            self.span,
+            name_fields(f, &self.name),
+            |f| match &self.ty {
+                ast::ParamType::Explicit(ty) => ty.dump(f),
+                ast::ParamType::SelfReceiver { span } => {
+                    f.node("SelfReceiver", *span, Vec::new(), |_| {});
+                }
+            },
+        );
     }
 }
 
@@ -1216,6 +1224,9 @@ impl AstDump for Expr {
                     });
                     for arg in &call.spec_args {
                         f.node("SpecTypeArg", arg.span(), Vec::new(), |f| arg.dump(f));
+                    }
+                    for arg in &call.generic_args {
+                        arg.dump(f);
                     }
                     for arg in &call.args {
                         arg.dump(f);

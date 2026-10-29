@@ -319,6 +319,15 @@ impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
         AnalysisStep::handled(self.apply_expr_effects(expr, span, state))
     }
 
+    fn spec_method_call(
+        &mut self,
+        expr: HirExprId,
+        span: Span,
+        state: Self::Domain,
+    ) -> AnalysisStep<Self::Domain> {
+        AnalysisStep::handled(self.apply_expr_effects(expr, span, state))
+    }
+
     fn stage_compose(
         &mut self,
         expr: HirExprId,

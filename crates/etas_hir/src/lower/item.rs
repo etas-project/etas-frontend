@@ -337,6 +337,19 @@ impl LowerCtx {
             .owner_path()
             .map(path_text)
             .unwrap_or_else(|| "<invalid-impl>".to_string());
+        let receiver_type = match &decl.target {
+            ast::ImplTarget::Inherent {
+                target,
+                type_args,
+                span,
+            } => Some(ast::TypeExpr::Path {
+                path: target.clone(),
+                args: type_args.clone(),
+                span: *span,
+            }),
+            ast::ImplTarget::SpecSatisfaction { self_type, .. } => Some(self_type.clone()),
+            ast::ImplTarget::Agent { .. } | ast::ImplTarget::Error { .. } => None,
+        };
         let owner_effect = match &target {
             HirImplTarget::Inherent { target, .. } => match &target.resolution {
                 ResolveResult::Resolved(symbol)
@@ -359,7 +372,24 @@ impl LowerCtx {
             .enumerate()
             .map(|item| match item {
                 (_, ImplItem::Flow(flow)) => {
-                    HirImplItem::Flow(self.lower_flow_like(flow, item_id, scope, Some(&owner)))
+                    let body = self.hir.items.alloc(HirItem::Error { span: flow.span });
+                    let callable = self.lower_flow_like(
+                        flow,
+                        body,
+                        scope,
+                        Some(&owner),
+                        receiver_type.as_ref(),
+                    );
+                    *self.hir.items.get_mut(body).expect("reserved method body") =
+                        HirItem::Flow(callable);
+                    self.map_item(body, flow.span);
+                    self.hir
+                        .modules_arena
+                        .get_mut(self.current_module)
+                        .expect("current module shell")
+                        .items
+                        .push(body);
+                    HirImplItem::Callable { item: body }
                 }
                 (item_index, ImplItem::Action(action)) => {
                     HirImplItem::Action(self.lower_action_decl(
@@ -423,7 +453,7 @@ impl LowerCtx {
             .enumerate()
             .map(|(item_index, item)| match item {
                 ast::SpecItem::FlowSignature(signature) => HirSpecItem::FlowSignature(Box::new(
-                    self.lower_flow_signature(signature, item_id, scope, item_index),
+                    self.lower_flow_signature(signature, item_id, scope, item_index, decl),
                 )),
                 ast::SpecItem::Error(span) => HirSpecItem::Error { span: *span },
             })
@@ -502,6 +532,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
         method_index: usize,
+        spec: &ast::SpecDecl,
     ) -> HirFlowSignature {
         let scope = self.scopes.alloc(
             Some(parent_scope),
@@ -524,8 +555,61 @@ impl LowerCtx {
             definition_span: signature.name.span,
         });
         self.insert_symbol(scope, &signature.name.text, symbol, signature.name.span);
-        let type_params = self.lower_type_params(&signature.type_params, scope, item_id);
-        let params = self.lower_params(&signature.params, scope, item_id);
+        let receiver = signature
+            .params
+            .first()
+            .filter(|param| matches!(param.ty, ast::ParamType::SelfReceiver { .. }));
+        // The receiver binds a method-local Self, not an extra public spec argument.
+        let receiver_type = receiver.map(|param| ast::TypeExpr::Path {
+            path: ast::Path {
+                segments: vec![ast::Name {
+                    text: "Self".into(),
+                    span: param.span,
+                }],
+                span: param.span,
+            },
+            args: Vec::new(),
+            span: param.span,
+        });
+        let mut generics = Vec::new();
+        if let Some(receiver) = receiver {
+            generics.push(ast::TypeParam {
+                name: ast::Name {
+                    text: "Self".into(),
+                    span: receiver.span,
+                },
+                kind: ast::TypeParamKind::Type,
+                bounds: vec![ast::TypeParamBound {
+                    path: ast::Path {
+                        segments: vec![spec.name.clone()],
+                        span: spec.name.span,
+                    },
+                    args: spec
+                        .type_params
+                        .iter()
+                        .map(|param| ast::TypeExpr::Path {
+                            path: ast::Path {
+                                segments: vec![param.name.clone()],
+                                span: param.name.span,
+                            },
+                            args: Vec::new(),
+                            span: param.name.span,
+                        })
+                        .collect(),
+                    span: receiver.span,
+                }],
+                span: receiver.span,
+            });
+        }
+        generics.extend(signature.type_params.iter().cloned());
+        let type_params = self.lower_type_params(&generics, scope, item_id);
+        let receiver_type_param = receiver.map(|_| type_params[0]);
+        let params = self.lower_params_with_receiver(
+            &signature.params,
+            scope,
+            item_id,
+            receiver_type.as_ref(),
+        );
         let return_type = signature
             .return_type
             .as_ref()
@@ -537,6 +621,7 @@ impl LowerCtx {
         HirFlowSignature {
             symbol,
             type_params,
+            receiver_type_param,
             params,
             return_type,
             effects,
@@ -771,7 +856,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
     ) -> HirFlowDecl {
-        let flow = self.lower_flow_like(decl, item_id, parent_scope, None);
+        let flow = self.lower_flow_like(decl, item_id, parent_scope, None, None);
         self.map_item(item_id, decl.span);
         flow
     }
@@ -782,6 +867,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
         owner_qualifier: Option<&str>,
+        receiver_type: Option<&ast::TypeExpr>,
     ) -> HirFlowDecl {
         let symbol = if let Some(owner_qualifier) = owner_qualifier {
             self.alloc_symbol_with_def(SymbolData {
@@ -797,7 +883,7 @@ impl LowerCtx {
         } else {
             self.item_symbol_at(item_id, decl.span)
         };
-        self.lower_flow_with_symbol(decl, item_id, parent_scope, symbol)
+        self.lower_flow_with_symbol(decl, item_id, parent_scope, symbol, receiver_type)
     }
 
     pub(super) fn lower_flow_with_symbol(
@@ -806,12 +892,13 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
         symbol: SymbolId,
+        receiver_type: Option<&ast::TypeExpr>,
     ) -> HirFlowDecl {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
         let type_params = self.lower_type_params(&decl.type_params, scope, item_id);
-        let params = self.lower_params(&decl.params, scope, item_id);
+        let params = self.lower_params_with_receiver(&decl.params, scope, item_id, receiver_type);
         let return_type = decl
             .return_type
             .as_ref()

@@ -164,6 +164,11 @@ impl LowerCtx {
                     .map(|arg| self.lower_type(arg, scope, item_id))
                     .collect(),
                 method: call.method.text.clone(),
+                generic_args: call
+                    .generic_args
+                    .iter()
+                    .map(|arg| self.lower_generic_arg(arg, scope, item_id))
+                    .collect(),
                 args: call
                     .args
                     .iter()

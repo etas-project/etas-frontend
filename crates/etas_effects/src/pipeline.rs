@@ -70,7 +70,18 @@ pub struct ExternalCallableValueMetadata {
     pub action_trace: ExternalActionTraceMetadata,
 }
 
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalSpecImplementationMetadata {
+    pub identity: etas_code::MethodId,
+    pub graph_key: etas_code::CodeFingerprint,
+    pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
+    pub values: Vec<ExternalCallableValueMetadata>,
+}
+
 pub(crate) struct ExternalCallableEffectView<'a> {
+    pub generic_params: &'a [(String, etas_types::CallableGenericParamKind)],
     pub handler_requests: Option<&'a ExternalRequestInstantiationMetadata>,
     pub parameter_targets: &'a [(String, crate::ParameterCallTarget)],
     pub public_effects: &'a ExternalEffectRowMetadata,
@@ -100,8 +111,58 @@ pub struct ExternalActionRequestMetadata {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ExternalParameterRequestMetadata {
-    pub parameter: String,
+    pub parameter: ExternalCallableRequestTarget,
     pub excluded: Vec<ExternalEffectMetadata>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum ExternalCallableRequestTarget {
+    Parameter(String),
+    SpecMethod(std::sync::Arc<ExternalSpecMethodInvocation>),
+}
+
+impl From<&str> for ExternalCallableRequestTarget {
+    fn from(value: &str) -> Self {
+        Self::Parameter(value.into())
+    }
+}
+impl From<String> for ExternalCallableRequestTarget {
+    fn from(value: String) -> Self {
+        Self::Parameter(value)
+    }
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalSpecMethodInvocation {
+    pub identity: etas_code::CodeFingerprint,
+    pub receiver: etas_types::TypeId,
+    pub spec: etas_types::ExternalSpecIdentity,
+    pub spec_args: Vec<etas_types::TypeId>,
+    pub method: String,
+    pub arity: u32,
+    pub generic_arguments: Vec<ExternalSpecMethodGenericArgument>,
+    pub callable_arguments: Vec<ExternalSpecMethodCallableArgument>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum ExternalSpecMethodGenericArgument {
+    Type(etas_types::TypeId),
+    EffectRow(etas_types::EffectRowRef),
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalSpecMethodCallableArgument {
+    pub position: u32,
+    pub sources: etas_package_metadata::CallableValueGraph,
+    pub values: Vec<ExternalCallableValueMetadata>,
 }
 
 #[derive(
@@ -146,7 +207,7 @@ pub enum ExternalActionTraceMetadata {
         source: crate::ActionEventSource,
     },
     ParameterCall {
-        parameter: String,
+        parameter: ExternalCallableRequestTarget,
     },
     Seq(Vec<ExternalActionTraceMetadata>),
     Choice(Vec<ExternalActionTraceMetadata>),
@@ -154,7 +215,7 @@ pub enum ExternalActionTraceMetadata {
     UnknownOrder(Vec<ExternalEffectMetadata>),
     Widened {
         actions: Vec<ExternalEffectMetadata>,
-        parameter_calls: Vec<String>,
+        parameter_calls: Vec<ExternalCallableRequestTarget>,
     },
 }
 
@@ -314,6 +375,8 @@ pub struct ExternalTraceSpecEffectMetadata {
 
 #[derive(Clone, Copy, etas_core::RetainedSize)]
 pub struct EffectPipelineInput<'a> {
+    pub external_implementations:
+        &'a [AnchoredExternalMetadata<ExternalSpecImplementationMetadata>],
     pub frozen_calls: Option<&'a dyn crate::FrozenCallableSummaryProvider>,
     pub hir: &'a etas_hir::HirRevision,
     pub types: &'a etas_types::TypeOutput,
@@ -328,6 +391,7 @@ pub struct EffectPipelineInput<'a> {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectPipelineArtifacts {
+    pub external_implementations: Vec<ExternalSpecImplementationMetadata>,
     pub registry: std::sync::Arc<EffectRegistry>,
     pub dependency_metadata: DependencyEffectMetadata,
     pub tool_bindings: Vec<ToolProviderBindingMetadata>,
@@ -499,6 +563,7 @@ mod tests {
             let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
             let types = TypeOutput::default();
             let input = EffectPipelineInput {
+                external_implementations: &[],
                 frozen_calls: None,
                 hir: &hir,
                 types: &types,
@@ -553,6 +618,7 @@ mod tests {
         let types = TypeOutput::default();
         let registry = etas_std::standard_registry();
         let input = EffectPipelineInput {
+            external_implementations: &[],
             frozen_calls: None,
             hir: &hir,
             types: &types,

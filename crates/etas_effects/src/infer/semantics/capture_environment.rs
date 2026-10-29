@@ -148,8 +148,26 @@ impl EffectSemantics<'_> {
         bindings: &TraceArgumentBindings,
         state: &EffectState,
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
-        let application_expr = application;
-        let application = self.callable_environment_site(application_expr)?;
+        let (types, rows) = self.checked_call_generic_values(application, state)?;
+        self.instantiate_callable_environment_with_values(
+            root,
+            self.callable_environment_site(application)?,
+            bindings,
+            state,
+            &types,
+            &rows,
+        )
+    }
+
+    pub(crate) fn instantiate_callable_environment_with_values(
+        &self,
+        root: CallableEnvironmentId,
+        application: CodeFingerprint,
+        bindings: &TraceArgumentBindings,
+        state: &EffectState,
+        types: &[(String, etas_types::TypeId)],
+        rows: &[(String, crate::EffectRow)],
+    ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
         let mapped = |id: CallableEnvironmentId| CallableEnvironmentId {
             origin: id.origin,
             application,
@@ -191,6 +209,23 @@ impl EffectSemantics<'_> {
                                 environment: mapped(environment),
                             });
                         }
+                        LatentSource::SpecMethod { call, environment } => {
+                            pending.push(environment);
+                            resolved.insert(LatentSource::SpecMethod {
+                                call,
+                                environment: mapped(environment),
+                            });
+                        }
+                        LatentSource::MetadataSpecMethod {
+                            invocation,
+                            environment,
+                        } => {
+                            pending.push(environment);
+                            resolved.insert(LatentSource::MetadataSpecMethod {
+                                invocation,
+                                environment: mapped(environment),
+                            });
+                        }
                         LatentSource::Reference {
                             unit,
                             value,
@@ -222,10 +257,11 @@ impl EffectSemantics<'_> {
                 CallableEnvironment {
                     owner,
                     parameters,
-                    generics: self.instantiate_generic_values(
+                    generics: self.substitute_generic_values(
                         original.generics,
-                        application_expr,
-                        state,
+                        types,
+                        rows,
+                        state.owner,
                     )?,
                 },
             )?;

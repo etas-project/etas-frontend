@@ -1,5 +1,8 @@
 use super::*;
 
+mod implementations;
+mod methods;
+
 pub(super) fn validate(
     environment: &ProjectEnvironmentInput,
 ) -> Result<(), ExternalEnvironmentValidationError> {
@@ -17,6 +20,8 @@ pub(super) fn validate(
             }
         }
     }
+    methods::validate(environment, &declarations)?;
+    implementations::validate(environment, &declarations)?;
     let mut edges = BTreeMap::new();
     for (path, (package, signature)) in &declarations {
         let mut parents = Vec::new();

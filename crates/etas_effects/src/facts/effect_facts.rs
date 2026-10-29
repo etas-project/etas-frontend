@@ -42,6 +42,8 @@ pub enum EffectConvergenceStatus {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectMaterializationInputs {
+    pub method_evidence:
+        BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
     pub frozen_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, crate::FrozenCallableGraphIdentity>,
@@ -74,6 +76,8 @@ pub struct EffectMaterializationInputs {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectFacts {
+    pub method_evidence:
+        BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
     pub frozen_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, crate::FrozenCallableGraphIdentity>,

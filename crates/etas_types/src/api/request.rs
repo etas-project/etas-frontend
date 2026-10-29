@@ -212,6 +212,7 @@ pub struct ExternalSpecMethodInput {
     pub name: String,
     pub path: Vec<String>,
     pub signature: Option<ExternalFlowSignatureInput>,
+    pub receiver_param: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -225,7 +226,16 @@ pub struct ExternalSpecImplInput {
     pub self_type: ExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
-    pub methods: Vec<String>,
+    pub methods: Vec<ExternalSpecImplMethodInput>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalSpecImplMethodInput {
+    pub identity: etas_code::MethodId,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
+    pub params: Vec<ExternalTypeInput>,
+    pub output: ExternalTypeInput,
+    pub effects: ExternalEffectRowInput,
 }
 
 #[derive(Clone, Debug)]

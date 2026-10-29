@@ -8,6 +8,8 @@ use crate::{
     effect_var_id_from_name,
 };
 
+mod contextual_rows;
+
 pub struct EffectFactProjector;
 
 impl EffectFactProjector {
@@ -35,6 +37,7 @@ impl EffectFactProjector {
             native_call_targets: analysis.inputs.native_call_targets,
             generic_effect_rows: analysis.inputs.generic_effect_rows,
             callable_environments: analysis.inputs.callable_environments,
+            method_evidence: analysis.inputs.method_evidence,
             inferred_parameter_effects: analysis.inputs.inferred_parameter_effects,
             handler_action_effects: analysis.inputs.handler_action_effects,
             expr_effects: analysis.inputs.expr_effects,
@@ -146,6 +149,15 @@ fn materialize_latent_effects(
         Vec<etas_hir::HirExprId>,
     >,
 ) -> Result<(), EffectPipelineError> {
+    let contextual_rows = if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+    {
+        // Failed analysis retains its diagnostics, but cannot publish checked facts.
+        std::collections::HashMap::new()
+    } else {
+        contextual_rows::solved_contextual_rows(types, facts)?
+    };
     for (unit, summary) in facts.unit_effects.clone() {
         let EffectUnit::AnonymousFlow { value, body, .. } = unit else {
             continue;
@@ -163,7 +175,7 @@ fn materialize_latent_effects(
             ));
             continue;
         };
-        let declared_bound = match types.store.get(flow_type) {
+        let mut declared_bound = match types.store.get(flow_type) {
             Some(Type::Function(flow)) => flow
                 .effects
                 .as_ref()
@@ -182,6 +194,11 @@ fn materialize_latent_effects(
                 continue;
             }
         };
+        if let Some(bound) = &mut declared_bound
+            && let Some(bindings) = contextual_rows.get(&value)
+        {
+            contextual_rows::specialize_bound(bound, bindings);
+        }
         let body = match body {
             crate::infer::unit::EffectAnonymousFlowBody::Expr(expr) => {
                 LatentEffectBodyRef::Expr(expr)

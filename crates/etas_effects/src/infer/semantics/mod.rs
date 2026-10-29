@@ -21,6 +21,7 @@ mod request_templates;
 mod requirements;
 mod returned_callable;
 mod shared;
+mod spec_methods;
 mod specialize;
 pub mod state;
 mod static_string;

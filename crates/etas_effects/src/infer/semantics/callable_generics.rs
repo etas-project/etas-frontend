@@ -87,7 +87,8 @@ impl EffectSemantics<'_> {
         call: HirExprId,
         state: &EffectState,
     ) -> Result<GenericSubstitutions, EffectSpecializationError> {
-        let checked = self.call_generic_bindings(call);
+        let mut checked = self.call_generic_bindings(call);
+        self.bind_spec_method_generic_parameters(call, &mut checked)?;
         let mut rows = checked
             .effect_rows
             .iter()
@@ -201,15 +202,15 @@ impl EffectSemantics<'_> {
         Ok((types, rows))
     }
 
-    pub(super) fn instantiate_generic_values(
+    pub(super) fn substitute_generic_values(
         &self,
         values: GenericValues,
-        call: HirExprId,
-        state: &EffectState,
+        types: &[(String, TypeId)],
+        rows: &[(String, EffectRow)],
+        owner: Option<HirItemId>,
     ) -> Result<GenericValues, EffectSpecializationError> {
-        let (types, rows) = self.checked_call_generic_values(call, state)?;
         let substitution = types.iter().cloned().collect();
-        let row_arguments = self.type_row_arguments(&rows, state.owner)?;
+        let row_arguments = self.type_row_arguments(rows, owner)?;
         values
             .into_iter()
             .map(|(parameter, value)| {
@@ -223,7 +224,7 @@ impl EffectSemantics<'_> {
                         .substitute(ty)?,
                     ),
                     Value::EffectRow(row) => {
-                        Value::EffectRow(self.specialize_effect_row(&row, &[], &types, &rows)?)
+                        Value::EffectRow(self.specialize_effect_row(&row, &[], types, rows)?)
                     }
                 };
                 Ok((parameter, value))
