@@ -11,17 +11,53 @@ impl CodeDefinitionOperations for NativeDefinitionStore {
         definition: &DefinitionRef,
         body: SyntaxBlockRef,
     ) -> Result<DefinitionRef, DefinitionOperationError> {
+        self.with_body_impl(definition, body, None)
+    }
+}
+
+impl NativeDefinitionStore {
+    pub fn with_body_controlled(
+        &self,
+        definition: &DefinitionRef,
+        body: SyntaxBlockRef,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<DefinitionRef, DefinitionOperationError> {
+        self.with_body_impl(definition, body, Some(control))
+    }
+
+    fn with_body_impl(
+        &self,
+        definition: &DefinitionRef,
+        body: SyntaxBlockRef,
+        control: Option<&dyn etas_utils::PipelineExecutionControl>,
+    ) -> Result<DefinitionRef, DefinitionOperationError> {
+        let checkpoint = || -> Result<(), DefinitionOperationError> {
+            if let Some(control) = control {
+                control.checkpoint().map_err(|error| {
+                    DefinitionOperationError::Syntax(
+                        etas_code::syntax::SyntaxOperationError::Interrupted(error),
+                    )
+                })?;
+            }
+            Ok(())
+        };
+        checkpoint()?;
         let original = self.resolve(definition)?;
         self.syntax
             .resolve(&body)
             .map_err(DefinitionOperationError::Syntax)?;
         let data = original.0.data.with_body(body);
-        let method_snapshots =
-            original
-                .revised_method_snapshots(data.revision())
-                .map_err(|error| DefinitionOperationError::BackendUnavailable {
+        let method_snapshots = original
+            .revised_method_snapshots(data.revision(), control)
+            .map_err(|error| match error {
+                crate::code::descriptor::ProjectionError::Syntax(error) => {
+                    DefinitionOperationError::Syntax(error)
+                }
+                error => DefinitionOperationError::BackendUnavailable {
                     reason: error.to_string(),
-                })?;
+                },
+            })?;
+        checkpoint()?;
         self.publish(NativeDefinition {
             data,
             method_snapshots,
@@ -35,9 +71,6 @@ impl CodeDefinitionOperations for NativeDefinitionStore {
             implementation: None,
         })
     }
-}
-
-impl NativeDefinitionStore {
     pub fn body_overlay(
         &self,
         definition: &DefinitionRef,

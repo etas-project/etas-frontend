@@ -141,6 +141,7 @@ impl NativeDefinitionView {
     pub(super) fn revised_method_snapshots(
         &self,
         revision: &RevisionInfo,
+        control: Option<&dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<
         std::collections::BTreeMap<CallableId, Arc<etas_code::descriptor::DefinitionSnapshotInfo>>,
         crate::code::descriptor::ProjectionError,
@@ -157,6 +158,13 @@ impl NativeDefinitionView {
             .method_snapshots
             .iter()
             .map(|(id, previous)| {
+                if let Some(control) = control {
+                    control.checkpoint().map_err(|error| {
+                        crate::code::descriptor::ProjectionError::Syntax(
+                            etas_code::syntax::SyntaxOperationError::Interrupted(error),
+                        )
+                    })?;
+                }
                 let content = if id == &owner.revision.definition {
                     owner.revision.content
                 } else {

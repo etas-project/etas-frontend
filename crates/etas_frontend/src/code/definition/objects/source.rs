@@ -139,8 +139,9 @@ impl NativeDefinitionStore {
         }
         checkpoint()?;
         let method_snapshots = original
-            .revised_method_snapshots(data.revision())
+            .revised_method_snapshots(data.revision(), control)
             .map_err(NativeDefinitionError::Projection)?;
+        checkpoint()?;
         self.publish(NativeDefinition {
             data,
             method_snapshots,
