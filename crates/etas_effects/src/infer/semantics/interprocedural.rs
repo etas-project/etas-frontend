@@ -519,22 +519,22 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                                 .collect(),
                             _ => None,
                         };
-                        let (handler_free, enclosing_handled) =
-                            match self.enclosing_handled_row(site.call) {
-                                Ok(value) => value,
-                                Err(interruption) => {
-                                    self.callable_summaries.borrow_mut().interruption =
-                                        Some(interruption);
-                                    return state;
-                                }
-                            };
+                        let handler_context = match self.enclosing_handler_context(site.call) {
+                            Ok(value) => value,
+                            Err(interruption) => {
+                                self.callable_summaries.borrow_mut().interruption =
+                                    Some(interruption);
+                                return state;
+                            }
+                        };
                         state.exits.record_parameter_exit(crate::ParameterExitFact {
                             target: crate::ParameterCallTarget::Native(symbol),
                             output,
                             source: site.span.into(),
                             arguments,
-                            handler_free,
-                            enclosing_handled,
+                            handler_free: handler_context.free,
+                            enclosing_handled: handler_context.handled,
+                            enclosing_handlers: handler_context.handlers,
                             prefix: state.summary.action_trace.clone(),
                         });
                     } else {

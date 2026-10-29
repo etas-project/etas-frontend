@@ -90,6 +90,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
                 output: mapper.ty(exit.output)?,
                 source: exit.source.clone(),
                 handler_free: exit.handler_free,
+                enclosing_handlers: exit.enclosing_handlers.clone(),
                 enclosing_handled: exit
                     .enclosing_handled
                     .as_ref()

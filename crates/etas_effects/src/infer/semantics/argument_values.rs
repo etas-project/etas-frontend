@@ -241,39 +241,99 @@ pub(super) fn enclosing_handlers(
     Ok((None, None))
 }
 
+pub(super) fn compose_handler_scopes(
+    inner: Option<Vec<HirExprId>>,
+    outer: Option<&[HirExprId]>,
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+) -> Result<Option<Vec<HirExprId>>, etas_utils::PipelineInterruption> {
+    let (Some(mut inner), Some(outer)) = (inner, outer) else {
+        return Ok(None);
+    };
+    let mut visited = HashSet::new();
+    for handler in inner.iter().chain(outer.iter()) {
+        if let Some(control) = control {
+            control.checkpoint()?;
+        }
+        if !visited.insert(*handler) {
+            return Ok(None);
+        }
+    }
+    inner.extend_from_slice(outer);
+    Ok(Some(inner))
+}
+
+pub(super) struct EnclosingHandlerContext {
+    pub free: Option<bool>,
+    pub handled: Option<crate::EffectRow>,
+    pub handlers: Option<Vec<HirExprId>>,
+}
+
 impl super::engine::EffectSemantics<'_> {
-    pub(super) fn enclosing_handled_row(
+    pub(super) fn enclosing_handler_context(
         &self,
         expression: HirExprId,
-    ) -> Result<(Option<bool>, Option<crate::EffectRow>), etas_utils::PipelineInterruption> {
+    ) -> Result<EnclosingHandlerContext, etas_utils::PipelineInterruption> {
         let (free, handlers) = enclosing_handlers(self.hir, expression, self.query_control)?;
         let Some(handlers) = handlers else {
-            return Ok((free, None));
+            return Ok(EnclosingHandlerContext {
+                free,
+                handled: None,
+                handlers: None,
+            });
         };
         let mut handled = crate::EffectRow::empty();
-        for expression in handlers {
+        for expression in &handlers {
             if let Some(control) = self.query_control {
                 control.checkpoint()?;
             }
-            let Some(ty) = self.types.facts.expr_types.get(&expression) else {
-                return Ok((free, None));
+            let Some(ty) = self.types.facts.expr_types.get(expression) else {
+                return Ok(EnclosingHandlerContext {
+                    free,
+                    handled: None,
+                    handlers: Some(handlers),
+                });
             };
             let Some(Type::Handler(handler)) = self.types.store.get(*ty) else {
-                return Ok((free, None));
+                return Ok(EnclosingHandlerContext {
+                    free,
+                    handled: None,
+                    handlers: Some(handlers),
+                });
             };
             let row = self.row_from_type_ref(&handler.handled);
             if handled.open.is_some() && row.open.is_some() && handled.open != row.open {
-                return Ok((free, None));
+                return Ok(EnclosingHandlerContext {
+                    free,
+                    handled: None,
+                    handlers: Some(handlers),
+                });
             }
             handled.union_assign(&row);
         }
-        Ok((free, Some(handled)))
+        Ok(EnclosingHandlerContext {
+            free,
+            handled: Some(handled),
+            handlers: Some(handlers),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_handler_scopes_remain_explicitly_unknown() {
+        assert_eq!(
+            compose_handler_scopes(Some(vec![HirExprId(1)]), Some(&[HirExprId(2)]), None).unwrap(),
+            Some(vec![HirExprId(1), HirExprId(2)])
+        );
+        assert_eq!(
+            compose_handler_scopes(Some(vec![HirExprId(1)]), Some(&[HirExprId(1)]), None).unwrap(),
+            None
+        );
+        assert_eq!(compose_handler_scopes(None, Some(&[]), None).unwrap(), None);
+    }
 
     #[test]
     fn handler_scope_excludes_factory_and_deferred_lambda_body() {

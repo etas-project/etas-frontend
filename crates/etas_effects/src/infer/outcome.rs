@@ -213,6 +213,10 @@ pub struct ParameterExitFact {
     /// Checked effects intercepted by enclosing handler scopes; None is unknown.
     #[serde(default)]
     pub enclosing_handled: Option<crate::EffectRow>,
+    /// Session-local handler expressions, ordered from the innermost to the
+    /// outermost scope. None means the scope chain could not be established.
+    #[serde(default)]
+    pub enclosing_handlers: Option<Vec<HirExprId>>,
     pub prefix: ActionTraceDomain,
 }
 
@@ -332,6 +336,7 @@ impl CallableExitSummary {
                 && existing.output == exit.output
                 && existing.source == exit.source
                 && existing.arguments == exit.arguments
+                && existing.enclosing_handlers == exit.enclosing_handlers
         }) {
             let mut changed = existing.prefix.choice_assign(exit.prefix);
             if existing.handler_free != exit.handler_free && existing.handler_free.is_some() {
@@ -365,6 +370,7 @@ impl CallableExitSummary {
                 exit.output,
                 exit.source.clone(),
                 exit.arguments.clone(),
+                exit.enclosing_handlers.clone(),
             )
         });
         true

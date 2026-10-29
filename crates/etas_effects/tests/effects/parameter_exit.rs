@@ -1,6 +1,115 @@
 use super::*;
 
 #[test]
+fn parameter_exit_keeps_nested_handler_sources_in_unwind_order() {
+    let source = r#"
+effect Inner { action ping() -> unit; }
+effect Outer { action pong() -> unit; }
+flow relay(f: () -> unit ![Inner.ping, Outer.pong]) -> unit ![] {
+    handle {
+        handle { f(); } with { Inner.ping() => { resume; } };
+    } with { Outer.pong() => { resume; } };
+    return;
+}
+
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let exits = output.facts.item_effects[&flow_item(&hir, "relay")]
+        .exits
+        .as_ref()
+        .unwrap();
+    let [exit] = exits.parameter_exits.as_slice() else {
+        panic!("expected one callback exit: {exits:?}");
+    };
+    let handlers = exit.enclosing_handlers.as_ref().unwrap();
+    assert_eq!(handlers.len(), 2);
+    let spans = handlers
+        .iter()
+        .map(|handler| {
+            let span = hir.exprs.get(*handler).unwrap().span(&hir.blocks);
+            &source[span.range.start.to_usize()..span.range.end.to_usize()]
+        })
+        .collect::<Vec<_>>();
+    assert!(spans[0].contains("Inner.ping"), "{spans:?}");
+    assert!(spans[1].contains("Outer.pong"), "{spans:?}");
+}
+
+#[test]
+fn parameter_exit_carries_handler_scope_across_forwarding_call() {
+    let source = r#"
+effect Inner { action ping() -> unit; }
+effect Outer { action pong() -> unit; }
+flow invoke(f: () -> unit ![Inner.ping, Outer.pong]) -> unit ![Outer.pong] {
+    handle { f(); } with { Inner.ping() => { resume; } };
+    return;
+}
+flow relay(f: () -> unit ![Inner.ping, Outer.pong]) -> unit ![] {
+    handle { invoke(f); } with { Outer.pong() => { resume; } };
+    return;
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let exits = output.facts.item_effects[&flow_item(&hir, "relay")]
+        .exits
+        .as_ref()
+        .unwrap();
+    let [exit] = exits.parameter_exits.as_slice() else {
+        panic!("expected one forwarded callback exit: {exits:?}");
+    };
+    let handlers = exit.enclosing_handlers.as_ref().unwrap();
+    assert_eq!(handlers.len(), 2);
+    let spans = handlers
+        .iter()
+        .map(|handler| {
+            let span = hir.exprs.get(*handler).unwrap().span(&hir.blocks);
+            &source[span.range.start.to_usize()..span.range.end.to_usize()]
+        })
+        .collect::<Vec<_>>();
+    assert!(spans[0].contains("Inner.ping"), "{spans:?}");
+    assert!(spans[1].contains("Outer.pong"), "{spans:?}");
+}
+
+#[test]
+fn recursive_forwarding_with_a_handler_converges_without_forging_a_scope() {
+    let source = r#"
+effect Inner { action ping() -> unit; }
+flow recurse(f: () -> unit ![Inner.ping], stop: bool) -> unit ![Inner.ping] {
+    if stop { f(); return; }
+    handle { recurse(f, true); } with { Inner.ping() => { resume; } };
+    return;
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "recurse")];
+    let exits = summary.exits.as_ref().unwrap();
+    assert!(
+        exits
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::Callee(_))),
+        "recursive call control must remain explicitly unproved: {exits:?}"
+    );
+}
+
+#[test]
 fn parameter_exit_facts_retain_distinct_checked_call_arguments() {
     let source = "flow relay(f: (i32) -> unit ![]) -> unit ![] { f(0); f(1); return; }";
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));

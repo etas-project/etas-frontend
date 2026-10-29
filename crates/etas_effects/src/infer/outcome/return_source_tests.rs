@@ -21,6 +21,7 @@ fn parameter_exit_prefixes_join_without_discarding_the_unknown_outcome() {
         arguments: Some(Vec::new()),
         handler_free: Some(true),
         enclosing_handled: Some(crate::EffectRow::empty()),
+        enclosing_handlers: Some(Vec::new()),
         prefix: ActionTraceDomain::Empty,
     });
     let mut right = CallableExitSummary::default();
@@ -31,6 +32,7 @@ fn parameter_exit_prefixes_join_without_discarding_the_unknown_outcome() {
         arguments: Some(Vec::new()),
         handler_free: Some(true),
         enclosing_handled: Some(crate::EffectRow::empty()),
+        enclosing_handlers: Some(Vec::new()),
         prefix: ActionTraceDomain::ParameterCall {
             target,
             parameter: "f".into(),
@@ -51,6 +53,7 @@ fn parameter_exit_prefixes_join_without_discarding_the_unknown_outcome() {
         arguments: None,
         handler_free: None,
         enclosing_handled: None,
+        enclosing_handlers: None,
         prefix: ActionTraceDomain::Empty,
     });
     assert_eq!(
@@ -69,6 +72,52 @@ fn parameter_exit_prefixes_join_without_discarding_the_unknown_outcome() {
     assert!(
         !left.returns_only(),
         "a dangling symbolic exit must remain unproved"
+    );
+}
+
+#[test]
+fn parameter_exit_preserves_distinct_and_unknown_handler_scope_orders() {
+    let target = crate::ParameterCallTarget::Native(etas_hir::SymbolId(1));
+    let span = etas_core::Span::new(
+        etas_core::SourceId(7),
+        etas_core::TextRange::new(etas_core::TextSize(0), etas_core::TextSize(1)),
+    );
+    let mut summary = CallableExitSummary::default();
+    let exit = ParameterExitFact {
+        target,
+        output: TypeId(3),
+        source: span.into(),
+        arguments: Some(Vec::new()),
+        handler_free: Some(false),
+        enclosing_handled: Some(crate::EffectRow::empty()),
+        enclosing_handlers: Some(vec![HirExprId(10), HirExprId(11)]),
+        prefix: ActionTraceDomain::Empty,
+    };
+    summary.record_parameter_exit(exit.clone());
+    let mut reversed = exit.clone();
+    reversed.enclosing_handlers = Some(vec![HirExprId(11), HirExprId(10)]);
+    summary.record_parameter_exit(reversed);
+    let mut unknown = exit;
+    unknown.enclosing_handlers = None;
+    summary.record_parameter_exit(unknown);
+    assert_eq!(summary.parameter_exits.len(), 3);
+    assert!(
+        summary
+            .parameter_exits
+            .iter()
+            .any(|exit| exit.enclosing_handlers.is_none())
+    );
+    assert!(
+        summary
+            .parameter_exits
+            .iter()
+            .any(|exit| exit.enclosing_handlers == Some(vec![HirExprId(10), HirExprId(11)]))
+    );
+    assert!(
+        summary
+            .parameter_exits
+            .iter()
+            .any(|exit| exit.enclosing_handlers == Some(vec![HirExprId(11), HirExprId(10)]))
     );
 }
 

@@ -495,7 +495,7 @@ impl EffectSemantics<'_> {
             })
             && exits.gaps.iter().filter(|gap| matches!(gap, Gap::ParameterCall { .. })).all(|gap| exits.parameter_exits.iter().any(|exit| matches!(gap, Gap::ParameterCall { target, output, source } if *target == exit.target && *output == exit.output && *source == exit.source)))
         {
-            let (outer_free, outer_handled) = match self.enclosing_handled_row(call) {
+            let outer_context = match self.enclosing_handler_context(call) {
                 Ok(value) => value,
                 Err(interruption) => {
                     self.callable_summaries.borrow_mut().interruption = Some(interruption);
@@ -512,12 +512,23 @@ impl EffectSemantics<'_> {
                     return;
                 }
                 let mut exit = exit.clone();
-                exit.handler_free = match (exit.handler_free, outer_free) {
+                exit.handler_free = match (exit.handler_free, outer_context.free) {
                     (Some(true), Some(true)) => Some(true),
                     (Some(false), _) | (_, Some(false)) => Some(false),
                     _ => None,
                 };
-                exit.enclosing_handled = match (exit.enclosing_handled, &outer_handled) {
+                exit.enclosing_handlers = match super::argument_values::compose_handler_scopes(
+                    exit.enclosing_handlers,
+                    outer_context.handlers.as_deref(),
+                    self.query_control,
+                ) {
+                    Ok(scopes) => scopes,
+                    Err(interruption) => {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        return;
+                    }
+                };
+                exit.enclosing_handled = match (exit.enclosing_handled, &outer_context.handled) {
                     (Some(mut inner), Some(outer))
                         if !(inner.open.is_some() && outer.open.is_some() && inner.open != outer.open) => {
                             inner.union_assign(outer);

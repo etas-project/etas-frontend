@@ -25,6 +25,16 @@ fn unit_parameters(hir: &etas_hir::HirRevision, unit: EffectUnit) -> &[etas_hir:
     }
 }
 
+fn relocate_handler_scopes(
+    handlers: Option<&[etas_hir::HirExprId]>,
+    expressions: &HashMap<etas_hir::HirExprId, etas_hir::HirExprId>,
+) -> Option<Vec<etas_hir::HirExprId>> {
+    handlers?
+        .iter()
+        .map(|handler| expressions.get(handler).copied())
+        .collect()
+}
+
 pub(super) struct Relocation<'a> {
     original: &'a crate::CheckedProgram,
     target: DescriptorInput<'a>,
@@ -698,6 +708,7 @@ impl<'a> Relocation<'a> {
                             source: exit.source.clone(),
                             handler_free: exit.handler_free,
                             enclosing_handled: exit.enclosing_handled.as_ref().map(|row| self.row(row, scope)).transpose()?,
+                            enclosing_handlers: relocate_handler_scopes(exit.enclosing_handlers.as_deref(), &self.native_exprs),
                             arguments: exit.arguments.as_ref().map(|arguments| arguments.iter().map(|argument| Ok(etas_effects::ParameterExitArgument {
                                 name: argument.name.clone(), ty: self.ty(scope, argument.ty)?, source: argument.source.clone(), value: argument.value.clone(),
                             })).collect::<Result<Vec<_>, ProjectionError>>()).transpose()?,
@@ -856,5 +867,30 @@ impl<'a> Relocation<'a> {
             independent_determinism: source.independent_determinism,
             support: source.support.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use etas_hir::HirExprId;
+
+    #[test]
+    fn relocates_ordered_scopes_only_when_every_expression_is_checked() {
+        let expressions =
+            HashMap::from([(HirExprId(1), HirExprId(11)), (HirExprId(2), HirExprId(12))]);
+        assert_eq!(
+            relocate_handler_scopes(Some(&[HirExprId(2), HirExprId(1)]), &expressions),
+            Some(vec![HirExprId(12), HirExprId(11)])
+        );
+        assert_eq!(
+            relocate_handler_scopes(Some(&[]), &expressions),
+            Some(vec![])
+        );
+        assert_eq!(
+            relocate_handler_scopes(Some(&[HirExprId(1), HirExprId(3)]), &expressions),
+            None
+        );
+        assert_eq!(relocate_handler_scopes(None, &expressions), None);
     }
 }
