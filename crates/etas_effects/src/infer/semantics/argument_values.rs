@@ -173,23 +173,30 @@ pub(super) fn enclosing_handlers(
     expression: HirExprId,
     control: Option<&dyn etas_utils::PipelineExecutionControl>,
 ) -> Result<(Option<bool>, Option<Vec<HirExprId>>), etas_utils::PipelineInterruption> {
-    use etas_hir::HirOwner;
+    use etas_hir::{HirBodyKind, HirOwner};
     let index = hir.index();
     let Some(mut owner) = index.expr_owner.get(&expression).copied() else {
         return Ok((None, None));
     };
+    let mut child = HirOwner::Expr(expression);
     let mut visited = HashSet::new();
     let mut handlers = Vec::new();
     while visited.insert(owner) {
         if let Some(control) = control {
             control.checkpoint()?;
         }
-        owner = match owner {
+        let parent = match owner {
             HirOwner::Item(_) => return Ok((Some(handlers.is_empty()), Some(handlers))),
             HirOwner::HandlerArm(_) => return Ok((Some(false), None)),
             HirOwner::Expr(expr) => {
                 match hir.exprs.get(expr) {
-                    Some(HirExpr::Handle { handler, .. }) => handlers.push(*handler),
+                    Some(HirExpr::Handle { body, handler, .. }) => {
+                        if child == HirOwner::Expr(*body) {
+                            handlers.push(*handler);
+                        } else if child != HirOwner::Expr(*handler) {
+                            return Ok((None, None));
+                        }
+                    }
                     Some(HirExpr::Try { .. }) => return Ok((Some(false), None)),
                     Some(_) => {}
                     None => return Ok((None, None)),
@@ -212,6 +219,9 @@ pub(super) fn enclosing_handlers(
                 *parent
             }
             HirOwner::Body(body) => {
+                if matches!(body.kind, HirBodyKind::Lambda(_)) {
+                    return Ok((Some(handlers.is_empty()), Some(handlers)));
+                }
                 let Some(parent) = index.body_owner.get(&body) else {
                     return Ok((None, None));
                 };
@@ -225,6 +235,8 @@ pub(super) fn enclosing_handlers(
             }
             HirOwner::Module(_) => return Ok((None, None)),
         };
+        child = owner;
+        owner = parent;
     }
     Ok((None, None))
 }
@@ -256,5 +268,91 @@ impl super::engine::EffectSemantics<'_> {
             handled.union_assign(&row);
         }
         Ok((free, Some(handled)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handler_scope_excludes_factory_and_deferred_lambda_body() {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+            r#"
+flow run() -> unit {
+    handle {
+        body_call();
+        let later = () => { lambda_call(); return; };
+    } with factory(factory_call());
+    return;
+}
+"#,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
+        let call = |name: &str| {
+            hir.exprs
+                .iter()
+                .find_map(|(id, expr)| {
+                    let HirExpr::Call { callee, .. } = expr else {
+                        return None;
+                    };
+                    let HirExpr::Path(path) = hir.exprs.get(*callee)? else {
+                        return None;
+                    };
+                    (path.segments.last()?.name == name).then_some(id)
+                })
+                .unwrap()
+        };
+        let (free, handlers) = enclosing_handlers(&hir, call("body_call"), None).unwrap();
+        assert_eq!(free, Some(false));
+        assert_eq!(handlers.unwrap().len(), 1);
+        for name in ["factory_call", "lambda_call"] {
+            let (free, handlers) = enclosing_handlers(&hir, call(name), None).unwrap();
+            assert_eq!(free, Some(true), "{name}");
+            assert!(handlers.unwrap().is_empty(), "{name}");
+        }
+    }
+
+    #[test]
+    fn nested_handler_scope_is_ordered_from_inner_to_outer() {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+            r#"
+flow run() -> unit {
+    handle {
+        handle { inner_call(); } with inner_factory(inner_argument());
+    } with outer_factory(outer_argument());
+    return;
+}
+"#,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
+        let call = |name: &str| {
+            hir.exprs
+                .iter()
+                .find_map(|(id, expr)| {
+                    let HirExpr::Call { callee, .. } = expr else {
+                        return None;
+                    };
+                    let HirExpr::Path(path) = hir.exprs.get(*callee)? else {
+                        return None;
+                    };
+                    (path.segments.last()?.name == name).then_some(id)
+                })
+                .unwrap()
+        };
+        for (name, expected) in [
+            (
+                "inner_call",
+                vec![call("inner_factory"), call("outer_factory")],
+            ),
+            ("inner_argument", vec![call("outer_factory")]),
+            ("outer_argument", vec![]),
+        ] {
+            let (free, handlers) = enclosing_handlers(&hir, call(name), None).unwrap();
+            assert_eq!(free, Some(expected.is_empty()), "{name}");
+            assert_eq!(handlers, Some(expected), "{name}");
+        }
     }
 }
