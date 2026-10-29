@@ -45,7 +45,7 @@ pub use infer::{
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
     EffectPipelineOutput, ExternalActionRequestMetadata, ExternalActionTraceMetadata,
-    ExternalArtifactAnchor, ExternalCallableValueMetadata,
+    ExternalArtifactAnchor, ExternalCallableContract, ExternalCallableValueMetadata,
     ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
     ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
     ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,

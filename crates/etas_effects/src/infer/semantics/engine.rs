@@ -752,6 +752,7 @@ mod tests {
     #[test]
     pub(crate) fn external_summary_import_root_matches_multi_segment_prefix() {
         let summary = crate::ExternalEffectSummaryMetadata {
+            callable_contract: None,
             behavior: None,
             handler_requests: None,
             returned_callables: None,

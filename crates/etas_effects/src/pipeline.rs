@@ -29,6 +29,9 @@ use context::{EffectPipelineContext, effect_pipeline};
     etas_core::RetainedSize,
 )]
 pub struct ExternalEffectSummaryMetadata {
+    /// Validated portable analysis for this exact declaration, when published.
+    #[serde(default)]
+    pub callable_contract: Option<ExternalCallableContract>,
     #[serde(default)]
     pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
     pub handler_requests: Option<ExternalRequestInstantiationMetadata>,
@@ -58,6 +61,14 @@ pub struct ExternalEffectSummaryMetadata {
     pub latent_flows: Vec<ExternalLatentFlowSummaryMetadata>,
     #[serde(default)]
     pub action_trace: ExternalActionTraceMetadata,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalCallableContract {
+    pub header: std::sync::Arc<etas_code::descriptor::CallableHeaderInfo>,
+    pub graph: std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
 }
 
 #[derive(
