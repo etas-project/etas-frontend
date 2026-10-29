@@ -272,6 +272,42 @@ flow inspect() -> unit { let definition = ^normalize; return; }"#,
 }
 
 #[test]
+fn branch_before_callback_does_not_discard_unproved_host_outcomes() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+flow normalize(flag: bool, f: () -> unit ![]) -> unit ![Console.stdout_write, Console.stderr_write] {
+    if flag { perform Console.stdout_write("a"); } else { perform Console.stderr_write("b"); }
+    f();
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let body = store.syntax_operations().parse_body(
+        "if flag { perform Console.stdout_write(\"a\"); } else { perform Console.stderr_write(\"b\"); } f(); return;",
+    ).unwrap();
+    let draft = store.with_body(&original, body).unwrap();
+    let overlay = store
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(store.syntax_operations())
+        .unwrap();
+    let report = FrontendSession::new()
+        .analyze_body_overlay(overlay)
+        .unwrap()
+        .check_report(Default::default())
+        .unwrap();
+    assert_ne!(report.status, CheckStatus::Accepted, "{report:?}");
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "code::MissingOutcomeSensitiveSummary"),
+        "{report:?}"
+    );
+}
+
+#[test]
 fn unchanged_boolean_resume_value_preserves_callback_contract() {
     let (store, expr) = definitions_from(
         r#"module app;

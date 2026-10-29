@@ -91,9 +91,9 @@ impl DefinitionDescriptorProjector<'_> {
             }) {
                 return false;
             }
-            if linear_site_count(&exit.prefix, exit.target, exit.source.span()) != Some(0)
+            if exact_site_count(&exit.prefix, exit.target, exit.source.span()) != Some(0)
                 || exits.exits.iter().any(|normal| {
-                    linear_site_count(&normal.trace, exit.target, exit.source.span()) != Some(1)
+                    exact_site_count(&normal.trace, exit.target, exit.source.span()) != Some(1)
                 })
             {
                 return false;
@@ -264,38 +264,139 @@ impl DefinitionDescriptorProjector<'_> {
     }
 }
 
-fn linear_site_count(
+fn exact_site_count(
     trace: &etas_effects::ActionTraceDomain,
     target: etas_effects::ParameterCallTarget,
     source: etas_core::Span,
 ) -> Option<usize> {
     use etas_effects::ActionTraceDomain;
-    let mut pending = vec![trace];
-    let mut count = 0usize;
-    while let Some(node) = pending.pop() {
-        match node {
-            ActionTraceDomain::Empty | ActionTraceDomain::Event(_) => {}
-            ActionTraceDomain::ParameterCall {
+    enum Step<'a> {
+        Visit(&'a ActionTraceDomain),
+        Sequence(usize),
+        Choice(usize),
+        Repeat,
+    }
+
+    let mut pending = vec![Step::Visit(trace)];
+    let mut counts: Vec<Option<usize>> = Vec::new();
+    while let Some(step) = pending.pop() {
+        match step {
+            Step::Visit(
+                ActionTraceDomain::Empty
+                | ActionTraceDomain::Event(_)
+                | ActionTraceDomain::UnknownOrder(_),
+            ) => counts.push(Some(0)),
+            Step::Visit(ActionTraceDomain::ParameterCall {
                 target: actual,
                 span,
                 ..
-            } => {
-                if *actual == target && *span == source {
-                    count = count.checked_add(1)?;
-                }
+            }) => {
+                counts.push(Some(usize::from(*actual == target && *span == source)));
             }
-            ActionTraceDomain::Seq(parts) => pending.extend(parts),
-            ActionTraceDomain::Choice(_)
-            | ActionTraceDomain::Repeat(_)
-            | ActionTraceDomain::UnknownOrder(_)
-            | ActionTraceDomain::Widened { .. } => return None,
+            Step::Visit(ActionTraceDomain::Seq(parts)) => {
+                pending.push(Step::Sequence(parts.len()));
+                pending.extend(parts.iter().map(Step::Visit));
+            }
+            Step::Visit(ActionTraceDomain::Choice(parts)) => {
+                pending.push(Step::Choice(parts.len()));
+                pending.extend(parts.iter().map(Step::Visit));
+            }
+            Step::Visit(ActionTraceDomain::Repeat(inner)) => {
+                pending.push(Step::Repeat);
+                pending.push(Step::Visit(inner));
+            }
+            Step::Visit(ActionTraceDomain::Widened {
+                parameter_calls, ..
+            }) => {
+                counts.push(
+                    (!parameter_calls
+                        .iter()
+                        .any(|call| call.target == target && call.span == source))
+                    .then_some(0),
+                );
+            }
+            Step::Sequence(length) => {
+                let start = counts.len().checked_sub(length)?;
+                let count = counts
+                    .drain(start..)
+                    .try_fold(0usize, |sum, next| sum.checked_add(next?));
+                counts.push(count);
+            }
+            Step::Choice(length) => {
+                let start = counts.len().checked_sub(length)?;
+                let mut alternatives = counts.drain(start..);
+                let first = alternatives.next().flatten();
+                let count = first
+                    .filter(|first| alternatives.all(|alternative| alternative == Some(*first)));
+                drop(alternatives);
+                counts.push(count);
+            }
+            Step::Repeat => {
+                let count = counts.pop()?;
+                counts.push((count == Some(0)).then_some(0));
+            }
         }
     }
-    Some(count)
+    if counts.len() == 1 {
+        counts.pop()?
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parameter_site_count_handles_choices_and_preserves_unknown_multiplicity() {
+        use etas_effects::{
+            ActionTraceDomain as Trace, ParameterCallTarget, infer::domain::ParameterCallRef,
+        };
+        let target = ParameterCallTarget::Interface(0);
+        let span = etas_core::Span::empty(etas_core::SourceId(0), etas_core::TextSize::ZERO);
+        let call = Trace::ParameterCall {
+            target,
+            parameter: "f".into(),
+            span,
+        };
+        let count = |trace: &Trace| super::exact_site_count(trace, target, span);
+        assert_eq!(
+            count(&Trace::Choice(vec![call.clone(), call.clone()])),
+            Some(1)
+        );
+        assert_eq!(
+            count(&Trace::Seq(vec![
+                Trace::Choice(vec![Trace::Empty, Trace::Empty]),
+                call.clone()
+            ])),
+            Some(1)
+        );
+        assert_eq!(
+            count(&Trace::Choice(vec![Trace::Empty, call.clone()])),
+            None
+        );
+        assert_eq!(count(&Trace::Repeat(Box::new(call.clone()))), None);
+        assert_eq!(count(&Trace::Repeat(Box::new(Trace::Empty))), Some(0));
+        assert_eq!(
+            count(&Trace::Widened {
+                actions: Default::default(),
+                parameter_calls: vec![ParameterCallRef {
+                    target,
+                    parameter: "f".into(),
+                    span
+                }]
+            }),
+            None
+        );
+        assert_eq!(
+            count(&Trace::Widened {
+                actions: Default::default(),
+                parameter_calls: vec![]
+            }),
+            Some(0)
+        );
+        assert_eq!(count(&Trace::Choice(vec![])), None);
+    }
+
     #[test]
     fn handler_disjointness_accounts_for_effect_extensions() {
         use etas_effects::{
