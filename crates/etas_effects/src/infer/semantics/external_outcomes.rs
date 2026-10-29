@@ -92,9 +92,30 @@ impl EffectSemantics<'_> {
         }
         let trace_root = contract.header.analysis.trace?;
         let outcomes_root = contract.header.analysis.outcomes?;
-        let calls = ordered_descriptor_calls(&graph, trace_root)?;
-        let native_calls = ordered_native_calls(&summary.action_trace)?;
-        if calls.is_empty() || calls.len() != native_calls.len() {
+        let mut budget = etas_code::descriptor::DescriptorLimits::default().max_edges;
+        let paths = descriptor_call_paths(&graph, trace_root, &mut budget)?;
+        let native_paths = native_call_paths(&summary.action_trace, &mut budget)?;
+        if paths.is_empty() || paths.len() != native_paths.len() {
+            return None;
+        }
+        let mut calls = std::collections::BTreeMap::new();
+        for (path, native) in paths.iter().zip(&native_paths) {
+            if path.len() != native.len() {
+                return None;
+            }
+            for (reference, native_call) in path.iter().zip(native) {
+                let TraceInfo::ParameterCall(call) = graph.trace(*reference)? else {
+                    return None;
+                };
+                if calls
+                    .insert(*reference, (call, *native_call))
+                    .is_some_and(|(_, previous)| previous != *native_call)
+                {
+                    return None;
+                }
+            }
+        }
+        if calls.is_empty() {
             return None;
         }
         let etas_code::descriptor::TypeInfo::Function(portable_signature) =
@@ -118,8 +139,8 @@ impl EffectSemantics<'_> {
         }
         let source: crate::FrozenSourceLocation = span.into();
         let mut requested = crate::EffectSet::new();
-        let mut checked_calls = Vec::with_capacity(calls.len());
-        for ((reference, root_call), native_call) in calls.iter().zip(&native_calls) {
+        let mut checked_calls = std::collections::BTreeMap::new();
+        for (reference, (root_call, native_call)) in calls {
             if root_call.callable != contract.header.id
                 || root_call.signature != contract.header.signature
             {
@@ -269,11 +290,14 @@ impl EffectSemantics<'_> {
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
-            checked_calls.push((target, callback.output, arguments, handled, scopes));
+            checked_calls.insert(
+                reference,
+                (target, callback.output, arguments, handled, scopes),
+            );
         }
         if requested != summary.requested_actions.effects
             || parameters.iter().any(|parameter| {
-                !checked_calls.iter().any(|(target, _, _, handled, _)| {
+                !checked_calls.values().any(|(target, _, _, handled, _)| {
                     *target == parameter.target && *handled == parameter.excluded
                 })
             })
@@ -321,40 +345,64 @@ impl EffectSemantics<'_> {
                     );
                 }
                 TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturn(call)) => {
-                    let preceding = ordered_descriptor_calls(&graph, *prefix)?;
-                    let position = preceding.len();
-                    if position >= calls.len()
-                        || preceding
-                            .iter()
-                            .zip(&calls)
-                            .any(|((_, actual), (_, expected))| {
-                                !same_call(&graph, actual, expected)
-                            })
-                        || !same_call(&graph, calls[position].1, call)
-                    {
-                        return None;
+                    for preceding in descriptor_call_paths(&graph, *prefix, &mut budget)? {
+                        let position = preceding.len();
+                        let mut matched = false;
+                        for (path, native_path) in paths.iter().zip(&native_paths) {
+                            budget = budget.checked_sub(position.saturating_add(1))?;
+                            if position >= path.len() {
+                                continue;
+                            }
+                            let mut equivalent = true;
+                            for (actual, expected) in preceding.iter().zip(path) {
+                                let (
+                                    Some(TraceInfo::ParameterCall(actual)),
+                                    Some(TraceInfo::ParameterCall(expected)),
+                                ) = (graph.trace(*actual), graph.trace(*expected))
+                                else {
+                                    return None;
+                                };
+                                if !same_call(&graph, actual, expected) {
+                                    equivalent = false;
+                                    break;
+                                }
+                            }
+                            let Some(TraceInfo::ParameterCall(expected)) =
+                                graph.trace(path[position])
+                            else {
+                                return None;
+                            };
+                            if !equivalent || !same_call(&graph, expected, call) {
+                                continue;
+                            }
+                            matched = true;
+                            let (target, output, arguments, excluded, scopes) =
+                                checked_calls.get(&path[position])?;
+                            let mut prefix = ActionTraceDomain::Empty;
+                            for call in &native_path[..position] {
+                                prefix.seq_assign((*call).clone());
+                            }
+                            exits.gaps.insert(OutcomeAnalysisGap::ParameterCall {
+                                target: *target,
+                                output: *output,
+                                source: source.clone(),
+                            });
+                            exits.record_parameter_exit(ParameterExitFact {
+                                target: *target,
+                                output: *output,
+                                source: source.clone(),
+                                arguments: Some(arguments.clone()),
+                                handler_free: Some(scopes.is_empty()),
+                                enclosing_handled: Some(EffectRow::closed(excluded.clone())),
+                                enclosing_handlers: Some(scopes.clone()),
+                                prefix,
+                            });
+                            callback_exit = true;
+                        }
+                        if !matched {
+                            return None;
+                        }
                     }
-                    let (target, output, arguments, excluded, scopes) = &checked_calls[position];
-                    let mut prefix = ActionTraceDomain::Empty;
-                    for call in &native_calls[..position] {
-                        prefix.seq_assign((*call).clone());
-                    }
-                    exits.gaps.insert(OutcomeAnalysisGap::ParameterCall {
-                        target: *target,
-                        output: *output,
-                        source: source.clone(),
-                    });
-                    exits.record_parameter_exit(ParameterExitFact {
-                        target: *target,
-                        output: *output,
-                        source: source.clone(),
-                        arguments: Some(arguments.clone()),
-                        handler_free: Some(scopes.is_empty()),
-                        enclosing_handled: Some(EffectRow::closed(excluded.clone())),
-                        enclosing_handlers: Some(scopes.clone()),
-                        prefix,
-                    });
-                    callback_exit = true;
                 }
                 _ => return None,
             }
@@ -438,47 +486,105 @@ impl EffectSemantics<'_> {
     }
 }
 
-fn ordered_descriptor_calls(
+fn descriptor_call_paths(
     graph: &DescriptorGraph,
     root: etas_code::descriptor::TraceInfoRef,
-) -> Option<Vec<(etas_code::descriptor::TraceInfoRef, &ParameterCallInfo)>> {
-    let mut pending = vec![root];
-    let mut calls = Vec::new();
-    let mut visited = 0usize;
-    let limit = etas_code::descriptor::DescriptorLimits::default().max_edges;
-    while let Some(reference) = pending.pop() {
-        visited = visited.checked_add(1)?;
-        if visited > limit {
-            return None;
-        }
-        match graph.trace(reference)? {
-            TraceInfo::Empty => {}
-            TraceInfo::Seq(parts) => pending.extend(parts.iter().rev().copied()),
-            TraceInfo::ParameterCall(call) => calls.push((reference, call)),
-            _ => return None,
-        }
-    }
-    Some(calls)
+    budget: &mut usize,
+) -> Option<Vec<Vec<etas_code::descriptor::TraceInfoRef>>> {
+    finite_call_paths(root, budget, |reference| match graph.trace(*reference)? {
+        TraceInfo::Empty => Some(CallPathNode::Empty),
+        TraceInfo::Seq(parts) => Some(CallPathNode::Sequence(parts.clone())),
+        TraceInfo::Choice(parts) => Some(CallPathNode::Choice(parts.clone())),
+        TraceInfo::ParameterCall(_) => Some(CallPathNode::Call(*reference)),
+        _ => None,
+    })
 }
 
-fn ordered_native_calls(root: &ActionTraceDomain) -> Option<Vec<&ActionTraceDomain>> {
-    let mut pending = vec![root];
-    let mut calls = Vec::new();
-    let mut visited = 0usize;
-    let limit = etas_code::descriptor::DescriptorLimits::default().max_edges;
-    while let Some(trace) = pending.pop() {
-        visited = visited.checked_add(1)?;
-        if visited > limit {
-            return None;
-        }
-        match trace {
-            ActionTraceDomain::Empty => {}
-            ActionTraceDomain::Seq(parts) => pending.extend(parts.iter().rev()),
-            ActionTraceDomain::ParameterCall { .. } => calls.push(trace),
-            _ => return None,
+fn native_call_paths<'a>(
+    root: &'a ActionTraceDomain,
+    budget: &mut usize,
+) -> Option<Vec<Vec<&'a ActionTraceDomain>>> {
+    finite_call_paths(root, budget, |trace| match trace {
+        ActionTraceDomain::Empty => Some(CallPathNode::Empty),
+        ActionTraceDomain::Seq(parts) => Some(CallPathNode::Sequence(parts.iter().collect())),
+        ActionTraceDomain::Choice(parts) => Some(CallPathNode::Choice(parts.iter().collect())),
+        ActionTraceDomain::ParameterCall { .. } => Some(CallPathNode::Call(*trace)),
+        _ => None,
+    })
+}
+
+enum CallPathNode<T> {
+    Empty,
+    Call(T),
+    Sequence(Vec<T>),
+    Choice(Vec<T>),
+}
+
+fn finite_call_paths<T: Clone>(
+    root: T,
+    budget: &mut usize,
+    mut node: impl FnMut(&T) -> Option<CallPathNode<T>>,
+) -> Option<Vec<Vec<T>>> {
+    enum Step<T> {
+        Visit(T),
+        Sequence(usize),
+        Choice(usize),
+    }
+    let limits = etas_code::descriptor::DescriptorLimits::default();
+    let mut pending = vec![Step::Visit(root)];
+    let mut values = Vec::<Vec<Vec<T>>>::new();
+    while let Some(step) = pending.pop() {
+        *budget = budget.checked_sub(1)?;
+        match step {
+            Step::Visit(value) => match node(&value)? {
+                CallPathNode::Empty => values.push(vec![vec![]]),
+                CallPathNode::Call(value) => values.push(vec![vec![value]]),
+                CallPathNode::Sequence(parts) => {
+                    pending.push(Step::Sequence(parts.len()));
+                    pending.extend(parts.into_iter().rev().map(Step::Visit));
+                }
+                CallPathNode::Choice(parts) => {
+                    pending.push(Step::Choice(parts.len()));
+                    pending.extend(parts.into_iter().rev().map(Step::Visit));
+                }
+            },
+            Step::Sequence(length) => {
+                let start = values.len().checked_sub(length)?;
+                let parts = values.drain(start..).collect::<Vec<_>>();
+                let mut combined = vec![vec![]];
+                for part in parts {
+                    if combined.len().checked_mul(part.len())? > limits.max_nodes {
+                        return None;
+                    }
+                    let mut next = Vec::new();
+                    for left in &combined {
+                        for right in &part {
+                            let size = left.len().checked_add(right.len())?;
+                            *budget = budget.checked_sub(size.saturating_add(1))?;
+                            let mut path = Vec::with_capacity(size);
+                            path.extend_from_slice(left);
+                            path.extend_from_slice(right);
+                            next.push(path);
+                        }
+                    }
+                    combined = next;
+                }
+                values.push(combined);
+            }
+            Step::Choice(length) => {
+                let start = values.len().checked_sub(length)?;
+                let mut combined = Vec::new();
+                for part in values.drain(start..) {
+                    if combined.len().checked_add(part.len())? > limits.max_nodes {
+                        return None;
+                    }
+                    combined.extend(part);
+                }
+                values.push(combined);
+            }
         }
     }
-    Some(calls)
+    (values.len() == 1).then(|| values.pop()).flatten()
 }
 
 fn same_call(graph: &DescriptorGraph, left: &ParameterCallInfo, right: &ParameterCallInfo) -> bool {

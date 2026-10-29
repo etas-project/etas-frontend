@@ -77,35 +77,8 @@ impl DefinitionDescriptorProjector<'_> {
         if exits.exits.is_empty() {
             return false;
         }
-        let mut site_prefixes =
-            std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
-        for exit in &exits.parameter_exits {
-            let Some(prefix) = exact_site_count(&exit.prefix, exit.target, exit.source.span())
-            else {
-                return false;
-            };
-            site_prefixes
-                .entry((exit.target, exit.source.clone()))
-                .or_default()
-                .insert(prefix);
-        }
-        for ((target, source), prefixes) in site_prefixes {
-            let Some(count) = exits
-                .exits
-                .first()
-                .and_then(|normal| exact_site_count(&normal.trace, target, source.span()))
-            else {
-                return false;
-            };
-            if count == 0
-                || prefixes.len() != count
-                || prefixes.iter().any(|prefix| *prefix >= count)
-                || exits.exits.iter().any(|normal| {
-                    exact_site_count(&normal.trace, target, source.span()) != Some(count)
-                })
-            {
-                return false;
-            }
+        if !complete_finite_prefixes(exits, self.limits) {
+            return false;
         }
         exits.parameter_exits.iter().all(|exit| {
             let Some(arguments) = exit
@@ -293,90 +266,136 @@ impl DefinitionDescriptorProjector<'_> {
     }
 }
 
-fn exact_site_count(
-    trace: &etas_effects::ActionTraceDomain,
-    target: etas_effects::ParameterCallTarget,
-    source: etas_core::Span,
-) -> Option<usize> {
-    use etas_effects::ActionTraceDomain;
-    enum Step<'a> {
-        Visit(&'a ActionTraceDomain),
-        Sequence(usize),
-        Choice(usize),
-        Repeat,
-    }
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum FiniteTraceAtom {
+    Action(etas_effects::Effect),
+    Call(
+        etas_effects::ParameterCallTarget,
+        etas_effects::FrozenSourceLocation,
+    ),
+}
 
-    let mut pending = vec![Step::Visit(trace)];
-    let mut counts: Vec<Option<usize>> = Vec::new();
-    while let Some(step) = pending.pop() {
-        match step {
-            Step::Visit(
-                ActionTraceDomain::Empty
-                | ActionTraceDomain::Event(_)
-                | ActionTraceDomain::UnknownOrder(_),
-            ) => counts.push(Some(0)),
-            Step::Visit(ActionTraceDomain::ParameterCall {
-                target: actual,
-                span,
-                ..
-            }) => {
-                counts.push(Some(usize::from(*actual == target && *span == source)));
-            }
-            Step::Visit(ActionTraceDomain::Seq(parts)) => {
-                pending.push(Step::Sequence(parts.len()));
-                pending.extend(parts.iter().map(Step::Visit));
-            }
-            Step::Visit(ActionTraceDomain::Choice(parts)) => {
-                pending.push(Step::Choice(parts.len()));
-                pending.extend(parts.iter().map(Step::Visit));
-            }
-            Step::Visit(ActionTraceDomain::Repeat(inner)) => {
-                pending.push(Step::Repeat);
-                pending.push(Step::Visit(inner));
-            }
-            Step::Visit(ActionTraceDomain::Widened {
-                parameter_calls, ..
-            }) => {
-                counts.push(
-                    (!parameter_calls
-                        .iter()
-                        .any(|call| call.target == target && call.span == source))
-                    .then_some(0),
-                );
-            }
-            Step::Sequence(length) => {
-                let start = counts.len().checked_sub(length)?;
-                let count = counts
-                    .drain(start..)
-                    .try_fold(0usize, |sum, next| sum.checked_add(next?));
-                counts.push(count);
-            }
-            Step::Choice(length) => {
-                let start = counts.len().checked_sub(length)?;
-                let mut alternatives = counts.drain(start..);
-                let first = alternatives.next().flatten();
-                let count = first
-                    .filter(|first| alternatives.all(|alternative| alternative == Some(*first)));
-                drop(alternatives);
-                counts.push(count);
-            }
-            Step::Repeat => {
-                let count = counts.pop()?;
-                counts.push((count == Some(0)).then_some(0));
+fn complete_finite_prefixes(exits: &CallableExitSummary, limits: DescriptorLimits) -> bool {
+    use std::collections::{BTreeMap, BTreeSet};
+    type Site = (
+        etas_effects::ParameterCallTarget,
+        etas_effects::FrozenSourceLocation,
+    );
+    type Prefixes = BTreeMap<Site, BTreeSet<Vec<FiniteTraceAtom>>>;
+    let mut budget = limits.max_edges;
+    let mut expected = Prefixes::new();
+    for normal in &exits.exits {
+        let Some(paths) = finite_trace_paths(&normal.trace, limits.max_nodes, &mut budget) else {
+            return false;
+        };
+        for path in paths {
+            for (index, atom) in path.iter().enumerate() {
+                if let FiniteTraceAtom::Call(target, source) = atom {
+                    if index > budget {
+                        return false;
+                    }
+                    budget -= index;
+                    expected
+                        .entry((*target, source.clone()))
+                        .or_default()
+                        .insert(path[..index].to_vec());
+                }
             }
         }
     }
-    if counts.len() == 1 {
-        counts.pop()?
-    } else {
-        None
+    let mut actual = Prefixes::new();
+    for exit in &exits.parameter_exits {
+        let Some(paths) = finite_trace_paths(&exit.prefix, limits.max_nodes, &mut budget) else {
+            return false;
+        };
+        actual
+            .entry((exit.target, exit.source.clone()))
+            .or_default()
+            .extend(paths);
     }
+    expected == actual
+}
+
+fn finite_trace_paths(
+    trace: &etas_effects::ActionTraceDomain,
+    max_paths: usize,
+    budget: &mut usize,
+) -> Option<std::collections::BTreeSet<Vec<FiniteTraceAtom>>> {
+    use etas_effects::ActionTraceDomain as Trace;
+    use std::collections::BTreeSet;
+    enum Step<'a> {
+        Visit(&'a Trace),
+        Sequence(usize),
+        Choice(usize),
+    }
+    let mut pending = vec![Step::Visit(trace)];
+    let mut values = Vec::<BTreeSet<Vec<FiniteTraceAtom>>>::new();
+    while let Some(step) = pending.pop() {
+        *budget = budget.checked_sub(1)?;
+        match step {
+            Step::Visit(Trace::Empty) => values.push(BTreeSet::from([vec![]])),
+            Step::Visit(Trace::Event(event)) => {
+                values.push(BTreeSet::from([vec![FiniteTraceAtom::Action(
+                    event.action.clone(),
+                )]]))
+            }
+            Step::Visit(Trace::ParameterCall { target, span, .. }) => values.push(BTreeSet::from(
+                [vec![FiniteTraceAtom::Call(*target, (*span).into())]],
+            )),
+            Step::Visit(Trace::Seq(parts)) => {
+                pending.push(Step::Sequence(parts.len()));
+                pending.extend(parts.iter().rev().map(Step::Visit));
+            }
+            Step::Visit(Trace::Choice(parts)) => {
+                pending.push(Step::Choice(parts.len()));
+                pending.extend(parts.iter().rev().map(Step::Visit));
+            }
+            Step::Visit(Trace::Repeat(_) | Trace::UnknownOrder(_) | Trace::Widened { .. }) => {
+                return None;
+            }
+            Step::Sequence(length) => {
+                let start = values.len().checked_sub(length)?;
+                let parts = values.drain(start..).collect::<Vec<_>>();
+                let mut combined = BTreeSet::from([vec![]]);
+                for part in parts {
+                    if combined.len().checked_mul(part.len())? > max_paths {
+                        return None;
+                    }
+                    let mut next = BTreeSet::new();
+                    for left in &combined {
+                        for right in &part {
+                            let size = left.len().checked_add(right.len())?;
+                            *budget = budget.checked_sub(size.saturating_add(1))?;
+                            let mut path = Vec::with_capacity(size);
+                            path.extend_from_slice(left);
+                            path.extend_from_slice(right);
+                            next.insert(path);
+                        }
+                    }
+                    combined = next;
+                }
+                values.push(combined);
+            }
+            Step::Choice(length) => {
+                let start = values.len().checked_sub(length)?;
+                let mut combined = BTreeSet::new();
+                for part in values.drain(start..) {
+                    combined.extend(part);
+                    if combined.len() > max_paths {
+                        return None;
+                    }
+                }
+                values.push(combined);
+            }
+        }
+    }
+    (values.len() == 1).then(|| values.pop()).flatten()
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn parameter_site_count_handles_choices_and_preserves_unknown_multiplicity() {
+    fn finite_trace_paths_preserve_choices_and_reject_unknown_multiplicity() {
         use etas_effects::{
             ActionTraceDomain as Trace, ParameterCallTarget, infer::domain::ParameterCallRef,
         };
@@ -387,43 +406,34 @@ mod tests {
             parameter: "f".into(),
             span,
         };
-        let count = |trace: &Trace| super::exact_site_count(trace, target, span);
+        let paths = |trace: &Trace| super::finite_trace_paths(trace, 100, &mut 100);
         assert_eq!(
-            count(&Trace::Choice(vec![call.clone(), call.clone()])),
-            Some(1)
+            paths(&Trace::Choice(vec![call.clone(), call.clone()]))
+                .unwrap()
+                .len(),
+            1
         );
         assert_eq!(
-            count(&Trace::Seq(vec![
-                Trace::Choice(vec![Trace::Empty, Trace::Empty]),
-                call.clone()
-            ])),
-            Some(1)
+            paths(&Trace::Choice(vec![Trace::Empty, call.clone()]))
+                .unwrap()
+                .len(),
+            2
         );
-        assert_eq!(
-            count(&Trace::Choice(vec![Trace::Empty, call.clone()])),
-            None
-        );
-        assert_eq!(count(&Trace::Repeat(Box::new(call.clone()))), None);
-        assert_eq!(count(&Trace::Repeat(Box::new(Trace::Empty))), Some(0));
-        assert_eq!(
-            count(&Trace::Widened {
+        assert!(paths(&Trace::Repeat(Box::new(call.clone()))).is_none());
+        assert!(
+            paths(&Trace::Widened {
                 actions: Default::default(),
                 parameter_calls: vec![ParameterCallRef {
                     target,
                     parameter: "f".into(),
                     span
                 }]
-            }),
-            None
+            })
+            .is_none()
         );
-        assert_eq!(
-            count(&Trace::Widened {
-                actions: Default::default(),
-                parameter_calls: vec![]
-            }),
-            Some(0)
+        assert!(
+            super::finite_trace_paths(&Trace::Seq(vec![call.clone(), call]), 100, &mut 1).is_none()
         );
-        assert_eq!(count(&Trace::Choice(vec![])), None);
     }
 
     #[test]
