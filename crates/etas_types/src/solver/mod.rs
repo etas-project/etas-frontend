@@ -19,6 +19,7 @@ mod reflection;
 pub mod report;
 mod return_type;
 pub mod spec_solver;
+mod statement;
 mod try_capture;
 pub mod unification;
 
@@ -75,9 +76,24 @@ impl TypeSolver {
         let mut captures = Vec::new();
         let mut callable_references = Vec::new();
         let mut handler_parameters = Vec::new();
+        let mut discarded_values = Vec::new();
+        let mut deferred_bottom = Vec::new();
         for constraint in input.constraints {
             checkpoint()?;
             match constraint {
+                TypeConstraint::DiscardValue {
+                    value,
+                    output,
+                    unit,
+                    origin,
+                } => {
+                    discarded_values.push(statement::Discard {
+                        value: *value,
+                        output: *output,
+                        unit: *unit,
+                        origin: *origin,
+                    });
+                }
                 TypeConstraint::HandlerInstantiation {
                     parameters,
                     requests,
@@ -192,6 +208,14 @@ impl TypeSolver {
                                 display_type(input.store, to)
                             ),
                         });
+                    } else if matches!(
+                        input.store.get(from),
+                        Some(Type::Primitive(PrimitiveType::Never))
+                    ) && is_unresolved_type_var(input.store, to)
+                    {
+                        // Other return/value constraints get to infer the target
+                        // before a bottom-only path supplies its final default.
+                        deferred_bottom.push((from, to, *origin));
                     } else {
                         let mut unifier = TypeUnifier::with_known_substitution(
                             input.store,
@@ -336,8 +360,22 @@ impl TypeSolver {
                 TypeConstraint::TryOperand { .. } => captures.push(constraint),
             }
         }
+        statement::solve_ready(
+            input.store,
+            &mut report,
+            &mut discarded_values,
+            false,
+            checkpoint,
+        )?;
         return_type::solve(input.store, &mut report, &returns, checkpoint)?;
         try_capture::solve(input.store, &mut report, &captures, checkpoint)?;
+        statement::solve_ready(
+            input.store,
+            &mut report,
+            &mut discarded_values,
+            false,
+            checkpoint,
+        )?;
         pending_access_constraints.extend(checked_method_constraints);
         method::solve_ready(
             &input,
@@ -351,6 +389,13 @@ impl TypeSolver {
             input.store,
             &mut report,
             pending_unary_constraints,
+            checkpoint,
+        )?;
+        statement::solve_ready(
+            input.store,
+            &mut report,
+            &mut discarded_values,
+            false,
             checkpoint,
         )?;
         method::solve_pending(
@@ -369,6 +414,30 @@ impl TypeSolver {
             checkpoint,
         )?;
         callable_reference::solve(input.store, &mut report, &callable_references, checkpoint)?;
+        for (from, to, origin) in deferred_bottom {
+            checkpoint()?;
+            let to = resolve_known_substitutions(input.store, &report, to);
+            if is_unresolved_type_var(input.store, to) {
+                let mut unifier =
+                    TypeUnifier::with_known_substitution(input.store, &report.substitutions);
+                if unifier.unify(from, to).is_ok() {
+                    report.substitutions.extend(&unifier.into_substitution());
+                } else {
+                    report.push(SolverFailure {
+                        code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                        span: origin.span,
+                        message: "nonreturning expression result could not be inferred".into(),
+                    });
+                }
+            }
+        }
+        statement::solve_ready(
+            input.store,
+            &mut report,
+            &mut discarded_values,
+            true,
+            checkpoint,
+        )?;
         handler::finalize_parameters(input.store, &mut report, handler_parameters);
         let deferred_obligations = std::mem::take(&mut report.pending_spec_obligations);
         let obligations = input
