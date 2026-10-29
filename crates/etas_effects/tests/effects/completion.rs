@@ -1,6 +1,74 @@
 use super::*;
 
 #[test]
+fn checked_limit_constructors_have_complete_outcomes() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module app;
+flow limits() -> unit {
+    let iterations = Iterations(8);
+    let tokens = Tokens(9);
+    let context = ContextTokens(10);
+    let attempts = Attempts(11);
+    return;
+}
+
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let exits = output.facts.item_effects[&flow_item(&hir, "limits")]
+        .exits
+        .as_ref()
+        .unwrap();
+    assert!(exits.gaps.is_empty(), "{exits:?}");
+    assert!(!exits.exits.is_empty(), "{exits:?}");
+}
+
+#[test]
+fn loop_limit_completion_does_not_hide_unproved_loop_outcomes() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module app;
+flow looped(values: Array<bool>) -> unit {
+    for value in values limit Iterations(8) { let copy = value; }
+    return;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let exits = output.facts.item_effects[&flow_item(&hir, "looped")]
+        .exits
+        .as_ref()
+        .unwrap();
+    assert!(
+        exits
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::Loop(_))),
+        "{exits:?}"
+    );
+    assert!(
+        !exits
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::ExternalCall(_))),
+        "{exits:?}"
+    );
+}
+
+#[test]
 fn checked_boolean_operations_and_count_queries_preserve_complete_return_summaries() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"

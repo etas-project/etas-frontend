@@ -1,5 +1,7 @@
 use super::*;
+use etas_hir::HirArg;
 use etas_std::IntrinsicCompletionSemantics as Completion;
+use etas_std::{RequirementSemantics, StdDecl};
 
 impl EffectSemantics<'_> {
     pub(crate) fn checked_total_operation(&self, expr: HirExprId) -> bool {
@@ -60,6 +62,9 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn checked_intrinsic_completion(&self, expr: HirExprId) -> Option<Completion> {
+        if self.checked_limit_constructor(expr) {
+            return Some(Completion::Returns);
+        }
         let (declaration, effects, overload) =
             if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr) {
                 if !matches!(
@@ -158,6 +163,79 @@ impl EffectSemantics<'_> {
             }
             _ => None,
         }
+    }
+
+    fn checked_limit_constructor(&self, expr: HirExprId) -> bool {
+        let Some(HirExpr::Call {
+            callee,
+            generic_args,
+            args,
+            ..
+        }) = self.hir.exprs.get(expr)
+        else {
+            return false;
+        };
+        let Some(path) = self.std_qualified_path_for_expr(*callee) else {
+            return false;
+        };
+        let Some(declaration) = self.std_registry.lookup_qualified(&path) else {
+            return false;
+        };
+        let StdDecl::Requirement(requirement) = &declaration.decl else {
+            return false;
+        };
+        if !matches!(requirement.semantics, RequirementSemantics::Limit(_))
+            || declaration
+                .intrinsic
+                .as_ref()
+                .and_then(|intrinsic| etas_std::intrinsic_completion_semantics(intrinsic.id))
+                != Some(Completion::Returns)
+            || !generic_args.is_empty()
+            || args.len() != requirement.params.len()
+        {
+            return false;
+        }
+        let Some(signature) = self
+            .callee_symbol(*callee)
+            .and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
+            .and_then(|symbol| {
+                self.type_symbols
+                    .symbol_fact(self.hir, &self.types.facts, symbol)
+            })
+            .and_then(|fact| match fact {
+                etas_types::SymbolTypeFact::Flow { signature } => Some(signature),
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        let Some(result_type) = self.types.facts.expr_types.get(&expr).copied() else {
+            return false;
+        };
+        signature.generic_params.is_empty()
+            && signature.params.len() == args.len()
+            && signature
+                .effects
+                .as_ref()
+                .is_none_or(|row| row.effects.is_empty() && row.tail.is_none())
+            && signature.output == result_type
+            && self
+                .types
+                .facts
+                .known_std_types
+                .runtime_type(etas_std::RuntimeTypeRole::Limit)
+                == Some(result_type)
+            && args.iter().all(|arg| {
+                let arg = match arg {
+                    HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => expr,
+                };
+                self.types
+                    .facts
+                    .expr_types
+                    .get(arg)
+                    .and_then(|ty| self.types.store.get(*ty))
+                    .is_some()
+            })
     }
 
     pub(crate) fn discarded_try_completion(&self, expr: HirExprId) -> bool {
