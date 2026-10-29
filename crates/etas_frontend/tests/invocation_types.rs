@@ -71,7 +71,7 @@ flow main() -> bool ![] { return boxed<UserId>(UserId("checked")); }
 }
 
 #[test]
-fn an_unbounded_polymorphic_recursion_is_rejected_without_native_stack_exhaustion() {
+fn polymorphic_recursion_publishes_checked_templates_without_unbounded_expansion() {
     let mut source = SourceInput::anonymous(
         r#"
 flow recur<T>(value: T) -> unit ![] { recur<Array<T>>([value]); }
@@ -80,21 +80,23 @@ flow main() -> unit ![] { recur<i32>(0); }
     );
     source.id = etas_core::SourceId(912);
     let output = Frontend.check_project(ProjectInput::single_source(source));
-    assert!(output.checked.is_none());
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let templates = checked
+        .types
+        .generic_instantiations
+        .keys()
+        .flat_map(|call| {
+            checked
+                .recursive_generic_call_targets(*call)
+                .map(move |target| (*call, target))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(templates.len(), 1);
+    let (call, target) = templates[0];
+    assert_eq!(checked.hir.index().expr_item.get(&call), Some(&target));
+    let fact = &checked.types.generic_instantiations[&call];
     assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(
-                |diagnostic| diagnostic.severity == etas_core::Severity::Error
-                    && diagnostic.message.contains("expansion depth")
-                    && diagnostic.code
-                        == etas_core::DiagnosticCode::Type(
-                            etas_core::TypeDiagnosticCode::CompilerResourceLimit
-                        )
-                    && diagnostic.primary.span.source == etas_core::SourceId(912)
-            ),
-        "{:?}",
-        output.diagnostics
+        matches!(&fact.type_bindings[..], [(name, ty)] if name == "T" && matches!(checked.type_store.get(*ty), Some(etas_types::Type::Array(_))))
     );
 }
