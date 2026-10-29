@@ -411,6 +411,7 @@ mod tests {
 
         let path = |name: &str| vec!["example".to_owned(), name.to_owned()];
         let metadata = DependencyEffectMetadata {
+            source_bindings: Vec::new(),
             tags: ["Parent", "Child", "Other"]
                 .into_iter()
                 .map(|name| DependencyEffectTag {

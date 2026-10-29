@@ -28,6 +28,7 @@ impl Pass<ProjectContext> for PrepareEffectRegistryPass {
         PassDescriptor::new("PrepareEffectRegistryPass", PassKind::Analysis)
             .requires(ArtifactSet::from([
                 HIR_OUTPUT,
+                MODULE_INDEX,
                 SIGNATURE_FACTS,
                 TYPE_ENVIRONMENT,
                 RESOLVED_IMPORTS,
@@ -42,13 +43,22 @@ impl Pass<ProjectContext> for PrepareEffectRegistryPass {
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let (Some(hir), Some(signatures), Some(type_environment), Some(imports), Some(environment)) = (
+        let (
+            Some(hir),
+            Some(modules),
+            Some(signatures),
+            Some(type_environment),
+            Some(imports),
+            Some(environment),
+        ) = (
             context.hir.as_ref(),
+            context.modules.as_ref(),
             context.signature_types.as_ref(),
             context.type_environment.as_ref(),
             context.resolved_imports.as_ref(),
             context.validated_external_environment.as_ref(),
-        ) else {
+        )
+        else {
             return PassResult::failed(
                 "effect registry preparation requires checked signature and import artifacts",
             );
@@ -56,11 +66,14 @@ impl Pass<ProjectContext> for PrepareEffectRegistryPass {
         let environment = environment.environment();
         let anchors = ExternalImportAnchorIndex::build(imports, environment);
         let mut diagnostics = Vec::new();
-        let metadata =
+        let mut metadata =
             match external_effect_metadata(environment, signatures, &anchors, &mut diagnostics) {
                 Ok(metadata) => metadata,
                 Err(error) => return PassResult::failed(error),
             };
+        if let Err(error) = bind_overlay_effects(&hir.hir, modules, environment, &mut metadata) {
+            return PassResult::failed(error);
+        }
         let prepared = match etas_effects::PreparedEffectRegistry::build(
             &hir.hir,
             signatures,
@@ -79,6 +92,83 @@ impl Pass<ProjectContext> for PrepareEffectRegistryPass {
             ArtifactSet::one(PREPARED_EFFECT_REGISTRY),
         )
     }
+}
+
+fn bind_overlay_effects(
+    hir: &etas_hir::HirProgram,
+    modules: &crate::ModuleIndex,
+    environment: &crate::ProjectEnvironmentInput,
+    metadata: &mut etas_effects::DependencyEffectMetadata,
+) -> Result<(), String> {
+    if !metadata.source_bindings.is_empty() {
+        return Err("external metadata must not supply session-local effect bindings".into());
+    }
+    for (_, item) in hir.items.iter() {
+        let etas_hir::HirItem::Effect(effect) = item else {
+            continue;
+        };
+        let Some(module) = modules
+            .by_source
+            .get(&effect.span.source)
+            .and_then(|id| modules.modules.get(*id))
+        else {
+            continue;
+        };
+        let crate::ModuleOrigin::DependencySourceOverlay { package, .. } = &module.origin else {
+            continue;
+        };
+        let name = &hir
+            .symbols
+            .get(effect.symbol)
+            .ok_or("overlay effect is missing its symbol")?
+            .name;
+        let mut path = module.path.segments.clone();
+        path.push(name.clone());
+        if !metadata.tags.iter().any(|tag| tag.path == path) {
+            continue;
+        }
+        let origins = environment
+            .external_definition_origins
+            .iter()
+            .find(|input| input.package == *package)
+            .ok_or_else(|| {
+                format!(
+                    "overlay effect `{}` has no checked package origins",
+                    path.join(".")
+                )
+            })?;
+        let canonical_module = origins
+            .origins
+            .modules
+            .iter()
+            .find(|candidate| candidate.path == module.path.segments)
+            .ok_or_else(|| {
+                format!(
+                    "overlay effect `{}` has no checked module origin",
+                    path.join(".")
+                )
+            })?;
+        let matching = origins.origins.declarations.iter().any(|binding| {
+            binding.path() == path
+                && binding.definition.kind() == etas_code::DefinitionKind::Effect
+                && binding.definition.package() == origins.origins.package
+                && binding.definition.module() == canonical_module.canonical_path
+                && binding.definition.declaration() == binding.declaration
+        });
+        if !matching {
+            return Err(format!(
+                "overlay effect `{}` does not match its checked definition origin",
+                path.join(".")
+            ));
+        }
+        metadata
+            .source_bindings
+            .push(etas_effects::DependencySourceEffectBinding {
+                symbol: effect.symbol,
+                path,
+            });
+    }
+    Ok(())
 }
 
 pub struct RunEffectPipelinePass;

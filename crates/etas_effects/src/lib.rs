@@ -14,11 +14,11 @@ pub use effect::{
     ActionRef, COMMAND_RUN_ACTION, COMMAND_TAG, CONSOLE_STDERR_WRITE_ACTION,
     CONSOLE_STDIN_READ_ALL_ACTION, CONSOLE_STDIN_READ_LINE_ACTION, CONSOLE_STDOUT_WRITE_ACTION,
     CONSOLE_TAG, CoreEffect, DependencyEffectAction, DependencyEffectExtension,
-    DependencyEffectMetadata, DependencyEffectTag, ERROR_TAG, Effect, EffectActionArgKind,
-    EffectActionId, EffectActionSig, EffectCoverage, EffectRegistry, EffectRow, EffectSet,
-    EffectTag, EffectTagId, EffectVarId, ExtensionGraph, FILE_IO_TAG, HUMAN_TAG,
-    MEMORY_READ_ACTION, MEMORY_TAG, MEMORY_WRITE_ACTION, MemoryPlaceDecl, NETWORK_TAG, SECRET_TAG,
-    TIME_TAG, ToolProviderBindingMetadata, UnresolvedDependencyEffectExtension,
+    DependencyEffectMetadata, DependencyEffectTag, DependencySourceEffectBinding, ERROR_TAG,
+    Effect, EffectActionArgKind, EffectActionId, EffectActionSig, EffectCoverage, EffectRegistry,
+    EffectRow, EffectSet, EffectTag, EffectTagId, EffectVarId, ExtensionGraph, FILE_IO_TAG,
+    HUMAN_TAG, MEMORY_READ_ACTION, MEMORY_TAG, MEMORY_WRITE_ACTION, MemoryPlaceDecl, NETWORK_TAG,
+    SECRET_TAG, TIME_TAG, ToolProviderBindingMetadata, UnresolvedDependencyEffectExtension,
     effect_var_id_from_name,
 };
 pub use facts::{

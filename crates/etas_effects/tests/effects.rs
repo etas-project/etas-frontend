@@ -4042,6 +4042,7 @@ flow main() -> unit {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let metadata = etas_effects::DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![etas_effects::DependencyEffectTag {
             path: vec!["dep".into(), "payments".into(), "PartnerBilling".into()],
             runtime_requirement: Some(RuntimeRequirementReason::Network),
@@ -4279,6 +4280,7 @@ flow main() -> unit {
     let types = etas_types::build_signature_facts(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let metadata = etas_effects::DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![etas_effects::DependencyEffectTag {
             path: vec!["EdkHttp".into()],
             runtime_requirement: Some(RuntimeRequirementReason::Network),
@@ -4334,6 +4336,7 @@ flow main() -> unit {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let metadata = etas_effects::DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![etas_effects::DependencyEffectTag {
             path: vec!["dep".into(), "audit".into(), "AuditTrail".into()],
             runtime_requirement: Some(RuntimeRequirementReason::FileIO),
@@ -4386,6 +4389,7 @@ flow main() -> unit {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let metadata = etas_effects::DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![etas_effects::DependencyEffectTag {
             path: vec!["dep".into(), "audit".into(), "AuditTrail".into()],
             runtime_requirement: Some(RuntimeRequirementReason::FileIO),

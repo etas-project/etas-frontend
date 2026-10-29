@@ -3223,6 +3223,7 @@ fn frontend_session_external_effect_metadata_change_invalidates_effect_artifacts
     let source = etas_core::SourceId(210);
     let mut environment = external_environment();
     environment.external_effect_metadata = DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![DependencyEffectTag {
             path: vec!["dep".into(), "payments".into(), "Payment".into()],
             runtime_requirement: Some(RuntimeRequirementReason::Network),
@@ -3278,6 +3279,7 @@ flow main(args: Array<string>) -> i32 {
         .fingerprint;
 
     environment.external_effect_metadata = DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![DependencyEffectTag {
             path: vec!["dep".into(), "audit".into(), "AuditTrail".into()],
             runtime_requirement: Some(RuntimeRequirementReason::FileIO),
@@ -5192,6 +5194,7 @@ fn assert_runtime_requirements_empty(output: &ProjectOutput) {
 fn frontend_effect_pipeline_consumes_external_effect_metadata() {
     let mut environment = external_environment();
     environment.external_effect_metadata = DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![DependencyEffectTag {
             path: vec!["dep".into(), "payments".into(), "Payment".into()],
             runtime_requirement: Some(RuntimeRequirementReason::Network),

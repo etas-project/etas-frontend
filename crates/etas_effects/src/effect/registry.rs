@@ -48,6 +48,16 @@ pub struct DependencyEffectMetadata {
     #[serde(default)]
     pub actions: Vec<DependencyEffectAction>,
     pub extensions: Vec<DependencyEffectExtension>,
+    #[serde(skip)]
+    pub source_bindings: Vec<DependencySourceEffectBinding>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct DependencySourceEffectBinding {
+    pub symbol: SymbolId,
+    pub path: Vec<String>,
 }
 
 #[derive(
@@ -153,9 +163,9 @@ impl EffectRegistry {
     ) -> Result<Self, EffectPipelineError> {
         let mut registry = Self::with_standard_effects_from(std_registry);
         registry.register_dependency_metadata(dependency_metadata)?;
-        registry.register_hir_effects(hir);
+        registry.register_hir_effects(hir, dependency_metadata)?;
         registry.register_hir_effect_extensions(hir);
-        registry.register_hir_actions(hir, &types.facts);
+        registry.register_hir_actions(hir, &types.facts)?;
         registry.register_memory_places(types.store.iter());
         Ok(registry)
     }
@@ -636,7 +646,19 @@ impl EffectRegistry {
         self.names.insert(format!("std.effects.{name}"), id);
     }
 
-    fn register_hir_effects(&mut self, hir: &HirProgram) {
+    fn register_hir_effects(
+        &mut self,
+        hir: &HirProgram,
+        dependencies: &DependencyEffectMetadata,
+    ) -> Result<(), EffectPipelineError> {
+        let mut bindings = BTreeMap::new();
+        for binding in &dependencies.source_bindings {
+            if bindings.insert(binding.symbol, &binding.path).is_some() {
+                return Err(invalid_dependency_metadata(
+                    "duplicate dependency source effect binding",
+                ));
+            }
+        }
         let mut next_user_tag = self.next_dynamic_tag();
         for (_, item) in hir.items.iter() {
             let HirItem::Effect(effect) = item else {
@@ -649,6 +671,25 @@ impl EffectRegistry {
             let Some(name) = symbol_name(hir, effect.symbol) else {
                 continue;
             };
+            if let Some(path) = bindings.remove(&effect.symbol) {
+                let id = self.tag_by_path(path).ok_or_else(|| {
+                    invalid_dependency_metadata(
+                        "source effect binding has no matching dependency tag",
+                    )
+                })?;
+                if self
+                    .dependency_tag_paths
+                    .get(&id)
+                    .is_none_or(|candidate| candidate != path)
+                {
+                    return Err(invalid_dependency_metadata(
+                        "source effect binding does not identify a dependency tag",
+                    ));
+                }
+                self.symbol_tags.insert(effect.symbol, id);
+                self.register_effect_names(hir, effect, id);
+                continue;
+            }
             if let Some(existing) = self
                 .tag_by_name(name)
                 .filter(|existing| self.can_source_effect_bind_standard_tag(name, *existing))
@@ -662,6 +703,12 @@ impl EffectRegistry {
             self.symbol_tags.insert(effect.symbol, id);
             self.register_effect_names(hir, effect, id);
         }
+        if !bindings.is_empty() {
+            return Err(invalid_dependency_metadata(
+                "source effect binding has no HIR effect declaration",
+            ));
+        }
+        Ok(())
     }
 
     fn register_dependency_metadata(
@@ -835,7 +882,11 @@ impl EffectRegistry {
         }
     }
 
-    fn register_hir_actions(&mut self, hir: &HirProgram, types: &etas_types::TypeFacts) {
+    fn register_hir_actions(
+        &mut self,
+        hir: &HirProgram,
+        types: &etas_types::TypeFacts,
+    ) -> Result<(), EffectPipelineError> {
         let mut next_user_action = self.next_dynamic_action();
         for (symbol, signature) in &types.action_signatures {
             let Some(owner) =
@@ -853,8 +904,20 @@ impl EffectRegistry {
                 .strip_prefix(owner_name.as_str())
                 .and_then(|rest| rest.strip_prefix('.'))
                 .unwrap_or(action_name);
-            let action_id = self
-                .action_by_name(&format!("{owner_name}.{local_action_name}"))
+            let qualified = self
+                .dependency_tag_paths
+                .get(&owner)
+                .map(|path| format!("{}.{local_action_name}", path.join(".")));
+            let existing = qualified
+                .as_ref()
+                .and_then(|path| self.action_by_name(path))
+                .or_else(|| {
+                    qualified
+                        .is_none()
+                        .then(|| self.action_by_name(&format!("{owner_name}.{local_action_name}")))
+                        .flatten()
+                });
+            let action_id = existing
                 .filter(|action| action.tag == owner)
                 .map(|action| action.action)
                 .unwrap_or_else(|| {
@@ -880,6 +943,17 @@ impl EffectRegistry {
                 runtime_requirement: self.runtime_requirement_reason(owner),
                 high_impact_ack: false,
             };
+            if let Some(metadata) = self.dependency_actions.get(&action_id)
+                && (metadata.owner != owner
+                    || metadata.effect_args != sig.effect_args
+                    || metadata.selector_param_names != sig.selector_param_names
+                    || metadata.selector_defaults != sig.selector_defaults
+                    || metadata.returns_never != sig.returns_never)
+            {
+                return Err(invalid_dependency_metadata(
+                    "dependency source action disagrees with its metadata selector signature",
+                ));
+            }
             self.actions.insert(*symbol, sig);
             if let Some(owner_tag) = self.tags.get(&owner) {
                 let action_ref = ActionRef {
@@ -902,6 +976,7 @@ impl EffectRegistry {
                 .or_default()
                 .push(*symbol);
         }
+        Ok(())
     }
 
     pub(crate) fn register_memory_places<'a>(
@@ -1127,6 +1202,7 @@ mod tests {
     #[test]
     fn dependency_action_metadata_registers_canonical_and_import_visible_names() {
         let metadata = DependencyEffectMetadata {
+            source_bindings: Vec::new(),
             tags: vec![DependencyEffectTag {
                 path: vec!["errors".to_owned(), "Net".to_owned()],
                 runtime_requirement: None,
@@ -1160,6 +1236,7 @@ mod tests {
     #[test]
     fn malformed_dependency_metadata_fails_closed() {
         let metadata = DependencyEffectMetadata {
+            source_bindings: Vec::new(),
             tags: vec![DependencyEffectTag {
                 path: Vec::new(),
                 runtime_requirement: None,
@@ -1173,6 +1250,27 @@ mod tests {
             &metadata,
         )
         .expect_err("empty dependency effect paths must be rejected");
+        assert!(matches!(
+            error,
+            EffectPipelineError::InvalidExternalMetadata { .. }
+        ));
+    }
+
+    #[test]
+    fn overlay_binding_without_hir_effect_is_rejected() {
+        let metadata = DependencyEffectMetadata {
+            source_bindings: vec![DependencySourceEffectBinding {
+                symbol: SymbolId(0),
+                path: vec!["dependency".into(), "Effect".into()],
+            }],
+            ..Default::default()
+        };
+        let error = EffectRegistry::from_hir_types_and_dependencies(
+            &HirProgram::default(),
+            &etas_types::TypeOutput::default(),
+            &metadata,
+        )
+        .expect_err("a binding must refer to an actual HIR effect");
         assert!(matches!(
             error,
             EffectPipelineError::InvalidExternalMetadata { .. }
