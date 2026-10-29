@@ -135,6 +135,76 @@ fn instantiation_work_remains_cooperatively_cancellable() {
 }
 
 #[test]
+fn a_single_instantiation_can_be_cancelled_during_type_substitution() {
+    struct Stop(AtomicUsize);
+    impl etas_utils::PipelineExecutionControl for Stop {
+        fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(etas_utils::PipelineInterruption {
+                    kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                    reason: "cancel inside substitution".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+    let (hir, types, mut effects) = recursion(false);
+    effects.native_call_targets.clear();
+    let owner = hir
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if hir
+                    .symbols
+                    .get(flow.symbol)
+                    .is_some_and(|symbol| symbol.name == "recur") =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let integer = types
+        .store
+        .iter()
+        .find_map(|(id, ty)| {
+            matches!(
+                ty,
+                etas_types::Type::Primitive(etas_types::PrimitiveType::I32)
+            )
+            .then_some(id)
+        })
+        .unwrap();
+    let seed = NativeInstantiation {
+        owner,
+        arguments: vec![NativeGenericArgument::Type(integer)],
+    };
+    let control = Stop(AtomicUsize::new(0));
+    let result = prepare(
+        PreparationInput {
+            hir: &hir,
+            types: &types,
+            effects: &effects,
+            limits: Default::default(),
+            control: Some(&control),
+        },
+        &[seed],
+        None,
+    );
+    assert!(matches!(
+        result,
+        Err(InstantiationError::Interrupted(
+            etas_utils::PipelineInterruption {
+                kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                ..
+            }
+        ))
+    ));
+    assert_eq!(control.0.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn expanding_type_depth_is_a_resource_failure_before_native_stack_exhaustion() {
     let (hir, types, effects) = recursion(true);
     let result = prepare(

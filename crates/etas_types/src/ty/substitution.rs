@@ -24,11 +24,15 @@ pub enum TypeSubstitutionError {
     UnmaterializedType(Type),
     RepresentationLimit(usize),
     ExpansionDepth(usize),
+    Interrupted(etas_utils::PipelineInterruption),
 }
 
 impl std::fmt::Display for TypeSubstitutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Interrupted(interruption) => {
+                write!(f, "type substitution interrupted: {}", interruption.reason)
+            }
             Self::ExpansionDepth(limit) => {
                 write!(f, "type substitution exceeds expansion depth {limit}")
             }
@@ -103,6 +107,7 @@ pub struct TypeSubstitutionEngine<'a> {
     memo: HashMap<TypeId, TypeId>,
     memo_depths: HashMap<TypeId, usize>,
     expansion_depth: Option<usize>,
+    control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
 }
 
 impl<'a> TypeSubstitutionEngine<'a> {
@@ -121,6 +126,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            control: None,
         }
     }
 
@@ -135,6 +141,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            control: None,
         }
     }
 
@@ -154,6 +161,23 @@ impl<'a> TypeSubstitutionEngine<'a> {
         self.memo.clear();
         self.memo_depths.clear();
         self
+    }
+
+    pub fn with_execution_control(
+        mut self,
+        control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
+    ) -> Self {
+        self.control = control;
+        self
+    }
+
+    fn checkpoint(&self) -> Result<(), TypeSubstitutionError> {
+        if let Some(control) = self.control {
+            control
+                .checkpoint()
+                .map_err(TypeSubstitutionError::Interrupted)?;
+        }
+        Ok(())
     }
 
     /// Runtime value contracts require closed arguments even when no payload
@@ -179,6 +203,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            control: None,
         }
     }
 
@@ -193,6 +218,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            control: None,
         }
     }
 
@@ -204,6 +230,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
     }
 
     pub fn substitute(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
+        self.checkpoint()?;
         if let Some(specialized) = self.memo.get(&ty).copied() {
             return Ok(specialized);
         }
@@ -211,6 +238,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let mut entered = Vec::new();
         let result = (|| {
             while let Some((current, finish)) = pending.pop() {
+                self.checkpoint()?;
                 if self.memo.contains_key(&current) {
                     continue;
                 }
@@ -1181,5 +1209,56 @@ mod tests {
                 .substitute(parameter),
             Ok(concrete)
         );
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_single_type_and_effect_row_substitution() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct StopAfter(AtomicUsize);
+        impl etas_utils::PipelineExecutionControl for StopAfter {
+            fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+                if self.0.fetch_add(1, Ordering::SeqCst) >= 2 {
+                    return Err(etas_utils::PipelineInterruption {
+                        kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                        reason: "cancel substitution".into(),
+                    });
+                }
+                Ok(())
+            }
+        }
+        let mut interner = TypeInterner::new();
+        let boolean = interner.primitive(PrimitiveType::Bool);
+        let tuple = interner.intern(Type::Tuple(vec![boolean, boolean]));
+        let names = HashMap::new();
+        let control = StopAfter(AtomicUsize::new(0));
+        let mut engine = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_execution_control(Some(&control));
+        assert!(matches!(
+            engine.substitute(tuple),
+            Err(TypeSubstitutionError::Interrupted(_))
+        ));
+        assert_eq!(control.0.load(Ordering::SeqCst), 3);
+
+        let control = StopAfter(AtomicUsize::new(0));
+        let mut engine = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_execution_control(Some(&control));
+        let row = crate::EffectRowRef {
+            effects: vec![
+                crate::EffectRef {
+                    name: "A".into(),
+                    args: vec![],
+                },
+                crate::EffectRef {
+                    name: "B".into(),
+                    args: vec![],
+                },
+            ],
+            tail: None,
+        };
+        assert!(matches!(
+            engine.substitute_effect_row(row),
+            Err(TypeSubstitutionError::Interrupted(_))
+        ));
+        assert_eq!(control.0.load(Ordering::SeqCst), 3);
     }
 }

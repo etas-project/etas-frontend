@@ -35,12 +35,14 @@ impl<'a> TypeSubstitutionEngine<'a> {
         &mut self,
         row: EffectRowRef,
     ) -> Result<EffectRowRef, TypeSubstitutionError> {
+        self.checkpoint()?;
         let original_members = row.effects.len();
         let ExpandedRow {
             mut row,
             argument_start,
         } = self.expanded_row(row)?;
         for (index, effect) in row.effects.iter_mut().enumerate() {
+            self.checkpoint()?;
             let names = match &self.target {
                 SubstitutionTarget::Relocate(input) => Some(input.effect_names),
                 SubstitutionTarget::RelocateMaterialize(input) => Some(input.effect_names),
@@ -52,6 +54,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
                 })?;
             }
             for arg in &mut effect.args {
+                self.checkpoint()?;
                 if let EffectArgRef::Type(ty) = arg {
                     *ty = if argument_start.is_some_and(|start| index >= start) {
                         self.substitute_argument(*ty)?
@@ -64,6 +67,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let mut unique = Vec::new();
         let mut seen = HashSet::new();
         for (index, effect) in row.effects.into_iter().enumerate() {
+            self.checkpoint()?;
             let first = seen.insert(effect.clone());
             if index < original_members || first {
                 unique.push(effect);
@@ -109,6 +113,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
                         })
                         .map(|binding| (tail.clone(), binding))
                 }) {
+                    self.checkpoint()?;
                     if !visited.insert(tail.clone()) {
                         return Err(TypeSubstitutionError::CyclicEffectRow(tail));
                     }
