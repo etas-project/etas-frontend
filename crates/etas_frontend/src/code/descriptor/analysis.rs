@@ -233,8 +233,17 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 ActionTraceDomain::ParameterCall { target, span, .. } => {
                     self.edge()?;
-                    let handlers =
-                        self.project_parameter_handler_scopes(*target, *span, exits, scope)?;
+                    let handlers = self.project_parameter_handler_scopes(
+                        *target,
+                        *span,
+                        exits,
+                        super::handler_scopes::TraceProjectionContext {
+                            scope,
+                            callable,
+                            signature,
+                            parameters,
+                        },
+                    )?;
                     TraceInfo::ParameterCall(parameter_call(
                         callable,
                         signature,
@@ -279,7 +288,12 @@ impl DefinitionDescriptorProjector<'_> {
                                 call.target,
                                 call.span,
                                 exits,
-                                scope,
+                                super::handler_scopes::TraceProjectionContext {
+                                    scope,
+                                    callable,
+                                    signature,
+                                    parameters,
+                                },
                             )?;
                             calls.push(parameter_call(
                                 callable,

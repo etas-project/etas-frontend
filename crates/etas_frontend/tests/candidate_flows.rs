@@ -187,6 +187,50 @@ flow inspect() -> unit { let definition = ^normalize; return; }"#,
 }
 
 #[test]
+fn callback_effectful_handler_preserves_arm_trace_order() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+import std.io.{println, eprintln};
+effect Choice { action decide() -> unit; }
+flow normalize(f: () -> unit ![Choice.decide]) -> unit ![] {
+    handle { f(); } with { Choice.decide() => { println("a")?; eprintln("b")?; resume; } };
+    return;
+}
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let report_for = |source| {
+        let body = store.syntax_operations().parse_body(source).unwrap();
+        let draft = store.with_body(&original, body).unwrap();
+        let overlay = store
+            .resolve(&draft)
+            .unwrap()
+            .body_overlay(store.syntax_operations())
+            .unwrap();
+        FrontendSession::new()
+            .analyze_body_overlay(overlay)
+            .unwrap()
+            .check_report(Default::default())
+            .unwrap()
+    };
+    let same = report_for(
+        "handle { f(); } with { Choice.decide() => { println(\"a\")?; eprintln(\"b\")?; resume; } }; return;",
+    );
+    assert_eq!(same.status, CheckStatus::Accepted, "{same:?}");
+    let reordered = report_for(
+        "handle { f(); } with { Choice.decide() => { eprintln(\"b\")?; println(\"a\")?; resume; } }; return;",
+    );
+    assert_ne!(reordered.status, CheckStatus::Accepted, "{reordered:?}");
+    assert!(
+        reordered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "code::ActionTraceNotContained"),
+        "{reordered:?}"
+    );
+}
+
+#[test]
 fn callback_handler_contract_preserves_mixed_resume_and_finish_arms() {
     let (store, expr) = definitions_from(
         r#"module app;

@@ -1,10 +1,14 @@
-use etas_code::descriptor::{
-    ParameterHandlerArmInfo, ParameterHandlerCompletionInfo, ParameterHandlerScopeInfo,
-    ReturnObservationInfo,
+use etas_code::{
+    CallableId,
+    descriptor::{
+        ParameterHandlerArmInfo, ParameterHandlerCompletionInfo, ParameterHandlerScopeInfo,
+        ReturnObservationInfo, TypeInfoRef,
+    },
 };
 use etas_effects::{
     ActionTraceDomain, CallableExitSummary, CallableOutcome, Effect, EffectSummary, EffectUnit,
-    FinishSummary, ParameterCallTarget, ParameterExitFact, ResumeSummary, ReturnObservation,
+    FinishSummary, ParameterCallTarget, ParameterExitFact, RequestInstantiationSummary,
+    ResumeSummary, ReturnObservation,
 };
 use etas_hir::{HirExpr, HirExprId, HirOwner, HirPat, HirStmt, ResolveResult};
 use etas_types::{PrimitiveType, Type, TypeId};
@@ -14,9 +18,17 @@ use super::{DefinitionDescriptorProjector, ProjectionError};
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct CheckedHandlerArm {
     action: Effect,
+    trace: ActionTraceDomain,
     result_type: TypeId,
     value: ReturnObservationInfo,
     finishes: bool,
+}
+
+pub(super) struct TraceProjectionContext<'a> {
+    pub scope: usize,
+    pub callable: &'a CallableId,
+    pub signature: TypeInfoRef,
+    pub parameters: &'a [etas_hir::SymbolId],
 }
 
 impl DefinitionDescriptorProjector<'_> {
@@ -58,7 +70,7 @@ impl DefinitionDescriptorProjector<'_> {
         };
         let fact = effects.handler_values.get(&handler)?;
         let owner = *self.checked.hir.index().expr_item.get(&handler)?;
-        if handlers.len() != fact.arms.len() || !fact.produced.is_empty() {
+        if handlers.len() != fact.arms.len() {
             return None;
         }
         let mut arms = Vec::new();
@@ -126,7 +138,13 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 _ => return None,
             };
-            if exit.trace != ActionTraceDomain::Empty {
+            if exit.trace != summary.action_trace
+                || !concrete_action_trace(&exit.trace)
+                || fact.arm_effects != summary.escaping_effects
+                || summary.requested_actions.open.is_some()
+                || summary.requested_actions.effects != summary.action_trace.action_set()
+                || !matches!(&summary.handler_requests, RequestInstantiationSummary::Available { parameters, .. } if parameters.is_empty())
+            {
                 return None;
             }
             let value = match (self.checked.type_store.get(*ty), observation) {
@@ -140,11 +158,19 @@ impl DefinitionDescriptorProjector<'_> {
             };
             let mut expected = EffectSummary::local();
             expected.exits = Some(completion.clone());
+            expected.action_trace = summary.action_trace.clone();
+            expected.requested_actions = summary.requested_actions.clone();
+            expected.handler_requests = summary.handler_requests.clone();
+            expected.default_actions = summary.default_actions.clone();
+            expected.determinism = summary.determinism;
+            expected.independent_determinism = summary.independent_determinism;
+            expected.support = summary.support.clone();
             if summary != &expected {
                 return None;
             }
             arms.push(CheckedHandlerArm {
                 action: effect.clone(),
+                trace: exit.trace.clone(),
                 result_type: *ty,
                 value,
                 finishes,
@@ -220,7 +246,7 @@ impl DefinitionDescriptorProjector<'_> {
         target: ParameterCallTarget,
         span: etas_core::Span,
         exits: Option<&CallableExitSummary>,
-        scope: usize,
+        context: TraceProjectionContext<'_>,
     ) -> Result<Option<Vec<ParameterHandlerScopeInfo>>, ProjectionError> {
         let Some(exits) = exits else {
             return Ok(None);
@@ -247,15 +273,23 @@ impl DefinitionDescriptorProjector<'_> {
                     .iter()
                     .map(|arm| {
                         Ok(ParameterHandlerArmInfo {
-                            action: self.analysis_effect(&arm.action, scope)?,
+                            action: self.analysis_effect(&arm.action, context.scope)?,
+                            trace: self.analysis_trace(
+                                &arm.trace,
+                                context.callable,
+                                context.signature,
+                                context.parameters,
+                                context.scope,
+                                None,
+                            )?,
                             completion: if arm.finishes {
                                 ParameterHandlerCompletionInfo::Finish {
-                                    result_type: self.type_ref(arm.result_type, scope)?,
+                                    result_type: self.type_ref(arm.result_type, context.scope)?,
                                     value: arm.value.clone(),
                                 }
                             } else {
                                 ParameterHandlerCompletionInfo::Resume {
-                                    result_type: self.type_ref(arm.result_type, scope)?,
+                                    result_type: self.type_ref(arm.result_type, context.scope)?,
                                     value: arm.value.clone(),
                                 }
                             },
@@ -267,4 +301,21 @@ impl DefinitionDescriptorProjector<'_> {
             .collect::<Result<Vec<_>, _>>()
             .map(Some)
     }
+}
+
+fn concrete_action_trace(trace: &ActionTraceDomain) -> bool {
+    let mut pending = vec![trace];
+    while let Some(trace) = pending.pop() {
+        match trace {
+            ActionTraceDomain::Empty => {}
+            ActionTraceDomain::Event(event) if event.action.is_action() => {}
+            ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
+                pending.extend(parts)
+            }
+            ActionTraceDomain::Repeat(inner) => pending.push(inner),
+            ActionTraceDomain::UnknownOrder(actions) if actions.iter().all(Effect::is_action) => {}
+            _ => return false,
+        }
+    }
+    true
 }

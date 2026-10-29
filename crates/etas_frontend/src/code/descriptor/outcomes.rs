@@ -248,7 +248,12 @@ impl DefinitionDescriptorProjector<'_> {
                     exit.target,
                     exit.source.span(),
                     Some(exits),
-                    scope,
+                    super::handler_scopes::TraceProjectionContext {
+                        scope,
+                        callable,
+                        signature,
+                        parameters,
+                    },
                 )?,
             )?;
             let terminal = self.reserve_trace()?;

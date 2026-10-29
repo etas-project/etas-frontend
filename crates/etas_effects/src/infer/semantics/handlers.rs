@@ -17,11 +17,39 @@ use super::state::EffectState;
 mod completion;
 mod result;
 
-fn handler_evaluation_is_inert(entry: &EffectState, handler: &EffectState) -> bool {
-    !handler.incomplete && handler.summary == entry.summary && handler.exits == entry.exits
+fn handler_evaluation_is_inert(
+    entry: &EffectState,
+    handler: &EffectState,
+    expected: &EffectSummary,
+) -> bool {
+    !handler.incomplete && handler.exits == entry.exits && &handler.summary == expected
 }
 
 impl EffectSemantics<'_> {
+    fn handler_evaluation_is_inert(
+        &self,
+        expr: HirExprId,
+        entry: &EffectState,
+        handler: &EffectState,
+    ) -> bool {
+        if handler.incomplete || handler.exits != entry.exits {
+            return false;
+        }
+        let mut expected = entry.summary.clone();
+        if matches!(self.hir.exprs.get(expr), Some(HirExpr::Handler { .. })) {
+            let Some(fact) = self.inputs.handler_values.get(&expr) else {
+                return false;
+            };
+            for arm in &fact.arms {
+                let Some(summary) = self.inputs.unit_effects.get(&arm.unit) else {
+                    return false;
+                };
+                expected.merge_request_footprint_without_escaping_or_trace(summary);
+            }
+        }
+        handler_evaluation_is_inert(entry, handler, &expected)
+    }
+
     pub(crate) fn handle_parts(
         &mut self,
         expr: HirExprId,
@@ -113,7 +141,7 @@ impl EffectSemantics<'_> {
                         normal_control: only_normal
                             && handler_only_normal
                             && !result.incomplete
-                            && handler_evaluation_is_inert(&entry, &handler_state),
+                            && self.handler_evaluation_is_inert(handler, &entry, &handler_state),
                         handled: handled.clone(),
                         body_escaping: result.summary.escaping_effects.clone(),
                     });
@@ -934,37 +962,83 @@ mod inert_tests {
     #[test]
     fn handler_construction_must_not_add_actions_effects_or_exit_gaps() {
         let entry = EffectState::default();
-        assert!(handler_evaluation_is_inert(&entry, &entry));
+        assert!(handler_evaluation_is_inert(&entry, &entry, &entry.summary));
         let action = crate::Effect::Action(crate::ActionRef {
             tag: crate::CONSOLE_TAG,
             action: crate::CONSOLE_STDOUT_WRITE_ACTION,
         });
+        let mut latent = EffectSummary::local();
+        latent.record_requested_action(action.clone());
+        let mut expected = entry.summary.clone();
+        expected.merge_request_footprint_without_escaping_or_trace(&latent);
+        let mut latent_handler = entry.clone();
+        latent_handler.summary = expected.clone();
+        assert!(handler_evaluation_is_inert(
+            &entry,
+            &latent_handler,
+            &expected
+        ));
+        latent_handler.summary.action_trace =
+            crate::ActionTraceDomain::UnknownOrder([action.clone()].into_iter().collect());
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &latent_handler,
+            &expected
+        ));
         let mut handler = entry.clone();
         handler.summary.action_trace =
             crate::ActionTraceDomain::UnknownOrder([action.clone()].into_iter().collect());
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
         handler = entry.clone();
         handler.summary.record_escaping_effect(action);
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
         handler = entry.clone();
         handler.summary.determinism = crate::Determinism::NonDeterministic;
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
         handler = entry.clone();
         handler.summary.independent_determinism = None;
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
         handler = entry.clone();
         handler
             .summary
             .require_runtime(crate::RuntimeRequirementReason::Time);
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
         handler = entry.clone();
         handler
             .exits
             .gaps
             .insert(crate::OutcomeAnalysisGap::InvalidControlExit);
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
         handler = entry.clone();
         handler.incomplete = true;
-        assert!(!handler_evaluation_is_inert(&entry, &handler));
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
     }
 }
