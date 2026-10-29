@@ -23,6 +23,35 @@ impl EffectSemantics<'_> {
     ) -> Option<CallableExitSummary> {
         let graph =
             DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default()).ok()?;
+        let RequestInstantiationSummary::Available {
+            actions,
+            parameters,
+        } = &summary.handler_requests
+        else {
+            return None;
+        };
+        let mut candidates = crate::EffectSet::new();
+        for row in [
+            &summary.escaping_effects,
+            &summary.requested_actions,
+            &summary.default_actions,
+            &summary.handled_actions,
+        ] {
+            candidates.union_assign(&row.effects);
+        }
+        for parameter in parameters {
+            candidates.union_assign(&parameter.excluded);
+        }
+        for action in actions {
+            candidates.insert(action.action.clone());
+        }
+        for ty in &signature.input {
+            if let Some(Type::Function(callback)) = self.types.store.get(*ty)
+                && let Some(row) = callback.effects.as_ref()
+            {
+                candidates.union_assign(&self.row_from_type_ref(row).effects);
+            }
+        }
         let checked_row = |reference| -> Option<EffectRow> {
             let row = graph.effect_row(reference)?;
             if row.tail.is_some() {
@@ -30,7 +59,12 @@ impl EffectSemantics<'_> {
             }
             let mut effects = crate::EffectSet::new();
             for effect in &row.effects {
-                effects.insert(self.checked_descriptor_action(contract, effect)?);
+                effects.insert(self.checked_descriptor_action(
+                    &graph,
+                    contract,
+                    effect,
+                    &candidates,
+                )?);
             }
             Some(EffectRow::closed(effects))
         };
@@ -72,10 +106,6 @@ impl EffectSemantics<'_> {
         if !same_primitive(native_output, graph.type_info(portable_signature.output)?) {
             return None;
         }
-        let RequestInstantiationSummary::Available { parameters, .. } = &summary.handler_requests
-        else {
-            return None;
-        };
         if summary.requested_actions.open.is_some() {
             return None;
         }
@@ -173,7 +203,12 @@ impl EffectSemantics<'_> {
             for scope in handlers {
                 let ParameterHandlerScopeInfo::Handle { arms } = scope;
                 for arm in arms {
-                    handled.insert(self.checked_descriptor_action(contract, &arm.action)?);
+                    handled.insert(self.checked_descriptor_action(
+                        &graph,
+                        contract,
+                        &arm.action,
+                        &candidates,
+                    )?);
                     let mut pending = vec![arm.trace];
                     let mut seen = std::collections::BTreeSet::new();
                     while let Some(trace) = pending.pop() {
@@ -183,7 +218,12 @@ impl EffectSemantics<'_> {
                         match graph.trace(trace)? {
                             TraceInfo::Empty => {}
                             TraceInfo::Event(action) => {
-                                requested.insert(self.checked_descriptor_action(contract, action)?);
+                                requested.insert(self.checked_descriptor_action(
+                                    &graph,
+                                    contract,
+                                    action,
+                                    &candidates,
+                                )?);
                             }
                             TraceInfo::Seq(parts) | TraceInfo::Choice(parts) => {
                                 pending.extend(parts.iter().copied())
@@ -307,8 +347,10 @@ impl EffectSemantics<'_> {
 
     fn checked_descriptor_action(
         &self,
+        graph: &DescriptorGraph,
         contract: &ExternalCallableContract,
         effect: &etas_code::descriptor::EffectInfo,
+        candidates: &crate::EffectSet,
     ) -> Option<crate::Effect> {
         let etas_code::descriptor::EffectTargetInfo::Action {
             effect: identity,
@@ -317,15 +359,8 @@ impl EffectSemantics<'_> {
         else {
             return None;
         };
-        if !effect.arguments.is_empty() {
-            return None;
-        }
         let mut resolved = None;
-        for (_, path) in contract
-            .effect_paths
-            .iter()
-            .filter(|(candidate, _)| candidate == identity)
-        {
+        for path in contract.definition_paths.get(identity)? {
             let mut path = path.clone();
             path.push(name.clone());
             let Some(action) = self.registry.action_by_name(&path.join(".")) else {
@@ -334,7 +369,7 @@ impl EffectSemantics<'_> {
             if self
                 .registry
                 .action_signature(&action)
-                .is_none_or(|signature| !signature.effect_args.is_empty())
+                .is_none_or(|signature| signature.effect_args.len() != effect.arguments.len())
             {
                 return None;
             }
@@ -343,8 +378,154 @@ impl EffectSemantics<'_> {
             }
             resolved = Some(action);
         }
-        Some(crate::Effect::Action(resolved?))
+        let action = resolved?;
+        if effect.arguments.is_empty() {
+            return Some(crate::Effect::Action(action));
+        }
+        let mut matching = candidates.iter().filter(|candidate| {
+            let crate::Effect::AppliedAction(instance) = candidate else {
+                return false;
+            };
+            instance.action == action
+                && instance.args.len() == effect.arguments.len()
+                && effect
+                    .arguments
+                    .iter()
+                    .zip(&instance.args)
+                    .all(|(portable, native)| {
+                        use etas_code::descriptor::StaticEffectArgInfo as S;
+                        match (portable, native) {
+                            (S::Type(reference), EffectArgRef::Type(ty)) => {
+                                checked_selector_type_matches(
+                                    &self.types.store,
+                                    graph,
+                                    *ty,
+                                    *reference,
+                                )
+                            }
+                            (S::String(left), EffectArgRef::String(right))
+                            | (S::Integer(left), EffectArgRef::Int(right)) => left == right,
+                            (S::Wildcard, EffectArgRef::Wildcard) => true,
+                            (S::Resource(identity), EffectArgRef::Path(path)) => contract
+                                .definition_paths
+                                .get(identity)
+                                .is_some_and(|paths| paths.contains(path)),
+                            (S::Callable(identity), EffectArgRef::Path(path)) => identity
+                                .as_declaration()
+                                .and_then(|identity| contract.definition_paths.get(identity))
+                                .is_some_and(|paths| paths.contains(path)),
+                            _ => false,
+                        }
+                    })
+        });
+        let result = matching.next()?.clone();
+        matching.next().is_none().then_some(result)
     }
+}
+
+fn checked_selector_type_matches(
+    store: &etas_types::TypeStore,
+    graph: &DescriptorGraph,
+    native: etas_types::TypeId,
+    portable: etas_code::descriptor::TypeInfoRef,
+) -> bool {
+    use etas_code::descriptor::{BuiltinTypeInfo as B, TypeInfo};
+    use etas_types::{ResourceHandleType, TrustWrapper};
+    let mut pending = vec![(native, portable)];
+    let mut seen = std::collections::HashSet::new();
+    let limit = etas_code::descriptor::DescriptorLimits::default().max_edges;
+    let mut visited = 0usize;
+    while let Some((native_id, portable_id)) = pending.pop() {
+        visited += 1;
+        if visited > limit {
+            return false;
+        }
+        if !seen.insert((native_id, portable_id)) {
+            continue;
+        }
+        let (Some(native), Some(portable)) = (store.get(native_id), graph.type_info(portable_id))
+        else {
+            return false;
+        };
+        if let TypeInfo::Alias { target, .. } = portable {
+            pending.push((native_id, *target));
+            continue;
+        }
+        if same_primitive(native, portable) {
+            continue;
+        }
+        let (constructor, native_args) = match native {
+            Type::Array(t) => (B::Array, vec![*t]),
+            Type::List(t) => (B::List, vec![*t]),
+            Type::Map { key, value } => (B::Map, vec![*key, *value]),
+            Type::Set(t) => (B::Set, vec![*t]),
+            Type::Range { index } => (B::Range, vec![*index]),
+            Type::Slice(t) => (B::Slice, vec![*t]),
+            Type::Option(t) => (B::Option, vec![*t]),
+            Type::Result { ok, err } => (B::Result, vec![*ok, *err]),
+            Type::Schema(t) => (B::Schema, vec![*t]),
+            Type::Prompt => (B::Prompt, vec![]),
+            Type::PromptPart => (B::PromptPart, vec![]),
+            Type::Message(t) => (B::Message, vec![*t]),
+            Type::MemorySelection(t) => (B::MemorySelection, vec![*t]),
+            Type::Store { key, value } => (B::Store, vec![*key, *value]),
+            Type::MemoryRegion(t) => (B::MemoryRegion, vec![*t]),
+            Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
+                (B::MemoryRegionHandle, vec![*schema])
+            }
+            Type::ResourceHandle(ResourceHandleType::ExternalTool { signature }) => {
+                (B::ExternalToolHandle, vec![*signature])
+            }
+            Type::Trust { wrapper, inner } => (
+                match wrapper {
+                    TrustWrapper::Trusted => B::Trusted,
+                    TrustWrapper::Untrusted => B::Untrusted,
+                    TrustWrapper::Secret => B::Secret,
+                    TrustWrapper::Public => B::Public,
+                    TrustWrapper::Sanitized => B::Sanitized,
+                },
+                vec![*inner],
+            ),
+            Type::Tuple(elements) => {
+                let TypeInfo::Tuple(other) = portable else {
+                    return false;
+                };
+                if elements.len() != other.len() {
+                    return false;
+                }
+                pending.extend(elements.iter().copied().zip(other.iter().copied()));
+                continue;
+            }
+            Type::Record(record) => {
+                let TypeInfo::Record(fields) = portable else {
+                    return false;
+                };
+                if record.fields.len() != fields.len() {
+                    return false;
+                }
+                for (left, right) in record.fields.iter().zip(fields) {
+                    if left.name != right.name {
+                        return false;
+                    }
+                    pending.push((left.ty, right.ty));
+                }
+                continue;
+            }
+            _ => return false,
+        };
+        let TypeInfo::Builtin {
+            constructor: actual,
+            arguments,
+        } = portable
+        else {
+            return false;
+        };
+        if constructor != *actual || native_args.len() != arguments.len() {
+            return false;
+        }
+        pending.extend(native_args.into_iter().zip(arguments.iter().copied()));
+    }
+    true
 }
 
 fn ordered_descriptor_calls(
@@ -476,4 +657,65 @@ fn same_call(graph: &DescriptorGraph, left: &ParameterCallInfo, right: &Paramete
                 matches!((graph.trace_fingerprint(left.trace), graph.trace_fingerprint(right.trace)), (Ok(left), Ok(right)) if left == right)
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etas_code::descriptor::{
+        BuiltinTypeInfo, DescriptorGraphInput, PrimitiveInfo, TypeInfo, TypeInfoRef,
+    };
+
+    #[test]
+    fn checked_selector_type_comparison_preserves_nested_structure() {
+        let mut store = etas_types::TypeStore::new();
+        let i32_ty = store.intern(Type::Primitive(PrimitiveType::I32));
+        let u32_ty = store.intern(Type::Primitive(PrimitiveType::U32));
+        let list = store.intern(Type::List(i32_ty));
+        let map = store.intern(Type::Map {
+            key: u32_ty,
+            value: list,
+        });
+        let mismatched = store.intern(Type::Map {
+            key: i32_ty,
+            value: list,
+        });
+        let graph = DescriptorGraph::new(
+            DescriptorGraphInput {
+                types: vec![
+                    TypeInfo::Primitive(PrimitiveInfo::I32),
+                    TypeInfo::Primitive(PrimitiveInfo::U32),
+                    TypeInfo::Builtin {
+                        constructor: BuiltinTypeInfo::List,
+                        arguments: vec![TypeInfoRef(0)],
+                    },
+                    TypeInfo::Builtin {
+                        constructor: BuiltinTypeInfo::Map,
+                        arguments: vec![TypeInfoRef(1), TypeInfoRef(2)],
+                    },
+                ],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        assert!(checked_selector_type_matches(
+            &store,
+            &graph,
+            map,
+            TypeInfoRef(3)
+        ));
+        assert!(!checked_selector_type_matches(
+            &store,
+            &graph,
+            mismatched,
+            TypeInfoRef(3)
+        ));
+        assert!(!checked_selector_type_matches(
+            &store,
+            &graph,
+            list,
+            TypeInfoRef(3)
+        ));
+    }
 }

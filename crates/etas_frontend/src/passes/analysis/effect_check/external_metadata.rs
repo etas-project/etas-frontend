@@ -315,7 +315,7 @@ struct ExternalContractIndex<'a> {
     candidates: BTreeMap<&'a etas_code::DefinitionKey, Vec<ContractCandidate<'a>>>,
     graphs: HashMap<usize, Arc<etas_code::descriptor::DescriptorGraphInput>>,
     fingerprints: HashMap<usize, etas_code::CodeFingerprint>,
-    effect_paths: Arc<Vec<(etas_code::DefinitionKey, Vec<String>)>>,
+    definition_paths: Arc<BTreeMap<etas_code::DefinitionKey, Vec<Vec<String>>>>,
 }
 
 impl<'a> ExternalContractIndex<'a> {
@@ -325,29 +325,27 @@ impl<'a> ExternalContractIndex<'a> {
     ) -> Result<Self, String> {
         let mut paths = HashMap::new();
         let mut candidates = BTreeMap::<_, Vec<_>>::new();
-        let mut effect_paths = Vec::new();
+        let mut definition_paths = BTreeMap::<etas_code::DefinitionKey, Vec<Vec<String>>>::new();
         let package = crate::code::identity::standard_package_key(std_registry)
             .map_err(|error| error.to_string())?;
         for symbol in std_registry.symbols() {
             if let Some(identity) =
                 crate::code::identity::standard_definition_key(std_registry, package, symbol)
                     .map_err(|error| error.to_string())?
-                && identity.kind() == etas_code::DefinitionKind::Effect
             {
-                effect_paths.push((identity, symbol.qualified_path.clone()));
+                definition_paths
+                    .entry(identity)
+                    .or_default()
+                    .push(symbol.qualified_path.clone());
             }
         }
         for (index, origin) in environment.external_definition_origins.iter().enumerate() {
-            effect_paths.extend(
-                origin
-                    .origins
-                    .declarations
-                    .iter()
-                    .filter(|binding| {
-                        binding.definition.kind() == etas_code::DefinitionKind::Effect
-                    })
-                    .map(|binding| (binding.definition.clone(), binding.path())),
-            );
+            for binding in &origin.origins.declarations {
+                definition_paths
+                    .entry(binding.definition.clone())
+                    .or_default()
+                    .push(binding.path());
+            }
             paths.insert(
                 origin.package,
                 origin
@@ -375,7 +373,7 @@ impl<'a> ExternalContractIndex<'a> {
             candidates,
             graphs: HashMap::new(),
             fingerprints: HashMap::new(),
-            effect_paths: Arc::new(effect_paths),
+            definition_paths: Arc::new(definition_paths),
         })
     }
 
@@ -402,7 +400,7 @@ impl<'a> ExternalContractIndex<'a> {
             );
         }
         Ok(Some(etas_effects::ExternalCallableContract {
-            effect_paths: self.effect_paths.clone(),
+            definition_paths: self.definition_paths.clone(),
             descriptor_fingerprint: *self
                 .fingerprints
                 .entry(index)
