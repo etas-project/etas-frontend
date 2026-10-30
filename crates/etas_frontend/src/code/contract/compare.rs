@@ -161,7 +161,17 @@ pub(crate) fn analyze(
         );
         record(
             C::Determinism,
-            if preserved {
+            // A widened callback footprint does not preserve call order or
+            // multiplicity, even when the enclosing source body is identical.
+            if preserved
+                && !((expected.analysis.determinism.is_none()
+                    || actual.analysis.determinism.is_none())
+                    && (expected.analysis.trace.is_some_and(|trace| {
+                        trace_has_widened_parameter_calls(expected_graph, trace)
+                    }) || actual.analysis.trace.is_some_and(|trace| {
+                        trace_has_widened_parameter_calls(actual_graph, trace)
+                    })))
+            {
                 R::Proven
             } else {
                 let expected_determinism = expected
@@ -362,6 +372,27 @@ fn trace_has_parameter_calls(graph: &DescriptorGraph, root: TraceInfoRef) -> boo
             | TraceInfo::Outcome(_)
             | TraceInfo::UnknownOrder(_)
             | TraceInfo::Widened { .. } => {}
+        }
+    }
+    false
+}
+
+fn trace_has_widened_parameter_calls(graph: &DescriptorGraph, root: TraceInfoRef) -> bool {
+    let mut pending = vec![root];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+        match &graph.data().traces[current.0 as usize] {
+            TraceInfo::Widened {
+                parameter_calls, ..
+            } if !parameter_calls.is_empty() => return true,
+            TraceInfo::Seq(parts) | TraceInfo::Choice(parts) => {
+                pending.extend(parts.iter().copied())
+            }
+            TraceInfo::Repeat(inner) => pending.push(*inner),
+            _ => {}
         }
     }
     false

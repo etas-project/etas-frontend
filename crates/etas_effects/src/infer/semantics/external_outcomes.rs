@@ -20,6 +20,22 @@ struct DescriptorBindings<'a> {
     effects: &'a std::collections::BTreeMap<etas_code::descriptor::GenericParameterRef, String>,
 }
 
+fn resolve_alias(
+    graph: &DescriptorGraph,
+    mut ty: etas_code::descriptor::TypeInfoRef,
+) -> Option<&etas_code::descriptor::TypeInfo> {
+    use etas_code::descriptor::TypeInfo;
+
+    let mut visited = std::collections::BTreeSet::new();
+    while visited.insert(ty) {
+        match graph.type_info(ty)? {
+            TypeInfo::Alias { target, .. } => ty = *target,
+            node => return Some(node),
+        }
+    }
+    None
+}
+
 impl EffectSemantics<'_> {
     /// Replays only outcome branches whose portable control flow and checked
     /// callback interface can be proved exactly. Other shapes remain unknown.
@@ -90,24 +106,29 @@ impl EffectSemantics<'_> {
             }
         }
         for (parameter, actual) in portable.parameters.iter().zip(&signature.input) {
-            if matches!(
-                graph.type_info(parameter.ty),
-                Some(etas_code::descriptor::TypeInfo::Builtin {
+            let is_definition = matches!(
+                resolve_alias(&graph, parameter.ty).ok_or(
+                    super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+                )?,
+                etas_code::descriptor::TypeInfo::Builtin {
                     constructor: etas_code::descriptor::BuiltinTypeInfo::CallableDefinition,
                     ..
-                })
-            ) && !etas_types::checked_descriptor_type_matches_with_bindings(
-                self.types,
-                &graph,
-                *actual,
-                parameter.ty,
-                &binders,
-                &names,
-                &effect_binders,
-            )
-            .map_err(|_| {
-                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface
-            })? {
+                }
+            );
+            if is_definition
+                && !etas_types::checked_descriptor_type_matches_with_bindings(
+                    self.types,
+                    &graph,
+                    *actual,
+                    parameter.ty,
+                    &binders,
+                    &names,
+                    &effect_binders,
+                )
+                .map_err(|_| {
+                    super::specialize::EffectSpecializationError::InvalidCallableParameterInterface
+                })?
+            {
                 return Err(
                     super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
                 );
@@ -324,14 +345,14 @@ impl EffectSemantics<'_> {
             let Type::Function(callback) = self.types.store.get(native_callback)? else {
                 return None;
             };
-            let portable_callback = match graph.type_info(portable_parameter.ty)? {
+            let portable_callback = match resolve_alias(graph, portable_parameter.ty)? {
                 etas_code::descriptor::TypeInfo::Function(callback) => callback,
                 etas_code::descriptor::TypeInfo::Builtin {
                     constructor: etas_code::descriptor::BuiltinTypeInfo::CallableDefinition,
                     arguments,
                 } if arguments.len() == 1 => {
                     let etas_code::descriptor::TypeInfo::Function(callback) =
-                        graph.type_info(arguments[0])?
+                        resolve_alias(graph, arguments[0])?
                     else {
                         return None;
                     };

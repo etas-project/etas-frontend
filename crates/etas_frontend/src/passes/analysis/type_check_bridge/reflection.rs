@@ -9,10 +9,23 @@ use crate::ProjectContext;
 pub(super) fn signature_input(
     context: &ProjectContext,
 ) -> Result<etas_types::api::ReflectionSignatureInput, crate::code::descriptor::ProjectionError> {
+    signature_input_for_environment(
+        &context.std_registry,
+        context
+            .validated_external_environment
+            .as_ref()
+            .map(|validated| validated.environment()),
+    )
+}
+
+pub(in crate::passes::analysis) fn signature_input_for_environment(
+    registry: &etas_std::StdRegistry,
+    environment: Option<&crate::ProjectEnvironmentInput>,
+) -> Result<etas_types::api::ReflectionSignatureInput, crate::code::descriptor::ProjectionError> {
     let mut declarations = BTreeMap::new();
     let mut effect_targets = BTreeMap::new();
-    if let Some(validated) = &context.validated_external_environment {
-        for origin in &validated.environment().external_definition_origins {
+    if let Some(environment) = environment {
+        for origin in &environment.external_definition_origins {
             let aliases = origin
                 .descriptors
                 .iter()
@@ -33,10 +46,10 @@ pub(super) fn signature_input(
             }
         }
     }
-    let package = crate::code::identity::standard_package_key(&context.std_registry)?;
-    for symbol in context.std_registry.symbols() {
+    let package = crate::code::identity::standard_package_key(registry)?;
+    for symbol in registry.symbols() {
         if let Some(key) =
-            crate::code::identity::standard_definition_key(&context.std_registry, package, symbol)?
+            crate::code::identity::standard_definition_key(registry, package, symbol)?
         {
             insert_declaration(&mut declarations, symbol.qualified_path.clone(), key)?;
         }
@@ -50,7 +63,7 @@ pub(super) fn signature_input(
     // Registry logical names are the canonical names used by typed std rows.
     // Source rows use resolved declaration paths, including when they shadow std.
     let mut standard_effects = BTreeMap::new();
-    for symbol in context.std_registry.symbols() {
+    for symbol in registry.symbols() {
         if let etas_std::StdDecl::Effect(effect) = &symbol.decl {
             let key = declarations.get(&symbol.qualified_path).ok_or_else(|| {
                 crate::code::descriptor::ProjectionError::MissingIdentity(
@@ -61,7 +74,7 @@ pub(super) fn signature_input(
             effect_targets.insert(effect.name.clone(), EffectTargetInfo::Effect(key.clone()));
         }
     }
-    for symbol in context.std_registry.symbols() {
+    for symbol in registry.symbols() {
         if let etas_std::StdDecl::EffectAction(action) = &symbol.decl {
             let key = standard_effects.get(&action.owner).ok_or_else(|| {
                 crate::code::descriptor::ProjectionError::MissingIdentity(action.owner.clone())
@@ -83,8 +96,8 @@ pub(super) fn signature_input(
             effect_targets.insert(format!("{}.{}", action.owner, action.name), target);
         }
     }
-    if let Some(validated) = &context.validated_external_environment {
-        for metadata in &validated.environment().external_public_metadata {
+    if let Some(environment) = environment {
+        for metadata in &environment.external_public_metadata {
             for action in &metadata.actions {
                 let Some((name, owner)) = action.path.split_last() else {
                     continue;
@@ -258,5 +271,65 @@ pub(super) fn canonicalize_re_exports(
             binding.package = etas_types::ExternalPackageKey(package.0);
             binding.path = (*from).clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etas_code::{
+        CodeFingerprint, DefinitionKey, PackageKey,
+        identity::{DefinitionBindingOrigin, DefinitionModuleOrigin, PackageDefinitionOrigins},
+    };
+
+    #[test]
+    fn reflection_identities_are_available_without_hir_and_preserve_package_identity() {
+        let registry = etas_std::standard_registry();
+        let mut environment = crate::ProjectEnvironmentInput::default();
+        let mut expected = Vec::new();
+        for (number, root) in [(1, "first"), (2, "second")] {
+            let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
+                "etas.test.reflection.identity",
+                root.as_bytes(),
+            ));
+            let key = DefinitionKey::new(
+                package,
+                vec!["library".into()],
+                vec!["Item".into()],
+                DefinitionKind::Type,
+            )
+            .unwrap();
+            let module = vec![root.to_owned(), "library".into()];
+            let mut path = module.clone();
+            path.push("Item".into());
+            environment.external_definition_origins.push(
+                crate::ProjectExternalDefinitionOriginsInput {
+                    package: crate::ExternalPackageId(number),
+                    origins: PackageDefinitionOrigins {
+                        package,
+                        modules: vec![DefinitionModuleOrigin {
+                            path: module.clone(),
+                            canonical_path: vec!["library".into()],
+                        }],
+                        declarations: vec![DefinitionBindingOrigin {
+                            module,
+                            declaration: vec!["Item".into()],
+                            definition: key.clone(),
+                        }],
+                    },
+                    descriptors: None,
+                },
+            );
+            expected.push((path, key));
+        }
+        let input = signature_input_for_environment(&registry, Some(&environment)).unwrap();
+        for entry in &expected {
+            assert!(input.declarations.contains(entry));
+        }
+        assert_ne!(expected[0].1, expected[1].1);
+        assert!(input.effect_targets.iter().any(|(path, target)| {
+            path == "Console.stdout_write"
+                && matches!(target, etas_code::descriptor::EffectTargetInfo::Action { name, .. } if name == "stdout_write")
+        }));
     }
 }

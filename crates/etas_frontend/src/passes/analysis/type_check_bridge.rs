@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use etas_core::{Diagnostic, TypeDiagnosticCode};
 
 mod behavior_types;
-mod reflection;
+pub(super) mod reflection;
 
 use crate::{
     ExternalPackageId, ImportTarget, ModuleId, ModulePath, ProjectContext,
@@ -524,7 +524,7 @@ fn convert_external_action_signature(
     }
 }
 
-fn convert_external_generic_params(
+pub(super) fn convert_external_generic_params(
     params: &[crate::ProjectExternalCallableGenericParamInput],
 ) -> Vec<etas_types::ExternalCallableGenericParamInput> {
     params

@@ -415,7 +415,7 @@ fn effect_matches(
     Ok(true)
 }
 
-fn primitive(value: N) -> P {
+pub(super) fn primitive(value: N) -> P {
     match value {
         N::Unit => P::Unit,
         N::Never => P::Never,

@@ -1275,7 +1275,13 @@ fn validate_type_semantics(
     allow_unbound_vars: bool,
 ) -> Result<(), String> {
     match ty {
-        ProjectExternalTypeInput::Primitive(name) => validate_name(name, "primitive name"),
+        ProjectExternalTypeInput::Primitive(name) => {
+            validate_name(name, "primitive name")?;
+            if !etas_types::lower::external::is_valid_external_primitive(name) {
+                return Err(format!("unknown primitive type `{name}`"));
+            }
+            Ok(())
+        }
         ProjectExternalTypeInput::Var(name) => {
             validate_name(name, "type variable")?;
             if !allow_unbound_vars && !scope.types.contains(name) {

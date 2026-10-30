@@ -630,7 +630,11 @@ fn external_type_by_path(store: &TypeStore, path: &[String]) -> Option<TypeId> {
     })
 }
 
-fn primitive_from_external_name(name: &str) -> Option<PrimitiveType> {
+pub fn is_valid_external_primitive(name: &str) -> bool {
+    primitive_from_external_name(name).is_some()
+}
+
+pub(crate) fn primitive_from_external_name(name: &str) -> Option<PrimitiveType> {
     Some(match name {
         "bool" => PrimitiveType::Bool,
         "i8" => PrimitiveType::I8,
@@ -656,7 +660,7 @@ fn primitive_from_external_name(name: &str) -> Option<PrimitiveType> {
     })
 }
 
-fn external_trust_wrapper(wrapper: &str) -> Option<TrustWrapper> {
+pub(crate) fn external_trust_wrapper(wrapper: &str) -> Option<TrustWrapper> {
     Some(match wrapper {
         "Trusted" | "trusted" => TrustWrapper::Trusted,
         "Secret" | "secret" => TrustWrapper::Secret,
