@@ -43,6 +43,7 @@ use crate::TypeId;
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
     pub external_specs: specs::ExternalSpecFacts,
+    pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, TypeId)>,
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
     pub reflection_type_identities: HashMap<TypeId, etas_code::DefinitionKey>,
     pub reflection_declaration_identities: HashMap<Vec<String>, etas_code::DefinitionKey>,

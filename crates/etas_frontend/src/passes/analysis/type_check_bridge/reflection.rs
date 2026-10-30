@@ -117,10 +117,27 @@ pub(in crate::passes::analysis) fn signature_input_for_environment(
         }
     }
     let methods = external_method_identities(environment, &declarations)?;
+    let aliases = environment
+        .into_iter()
+        .flat_map(|env| &env.external_public_metadata)
+        .flat_map(|metadata| &metadata.types)
+        .filter_map(|item| match &item.ty {
+            Some(crate::ProjectExternalTypeInput::Alias { target, .. }) => Some((
+                item.path.clone(),
+                item.generic_params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+                super::convert_external_type(target),
+            )),
+            _ => None,
+        })
+        .collect();
     Ok(etas_types::api::ReflectionSignatureInput {
         declarations: declarations.into_iter().collect(),
         effect_targets: effect_targets.into_iter().collect(),
         methods: methods.into_iter().collect(),
+        aliases,
     })
 }
 

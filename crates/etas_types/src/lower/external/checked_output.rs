@@ -97,6 +97,18 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         | crate::ExternalTypeInput::Nominal { path, .. }
         | crate::ExternalTypeInput::Enum { path, .. }
         | crate::ExternalTypeInput::Applied { path, .. } => {
+            if let Some((parameters, target)) = self.types.facts.external_type_aliases.get(path) {
+                let args = match ty {
+                    crate::ExternalTypeInput::Applied { args, .. } => args.as_slice(),
+                    crate::ExternalTypeInput::Named(_) => &[],
+                    _ => return Err(ExternalMetadataLoweringError { message: "external nominal or enum type conflicts with a checked alias".into() }),
+                };
+                if args.len() != parameters.len() {
+                    return Err(ExternalMetadataLoweringError { message: format!("external alias `{}` expects {} arguments, got {}", path.join("."), parameters.len(), args.len()) });
+                }
+                let bindings = parameters.iter().cloned().zip(args.iter().map(|arg| self.type_id(arg)).collect::<Result<Vec<_>, _>>()?).collect();
+                return crate::substitute_named_params_in_store(&self.types.store, *target, &bindings).map_err(|error| ExternalMetadataLoweringError { message: format!("external alias `{}` has no checked instantiation: {error}", path.join(".")) });
+            }
             let Some(id) = external_type_by_path(&self.types.store, path) else {
                 return Err(ExternalMetadataLoweringError {
                     message: format!(
@@ -265,6 +277,48 @@ impl<'a> CheckedExternalTypeResolver<'a> {
 mod tests {
     use super::*;
     use crate::{CallableGenericParam, CallableGenericParamKind, ExternalTypeInput, TypeInterner};
+
+    #[test]
+    fn checked_effect_selector_instantiates_external_alias_in_callable_scope() {
+        let mut interner = TypeInterner::new();
+        let alias_param = interner.intern(Type::Named(NamedTypeRef {
+            name: "A".into(),
+            source_parameter: None,
+        }));
+        let caller_param = interner.intern(Type::Named(NamedTypeRef {
+            name: "T".into(),
+            source_parameter: Some(etas_hir::SymbolId(10)),
+        }));
+        let target = interner.intern(Type::Array(alias_param));
+        let expected = interner.intern(Type::Array(caller_param));
+        let path = vec!["library".into(), "ArrayAlias".into()];
+        let mut facts = crate::TypeFacts::default();
+        facts
+            .external_type_aliases
+            .insert(path.clone(), (vec!["A".into()], target));
+        let types = TypeOutput {
+            facts: std::sync::Arc::new(facts),
+            store: std::sync::Arc::new(interner.into_store()),
+            ..Default::default()
+        };
+        let parameter = CallableGenericParam {
+            name: "T".into(),
+            subject: caller_param,
+            kind: CallableGenericParamKind::Type,
+            bounds: vec![],
+        };
+        let resolver = CheckedExternalTypeResolver::for_callable(&types, &[parameter]).unwrap();
+        let arg = crate::ExternalEffectArgInput::Type(ExternalTypeInput::Applied {
+            path: path.clone(),
+            args: vec![ExternalTypeInput::Var("T".into())],
+        });
+        assert_eq!(
+            resolver.effect_arg(&arg).unwrap(),
+            EffectArgRef::Type(expected)
+        );
+        let wrong = ExternalTypeInput::Applied { path, args: vec![] };
+        assert!(resolver.type_id(&wrong).is_err());
+    }
 
     #[test]
     fn checked_callable_scope_distinguishes_same_spelled_binders_and_rejects_undeclared_variables()

@@ -274,6 +274,40 @@ pub fn lower_external_type(
             ty
         }
         crate::ExternalTypeInput::Applied { path, args } => {
+            if let Some((params, target)) = ctx.external_type_aliases.get(path).cloned() {
+                if params.len() != args.len() {
+                    invalid_external_metadata(
+                        ctx,
+                        span,
+                        format!(
+                            "invalid external package metadata: alias `{}` expects {} arguments, got {}",
+                            path.join("."),
+                            params.len(),
+                            args.len()
+                        ),
+                    );
+                    return ctx.interner.primitive(PrimitiveType::Never);
+                }
+                let substitutions = params
+                    .into_iter()
+                    .zip(args.iter().map(|arg| lower_external_type(ctx, span, arg)))
+                    .collect();
+                return match crate::substitute_named_params(
+                    &mut ctx.interner,
+                    target,
+                    &substitutions,
+                ) {
+                    Ok(ty) => ty,
+                    Err(error) => {
+                        invalid_external_metadata(
+                            ctx,
+                            span,
+                            format!("external alias substitution failed: {error}"),
+                        );
+                        ctx.interner.primitive(PrimitiveType::Never)
+                    }
+                };
+            }
             let Some(constructor) = checked_external_or_std_type(ctx, path) else {
                 invalid_external_metadata(
                     ctx,
@@ -482,6 +516,14 @@ pub fn lower_external_type_declaration(
             }
             let ty = lower_external_type(ctx, span, target);
             ctx.external_type_paths.insert(path.to_vec(), ty);
+            ctx.external_type_aliases.insert(
+                path.to_vec(),
+                (params.iter().map(|param| param.name.clone()).collect(), ty),
+            );
+            ctx.signature_facts.external_type_aliases.insert(
+                path.to_vec(),
+                (params.iter().map(|param| param.name.clone()).collect(), ty),
+            );
             ty
         }
         Some(crate::ExternalTypeInput::Nominal {

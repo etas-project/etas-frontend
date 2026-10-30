@@ -38,6 +38,9 @@ pub fn merge_body_deltas_with_application<'a>(
 fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
     facts.type_generics.extend(body.type_generics);
     facts
+        .external_type_aliases
+        .extend(body.external_type_aliases);
+    facts
         .reflection_type_identities
         .extend(body.reflection_type_identities);
     facts.expr_types.extend(body.expr_types);

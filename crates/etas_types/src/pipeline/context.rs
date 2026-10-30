@@ -16,6 +16,7 @@ pub struct TypePipelineContext<'a> {
     pub lowering_type_stack: Vec<etas_hir::SymbolId>,
     pub(crate) type_applications: Vec<crate::lower::type_application::TypeApplication>,
     pub external_type_paths: HashMap<Vec<String>, crate::TypeId>,
+    pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, crate::TypeId)>,
 }
 
 pub struct BodyCollectContext<'a, 's, E = std::convert::Infallible> {
@@ -137,6 +138,7 @@ impl<'a> TypePipelineContext<'a> {
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
             external_type_paths: HashMap::new(),
+            external_type_aliases: HashMap::new(),
         }
     }
 
@@ -178,6 +180,7 @@ impl<'a> TypePipelineContext<'a> {
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
             external_type_paths: HashMap::new(),
+            external_type_aliases: HashMap::new(),
         }
     }
 

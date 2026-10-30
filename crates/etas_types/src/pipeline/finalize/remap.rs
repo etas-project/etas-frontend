@@ -491,6 +491,9 @@ pub(crate) fn project_signature_facts(
 }
 
 fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '_>) {
+    for (_, target) in facts.external_type_aliases.values_mut() {
+        *target = remapper.ty(*target);
+    }
     facts.type_generics = std::mem::take(&mut facts.type_generics)
         .into_iter()
         .map(|(ty, mut parameters)| {

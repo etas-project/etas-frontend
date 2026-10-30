@@ -49,6 +49,7 @@ pub fn check_top_level_items(
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
+        external_type_aliases: std::collections::HashMap::new(),
     };
     for (item, data) in hir.items.iter() {
         if matches!(data, etas_hir::HirItem::TopLevelLet(_)) {
@@ -143,6 +144,7 @@ fn infer_outputs_with_checkpoint<E>(
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
+        external_type_aliases: std::collections::HashMap::new(),
     };
     body::output_inference::run_with_checkpoint(&mut ctx, checkpoint)?;
     checkpoint()?;

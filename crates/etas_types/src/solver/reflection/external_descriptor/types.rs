@@ -17,6 +17,16 @@ impl ExternalDescriptorMatcher<'_> {
         if let ExternalTypeInput::Alias { target, .. } = input {
             return self.ty(target, reference, scope, depth + 1);
         }
+        if let ExternalTypeInput::Applied { path, args } = input
+            && let Some(expanded) = self.expand_alias(path, args, depth + 1)?
+        {
+            return self.ty(&expanded, reference, scope, depth + 1);
+        }
+        if let ExternalTypeInput::Named(path) = input
+            && let Some(expanded) = self.expand_alias(path, &[], depth + 1)?
+        {
+            return self.ty(&expanded, reference, scope, depth + 1);
+        }
         let mut seen = BTreeSet::new();
         while let Some(TypeInfo::Parameter(parameter)) = self.graph.types.get(reference.0 as usize)
         {
@@ -199,6 +209,16 @@ impl ExternalDescriptorMatcher<'_> {
         self.charge(depth)?;
         match input {
             ExternalTypeInput::Alias { target, .. } => self.is_callable_argument(target, depth + 1),
+            ExternalTypeInput::Applied { path, args } => {
+                match self.expand_alias(path, args, depth + 1)? {
+                    Some(target) => self.is_callable_argument(&target, depth + 1),
+                    None => Ok(false),
+                }
+            }
+            ExternalTypeInput::Named(path) => match self.expand_alias(path, &[], depth + 1)? {
+                Some(target) => self.is_callable_argument(&target, depth + 1),
+                None => Ok(false),
+            },
             ExternalTypeInput::Function { .. } => Ok(true),
             ExternalTypeInput::Var(name) => {
                 Ok(self.parameters.get(name).is_some_and(|reference| {

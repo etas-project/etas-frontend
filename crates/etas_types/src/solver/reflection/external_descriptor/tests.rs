@@ -92,6 +92,94 @@ fn generic_descriptor_alias_substitutes_the_callable_type() {
 }
 
 #[test]
+fn external_applied_aliases_expand_with_checked_substitution_and_budget() {
+    let graph = DescriptorGraphInput {
+        types: vec![
+            TypeInfo::Primitive(PrimitiveInfo::I32),
+            TypeInfo::Function(SignatureInfo {
+                generics: vec![],
+                parameters: vec![ParameterInfo {
+                    name: None,
+                    ty: TypeInfoRef(0),
+                }],
+                output: TypeInfoRef(0),
+                declared_output: None,
+                effects: None,
+            }),
+            TypeInfo::Builtin {
+                constructor: BuiltinTypeInfo::CallableDefinition,
+                arguments: vec![TypeInfoRef(1)],
+            },
+        ],
+        ..Default::default()
+    };
+    let f = vec!["library".into(), "Fn".into()];
+    let draft = vec!["library".into(), "Draft".into()];
+    let cycle = vec!["library".into(), "Cycle".into()];
+    let identities = ReflectionSignatureInput {
+        aliases: vec![
+            (
+                f.clone(),
+                vec!["T".into()],
+                ExternalTypeInput::Function {
+                    input: vec![ExternalTypeInput::Var("T".into())],
+                    output: Box::new(ExternalTypeInput::Var("T".into())),
+                    effects: None,
+                },
+            ),
+            (
+                draft.clone(),
+                vec!["U".into()],
+                ExternalTypeInput::Applied {
+                    path: vec!["std".into(), "compiler".into(), "CallableDef".into()],
+                    args: vec![ExternalTypeInput::Applied {
+                        path: f,
+                        args: vec![ExternalTypeInput::Var("U".into())],
+                    }],
+                },
+            ),
+            (
+                cycle.clone(),
+                vec![],
+                ExternalTypeInput::Named(cycle.clone()),
+            ),
+        ],
+        ..Default::default()
+    };
+    let registry = etas_std::standard_registry();
+    let identities = ExternalDescriptorIdentities::new(&registry, &identities).unwrap();
+    let mut budget = 1000;
+    let mut matcher =
+        ExternalDescriptorMatcher::new(&graph, &identities, &[], &[], &mut budget).unwrap();
+    let apply = |args| ExternalTypeInput::Applied {
+        path: draft.clone(),
+        args,
+    };
+    assert!(
+        matcher
+            .matches(
+                &apply(vec![ExternalTypeInput::Primitive("i32".into())]),
+                TypeInfoRef(2)
+            )
+            .unwrap()
+    );
+    assert!(
+        !matcher
+            .matches(
+                &apply(vec![ExternalTypeInput::Primitive("bool".into())]),
+                TypeInfoRef(2)
+            )
+            .unwrap()
+    );
+    assert!(matcher.matches(&apply(vec![]), TypeInfoRef(2)).is_err());
+    assert!(
+        matcher
+            .matches(&ExternalTypeInput::Named(cycle), TypeInfoRef(2))
+            .is_err()
+    );
+}
+
+#[test]
 fn comparison_budget_is_shared_across_matchers() {
     let graph = DescriptorGraphInput {
         types: vec![TypeInfo::Primitive(PrimitiveInfo::I32)],

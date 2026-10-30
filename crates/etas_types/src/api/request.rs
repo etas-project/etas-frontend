@@ -54,6 +54,7 @@ pub struct ReflectionSignatureInput {
     pub declarations: Vec<(Vec<String>, etas_code::DefinitionKey)>,
     pub effect_targets: Vec<(String, etas_code::descriptor::EffectTargetInfo)>,
     pub methods: Vec<(Vec<String>, etas_code::CallableId)>,
+    pub aliases: Vec<(Vec<String>, Vec<String>, ExternalTypeInput)>,
 }
 
 #[derive(Clone, Debug, Default)]

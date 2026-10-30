@@ -9,6 +9,8 @@ use etas_code::descriptor::{
     GenericParameterRef, TypeInfoRef,
 };
 
+#[path = "external_descriptor/aliases.rs"]
+mod aliases;
 #[path = "external_descriptor/effects.rs"]
 mod effects;
 #[cfg(test)]
@@ -23,6 +25,7 @@ pub struct ExternalDescriptorIdentities<'a> {
     declarations: BTreeMap<Vec<String>, etas_code::DefinitionKey>,
     effects: BTreeMap<String, EffectTargetInfo>,
     methods: BTreeMap<Vec<String>, etas_code::CallableId>,
+    aliases: BTreeMap<Vec<String>, (Vec<String>, ExternalTypeInput)>,
 }
 
 impl<'a> ExternalDescriptorIdentities<'a> {
@@ -45,9 +48,15 @@ impl<'a> ExternalDescriptorIdentities<'a> {
             .iter()
             .cloned()
             .collect::<BTreeMap<_, _>>();
+        let aliases = identities
+            .aliases
+            .iter()
+            .map(|(path, params, target)| (path.clone(), (params.clone(), target.clone())))
+            .collect::<BTreeMap<_, _>>();
         if declarations.len() != identities.declarations.len()
             || effects.len() != identities.effect_targets.len()
             || methods.len() != identities.methods.len()
+            || aliases.len() != identities.aliases.len()
         {
             return Err("external descriptor identity index contains duplicate paths");
         }
@@ -56,6 +65,7 @@ impl<'a> ExternalDescriptorIdentities<'a> {
             declarations,
             effects,
             methods,
+            aliases,
         })
     }
 }
