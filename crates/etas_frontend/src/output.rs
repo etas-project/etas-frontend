@@ -276,8 +276,8 @@ impl ProjectEnvironmentInput {
             }
             for fact in metadata.callable_spec_satisfactions {
                 parts.push(format!(
-                    "callable-spec-satisfaction:{}:{}:{}",
-                    fact.item.join("."),
+                    "callable-spec-satisfaction:{:?}:{}:{}",
+                    fact.item,
                     fact.spec.join("."),
                     fact.args
                         .iter()
@@ -288,8 +288,8 @@ impl ProjectEnvironmentInput {
             }
             for fact in metadata.trace_spec_conformances {
                 parts.push(format!(
-                    "trace-spec-conformance:{}:{}",
-                    fact.item.join("."),
+                    "trace-spec-conformance:{:?}:{}",
+                    fact.item,
                     external_trace_spec_conformance_target_fingerprint(&fact.target)
                 ));
             }
@@ -830,14 +830,14 @@ pub struct ProjectExternalTypeSpecSatisfactionInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalCallableSpecSatisfactionInput {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTraceSpecConformanceInput {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub target: ProjectExternalTraceSpecConformanceTargetInput,
 }
 

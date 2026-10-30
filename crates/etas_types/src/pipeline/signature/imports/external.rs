@@ -481,7 +481,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 });
         }
         for fact in &metadata.callable_spec_satisfactions {
-            let span = binding_span(input, metadata.package, &fact.item).unwrap_or(package_span);
+            let span = contract_span(input, metadata.package, &fact.item, package_span);
             let args = fact
                 .args
                 .iter()
@@ -493,11 +493,11 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                     item: fact.item.clone(),
                     spec: fact.spec.clone(),
                     args,
-                    span: binding_span(input, metadata.package, &fact.item).unwrap_or(package_span),
+                    span,
                 });
         }
         for fact in &metadata.trace_spec_conformances {
-            let span = binding_span(input, metadata.package, &fact.item).unwrap_or(package_span);
+            let span = contract_span(input, metadata.package, &fact.item, package_span);
             let target = match &fact.target {
                 crate::ExternalTraceSpecConformanceTargetInput::Inline => {
                     ExternalTraceSpecConformanceTarget::Inline
@@ -516,10 +516,24 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 ExternalTraceSpecConformanceFact {
                     item: fact.item.clone(),
                     target,
-                    span: binding_span(input, metadata.package, &fact.item).unwrap_or(package_span),
+                    span,
                 },
             );
         }
+    }
+}
+
+fn contract_span(
+    input: &ExternalSignatureInput,
+    package: ExternalPackageKey,
+    target: &etas_package_metadata::CallableContractTarget,
+    package_span: etas_core::Span,
+) -> etas_core::Span {
+    match target {
+        etas_package_metadata::CallableContractTarget::Item(path) => {
+            binding_span(input, package, path).unwrap_or(package_span)
+        }
+        etas_package_metadata::CallableContractTarget::Method(_) => package_span,
     }
 }
 

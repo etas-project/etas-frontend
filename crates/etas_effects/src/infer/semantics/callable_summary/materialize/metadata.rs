@@ -15,6 +15,43 @@ impl EffectSemantics<'_> {
         &mut self,
     ) -> Result<(), EffectPipelineError> {
         let mut sources = self.discovered_external_method_sources.borrow().clone();
+        let contracts = self
+            .types
+            .facts
+            .external_trace_spec_conformances
+            .iter()
+            .map(|fact| &fact.item)
+            .chain(
+                self.types
+                    .facts
+                    .external_callable_spec_satisfactions
+                    .iter()
+                    .map(|fact| &fact.item),
+            );
+        for target in contracts {
+            let etas_package_metadata::CallableContractTarget::Method(identity) = target else {
+                continue;
+            };
+            let mut definitions = self
+                .external_implementations
+                .iter()
+                .filter(|method| &method.identity == identity);
+            let (Some(method), None) = (definitions.next(), definitions.next()) else {
+                return Err(invalid(
+                    "method conformance has no unique anchored behavior graph",
+                ));
+            };
+            let [CallableValueSource::Value(value)] = method.graph.sources.as_slice() else {
+                return Err(invalid(
+                    "method conformance has no owned callable graph root",
+                ));
+            };
+            sources.insert(MetadataCallableSource {
+                graph: method.graph_key,
+                value: *value,
+                environment: None,
+            });
+        }
         for key in self.callable_summaries.borrow().summaries.keys() {
             if let LatentSource::Metadata(source) = key.source {
                 sources.insert(source);

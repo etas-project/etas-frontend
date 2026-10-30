@@ -7800,13 +7800,13 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
     ];
     environment.external_public_metadata[0].callable_spec_satisfactions =
         vec![ProjectExternalCallableSpecSatisfactionInput {
-            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
+            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             spec: vec!["dep".to_owned(), "api".to_owned(), "Pure".to_owned()],
             args: Vec::new(),
         }];
     environment.external_public_metadata[0].trace_spec_conformances =
         vec![ProjectExternalTraceSpecConformanceInput {
-            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
+            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                 spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
                 args: Vec::new(),
@@ -7879,7 +7879,10 @@ flow main() -> unit {
             .types
             .external_callable_spec_satisfactions
             .iter()
-            .any(|fact| path_eq(&fact.item, &["dep", "api", "call"])
+            .any(|fact| fact
+                .item
+                .item_path()
+                .is_some_and(|path| path_eq(path, &["dep", "api", "call"]))
                 && path_eq(&fact.spec, &["dep", "api", "Pure"])),
         "external callable conformance metadata should be replayed as a path fact: {:#?}",
         checked.types.external_callable_spec_satisfactions
@@ -7891,7 +7894,9 @@ flow main() -> unit {
             .iter()
             .any(|fact| match &fact.target {
                 etas_types::ExternalTraceSpecConformanceTarget::Named { spec, .. } => {
-                    path_eq(&fact.item, &["dep", "api", "call"])
+                    fact.item
+                        .item_path()
+                        .is_some_and(|path| path_eq(path, &["dep", "api", "call"]))
                         && path_eq(spec, &["dep", "api", "Safe"])
                 }
                 etas_types::ExternalTraceSpecConformanceTarget::Inline => false,
@@ -7965,7 +7970,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].trace_spec_conformances =
         vec![ProjectExternalTraceSpecConformanceInput {
-            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
+            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                 spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
                 args: Vec::new(),
@@ -8008,7 +8013,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             metadata
                 .trace_spec_conformances
                 .push(ProjectExternalTraceSpecConformanceInput {
-                    item: vec!["dep".into(), "api".into(), "call".into()],
+                    item: vec!["dep".into(), "api".into(), "call".into()].into(),
                     target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                         spec: vec!["dep".into(), "api".into(), "Permitted".into()],
                         args: Vec::new(),
@@ -10256,7 +10261,9 @@ public flow main() -> unit ~ Safe {
             .trace_spec_conformances
             .iter()
             .any(|fact| {
-                fact.item == ["app", "main", "main"]
+                fact.item
+                    .item_path()
+                    .is_some_and(|path| path_eq(path, &["app", "main", "main"]))
                     && matches!(
                         &fact.target,
                         etas_package_metadata::TraceSpecConformanceTarget::Named { spec, .. }
@@ -10350,7 +10357,9 @@ public flow main() -> unit ~ Pure<unit, unit> {
             .callable_spec_satisfactions
             .iter()
             .any(|fact| {
-                fact.item == ["app", "main", "main"]
+                fact.item
+                    .item_path()
+                    .is_some_and(|path| path_eq(path, &["app", "main", "main"]))
                     && fact.spec == ["app", "main", "Pure"]
                     && fact.args.len() == 2
             }),

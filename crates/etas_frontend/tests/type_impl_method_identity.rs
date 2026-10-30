@@ -161,6 +161,73 @@ impl Second ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
 }
 
 #[test]
+fn applied_alias_method_contracts_publish_with_canonical_method_identity() {
+    let source = r#"
+module library.api;
+public spec Encoder { flow encode(self) -> i32 ![]; flow check(self) -> i32 ![]; }
+public spec Pure<I, O> I => O ![];
+public spec ReadOnly: trace = -Console.stdout_write;
+public type Container<T> = { value: T };
+public alias StringBox = Container<string>;
+impl StringBox ~ Encoder {
+    flow encode(self) -> i32 ![] ~ ReadOnly { return 1; }
+    flow check(self) -> i32 ![] ~ Pure<StringBox, i32> { return 2; }
+}
+"#;
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(package()),
+            package_id: "library".into(),
+            package_version: "0.1.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: "blake3:source".into(),
+            manifest_hash: "blake3:manifest".into(),
+            dependency_lock_hash: "blake3:lock".into(),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked(source),
+    )
+    .expect("impl method contracts must not require top-level flow export paths");
+    let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("library.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    let public = metadata.public_metadata;
+    let implementations = &public.spec_impls[0].methods;
+    assert_eq!(public.trace_spec_conformances.len(), 1);
+    assert_eq!(public.callable_spec_satisfactions.len(), 1);
+    for (target, name) in [
+        (&public.trace_spec_conformances[0].item, "encode"),
+        (&public.callable_spec_satisfactions[0].item, "check"),
+    ] {
+        let etas_package_metadata::CallableContractTarget::Method(identity) = target else {
+            panic!("impl method must not be published as an ordinary declaration: {target:?}");
+        };
+        assert_eq!(identity.name(), name);
+        assert_eq!(
+            identity.implementation().subject().declaration(),
+            ["Container"]
+        );
+        assert_eq!(
+            implementations
+                .iter()
+                .filter(|method| &method.identity == identity)
+                .count(),
+            1
+        );
+    }
+    assert!(
+        public.flows.is_empty(),
+        "method bodies are not public top-level flows"
+    );
+    assert_eq!(public.trace_spec_summaries.len(), 1);
+}
+
+#[test]
 fn same_nominal_subject_with_different_spec_headers_has_distinct_methods() {
     let methods = all_methods(
         r#"

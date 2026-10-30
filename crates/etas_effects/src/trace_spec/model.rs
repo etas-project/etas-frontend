@@ -208,6 +208,7 @@ fn bound_target_and_args<'a>(
 pub struct TraceSpecModelStore {
     pub clauses_by_item: BTreeMap<HirItemId, TraceSpecClauseAlternatives>,
     pub referenced_by_item: BTreeMap<HirItemId, TraceSpecConformances>,
-    pub external_referenced_by_item: BTreeMap<Vec<String>, TraceSpecConformances>,
+    pub external_referenced_by_item:
+        BTreeMap<etas_package_metadata::CallableContractTarget, TraceSpecConformances>,
     pub trace_spec_names: BTreeMap<HirItemId, String>,
 }

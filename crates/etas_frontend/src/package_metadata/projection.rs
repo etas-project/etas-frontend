@@ -263,8 +263,8 @@ impl<'a> ProjectMetadataProjection<'a> {
         metadata.spec_signatures = self.spec_signatures()?;
         metadata.spec_impls = self.spec_impls(identities)?;
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
-        metadata.callable_spec_satisfactions = self.callable_spec_satisfactions()?;
-        metadata.trace_spec_conformances = self.trace_spec_conformances()?;
+        metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
+        metadata.trace_spec_conformances = self.trace_spec_conformances(identities)?;
         metadata.effect_summaries = self.effect_summaries()?;
         metadata.trace_spec_summaries = self.trace_spec_summaries()?;
         for (_, module) in self.checked.module_index.modules.iter() {
@@ -793,6 +793,7 @@ impl<'a> ProjectMetadataProjection<'a> {
 
     fn callable_spec_satisfactions(
         &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Vec<MetadataCallableSpecSatisfaction>, PackageMetadataError> {
         self.checked
             .types
@@ -800,12 +801,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .iter()
             .filter(|fact| !self.is_named_agent_method_body(fact.item))
             .map(|fact| {
-                let item = self.item_path(fact.item).ok_or_else(|| {
-                    PackageMetadataError::InvalidMetadataType {
-                        reason: "callable spec satisfaction item has no canonical metadata path"
-                            .to_owned(),
-                    }
-                })?;
+                let item = self.callable_contract_target(fact.item, identities)?;
                 let spec = self
                     .symbol_canonical_path(fact.spec_symbol)
                     .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
@@ -827,6 +823,7 @@ impl<'a> ProjectMetadataProjection<'a> {
 
     fn trace_spec_conformances(
         &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Vec<MetadataTraceSpecConformance>, PackageMetadataError> {
         self.checked
             .types
@@ -834,12 +831,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .iter()
             .filter(|fact| !self.is_named_agent_method_body(fact.item))
             .map(|fact| {
-                let item = self.item_path(fact.item).ok_or_else(|| {
-                    PackageMetadataError::InvalidMetadataType {
-                        reason: "trace spec conformance item has no canonical metadata path"
-                            .to_owned(),
-                    }
-                })?;
+                let item = self.callable_contract_target(fact.item, identities)?;
                 Ok(MetadataTraceSpecConformance {
                     item,
                     target: match &fact.target {
@@ -874,6 +866,43 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .agent_methods
                 .values()
                 .any(|method| method.body == item)
+    }
+
+    fn callable_contract_target(
+        &self,
+        item: HirItemId,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<etas_package_metadata::CallableContractTarget, PackageMetadataError> {
+        if let Some(method) = self
+            .checked
+            .types
+            .type_impl_methods
+            .values()
+            .find(|method| method.body == item)
+        {
+            if !self.checked.types.spec_impls.iter().any(|implementation| {
+                implementation
+                    .methods
+                    .iter()
+                    .any(|member| member.symbol == method.symbol)
+            }) {
+                return Err(invalid(
+                    "method conformance requires a published implementation owner",
+                ));
+            }
+            let identity = identities
+                .and_then(|index| index.method(method.symbol))
+                .cloned()
+                .ok_or_else(|| {
+                    invalid("method conformance requires its canonical method identity")
+                })?;
+            return Ok(etas_package_metadata::CallableContractTarget::Method(
+                identity,
+            ));
+        }
+        self.item_path(item)
+            .map(etas_package_metadata::CallableContractTarget::Item)
+            .ok_or_else(|| invalid("callable conformance item has no public declaration identity"))
     }
 
     fn spec_method_metadata(
