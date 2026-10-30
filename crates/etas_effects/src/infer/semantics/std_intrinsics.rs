@@ -769,12 +769,18 @@ impl EffectSemantics<'_> {
                 }
                 summary
             }
-            Some(etas_std::LoweringHint::ActionReducer { .. }) => {
+            Some(etas_std::LoweringHint::ActionReducer {
+                reducer, stable_id, ..
+            }) => {
                 // The reducer can fail independently of the default read handler
                 // (limit/deadline). Its public row must survive action handling.
-                let mut summary = self
-                    .summary_from_std_flow(call, symbol, flow, span)
-                    .repeated();
+                let summary = self.summary_from_std_flow(call, symbol, flow, span);
+                let mut summary = match reducer {
+                    etas_std::StdActionReducer::ReadUntilLimit { .. } => summary.repeated(),
+                    etas_std::StdActionReducer::BoundedFileRead { .. } => {
+                        self.separate_reducer_default_effects(summary, call, flow, *stable_id, span)
+                    }
+                };
                 if let Err(reason) = self.record_std_action_call(
                     call,
                     decl.intrinsic.as_ref().map(|intrinsic| intrinsic.id.0),
@@ -802,6 +808,62 @@ impl EffectSemantics<'_> {
             }
         }
         Some(summary)
+    }
+
+    fn separate_reducer_default_effects(
+        &mut self,
+        mut summary: crate::EffectSummary,
+        call: HirExprId,
+        flow: &etas_std::FlowDecl,
+        stable_id: u32,
+        span: Span,
+    ) -> crate::EffectSummary {
+        let result = (|| {
+            let action = self.std_registry.symbols().find(|symbol|
+                matches!(&symbol.decl, StdDecl::EffectAction(action) if action.stable_id == Some(stable_id)))
+                .ok_or("reducer has no canonical std action")?;
+            let signature = self
+                .types
+                .facts
+                .qualified_action_signatures
+                .get(&action.qualified_path.join("."))
+                .ok_or("reducer has no checked action signature")?;
+            let produced = signature
+                .default_handler_effects
+                .as_ref()
+                .ok_or("reducer has no checked default-handler row")?
+                .clone();
+            let produced = self
+                .specialize_std_effect_row(call, flow, &produced, span)
+                .ok_or("reducer default-handler row could not be instantiated")?;
+            let produced = self.row_from_type_ref(&produced);
+            let action = {
+                let mut actions = summary.requested_actions.effects.iter();
+                let action = actions
+                    .next()
+                    .cloned()
+                    .ok_or("reducer has no checked requested action")?;
+                if actions.next().is_some() {
+                    return Err("reducer must request exactly one checked action");
+                }
+                action
+            };
+            for effect in produced.effects.iter() {
+                summary.remove_escaping_effect(effect);
+            }
+            summary.record_default_handler_effects(action, produced)
+        })();
+        if let Err(reason) = result {
+            self.diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                reason,
+            ));
+            summary.support = crate::InterpreterSupport::Rejected(
+                crate::FrontendRejectionReason::UnresolvedEffect,
+            );
+        }
+        summary
     }
 
     fn summary_from_std_flow(
