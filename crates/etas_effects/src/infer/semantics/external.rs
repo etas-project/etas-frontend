@@ -90,22 +90,28 @@ impl EffectSemantics<'_> {
             .ok_or(
                 super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
             )?;
+        let (type_bindings, effect_row_bindings) =
+            self.checked_call_generic_values(site.call, state)?;
         if let Some(contract) = &metadata.callable_contract {
             if let Some(control) = self.query_control {
                 control
                     .checkpoint()
                     .map_err(super::specialize::EffectSpecializationError::Interrupted)?;
             }
-            summary.exits =
-                self.external_callback_outcomes(contract, &summary, signature, site.span)?;
+            summary.exits = self.external_callback_outcomes(
+                contract,
+                &summary,
+                signature,
+                site.span,
+                &type_bindings,
+                &metadata.generic_params,
+            )?;
             if let Some(control) = self.query_control {
                 control
                     .checkpoint()
                     .map_err(super::specialize::EffectSpecializationError::Interrupted)?;
             }
         }
-        let (type_bindings, effect_row_bindings) =
-            self.checked_call_generic_values(site.call, state)?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
             &summary,

@@ -39,6 +39,9 @@ impl NativeDefinitionView {
     pub fn signature(&self) -> Option<&SignatureInfo> {
         self.0.data.base().signature()
     }
+    pub fn signature_type(&self) -> Option<etas_code::descriptor::TypeInfoRef> {
+        self.0.data.base().signature_type()
+    }
     pub fn body(&self) -> Option<&etas_code::syntax::SyntaxBlockRef> {
         self.0.data.body()
     }

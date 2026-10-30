@@ -84,6 +84,17 @@ impl DefinitionDescriptorProjector<'_> {
                 return Ok(TypeInfo::Record(fields));
             }
             Type::Applied { constructor, args } => {
+                if self.checked.types.known_std_types.code.callable_definition
+                    == Some(TypeId(constructor.0))
+                {
+                    return Ok(TypeInfo::Builtin {
+                        constructor: BuiltinTypeInfo::CallableDefinition,
+                        arguments: args
+                            .into_iter()
+                            .map(|ty| self.type_ref(ty, scope))
+                            .collect::<Result<_, _>>()?,
+                    });
+                }
                 let constructor = self.type_ref(TypeId(constructor.0), scope)?;
                 let arguments = args
                     .into_iter()

@@ -17,15 +17,15 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/etas-project/etas-frontend"
 
 [workspace.dependencies]
-etas_cache = { git = "https://github.com/etas-project/etas-core.git", rev = "03bd48d2b39a5752a2b790be07af65757bf538a9", package = "etas_cache" }
-etas_core = { git = "https://github.com/etas-project/etas-core.git", rev = "03bd48d2b39a5752a2b790be07af65757bf538a9", package = "etas_core" }
-etas_code = { git = "https://github.com/etas-project/etas-core.git", rev = "03bd48d2b39a5752a2b790be07af65757bf538a9", package = "etas_code" }
-etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "03bd48d2b39a5752a2b790be07af65757bf538a9", package = "etas_std" }
-etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "03bd48d2b39a5752a2b790be07af65757bf538a9", package = "etas_utils" }
+etas_cache = { git = "https://github.com/etas-project/etas-core.git", rev = "9a954d6abf4c8eefc349b3a55edcd3274bbcb725", package = "etas_cache" }
+etas_core = { git = "https://github.com/etas-project/etas-core.git", rev = "9a954d6abf4c8eefc349b3a55edcd3274bbcb725", package = "etas_core" }
+etas_code = { git = "https://github.com/etas-project/etas-core.git", rev = "9a954d6abf4c8eefc349b3a55edcd3274bbcb725", package = "etas_code" }
+etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "9a954d6abf4c8eefc349b3a55edcd3274bbcb725", package = "etas_std" }
+etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "9a954d6abf4c8eefc349b3a55edcd3274bbcb725", package = "etas_utils" }
 etas_syntax = { path = "crates/etas_syntax" }
 etas_hir = { path = "crates/etas_hir" }
 etas_hir_analysis = { path = "crates/etas_hir_analysis" }
-etas_package_metadata = { git = "https://github.com/etas-project/etas-core.git", rev = "03bd48d2b39a5752a2b790be07af65757bf538a9", package = "etas_package_metadata" }
+etas_package_metadata = { git = "https://github.com/etas-project/etas-core.git", rev = "9a954d6abf4c8eefc349b3a55edcd3274bbcb725", package = "etas_package_metadata" }
 etas_types = { path = "crates/etas_types" }
 etas_effects = { path = "crates/etas_effects" }
 etas_frontend = { path = "crates/etas_frontend" }

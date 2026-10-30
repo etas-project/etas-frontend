@@ -140,6 +140,20 @@ impl DefinitionDescriptorProjector<'_> {
                 }));
             }
             StdType::NamedApplied { name, args } => {
+                let declaration = self.standard_declaration(&name, module)?;
+                let callable_definition = declaration.standard
+                    .and_then(|symbol| self.checked.std_registry.symbol(symbol))
+                    .is_some_and(|symbol| matches!(&symbol.decl,
+                        StdDecl::Type(decl) if decl.code_role == Some(etas_std::CodeTypeRole::CallableDefinition)));
+                if callable_definition {
+                    return Ok(TypeInfo::Builtin {
+                        constructor: BuiltinTypeInfo::CallableDefinition,
+                        arguments: args
+                            .into_iter()
+                            .map(|ty| self.standard_ref(ty, scope, module))
+                            .collect::<Result<_, _>>()?,
+                    });
+                }
                 let constructor = self.standard_ref(StdType::Named(name), scope, module)?;
                 let arguments = args
                     .into_iter()

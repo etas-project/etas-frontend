@@ -50,7 +50,7 @@ impl EffectSemantics<'_> {
                 .symbols
                 .get(symbol)
                 .is_some_and(|data| matches!(data.def, SymbolDef::Param { owner, .. } if state.owner == Some(owner)))
-            && self.checked_function_parameter(symbol).is_some()
+            && self.checked_callable_contract_parameter(symbol).is_some()
         {
             return Ok(None);
         }

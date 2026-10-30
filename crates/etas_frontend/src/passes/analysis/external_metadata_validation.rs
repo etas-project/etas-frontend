@@ -41,7 +41,7 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let environment = context.input.environment.clone();
-        if let Err(error) = validate_external_environment(&environment) {
+        if let Err(error) = validate_external_environment(&environment, &context.std_registry) {
             let Some(package) = error.package else {
                 return PassResult::failed(format!(
                     "invalid external environment has no package identity: {}",
@@ -96,6 +96,7 @@ impl ExternalEnvironmentValidationError {
 
 fn validate_external_environment(
     environment: &ProjectEnvironmentInput,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), ExternalEnvironmentValidationError> {
     let mut packages = BTreeMap::<ExternalPackageId, &crate::ProjectExternalPackageInput>::new();
     let mut import_roots = BTreeMap::<String, ExternalPackageId>::new();
@@ -231,7 +232,7 @@ fn validate_external_environment(
                 "external package has duplicate public metadata records",
             ));
         }
-        validate_external_metadata(metadata).map_err(|reason| {
+        validate_external_metadata(metadata, std_registry).map_err(|reason| {
             ExternalEnvironmentValidationError::package(metadata.package, reason)
         })?;
         let declarations = declared_export_paths(metadata);
@@ -297,7 +298,13 @@ fn validate_external_environment(
         }
     }
 
-    origins::validate(environment, &packages, &module_paths, &exported_paths)?;
+    origins::validate(
+        environment,
+        &packages,
+        &module_paths,
+        &exported_paths,
+        std_registry,
+    )?;
     specs::validate(environment)?;
     validate_dependency_effect_metadata(environment, &packages, &effect_paths, &action_paths)?;
     validate_tool_bindings(environment, &packages, &tool_paths)?;
@@ -535,6 +542,7 @@ struct GenericScope {
 
 pub(super) fn validate_external_metadata(
     metadata: &ProjectExternalPublicMetadataInput,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), String> {
     let mut callable_scopes = HashMap::<Vec<String>, GenericScope>::new();
     let mut declaration_paths = HashSet::new();
@@ -680,7 +688,7 @@ pub(super) fn validate_external_metadata(
         callable_scopes.entry(value.path.clone()).or_default();
     }
     validate_spec_facts(metadata)?;
-    validate_effect_summaries(metadata, &callable_scopes)?;
+    validate_effect_summaries(metadata, &callable_scopes, std_registry)?;
     for summary in &metadata.action_summaries {
         validate_path(&summary.action, "action summary path")?;
         if !metadata
@@ -895,9 +903,56 @@ fn dependency_selector_default_matches_kind(
     }
 }
 
+fn callable_definition_argument<'a>(
+    ty: &'a ProjectExternalTypeInput,
+    std_registry: &etas_std::StdRegistry,
+) -> Option<&'a ProjectExternalTypeInput> {
+    let mut ty = ty;
+    while let ProjectExternalTypeInput::Alias { target, .. } = ty {
+        ty = target;
+    }
+    let ProjectExternalTypeInput::Applied { path, args } = ty else {
+        return None;
+    };
+    let symbol = std_registry.lookup_qualified(path)?;
+    if !matches!(&symbol.decl, etas_std::StdDecl::Type(decl)
+        if decl.code_role == Some(etas_std::CodeTypeRole::CallableDefinition))
+    {
+        return None;
+    }
+    let [argument] = args.as_slice() else {
+        return None;
+    };
+    Some(argument)
+}
+
+fn trace_callable_parameter(
+    ty: &ProjectExternalTypeInput,
+    parameters: &[ProjectExternalTypeInput],
+    scope: &GenericScope,
+    std_registry: &etas_std::StdRegistry,
+) -> bool {
+    let mut ty = ty;
+    while let ProjectExternalTypeInput::Alias { target, .. } = ty {
+        ty = target;
+    }
+    match ty {
+        ProjectExternalTypeInput::Function { .. } => true,
+        ProjectExternalTypeInput::Var(name) if scope.types.contains(name) => parameters.iter().any(|parameter| {
+            matches!(callable_definition_argument(parameter, std_registry), Some(ProjectExternalTypeInput::Var(other)) if name == other)
+        }),
+        _ => match callable_definition_argument(ty, std_registry) {
+            Some(ProjectExternalTypeInput::Function { .. }) => true,
+            Some(ProjectExternalTypeInput::Var(name)) => scope.types.contains(name),
+            _ => false,
+        },
+    }
+}
+
 fn validate_effect_summaries(
     metadata: &ProjectExternalPublicMetadataInput,
     callable_scopes: &HashMap<Vec<String>, GenericScope>,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), String> {
     let mut seen = HashSet::new();
     for summary in &metadata.effect_summaries {
@@ -933,27 +988,35 @@ fn validate_effect_summaries(
             validate_effect_row(&latent.declared_bound, scope)?;
             validate_effect_row(&latent.inferred_effects, scope)?;
         }
-        let (parameter_names, parameter_count) = metadata
+        let (parameter_names, parameter_types) = metadata
             .flows
             .iter()
             .find(|callable| callable.path == summary.item)
-            .map(|callable| (callable.param_names.as_slice(), callable.params.len()))
+            .map(|callable| (callable.param_names.as_slice(), callable.params.as_slice()))
             .or_else(|| {
                 metadata
                     .agents
                     .iter()
                     .find(|callable| callable.path == summary.item)
-                    .map(|callable| (callable.param_names.as_slice(), callable.input.len()))
+                    .map(|callable| (callable.param_names.as_slice(), callable.input.as_slice()))
             })
             .or_else(|| {
                 metadata
                     .tools
                     .iter()
                     .find(|callable| callable.path == summary.item)
-                    .map(|callable| (callable.param_names.as_slice(), callable.input.len()))
+                    .map(|callable| (callable.param_names.as_slice(), callable.input.as_slice()))
             })
             .unwrap_or_default();
-        validate_action_trace(&summary.action_trace, scope, parameter_names)?;
+        let callable_parameters = parameter_names
+            .iter()
+            .zip(parameter_types)
+            .filter_map(|(name, ty)| {
+                trace_callable_parameter(ty, parameter_types, scope, std_registry)
+                    .then_some(name.clone())
+            })
+            .collect::<Vec<_>>();
+        validate_action_trace(&summary.action_trace, scope, &callable_parameters)?;
         if let Some(behavior) = &summary.behavior {
             if behavior
                 .independent_determinism
@@ -986,7 +1049,7 @@ fn validate_effect_summaries(
             requests::validate(requests, scope, parameter_names)?;
         }
         if let Some(graph) = &summary.returned_callables {
-            if parameter_names.len() != parameter_count {
+            if parameter_names.len() != parameter_types.len() {
                 return Err(
                     "returned callable evidence requires an unambiguous named parameter interface"
                         .into(),
@@ -1026,7 +1089,7 @@ fn validate_effect_summaries(
                 })
                 .collect::<Vec<_>>();
             graph
-                .validate_references(Some((parameter_count, &generic_params)))
+                .validate_references(Some((parameter_types.len(), &generic_params)))
                 .map_err(|error| error.to_string())?;
         }
     }

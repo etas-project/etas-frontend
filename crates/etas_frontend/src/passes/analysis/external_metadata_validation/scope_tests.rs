@@ -179,8 +179,8 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             }),
         }],
     };
-    validate_external_metadata(&input).unwrap();
+    validate_external_metadata(&input, &etas_std::standard_registry()).unwrap();
     input.flows[0].generic_params.swap(0, 1);
-    let error = validate_external_metadata(&input).unwrap_err();
+    let error = validate_external_metadata(&input, &etas_std::standard_registry()).unwrap_err();
     assert!(error.contains("wrong kind"), "{error}");
 }

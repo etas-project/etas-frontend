@@ -11,6 +11,15 @@ use crate::{
     ParameterHandlerScopeRef, RequestInstantiationSummary, ReturnObservation,
 };
 
+struct DescriptorBindings<'a> {
+    types: &'a std::collections::BTreeMap<
+        etas_code::descriptor::GenericParameterRef,
+        etas_types::TypeId,
+    >,
+    names: &'a std::collections::BTreeMap<String, etas_types::TypeId>,
+    effects: &'a std::collections::BTreeMap<etas_code::descriptor::GenericParameterRef, String>,
+}
+
 impl EffectSemantics<'_> {
     /// Replays only outcome branches whose portable control flow and checked
     /// callback interface can be proved exactly. Other shapes remain unknown.
@@ -20,11 +29,90 @@ impl EffectSemantics<'_> {
         summary: &EffectSummary,
         signature: &etas_types::FlowType,
         span: Span,
+        type_bindings: &[(String, etas_types::TypeId)],
+        generic_params: &[(String, etas_types::CallableGenericParamKind)],
     ) -> Result<Option<CallableExitSummary>, super::specialize::EffectSpecializationError> {
         let Ok(graph) = DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default())
         else {
             return Ok(None);
         };
+        let Some(etas_code::descriptor::TypeInfo::Function(portable)) =
+            graph.type_info(contract.header.signature)
+        else {
+            return Err(
+                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+            );
+        };
+        if portable.parameters.len() != signature.input.len() {
+            return Err(
+                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+            );
+        }
+        let mut names = std::collections::BTreeMap::new();
+        for (name, ty) in type_bindings {
+            if names.insert(name.clone(), *ty).is_some() {
+                return Err(
+                    super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+                );
+            }
+        }
+        if portable.generics.len() != generic_params.len() {
+            return Err(
+                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+            );
+        }
+        let mut binders = std::collections::BTreeMap::new();
+        let mut effect_binders = std::collections::BTreeMap::new();
+        for (id, (name, kind)) in portable.generics.iter().zip(generic_params) {
+            let Some(binder) = graph.data().binders.get(id.0 as usize) else {
+                return Err(
+                    super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+                );
+            };
+            match (binder.kind, kind) {
+                (
+                    etas_code::descriptor::GenericParameterKind::Type,
+                    etas_types::CallableGenericParamKind::Type,
+                ) if binder.name == *name => {
+                    if let Some(ty) = names.get(name) {
+                        binders.insert(*id, *ty);
+                    }
+                }
+                (
+                    etas_code::descriptor::GenericParameterKind::EffectRow,
+                    etas_types::CallableGenericParamKind::Effect,
+                ) if binder.name == *name => {
+                    effect_binders.insert(*id, name.clone());
+                }
+                _ => return Err(
+                    super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+                ),
+            }
+        }
+        for (parameter, actual) in portable.parameters.iter().zip(&signature.input) {
+            if matches!(
+                graph.type_info(parameter.ty),
+                Some(etas_code::descriptor::TypeInfo::Builtin {
+                    constructor: etas_code::descriptor::BuiltinTypeInfo::CallableDefinition,
+                    ..
+                })
+            ) && !etas_types::checked_descriptor_type_matches_with_bindings(
+                self.types,
+                &graph,
+                *actual,
+                parameter.ty,
+                &binders,
+                &names,
+                &effect_binders,
+            )
+            .map_err(|_| {
+                super::specialize::EffectSpecializationError::InvalidCallableParameterInterface
+            })? {
+                return Err(
+                    super::specialize::EffectSpecializationError::InvalidCallableParameterInterface,
+                );
+            }
+        }
         let (Some(trace), Some(outcomes)) = (
             contract.header.analysis.trace,
             contract.header.analysis.outcomes,
@@ -41,10 +129,18 @@ impl EffectSemantics<'_> {
             }
         };
         match coverage {
-            Ok(true) => {
-                Ok(self
-                    .external_callback_outcomes_checked(contract, summary, signature, span, &graph))
-            }
+            Ok(true) => Ok(self.external_callback_outcomes_checked(
+                contract,
+                summary,
+                signature,
+                span,
+                &graph,
+                DescriptorBindings {
+                    types: &binders,
+                    names: &names,
+                    effects: &effect_binders,
+                },
+            )),
             Err(etas_code::contract::TraceProofError::Interrupted(error)) => Err(
                 super::specialize::EffectSpecializationError::Interrupted(error),
             ),
@@ -59,7 +155,13 @@ impl EffectSemantics<'_> {
         signature: &etas_types::FlowType,
         span: Span,
         graph: &DescriptorGraph,
+        bindings: DescriptorBindings<'_>,
     ) -> Option<CallableExitSummary> {
+        let DescriptorBindings {
+            types: binders,
+            names,
+            effects: effect_binders,
+        } = bindings;
         let RequestInstantiationSummary::Available {
             actions,
             parameters,
@@ -161,11 +263,14 @@ impl EffectSemantics<'_> {
             return None;
         };
         let native_output = self.types.store.get(signature.output)?;
-        if !etas_types::checked_descriptor_type_matches(
+        if !etas_types::checked_descriptor_type_matches_with_bindings(
             self.types,
             graph,
             signature.output,
             portable_signature.output,
+            binders,
+            names,
+            effect_binders,
         )
         .ok()?
         {
@@ -188,27 +293,61 @@ impl EffectSemantics<'_> {
             {
                 return None;
             }
-            let Type::Function(callback) = self
-                .types
-                .store
-                .get(*signature.input.get(root_call.position as usize)?)?
-            else {
-                return None;
-            };
+            let native_parameter = *signature.input.get(root_call.position as usize)?;
             let portable_parameter = portable_signature
                 .parameters
                 .get(root_call.position as usize)?;
-            let etas_code::descriptor::TypeInfo::Function(portable_callback) =
-                graph.type_info(portable_parameter.ty)?
-            else {
+            if !etas_types::checked_descriptor_type_matches_with_bindings(
+                self.types,
+                graph,
+                native_parameter,
+                portable_parameter.ty,
+                binders,
+                names,
+                effect_binders,
+            )
+            .ok()?
+            {
+                return None;
+            }
+            let native_callback = match self.types.store.get(native_parameter)? {
+                Type::Function(_) => native_parameter,
+                Type::Applied { constructor, args }
+                    if self.types.facts.known_std_types.code.callable_definition
+                        == Some(etas_types::TypeId(constructor.0))
+                        && args.len() == 1 =>
+                {
+                    args[0]
+                }
+                _ => return None,
+            };
+            let Type::Function(callback) = self.types.store.get(native_callback)? else {
                 return None;
             };
+            let portable_callback = match graph.type_info(portable_parameter.ty)? {
+                etas_code::descriptor::TypeInfo::Function(callback) => callback,
+                etas_code::descriptor::TypeInfo::Builtin {
+                    constructor: etas_code::descriptor::BuiltinTypeInfo::CallableDefinition,
+                    arguments,
+                } if arguments.len() == 1 => {
+                    let etas_code::descriptor::TypeInfo::Function(callback) =
+                        graph.type_info(arguments[0])?
+                    else {
+                        return None;
+                    };
+                    callback
+                }
+                _ => return None,
+            };
             if portable_callback.parameters.len() != callback.input.len()
-                || !etas_types::checked_descriptor_type_matches(
+                || !etas_types::checked_descriptor_type_matches_with_bindings(
                     self.types,
                     graph,
                     callback.output,
                     portable_callback.output,
+                    binders,
+                    names,
+                    effect_binders,
                 )
                 .ok()?
             {
@@ -223,11 +362,14 @@ impl EffectSemantics<'_> {
                 .zip(&callback.input)
                 .zip(&portable_callback.parameters)
                 .map(|((argument, ty), portable)| {
-                    if !etas_types::checked_descriptor_type_matches(
+                    if !etas_types::checked_descriptor_type_matches_with_bindings(
                         self.types,
                         graph,
                         *ty,
                         portable.ty,
+                        binders,
+                        names,
+                        effect_binders,
                     )
                     .ok()?
                     {
@@ -704,6 +846,158 @@ mod tests {
         assert!(
             !etas_types::checked_descriptor_type_matches(&types, &graph, list, TypeInfoRef(3))
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn callable_definition_descriptor_requires_the_checked_std_constructor() {
+        use etas_code::descriptor::{ParameterInfo, SignatureInfo};
+        let mut store = etas_types::TypeStore::new();
+        let scalar = store.intern(Type::Primitive(PrimitiveType::I32));
+        let function = store.intern(Type::Function(etas_types::FlowType {
+            input: vec![scalar],
+            output: scalar,
+            effects: None,
+        }));
+        let nominal = |name: &str| {
+            Type::Nominal(etas_types::NominalTypeRef {
+                name: name.into(),
+                params: vec!["F".into()],
+                representation: None,
+                read_only_erased_view: false,
+            })
+        };
+        let canonical = store.intern(nominal("std.compiler.CallableDef"));
+        let fake = store.intern(nominal("app.Fake"));
+        let applied = |constructor: etas_types::TypeId| Type::Applied {
+            constructor: etas_types::TypeConstructorId(constructor.0),
+            args: vec![function],
+        };
+        let valid = store.intern(applied(canonical));
+        let forged = store.intern(applied(fake));
+        let graph = DescriptorGraph::new(
+            DescriptorGraphInput {
+                types: vec![
+                    TypeInfo::Primitive(PrimitiveInfo::I32),
+                    TypeInfo::Function(SignatureInfo {
+                        generics: vec![],
+                        parameters: vec![ParameterInfo {
+                            name: None,
+                            ty: TypeInfoRef(0),
+                        }],
+                        output: TypeInfoRef(0),
+                        declared_output: None,
+                        effects: None,
+                    }),
+                    TypeInfo::Builtin {
+                        constructor: BuiltinTypeInfo::CallableDefinition,
+                        arguments: vec![TypeInfoRef(1)],
+                    },
+                ],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        let mut facts = etas_types::TypeFacts::default();
+        facts.known_std_types.code.callable_definition = Some(canonical);
+        let types = etas_types::TypeOutput {
+            store: store.into(),
+            facts: facts.into(),
+            ..Default::default()
+        };
+        assert!(
+            etas_types::checked_descriptor_type_matches(&types, &graph, valid, TypeInfoRef(2))
+                .unwrap()
+        );
+        assert!(
+            !etas_types::checked_descriptor_type_matches(&types, &graph, forged, TypeInfoRef(2))
+                .unwrap()
+        );
+        let types_without_fact = etas_types::TypeOutput {
+            store: types.store.clone(),
+            ..Default::default()
+        };
+        assert!(
+            !etas_types::checked_descriptor_type_matches(
+                &types_without_fact,
+                &graph,
+                valid,
+                TypeInfoRef(2)
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn checked_descriptor_binding_does_not_capture_same_named_caller_parameter() {
+        use etas_code::descriptor::{
+            GenericOwner, GenericParameterInfo, GenericParameterKind, GenericParameterRef,
+        };
+        let mut store = etas_types::TypeStore::new();
+        let scalar = store.intern(Type::Primitive(PrimitiveType::I32));
+        let external = store.intern(Type::Named(etas_types::NamedTypeRef {
+            name: "T".into(),
+            source_parameter: None,
+        }));
+        let caller = store.intern(Type::Named(etas_types::NamedTypeRef {
+            name: "T".into(),
+            source_parameter: Some(etas_hir::SymbolId(41)),
+        }));
+        let identity = etas_code::DefinitionKey::new(
+            etas_code::PackageKey::from_canonical_fingerprint(
+                etas_code::CodeFingerprint::from_bytes([7; 32]),
+            ),
+            vec!["pkg".into()],
+            vec!["generic".into()],
+            etas_code::DefinitionKind::Flow,
+        )
+        .unwrap();
+        let graph = DescriptorGraph::new(
+            DescriptorGraphInput {
+                types: vec![TypeInfo::Parameter(GenericParameterRef(0))],
+                binders: vec![GenericParameterInfo {
+                    owner: GenericOwner::Declaration(identity),
+                    position: 0,
+                    name: "T".into(),
+                    kind: GenericParameterKind::Type,
+                    bounds: vec![],
+                }],
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap();
+        let types = etas_types::TypeOutput {
+            store: store.into(),
+            ..Default::default()
+        };
+        let binders = std::collections::BTreeMap::from([(GenericParameterRef(0), scalar)]);
+        let names = std::collections::BTreeMap::from([("T".to_owned(), scalar)]);
+        let effect_binders = std::collections::BTreeMap::new();
+        assert!(
+            etas_types::checked_descriptor_type_matches_with_bindings(
+                &types,
+                &graph,
+                external,
+                TypeInfoRef(0),
+                &binders,
+                &names,
+                &effect_binders
+            )
+            .unwrap()
+        );
+        assert!(
+            !etas_types::checked_descriptor_type_matches_with_bindings(
+                &types,
+                &graph,
+                caller,
+                TypeInfoRef(0),
+                &binders,
+                &names,
+                &effect_binders
+            )
+            .unwrap()
         );
     }
 }

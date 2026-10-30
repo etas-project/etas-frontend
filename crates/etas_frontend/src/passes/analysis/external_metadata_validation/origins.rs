@@ -18,6 +18,7 @@ pub(super) fn validate(
     packages: &BTreeMap<ExternalPackageId, &crate::ProjectExternalPackageInput>,
     modules: &BTreeMap<Vec<String>, ExternalPackageId>,
     exports: &BTreeMap<ExternalPackageId, BTreeSet<Vec<String>>>,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), Error> {
     validate_resource_bounds(environment)?;
     let metadata = environment
@@ -69,6 +70,7 @@ pub(super) fn validate(
             .get(&input.package)
             .ok_or_else(|| fail("definition origins have no public metadata record".to_owned()))?;
         validate_agent_entries(input, metadata)?;
+        validate_callable_definition_parameters(input, metadata, std_registry)?;
         let kinds = declaration_kinds(metadata);
         let mut re_exports = BTreeMap::new();
         for export in &metadata.re_exports {
@@ -136,6 +138,98 @@ pub(super) fn validate(
         }
     }
     validate_chains(&bindings)
+}
+
+fn validate_callable_definition_parameters(
+    input: &crate::ProjectExternalDefinitionOriginsInput,
+    metadata: &ProjectExternalPublicMetadataInput,
+    std_registry: &etas_std::StdRegistry,
+) -> Result<(), Error> {
+    use etas_code::descriptor::{BuiltinTypeInfo, TypeInfo};
+    let Some(set) = input.descriptors.as_ref() else {
+        return Ok(());
+    };
+    let Some(headers) = set.headers.as_ref() else {
+        return Ok(());
+    };
+    let headers = headers
+        .callables
+        .iter()
+        .filter_map(|header| {
+            header
+                .id
+                .as_declaration()
+                .map(|identity| (identity, header))
+        })
+        .collect::<BTreeMap<_, _>>();
+    for binding in &input.origins.declarations {
+        let Some(header) = headers.get(&binding.definition) else {
+            continue;
+        };
+        let path = binding.path();
+        let parameters = metadata
+            .flows
+            .iter()
+            .find(|signature| signature.path == path)
+            .map(|signature| signature.params.as_slice())
+            .or_else(|| {
+                metadata
+                    .tools
+                    .iter()
+                    .find(|signature| signature.path == path)
+                    .map(|signature| signature.input.as_slice())
+            });
+        let Some(parameters) = parameters else {
+            continue;
+        };
+        let Some(TypeInfo::Function(signature)) = set.graph.types.get(header.signature.0 as usize)
+        else {
+            return Err(Error::package(
+                input.package,
+                "callable descriptor has no checked signature",
+            ));
+        };
+        if signature.parameters.len() != parameters.len() {
+            return Err(Error::package(
+                input.package,
+                "callable descriptor and public signature disagree on parameter count",
+            ));
+        }
+        for (portable, public) in signature.parameters.iter().zip(parameters) {
+            let mut ty = portable.ty;
+            let mut visited = BTreeSet::new();
+            let portable_role = loop {
+                if !visited.insert(ty.0) {
+                    return Err(Error::package(
+                        input.package,
+                        "callable descriptor parameter has a cyclic alias",
+                    ));
+                }
+                match set.graph.types.get(ty.0 as usize) {
+                    Some(TypeInfo::Alias { target, .. }) => ty = *target,
+                    Some(TypeInfo::Builtin {
+                        constructor: BuiltinTypeInfo::CallableDefinition,
+                        ..
+                    }) => break true,
+                    Some(_) => break false,
+                    None => {
+                        return Err(Error::package(
+                            input.package,
+                            "callable descriptor parameter type is missing",
+                        ));
+                    }
+                }
+            };
+            let public_role = super::callable_definition_argument(public, std_registry).is_some();
+            if portable_role != public_role {
+                return Err(Error::package(
+                    input.package,
+                    "callable descriptor and public signature disagree on callable-definition parameter identity",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_agent_entries(

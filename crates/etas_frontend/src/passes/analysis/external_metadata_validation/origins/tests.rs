@@ -141,6 +141,7 @@ fn graph_budget_is_shared_and_checked_before_building_identity_indexes() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &etas_std::standard_registry(),
     )
     .unwrap_err();
     assert_eq!(error.package, Some(ExternalPackageId(8)));

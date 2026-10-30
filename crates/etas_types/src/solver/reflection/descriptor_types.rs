@@ -12,6 +12,9 @@ struct TypeMatchInput<'a> {
     store: &'a crate::TypeStore,
     facts: &'a crate::TypeFacts,
     solved: Option<&'a crate::SolverReport>,
+    native_binders: Option<&'a BTreeMap<GenericParameterRef, TypeId>>,
+    native_names: Option<&'a BTreeMap<String, TypeId>>,
+    native_effect_binders: Option<&'a BTreeMap<GenericParameterRef, String>>,
 }
 
 /// Compare identities and structural types, never nominal representations.
@@ -26,6 +29,9 @@ pub(super) fn matches(
             store: input.store,
             facts: input.facts,
             solved: Some(input.solved),
+            native_binders: None,
+            native_names: None,
+            native_effect_binders: None,
         },
         graph,
         actual,
@@ -46,12 +52,68 @@ pub fn checked_descriptor_type_matches(
             store: &types.store,
             facts: &types.facts,
             solved: None,
+            native_binders: None,
+            native_names: None,
+            native_effect_binders: None,
         },
         graph.data(),
         actual,
         expected,
         &BTreeMap::new(),
     )
+}
+
+/// Compare a checked type using call-site bindings for the owning descriptor's binders.
+pub fn checked_descriptor_type_matches_with_bindings(
+    types: &crate::TypeOutput,
+    graph: &etas_code::descriptor::DescriptorGraph,
+    actual: TypeId,
+    expected: TypeInfoRef,
+    binders: &BTreeMap<GenericParameterRef, TypeId>,
+    names: &BTreeMap<String, TypeId>,
+    effect_binders: &BTreeMap<GenericParameterRef, String>,
+) -> Result<bool, &'static str> {
+    matches_scoped(
+        &TypeMatchInput {
+            store: &types.store,
+            facts: &types.facts,
+            solved: None,
+            native_binders: Some(binders),
+            native_names: Some(names),
+            native_effect_binders: Some(effect_binders),
+        },
+        graph.data(),
+        actual,
+        expected,
+        &BTreeMap::new(),
+    )
+}
+
+fn resolve_native_binding(
+    input: &TypeMatchInput<'_>,
+    mut ty: TypeId,
+) -> Result<TypeId, &'static str> {
+    let mut visited = BTreeSet::new();
+    while let Some(Type::Named(named)) = input.store.get(ty) {
+        if named.source_parameter.is_some() {
+            break;
+        }
+        let Some(bound) = input
+            .native_names
+            .and_then(|names| names.get(&named.name))
+            .copied()
+        else {
+            break;
+        };
+        if bound == ty {
+            break;
+        }
+        if !visited.insert(ty) {
+            return Err("cyclic checked generic type binding");
+        }
+        ty = bound;
+    }
+    Ok(ty)
 }
 
 fn matches_scoped(
@@ -64,15 +126,25 @@ fn matches_scoped(
     let mut environments = vec![environment.clone()];
     let mut pending = vec![(actual, expected, 0usize)];
     let mut seen = BTreeSet::new();
-    while let Some((actual, mut expected, scope)) = pending.pop() {
+    'work: while let Some((actual, mut expected, scope)) = pending.pop() {
         let environment = &environments[scope];
         let actual = input.solved.map_or(actual, |solved| {
             resolve_known_substitutions(input.store, solved, actual)
         });
+        let actual = resolve_native_binding(input, actual)?;
         let mut parameters = BTreeSet::new();
         while let Some(TypeInfo::Parameter(parameter)) = graph.types.get(expected.0 as usize) {
             let Some(bound) = environment.get(parameter) else {
-                return Ok(false);
+                let Some(native) = input
+                    .native_binders
+                    .and_then(|binders| binders.get(parameter))
+                else {
+                    return Ok(false);
+                };
+                if actual != resolve_native_binding(input, *native)? {
+                    return Ok(false);
+                }
+                continue 'work;
             };
             if !parameters.insert(*parameter) {
                 return Err("cyclic descriptor type parameter binding");
@@ -146,6 +218,21 @@ fn matches_scoped(
                     };
                     children.push((actual.ty, field.ty));
                 }
+            }
+            (
+                Type::Applied { constructor, args },
+                TypeInfo::Builtin {
+                    constructor: B::CallableDefinition,
+                    arguments,
+                },
+            ) => {
+                if input.facts.known_std_types.code.callable_definition
+                    != Some(TypeId(constructor.0))
+                    || args.len() != arguments.len()
+                {
+                    return Ok(false);
+                }
+                children.extend(args.iter().copied().zip(arguments.iter().copied()));
             }
             (
                 Type::Applied {
@@ -261,7 +348,17 @@ fn rows_match(
                 .rows
                 .get(expected.0 as usize)
                 .ok_or("selected spec has a missing effect row descriptor")?;
-            if actual.tail.is_some() || expected.tail.is_some() {
+            let tails_match = match (&actual.tail, expected.tail) {
+                (None, None) => true,
+                (Some(actual), Some(expected)) => {
+                    input
+                        .native_effect_binders
+                        .and_then(|binders| binders.get(&expected))
+                        == Some(actual)
+                }
+                _ => false,
+            };
+            if !tails_match {
                 return Ok(false);
             }
             let mut covered = vec![false; expected.effects.len()];

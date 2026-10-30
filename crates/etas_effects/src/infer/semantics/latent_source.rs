@@ -95,7 +95,7 @@ impl EffectSemantics<'_> {
             }
             return match definition.def {
                 SymbolDef::Param { owner, .. }
-                    if self.checked_function_parameter(symbol).is_some()
+                    if self.checked_callable_contract_parameter(symbol).is_some()
                         || self.symbolic_callable_parameter(symbol)
                         || self
                             .symbol_value_type(symbol)
@@ -123,7 +123,7 @@ impl EffectSemantics<'_> {
         }
     }
 
-    pub(crate) fn checked_function_parameter(
+    pub(crate) fn checked_callable_contract_parameter(
         &self,
         symbol: etas_hir::SymbolId,
     ) -> Option<&etas_types::FlowType> {
@@ -131,7 +131,11 @@ impl EffectSemantics<'_> {
         if !matches!(definition.def, SymbolDef::Param { .. }) {
             return None;
         }
-        let Type::Function(flow) = self.types.store.get(self.symbol_value_type(symbol)?)? else {
+        let parameter = self.symbol_value_type(symbol)?;
+        let contract = self
+            .descriptor_contract_type(parameter)
+            .unwrap_or(parameter);
+        let Type::Function(flow) = self.types.store.get(contract)? else {
             return None;
         };
         if flow.effects.is_none() && !self.parameter_effects.contains_key(&symbol) {
@@ -193,7 +197,7 @@ impl EffectSemantics<'_> {
                 if !matches!(data.def, SymbolDef::Param { owner: actual, .. } if actual == owner) {
                     return None;
                 }
-                let flow = self.checked_function_parameter(symbol)?;
+                let flow = self.checked_callable_contract_parameter(symbol)?;
                 let Some(row) = &flow.effects else {
                     return self.parameter_effects.get(&symbol).cloned();
                 };

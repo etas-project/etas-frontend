@@ -241,7 +241,7 @@ impl EffectSemantics<'_> {
         }
         let mut parameters = BTreeSet::new();
         for symbol in self.lambda_referenced_symbols(value).map_err(invalid)? {
-            if self.checked_function_parameter(symbol).is_none() {
+            if self.checked_callable_contract_parameter(symbol).is_none() {
                 continue;
             }
             let scope = self
