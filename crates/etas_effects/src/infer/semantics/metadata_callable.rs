@@ -211,7 +211,8 @@ impl EffectSemantics<'_> {
         // Implementation roots describe an already applied method. Unlike a
         // first-class callable value, their own callback inputs are captured
         // by the checked spec invocation and must be substituted here.
-        let applied_implementation = self.implementation_graphs.contains_key(&source.graph)
+        let applied_implementation = mode != CallableSummaryMode::Descriptor
+            && self.implementation_graphs.contains_key(&source.graph)
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)];
         let own_parameters = node
             .parameter_bindings

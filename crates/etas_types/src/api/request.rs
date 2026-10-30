@@ -247,14 +247,14 @@ pub struct ExternalTypeSpecSatisfactionInput {
 
 #[derive(Clone, Debug)]
 pub struct ExternalCallableSpecSatisfactionInput {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ExternalTraceSpecConformanceInput {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub target: ExternalTraceSpecConformanceTargetInput,
 }
 

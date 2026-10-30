@@ -24,6 +24,8 @@ pub struct TraceSpecValidationInput<'a> {
     pub models: &'a TraceSpecModelStore,
     pub analysis: &'a TraceSpecAnalysisOutput,
     pub external_summaries: &'a [crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
+    pub external_implementations:
+        &'a [crate::AnchoredExternalMetadata<crate::ExternalSpecImplementationMetadata>],
     pub reachable_items: Option<&'a BTreeSet<HirItemId>>,
 }
 
@@ -38,6 +40,7 @@ pub fn validate_trace_spec_facts(
         models,
         analysis,
         external_summaries,
+        external_implementations,
         reachable_items,
     } = input;
     validate_item_policies(
@@ -49,7 +52,14 @@ pub fn validate_trace_spec_facts(
         &analysis.summaries,
         reachable_items,
     )?;
-    validate_external_item_policies(hir, types, registry, effects, models, external_summaries)
+    validate_external_item_policies(
+        types,
+        registry,
+        effects,
+        models,
+        external_summaries,
+        external_implementations,
+    )
 }
 
 fn validate_item_policies(
@@ -141,14 +151,30 @@ fn validate_item_policies(
 }
 
 fn validate_external_item_policies(
-    _hir: &etas_hir::HirProgram,
     types: &etas_types::TypeOutput,
     registry: &EffectRegistry,
     effects: &mut EffectOutput,
     models: &TraceSpecModelStore,
     external_summaries: &[crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
+    external_implementations: &[crate::AnchoredExternalMetadata<
+        crate::ExternalSpecImplementationMetadata,
+    >],
 ) -> Result<(), EffectPipelineError> {
     for (item, alternatives) in &models.external_referenced_by_item {
+        let item = match item {
+            etas_package_metadata::CallableContractTarget::Method(identity) => {
+                validate_external_method_contract(
+                    types,
+                    registry,
+                    effects,
+                    identity,
+                    alternatives,
+                    external_implementations,
+                )?;
+                continue;
+            }
+            etas_package_metadata::CallableContractTarget::Item(path) => path,
+        };
         let Some(summary) = external_summaries
             .iter()
             .find(|summary| external_summary_matches_item(summary, item))
@@ -187,6 +213,65 @@ fn validate_external_item_policies(
             effects.diagnostics.push(diagnostic);
         }
     }
+    Ok(())
+}
+
+fn validate_external_method_contract(
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    effects: &mut EffectOutput,
+    identity: &etas_code::MethodId,
+    alternatives: &super::model::TraceSpecConformances,
+    implementations: &[crate::AnchoredExternalMetadata<
+        crate::ExternalSpecImplementationMetadata,
+    >],
+) -> Result<(), EffectPipelineError> {
+    let invalid = |reason: &str| EffectPipelineError::InvalidExternalMetadata {
+        package: format!("{:?}", identity.implementation().package()),
+        reason: reason.into(),
+    };
+    let mut methods = implementations
+        .iter()
+        .filter(|method| &method.identity == identity);
+    let (Some(method), None) = (methods.next(), methods.next()) else {
+        return Err(invalid(
+            "method conformance requires one anchored implementation",
+        ));
+    };
+    let [etas_package_metadata::CallableValueSource::Value(value)] =
+        method.graph.sources.as_slice()
+    else {
+        return Err(invalid(
+            "method conformance requires an owned callable graph root",
+        ));
+    };
+    let source = crate::MetadataCallableSource {
+        graph: method.graph_key,
+        value: *value,
+        environment: None,
+    };
+    let Some(crate::facts::MetadataCallableAnalysis::Solved { summary, .. }) =
+        effects.facts.metadata_callables.get(&source)
+    else {
+        return Err(invalid(
+            "method conformance requires complete checked callable analysis",
+        ));
+    };
+    let allowed = EffectCoverage {
+        registry,
+        types: &types.store,
+    }
+    .subtract_handled(&summary.requested_actions, &summary.default_actions);
+    let diagnostics = validate_conformances(
+        types,
+        registry,
+        alternatives,
+        &summary.action_trace,
+        summary.requested_actions.effects.iter().cloned().collect(),
+        allowed.effects.iter().cloned().collect(),
+        method.span,
+    );
+    effects.diagnostics.extend(diagnostics);
     Ok(())
 }
 

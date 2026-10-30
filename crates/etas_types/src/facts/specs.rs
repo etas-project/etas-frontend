@@ -158,7 +158,7 @@ pub struct TraceSpecConformanceFact {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalCallableSpecSatisfactionFact {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<TypeId>,
     pub span: etas_core::Span,
@@ -166,7 +166,7 @@ pub struct ExternalCallableSpecSatisfactionFact {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalTraceSpecConformanceFact {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub target: ExternalTraceSpecConformanceTarget,
     pub span: etas_core::Span,
 }

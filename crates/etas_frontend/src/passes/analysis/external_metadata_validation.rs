@@ -822,6 +822,8 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
             }
         }
     }
+    let mut methods =
+        std::collections::BTreeMap::<_, &etas_package_metadata::SpecImplMethod>::new();
     for implementation in &metadata.spec_impls {
         validate_path(&implementation.spec, "spec implementation path")?;
         validate_type(&implementation.self_type, &GenericScope::default(), true)?;
@@ -830,6 +832,11 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
         for method in &implementation.methods {
             if !identities.insert(&method.identity) {
                 return Err("spec implementation contains duplicate method identities".into());
+            }
+            if let Some(previous) = methods.insert(&method.identity, method)
+                && previous.callable != method.callable
+            {
+                return Err("method identity has conflicting published behavior graphs".into());
             }
             method.root().map_err(|error| error.to_string())?;
             etas_package_metadata::validate_callable_value_graph(&method.callable)
@@ -846,12 +853,12 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
         validate_types(&satisfaction.args, &GenericScope::default(), true)?;
     }
     for satisfaction in &metadata.callable_spec_satisfactions {
-        validate_path(&satisfaction.item, "callable satisfaction item path")?;
+        validate_contract_target(&satisfaction.item, &methods)?;
         validate_path(&satisfaction.spec, "callable satisfaction spec path")?;
         validate_types(&satisfaction.args, &GenericScope::default(), true)?;
     }
     for conformance in &metadata.trace_spec_conformances {
-        validate_path(&conformance.item, "trace conformance item path")?;
+        validate_contract_target(&conformance.item, &methods)?;
         if let crate::ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args } =
             &conformance.target
         {
@@ -860,6 +867,29 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
         }
     }
     Ok(())
+}
+
+fn validate_contract_target(
+    target: &etas_package_metadata::CallableContractTarget,
+    methods: &std::collections::BTreeMap<
+        &etas_code::MethodId,
+        &etas_package_metadata::SpecImplMethod,
+    >,
+) -> Result<(), String> {
+    match target {
+        etas_package_metadata::CallableContractTarget::Item(path) => {
+            validate_path(path, "callable conformance path")
+        }
+        etas_package_metadata::CallableContractTarget::Method(identity) => {
+            if !methods.contains_key(identity) {
+                return Err(
+                    "callable conformance method requires one published implementation owner"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn register_declaration(paths: &mut HashSet<Vec<String>>, path: &[String]) -> Result<(), String> {
