@@ -1744,6 +1744,21 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &AgentSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let header_item = match signature
+            .default_entry
+            .as_ref()
+            .and_then(|entry| entry.method)
+        {
+            Some(method) => {
+                self.checked
+                    .types
+                    .agent_methods
+                    .get(&method)
+                    .ok_or_else(|| invalid("agent default entry has no checked method"))?
+                    .body
+            }
+            None => item,
+        };
         let Some(signature) = signature.callable() else {
             return Ok(MetadataCallableSignature {
                 path,
@@ -1763,7 +1778,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         Ok(MetadataCallableSignature {
             path,
             generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
-            param_names: self.callable_param_names(item)?,
+            param_names: self.callable_param_names(header_item)?,
             input: signature
                 .params
                 .iter()

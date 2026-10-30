@@ -295,7 +295,12 @@ fn validate_callable_definition_parameters<'a>(
     let Some(headers) = set.headers.as_ref() else {
         return Ok(());
     };
-    let headers = headers
+    let by_callable = headers
+        .callables
+        .iter()
+        .map(|header| (&header.id, header))
+        .collect::<BTreeMap<_, _>>();
+    let mut callable_headers = headers
         .callables
         .iter()
         .filter_map(|header| {
@@ -305,6 +310,17 @@ fn validate_callable_definition_parameters<'a>(
                 .map(|identity| (identity, header))
         })
         .collect::<BTreeMap<_, _>>();
+    for agent in &headers.agents {
+        if let Some(default) = &agent.default_entry {
+            let header = by_callable.get(default).ok_or_else(|| {
+                Error::package(
+                    input.package,
+                    "agent default entry has no checked callable descriptor",
+                )
+            })?;
+            callable_headers.insert(&agent.identity, *header);
+        }
+    }
     let mut public_signatures = BTreeMap::new();
     for signature in &metadata.flows {
         if public_signatures
@@ -312,6 +328,7 @@ fn validate_callable_definition_parameters<'a>(
                 signature.path.as_slice(),
                 (
                     signature.params.as_slice(),
+                    signature.param_names.as_slice(),
                     signature.generic_params.as_slice(),
                     &signature.output,
                     signature.effects.as_ref(),
@@ -331,6 +348,7 @@ fn validate_callable_definition_parameters<'a>(
                 signature.path.as_slice(),
                 (
                     signature.input.as_slice(),
+                    signature.param_names.as_slice(),
                     signature.generic_params.as_slice(),
                     &signature.output,
                     signature.effects.as_ref(),
@@ -344,12 +362,35 @@ fn validate_callable_definition_parameters<'a>(
             ));
         }
     }
+    for signature in &metadata.agents {
+        let Some(output) = &signature.output else {
+            continue;
+        };
+        if public_signatures
+            .insert(
+                signature.path.as_slice(),
+                (
+                    signature.input.as_slice(),
+                    signature.param_names.as_slice(),
+                    signature.generic_params.as_slice(),
+                    output,
+                    signature.effects.as_ref(),
+                ),
+            )
+            .is_some()
+        {
+            return Err(Error::package(
+                input.package,
+                "duplicate public callable signature",
+            ));
+        }
+    }
     for binding in &input.origins.declarations {
-        let Some(header) = headers.get(&binding.definition) else {
+        let Some(header) = callable_headers.get(&binding.definition) else {
             continue;
         };
         let path = binding.path();
-        let Some(&(parameters, generic_parameters, output, effects)) =
+        let Some(&(parameters, parameter_names, generic_parameters, output, effects)) =
             public_signatures.get(path.as_slice())
         else {
             continue;
@@ -365,6 +406,20 @@ fn validate_callable_definition_parameters<'a>(
             return Err(Error::package(
                 input.package,
                 "callable descriptor and public signature disagree on parameter count",
+            ));
+        }
+        if parameter_names.len() != signature.parameters.len()
+            || signature
+                .parameters
+                .iter()
+                .zip(parameter_names)
+                .any(|(parameter, name)| {
+                    parameter.name.as_deref() != (name != "_").then_some(name.as_str())
+                })
+        {
+            return Err(Error::package(
+                input.package,
+                "callable descriptor and public signature disagree on parameter names",
             ));
         }
         {
