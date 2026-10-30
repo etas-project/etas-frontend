@@ -148,6 +148,36 @@ fn generic_iteration_element_does_not_prove_callable_absence() {
 }
 
 #[test]
+fn while_condition_action_is_not_misrepresented_as_a_single_request() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        "module app; effect Gate { action ask() -> bool; } flow looped() -> unit ![Gate.ask] { while perform Gate.ask() limit Iterations(2) { } return; }",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "looped")];
+    assert!(
+        matches!(summary.action_trace, ActionTraceDomain::Widened { .. }),
+        "{:?}",
+        summary.action_trace
+    );
+    assert!(!summary.action_trace.action_set().is_empty());
+    assert!(
+        summary
+            .exits
+            .as_ref()
+            .unwrap()
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::Loop(_)))
+    );
+}
+
+#[test]
 fn checked_boolean_operations_and_count_queries_preserve_complete_return_summaries() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"

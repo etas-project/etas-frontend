@@ -102,6 +102,57 @@ where
         Ok(result)
     }
 
+    pub(crate) fn while_loop_control(
+        &mut self,
+        cond: HirExprId,
+        body: HirBlockId,
+        initial: S::Domain,
+    ) -> Result<Control<S::Domain>, E> {
+        let mut result = self.expr_control(cond, initial.clone())?;
+        let solved = FixpointEngine::default().try_solve(initial, |state| {
+            let condition = self.expr_control(cond, state.clone())?;
+            let Some(condition_state) = condition.normal_state() else {
+                return Ok(false);
+            };
+            let body_control = self.block_control(body, condition_state.clone())?;
+            let mut back_edge = S::Domain::bottom();
+            if let Some(normal) = body_control.normal_state() {
+                back_edge.join_assign(normal);
+            }
+            if let Some(continued) = body_control.continue_state() {
+                back_edge.join_assign(continued);
+            }
+            Ok(state.join_assign(&back_edge))
+        })?;
+        let fixed = match solved.status {
+            ConvergenceStatus::Converged => solved.value,
+            ConvergenceStatus::IterationLimitReached => {
+                self.semantics.loop_fixpoint_incomplete(body, solved.value)
+            }
+        };
+
+        result.join_assign(&self.expr_control(cond, fixed)?);
+        if let Some(condition_state) = result.normal_state().cloned() {
+            let body_control = self.block_control(body, condition_state)?;
+            if let Some(broken) = body_control.break_state() {
+                result.join_normal(broken.clone());
+            }
+            if let Some(returned) = body_control.return_state() {
+                result.join_return(returned.clone());
+            }
+            if let Some(resumed) = body_control.resume_state() {
+                result.join_resume(resumed.clone());
+            }
+            if let Some(finished) = body_control.finish_state() {
+                result.join_finish(finished.clone());
+            }
+            if let Some(errored) = body_control.error_state() {
+                result.join_error(errored.clone());
+            }
+        }
+        Ok(result)
+    }
+
     pub(crate) fn direct_call_control(
         &mut self,
         call: HirExprId,
