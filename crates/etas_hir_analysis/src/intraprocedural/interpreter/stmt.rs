@@ -16,6 +16,7 @@ where
         (self.checkpoint)()?;
         let state = self.semantics.before_stmt(stmt, state);
         let stmt_data = self.context().program().stmts[stmt].clone();
+        let mut bounded_for_complete = false;
         let next = match stmt_data {
             HirStmt::Let { value, .. } | HirStmt::Var { value, .. } => {
                 self.expr_control(value, state)?
@@ -30,15 +31,26 @@ where
             HirStmt::For {
                 iter, limits, body, ..
             } => {
-                let control = self.expr_control(iter, state)?;
-                let control = self.exprs_control(limits, control)?;
-                control.try_with_normal_processed(|state| self.loop_block_control(body, state))?
+                let control = self.exprs_control(limits, Control::normal(state))?;
+                let control =
+                    control.try_with_normal_processed(|state| self.expr_control(iter, state))?;
+                match self.semantics.bounded_for_iterations(stmt) {
+                    Some(bound) => control.try_with_normal_processed(|state| {
+                        let (result, complete) =
+                            self.bounded_for_control(stmt, body, state, bound)?;
+                        bounded_for_complete = complete;
+                        Ok(result)
+                    })?,
+                    None => control
+                        .try_with_normal_processed(|state| self.loop_block_control(body, state))?,
+                }
             }
             HirStmt::While {
                 cond, limits, body, ..
             } => {
-                let control = self.expr_control(cond, state)?;
-                let control = self.exprs_control(limits, control)?;
+                let control = self.exprs_control(limits, Control::normal(state))?;
+                let control =
+                    control.try_with_normal_processed(|state| self.expr_control(cond, state))?;
                 control.try_with_normal_processed(|state| self.loop_block_control(body, state))?
             }
             HirStmt::Retry { limits, body, .. } => {
@@ -70,6 +82,12 @@ where
             HirStmt::Error { .. } => Control::error(state),
         };
         (self.checkpoint)()?;
-        Ok(self.map_control_states(next, |semantics, state| semantics.after_stmt(stmt, state)))
+        Ok(self.map_control_states(next, |semantics, state| {
+            if bounded_for_complete {
+                semantics.after_bounded_for(stmt, state)
+            } else {
+                semantics.after_stmt(stmt, state)
+            }
+        }))
     }
 }

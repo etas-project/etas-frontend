@@ -272,6 +272,18 @@ where
         <S as HirAnalysisSemantics>::loop_fixpoint_incomplete(self.semantics, body, state)
     }
 
+    fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
+        <S as HirAnalysisSemantics>::bounded_for_iterations(self.semantics, stmt)
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::after_bounded_for(self.semantics, stmt, state)
+    }
+
+    fn bounded_for_break(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::bounded_for_break(self.semantics, stmt, state)
+    }
+
     fn unhandled_semantics(
         &mut self,
         reason: UnhandledReason,

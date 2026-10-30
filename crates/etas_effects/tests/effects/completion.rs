@@ -31,7 +31,7 @@ flow limits() -> unit {
 }
 
 #[test]
-fn loop_limit_completion_does_not_hide_unproved_loop_outcomes() {
+fn checked_bounded_for_preserves_complete_pure_loop_outcomes() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"
 module app;
@@ -52,6 +52,68 @@ flow looped(values: Array<bool>) -> unit {
         .exits
         .as_ref()
         .unwrap();
+    assert!(exits.gaps.is_empty(), "{exits:?}");
+    assert!(!exits.exits.is_empty(), "{exits:?}");
+    assert!(
+        !exits
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::ExternalCall(_))),
+        "{exits:?}"
+    );
+}
+
+#[test]
+fn checked_bounded_for_does_not_hide_unproved_body_operations() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module app;
+flow looped(values: Array<i32>) -> unit {
+    for value in values limit Iterations(3) { let next = value + 1; }
+    return;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let exits = output.facts.item_effects[&flow_item(&hir, "looped")]
+        .exits
+        .as_ref()
+        .unwrap();
+    assert!(
+        exits
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::Operation(_))),
+        "{exits:?}"
+    );
+}
+
+#[test]
+fn checked_bounded_for_keeps_break_outcomes_unproven() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module app;
+flow looped(values: Array<bool>) -> unit {
+    for value in values limit Iterations(3) { if value { break; } }
+    return;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let exits = output.facts.item_effects[&flow_item(&hir, "looped")]
+        .exits
+        .as_ref()
+        .unwrap();
     assert!(
         exits
             .gaps
@@ -59,11 +121,28 @@ flow looped(values: Array<bool>) -> unit {
             .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::Loop(_))),
         "{exits:?}"
     );
+}
+
+#[test]
+fn generic_iteration_element_does_not_prove_callable_absence() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        "module app; flow looped<T>(values: Array<T>) -> unit { for value in values limit Iterations(3) { let copy = value; } return; }",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    let exits = output.facts.item_effects[&flow_item(&hir, "looped")]
+        .exits
+        .as_ref()
+        .unwrap();
     assert!(
-        !exits
+        exits
             .gaps
             .iter()
-            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::ExternalCall(_))),
+            .any(|gap| matches!(gap, etas_effects::OutcomeAnalysisGap::Loop(_))),
         "{exits:?}"
     );
 }

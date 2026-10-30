@@ -10,6 +10,55 @@ where
     S: HirAnalysisSemantics,
     F: Fn() -> Result<(), E>,
 {
+    pub(crate) fn bounded_for_control(
+        &mut self,
+        stmt: etas_hir::HirStmtId,
+        body: HirBlockId,
+        initial: S::Domain,
+        max_iterations: usize,
+    ) -> Result<(Control<S::Domain>, bool), E> {
+        let mut result = Control::normal(initial.clone());
+        let mut active = Some(initial);
+        for _ in 0..max_iterations {
+            let Some(state) = active.take() else { break };
+            (self.checkpoint)()?;
+            if self.loop_iterations_remaining == 0 {
+                let remaining = self.loop_block_control(body, state)?;
+                result.join_assign(&remaining);
+                return Ok((result, false));
+            }
+            self.loop_iterations_remaining -= 1;
+            let iteration = self.block_control(body, state)?;
+            if let Some(state) = iteration.break_state() {
+                result.join_normal(self.semantics.bounded_for_break(stmt, state.clone()));
+            }
+            if let Some(state) = iteration.return_state() {
+                result.join_return(state.clone());
+            }
+            if let Some(state) = iteration.resume_state() {
+                result.join_resume(state.clone());
+            }
+            if let Some(state) = iteration.finish_state() {
+                result.join_finish(state.clone());
+            }
+            if let Some(state) = iteration.error_state() {
+                result.join_error(state.clone());
+            }
+            let mut next = Control::bottom();
+            if let Some(state) = iteration.normal_state() {
+                next.join_normal(state.clone());
+            }
+            if let Some(state) = iteration.continue_state() {
+                next.join_normal(state.clone());
+            }
+            active = next.take_normal_state();
+            if let Some(state) = &active {
+                result.join_normal(state.clone());
+            }
+        }
+        Ok((result, true))
+    }
+
     pub(crate) fn loop_block_control(
         &mut self,
         body: HirBlockId,

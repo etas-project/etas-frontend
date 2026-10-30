@@ -314,6 +314,19 @@ pub enum ParameterCallTarget {
 impl ActionTraceDomain {
     const FIXPOINT_TRACE_NODE_LIMIT: usize = 32;
 
+    pub(crate) fn has_unordered_approximation(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::UnknownOrder(_) | Self::Widened { .. } => return true,
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty | Self::Event(_) | Self::ParameterCall { .. } => {}
+            }
+        }
+        false
+    }
+
     pub fn has_parameter_calls(&self) -> bool {
         let mut pending = vec![self];
         while let Some(trace) = pending.pop() {

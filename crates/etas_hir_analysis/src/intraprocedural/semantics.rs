@@ -76,6 +76,20 @@ pub trait HirAnalysisSemantics {
         self.incomplete_facts(state)
     }
 
+    /// Returns a checked upper bound for a `for` statement when this analysis
+    /// can model every iteration and its exits explicitly.
+    fn bounded_for_iterations(&self, _stmt: HirStmtId) -> Option<usize> {
+        None
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        self.after_stmt(stmt, state)
+    }
+
+    fn bounded_for_break(&mut self, _stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        state
+    }
+
     fn unhandled_semantics(
         &mut self,
         _reason: UnhandledReason,

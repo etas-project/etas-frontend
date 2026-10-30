@@ -29,6 +29,63 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         }
     }
 
+    fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
+        let HirStmt::For { iter, limits, .. } = self.hir.stmts.get(stmt)? else {
+            return None;
+        };
+        let [limit] = limits.as_slice() else {
+            return None;
+        };
+        let ty = self.types.facts.expr_types.get(iter)?;
+        if !matches!(
+            self.types.store.get(*ty),
+            Some(Type::Array(_) | Type::List(_) | Type::Slice(_) | Type::Set(_) | Type::Map { .. })
+        ) || !self.proven_non_callable_iteration_type(*ty)
+            || self.checked_intrinsic_completion(*limit)
+                != Some(etas_std::IntrinsicCompletionSemantics::Returns)
+        {
+            return None;
+        }
+        let requirement = self.limit_requirement_from_expr(*limit)?;
+        let (LimitKind::Iterations, Some(LimitValue::Count(count))) =
+            (requirement.kind, requirement.value)
+        else {
+            return None;
+        };
+        let count = usize::try_from(u32::try_from(count).ok()?.max(1)).ok()?;
+        (count <= etas_utils::IterationLimit::default().max_iterations()).then_some(count)
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, mut state: Self::Domain) -> Self::Domain {
+        if !state.exits.exits.is_empty()
+            || state.summary.action_trace.has_unordered_approximation()
+            || state
+                .exits
+                .exits
+                .iter()
+                .any(|exit| exit.trace.has_unordered_approximation())
+            || state
+                .exits
+                .parameter_exits
+                .iter()
+                .any(|exit| exit.prefix.has_unordered_approximation())
+        {
+            state
+                .exits
+                .gaps
+                .insert(crate::OutcomeAnalysisGap::Loop(stmt));
+        }
+        state
+    }
+
+    fn bounded_for_break(&mut self, stmt: HirStmtId, mut state: Self::Domain) -> Self::Domain {
+        state
+            .exits
+            .gaps
+            .insert(crate::OutcomeAnalysisGap::Loop(stmt));
+        state
+    }
+
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         if let Some(unit) = state.unit {
             self.call_completion_exits.remove(&(unit, expr));
@@ -566,6 +623,77 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             ));
         };
         AnalysisStep::handled(self.materialize_handler_value(expr, span, handlers, state))
+    }
+}
+
+impl EffectSemantics<'_> {
+    fn proven_non_callable_iteration_type(&self, root: TypeId) -> bool {
+        let mut pending = vec![root];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !visited.insert(ty) {
+                continue;
+            }
+            if self.descriptor_contract_type(ty).is_some() {
+                return false;
+            }
+            match self.types.store.get(ty) {
+                Some(Type::Primitive(_) | Type::IntegerLiteral { .. }) => {}
+                Some(
+                    Type::Array(inner)
+                    | Type::List(inner)
+                    | Type::Set(inner)
+                    | Type::Slice(inner)
+                    | Type::Option(inner)
+                    | Type::Schema(inner)
+                    | Type::Message(inner)
+                    | Type::MemorySelection(inner)
+                    | Type::MemoryRegion(inner)
+                    | Type::Refined { base: inner, .. }
+                    | Type::Trust { inner, .. }
+                    | Type::Range { index: inner },
+                ) => pending.push(*inner),
+                Some(
+                    Type::Map { key, value }
+                    | Type::Store { key, value }
+                    | Type::Result {
+                        ok: key,
+                        err: value,
+                    },
+                ) => pending.extend([*key, *value]),
+                Some(Type::Record(record)) => {
+                    pending.extend(record.fields.iter().map(|field| field.ty))
+                }
+                Some(Type::Tuple(fields)) => pending.extend(fields),
+                Some(Type::Nominal(nominal)) => match nominal.representation {
+                    Some(representation) => pending.push(representation),
+                    None => return false,
+                },
+                Some(Type::Enum(_)) => match self.types.facts.enum_layouts.get(&ty) {
+                    Some(layout) => pending.extend(
+                        layout
+                            .variants
+                            .iter()
+                            .flat_map(|variant| variant.fields.iter())
+                            .copied(),
+                    ),
+                    None => return false,
+                },
+                Some(
+                    Type::Var(_)
+                    | Type::Function(_)
+                    | Type::Handler(_)
+                    | Type::Named(_)
+                    | Type::Applied { .. }
+                    | Type::Prompt
+                    | Type::PromptPart
+                    | Type::MemoryPlace(_)
+                    | Type::ResourceHandle(_),
+                )
+                | None => return false,
+            }
+        }
+        true
     }
 }
 
