@@ -20,9 +20,46 @@ impl EffectSemantics<'_> {
         summary: &EffectSummary,
         signature: &etas_types::FlowType,
         span: Span,
+    ) -> Result<Option<CallableExitSummary>, super::specialize::EffectSpecializationError> {
+        let Ok(graph) = DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default())
+        else {
+            return Ok(None);
+        };
+        let (Some(trace), Some(outcomes)) = (
+            contract.header.analysis.trace,
+            contract.header.analysis.outcomes,
+        ) else {
+            return Ok(None);
+        };
+        let limits = etas_code::contract::TraceProofLimits::default();
+        let coverage = match self.query_control {
+            Some(control) => etas_code::contract::check_parameter_exit_coverage_controlled(
+                &graph, trace, outcomes, limits, control,
+            ),
+            None => {
+                etas_code::contract::check_parameter_exit_coverage(&graph, trace, outcomes, limits)
+            }
+        };
+        match coverage {
+            Ok(true) => {
+                Ok(self
+                    .external_callback_outcomes_checked(contract, summary, signature, span, &graph))
+            }
+            Err(etas_code::contract::TraceProofError::Interrupted(error)) => Err(
+                super::specialize::EffectSpecializationError::Interrupted(error),
+            ),
+            _ => Ok(None),
+        }
+    }
+
+    fn external_callback_outcomes_checked(
+        &self,
+        contract: &ExternalCallableContract,
+        summary: &EffectSummary,
+        signature: &etas_types::FlowType,
+        span: Span,
+        graph: &DescriptorGraph,
     ) -> Option<CallableExitSummary> {
-        let graph =
-            DescriptorGraph::new(contract.graph.as_ref().clone(), Default::default()).ok()?;
         let RequestInstantiationSummary::Available {
             actions,
             parameters,
@@ -60,7 +97,7 @@ impl EffectSemantics<'_> {
             let mut effects = crate::EffectSet::new();
             for effect in &row.effects {
                 effects.insert(self.checked_descriptor_action(
-                    &graph,
+                    graph,
                     contract,
                     effect,
                     &candidates,
@@ -93,7 +130,7 @@ impl EffectSemantics<'_> {
         let trace_root = contract.header.analysis.trace?;
         let outcomes_root = contract.header.analysis.outcomes?;
         let mut budget = etas_code::descriptor::DescriptorLimits::default().max_edges;
-        let paths = descriptor_call_paths(&graph, trace_root, &mut budget)?;
+        let paths = descriptor_call_paths(graph, trace_root, &mut budget)?;
         let native_paths = native_call_paths(&summary.action_trace, &mut budget)?;
         if paths.is_empty() || paths.len() != native_paths.len() {
             return None;
@@ -126,7 +163,7 @@ impl EffectSemantics<'_> {
         let native_output = self.types.store.get(signature.output)?;
         if !etas_types::checked_descriptor_type_matches(
             self.types,
-            &graph,
+            graph,
             signature.output,
             portable_signature.output,
         )
@@ -169,7 +206,7 @@ impl EffectSemantics<'_> {
             if portable_callback.parameters.len() != callback.input.len()
                 || !etas_types::checked_descriptor_type_matches(
                     self.types,
-                    &graph,
+                    graph,
                     callback.output,
                     portable_callback.output,
                 )
@@ -188,7 +225,7 @@ impl EffectSemantics<'_> {
                 .map(|((argument, ty), portable)| {
                     if !etas_types::checked_descriptor_type_matches(
                         self.types,
-                        &graph,
+                        graph,
                         *ty,
                         portable.ty,
                     )
@@ -242,7 +279,7 @@ impl EffectSemantics<'_> {
                 let ParameterHandlerScopeInfo::Handle { arms } = scope;
                 for arm in arms {
                     handled.insert(self.checked_descriptor_action(
-                        &graph,
+                        graph,
                         contract,
                         &arm.action,
                         &candidates,
@@ -257,7 +294,7 @@ impl EffectSemantics<'_> {
                             TraceInfo::Empty => {}
                             TraceInfo::Event(action) => {
                                 requested.insert(self.checked_descriptor_action(
-                                    &graph,
+                                    graph,
                                     contract,
                                     action,
                                     &candidates,
@@ -345,7 +382,7 @@ impl EffectSemantics<'_> {
                     );
                 }
                 TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturn(call)) => {
-                    for preceding in descriptor_call_paths(&graph, *prefix, &mut budget)? {
+                    for preceding in descriptor_call_paths(graph, *prefix, &mut budget)? {
                         let position = preceding.len();
                         let mut matched = false;
                         for (path, native_path) in paths.iter().zip(&native_paths) {
@@ -362,7 +399,7 @@ impl EffectSemantics<'_> {
                                 else {
                                     return None;
                                 };
-                                if !same_call(&graph, actual, expected) {
+                                if !same_call(graph, actual, expected) {
                                     equivalent = false;
                                     break;
                                 }
@@ -372,7 +409,7 @@ impl EffectSemantics<'_> {
                             else {
                                 return None;
                             };
-                            if !equivalent || !same_call(&graph, expected, call) {
+                            if !equivalent || !same_call(graph, expected, call) {
                                 continue;
                             }
                             matched = true;

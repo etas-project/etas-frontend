@@ -97,7 +97,7 @@ impl EffectSemantics<'_> {
                     .map_err(super::specialize::EffectSpecializationError::Interrupted)?;
             }
             summary.exits =
-                self.external_callback_outcomes(contract, &summary, signature, site.span);
+                self.external_callback_outcomes(contract, &summary, signature, site.span)?;
             if let Some(control) = self.query_control {
                 control
                     .checkpoint()
