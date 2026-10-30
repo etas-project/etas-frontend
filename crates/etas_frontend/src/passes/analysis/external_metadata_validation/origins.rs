@@ -147,6 +147,14 @@ pub(super) fn validate(
                 "definition origins have no public metadata record",
             )
         })?;
+        validate_alias_descriptors(
+            input,
+            metadata,
+            std_registry,
+            environment,
+            &mut descriptor_comparison_budget,
+            &mut identity_index,
+        )?;
         validate_callable_definition_parameters(
             input,
             metadata,
@@ -155,6 +163,119 @@ pub(super) fn validate(
             &mut descriptor_comparison_budget,
             &mut identity_index,
         )?;
+    }
+    Ok(())
+}
+
+fn validate_alias_descriptors<'a>(
+    input: &crate::ProjectExternalDefinitionOriginsInput,
+    metadata: &ProjectExternalPublicMetadataInput,
+    std_registry: &'a etas_std::StdRegistry,
+    environment: &ProjectEnvironmentInput,
+    comparison_budget: &mut usize,
+    identity_index: &mut Option<etas_types::ExternalDescriptorIdentities<'a>>,
+) -> Result<(), Error> {
+    use etas_code::descriptor::TypeInfo;
+    let Some(set) = input.descriptors.as_ref() else {
+        return Ok(());
+    };
+    let roots = set
+        .declarations
+        .iter()
+        .map(|root| (&root.definition, root.ty))
+        .collect::<BTreeMap<_, _>>();
+    let public_types = metadata
+        .types
+        .iter()
+        .map(|item| (item.path.as_slice(), item))
+        .collect::<BTreeMap<_, _>>();
+    let re_exports = metadata
+        .re_exports
+        .iter()
+        .map(|export| export.exported.as_slice())
+        .collect::<BTreeSet<_>>();
+    for binding in &input.origins.declarations {
+        let path = binding.path();
+        let Some(item) = public_types.get(path.as_slice()) else {
+            continue;
+        };
+        let public_alias = match &item.ty {
+            Some(crate::ProjectExternalTypeInput::Alias { target, .. }) => Some(target.as_ref()),
+            _ => None,
+        };
+        let Some(root) = roots.get(&binding.definition) else {
+            if public_alias.is_some()
+                && binding.definition.package() == input.origins.package
+                && !re_exports.contains(path.as_slice())
+            {
+                return Err(Error::package(
+                    input.package,
+                    "public alias has no checked descriptor root",
+                ));
+            }
+            continue;
+        };
+        let (target, definition, parameters, expected) =
+            match (public_alias, set.graph.types.get(root.0 as usize)) {
+                (
+                    Some(target),
+                    Some(TypeInfo::Alias {
+                        definition,
+                        parameters,
+                        target: expected,
+                    }),
+                ) => (target, definition, parameters, expected),
+                (Some(_), _) | (None, Some(TypeInfo::Alias { .. })) => {
+                    return Err(Error::package(
+                        input.package,
+                        "alias descriptor and public signature disagree on declaration kind",
+                    ));
+                }
+                _ => continue,
+            };
+        if definition != &binding.definition {
+            return Err(Error::package(
+                input.package,
+                "alias descriptor identity differs from its public origin",
+            ));
+        }
+        if identity_index.is_none() {
+            let identities =
+                super::super::type_check_bridge::reflection::signature_input_for_environment(
+                    std_registry,
+                    Some(environment),
+                )
+                .map_err(|error| Error::package(input.package, error.to_string()))?;
+            *identity_index = Some(
+                etas_types::ExternalDescriptorIdentities::new(std_registry, &identities)
+                    .map_err(|error| Error::package(input.package, error))?,
+            );
+        }
+        let identities = identity_index.as_ref().ok_or_else(|| {
+            Error::package(input.package, "missing external descriptor identities")
+        })?;
+        let generics =
+            super::super::type_check_bridge::convert_external_generic_params(&item.generic_params);
+        let mut matcher = etas_types::ExternalDescriptorMatcher::new(
+            &set.graph,
+            identities,
+            &generics,
+            parameters,
+            comparison_budget,
+        )
+        .map_err(|error| Error::package(input.package, error))?;
+        if !matcher
+            .matches(
+                &super::super::type_check_bridge::convert_external_type(target),
+                *expected,
+            )
+            .map_err(|error| Error::package(input.package, error))?
+        {
+            return Err(Error::package(
+                input.package,
+                "alias descriptor and public signature disagree on target type",
+            ));
+        }
     }
     Ok(())
 }
