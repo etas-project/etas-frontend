@@ -31,6 +31,19 @@ pub(super) fn validate(
     let mut descriptor_comparison_budget =
         etas_code::descriptor::DescriptorLimits::default().max_edges;
     let mut identity_index = None;
+    let mut public_exports = BTreeMap::<ExternalPackageId, BTreeSet<Vec<String>>>::new();
+    for module in &environment.external_modules {
+        let Some(package) = module.package else {
+            continue;
+        };
+        for export in &module.exports {
+            if export.visibility == etas_hir::Visibility::Public {
+                let mut path = module.path.segments.clone();
+                path.push(export.name.clone());
+                public_exports.entry(package).or_default().insert(path);
+            }
+        }
+    }
     for input in &environment.external_definition_origins {
         let fail = |reason| Error::package(input.package, reason);
         if !packages.contains_key(&input.package) || !seen.insert(input.package) {
@@ -147,11 +160,12 @@ pub(super) fn validate(
                 "definition origins have no public metadata record",
             )
         })?;
-        validate_alias_descriptors(
+        validate_type_descriptors(
             input,
             metadata,
             std_registry,
             environment,
+            &public_exports,
             &mut descriptor_comparison_budget,
             &mut identity_index,
         )?;
@@ -167,11 +181,12 @@ pub(super) fn validate(
     Ok(())
 }
 
-fn validate_alias_descriptors<'a>(
+fn validate_type_descriptors<'a>(
     input: &crate::ProjectExternalDefinitionOriginsInput,
     metadata: &ProjectExternalPublicMetadataInput,
     std_registry: &'a etas_std::StdRegistry,
     environment: &ProjectEnvironmentInput,
+    public_exports: &BTreeMap<ExternalPackageId, BTreeSet<Vec<String>>>,
     comparison_budget: &mut usize,
     identity_index: &mut Option<etas_types::ExternalDescriptorIdentities<'a>>,
 ) -> Result<(), Error> {
@@ -203,40 +218,78 @@ fn validate_alias_descriptors<'a>(
             Some(crate::ProjectExternalTypeInput::Alias { target, .. }) => Some(target.as_ref()),
             _ => None,
         };
+        let public_nominal = match &item.ty {
+            Some(crate::ProjectExternalTypeInput::Nominal { representation, .. }) => {
+                Some(representation.as_deref())
+            }
+            _ => None,
+        };
         let Some(root) = roots.get(&binding.definition) else {
-            if public_alias.is_some()
+            if (public_alias.is_some() || public_nominal.is_some())
+                && public_exports
+                    .get(&input.package)
+                    .is_some_and(|exports| exports.contains(&path))
                 && binding.definition.package() == input.origins.package
                 && !re_exports.contains(path.as_slice())
             {
                 return Err(Error::package(
                     input.package,
-                    "public alias has no checked descriptor root",
+                    if public_alias.is_some() {
+                        "public alias has no checked descriptor root"
+                    } else {
+                        "public nominal type has no checked descriptor root"
+                    },
                 ));
             }
             continue;
         };
-        let (target, definition, parameters, expected) =
-            match (public_alias, set.graph.types.get(root.0 as usize)) {
-                (
-                    Some(target),
-                    Some(TypeInfo::Alias {
-                        definition,
-                        parameters,
-                        target: expected,
-                    }),
-                ) => (target, definition, parameters, expected),
-                (Some(_), _) | (None, Some(TypeInfo::Alias { .. })) => {
-                    return Err(Error::package(
-                        input.package,
-                        "alias descriptor and public signature disagree on declaration kind",
-                    ));
-                }
-                _ => continue,
-            };
+        let (target, definition, parameters, expected, kind) = match (
+            public_alias,
+            public_nominal,
+            set.graph.types.get(root.0 as usize),
+        ) {
+            (
+                Some(target),
+                _,
+                Some(TypeInfo::Alias {
+                    definition,
+                    parameters,
+                    target: expected,
+                }),
+            ) => (
+                Some(target),
+                definition,
+                parameters,
+                Some(*expected),
+                "alias",
+            ),
+            (Some(_), _, _) | (None, _, Some(TypeInfo::Alias { .. })) => {
+                return Err(Error::package(
+                    input.package,
+                    "alias descriptor and public signature disagree on declaration kind",
+                ));
+            }
+            (
+                None,
+                Some(target),
+                Some(TypeInfo::Nominal {
+                    definition,
+                    parameters,
+                    representation,
+                }),
+            ) => (target, definition, parameters, *representation, "nominal"),
+            (None, Some(_), _) | (None, None, Some(TypeInfo::Nominal { .. })) => {
+                return Err(Error::package(
+                    input.package,
+                    "nominal descriptor and public signature disagree on declaration kind",
+                ));
+            }
+            _ => continue,
+        };
         if definition != &binding.definition {
             return Err(Error::package(
                 input.package,
-                "alias descriptor identity differs from its public origin",
+                format!("{kind} descriptor identity differs from its public origin"),
             ));
         }
         if identity_index.is_none() {
@@ -264,16 +317,27 @@ fn validate_alias_descriptors<'a>(
             comparison_budget,
         )
         .map_err(|error| Error::package(input.package, error))?;
-        if !matcher
-            .matches(
-                &super::super::type_check_bridge::convert_external_type(target),
-                *expected,
-            )
-            .map_err(|error| Error::package(input.package, error))?
-        {
+        let matches = match (target, expected) {
+            (None, None) => true,
+            (Some(target), Some(expected)) => matcher
+                .matches(
+                    &super::super::type_check_bridge::convert_external_type(target),
+                    expected,
+                )
+                .map_err(|error| Error::package(input.package, error))?,
+            _ => false,
+        };
+        if !matches {
             return Err(Error::package(
                 input.package,
-                "alias descriptor and public signature disagree on target type",
+                format!(
+                    "{kind} descriptor and public signature disagree on {}",
+                    if kind == "alias" {
+                        "target type"
+                    } else {
+                        "representation"
+                    }
+                ),
             ));
         }
     }
