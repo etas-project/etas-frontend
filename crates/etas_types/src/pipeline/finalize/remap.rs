@@ -585,6 +585,14 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             *row = remapper.effect_row(row.clone());
         }
     }
+    facts.known_std_types.file_read_limit_error = facts
+        .known_std_types
+        .file_read_limit_error
+        .map(|ty| remapper.ty(ty));
+    facts.known_std_types.filesystem_io_error = facts
+        .known_std_types
+        .filesystem_io_error
+        .map(|ty| remapper.ty(ty));
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
     for ty in facts.known_std_types.runtime_types.values_mut() {
         *ty = remapper.ty(*ty);
