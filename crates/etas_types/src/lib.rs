@@ -51,9 +51,10 @@ pub use pipeline::finalize::{
 pub use pipeline::signature::validate::annotations::validate_annotations as validate_item_annotations;
 pub use solver::{
     Assignable, CheckedIntegerLiteral, ExternalDescriptorIdentities, ExternalDescriptorMatcher,
-    SolverFailure, SolverReport, Substitution, TypeRelation, TypeSolver, TypeUnifier, UnifyError,
-    checked_descriptor_type_matches, checked_descriptor_type_matches_with_bindings,
-    checked_integer_literal,
+    ExternalMethodSelection, SolverFailure, SolverReport, Substitution, TypeRelation, TypeSolver,
+    TypeUnifier, UnifyError, checked_descriptor_type_matches,
+    checked_descriptor_type_matches_with_bindings, checked_integer_literal,
+    select_external_methods,
 };
 pub use ty::{
     EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef, FieldType, FlowType,

@@ -122,10 +122,15 @@ impl ExternalDescriptorMatcher<'_> {
                     self.identity(path, expected)?
                 }
                 (ExternalEffectArgInput::Path(path), StaticEffectArgInfo::Callable(expected)) => {
-                    let declaration = expected
-                        .as_declaration()
-                        .ok_or("external callable selector has no declaration identity")?;
-                    self.identity(path, declaration)?
+                    if let Some(declaration) = expected.as_declaration() {
+                        self.identity(path, declaration)?
+                    } else {
+                        self.identities
+                            .methods
+                            .get(path)
+                            .ok_or("external callable selector has no checked method identity")?
+                            == expected
+                    }
                 }
                 (ExternalEffectArgInput::String(actual), StaticEffectArgInfo::String(expected))
                 | (ExternalEffectArgInput::Int(actual), StaticEffectArgInfo::Integer(expected)) => {

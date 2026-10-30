@@ -19,8 +19,9 @@ pub use numeric_literal::{CheckedIntegerLiteral, checked_integer_literal};
 mod overload;
 mod reflection;
 pub use reflection::{
-    ExternalDescriptorIdentities, ExternalDescriptorMatcher, checked_descriptor_type_matches,
-    checked_descriptor_type_matches_with_bindings,
+    ExternalDescriptorIdentities, ExternalDescriptorMatcher, ExternalMethodSelection,
+    checked_descriptor_type_matches, checked_descriptor_type_matches_with_bindings,
+    select_external_methods,
 };
 pub mod report;
 mod return_type;

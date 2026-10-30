@@ -269,3 +269,83 @@ fn nested_function_effects_use_canonical_action_and_argument_types() {
         ExternalEffectArgInput::Type(ExternalTypeInput::Primitive("bool".into()));
     assert!(!matcher.matches(&actual, TypeInfoRef(1)).unwrap());
 }
+
+#[test]
+fn callable_selector_requires_the_checked_method_identity() {
+    use etas_code::{CallableId, ImplementationKey, MethodId};
+    let agent = definition("first", "Worker", DefinitionKind::Agent);
+    let method = |name: &str| {
+        CallableId::method(
+            MethodId::new(
+                ImplementationKey::new(
+                    agent.package(),
+                    agent.module().to_vec(),
+                    agent.clone(),
+                    None,
+                    CodeFingerprint::of_bytes("etas.test.method", name.as_bytes()),
+                )
+                .unwrap(),
+                "run".into(),
+            )
+            .unwrap(),
+        )
+    };
+    let expected_method = method("expected");
+    let other_method = method("other");
+    let target = EffectTargetInfo::Action {
+        effect: definition("first", "Agentic", DefinitionKind::Effect),
+        name: "infer".into(),
+    };
+    let graph = DescriptorGraphInput {
+        rows: vec![etas_code::descriptor::EffectRowInfo {
+            effects: vec![EffectInfo {
+                target: target.clone(),
+                arguments: vec![StaticEffectArgInfo::Callable(expected_method.clone())],
+            }],
+            tail: None,
+        }],
+        ..Default::default()
+    };
+    let registry = etas_std::standard_registry();
+    let path = vec!["first".into(), "Worker".into(), "run".into()];
+    let identities = ReflectionSignatureInput {
+        effect_targets: vec![("first.Agentic.infer".into(), target)],
+        methods: vec![(path.clone(), expected_method)],
+        ..Default::default()
+    };
+    let actual = ExternalEffectRowInput {
+        effects: vec![ExternalEffectRefInput {
+            path: vec!["first".into(), "Agentic".into(), "infer".into()],
+            args: vec![ExternalEffectArgInput::Path(path.clone())],
+        }],
+        tail: None,
+    };
+    let mut budget = 100;
+    let index = ExternalDescriptorIdentities::new(&registry, &identities).unwrap();
+    let mut matcher =
+        ExternalDescriptorMatcher::new(&graph, &index, &[], &[], &mut budget).unwrap();
+    assert!(
+        matcher
+            .matches_optional_effect_row(Some(&actual), Some(EffectRowInfoRef(0)))
+            .unwrap()
+    );
+
+    let mut identities = identities;
+    identities.methods[0].1 = other_method;
+    let index = ExternalDescriptorIdentities::new(&registry, &identities).unwrap();
+    let mut matcher =
+        ExternalDescriptorMatcher::new(&graph, &index, &[], &[], &mut budget).unwrap();
+    assert!(
+        !matcher
+            .matches_optional_effect_row(Some(&actual), Some(EffectRowInfoRef(0)))
+            .unwrap()
+    );
+    identities.methods.clear();
+    let index = ExternalDescriptorIdentities::new(&registry, &identities).unwrap();
+    let mut matcher =
+        ExternalDescriptorMatcher::new(&graph, &index, &[], &[], &mut budget).unwrap();
+    assert_eq!(
+        matcher.matches_optional_effect_row(Some(&actual), Some(EffectRowInfoRef(0))),
+        Err("external callable selector has no checked method identity")
+    );
+}

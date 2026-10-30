@@ -53,6 +53,7 @@ impl<'a> SignaturePipelineInput<'a> {
 pub struct ReflectionSignatureInput {
     pub declarations: Vec<(Vec<String>, etas_code::DefinitionKey)>,
     pub effect_targets: Vec<(String, etas_code::descriptor::EffectTargetInfo)>,
+    pub methods: Vec<(Vec<String>, etas_code::CallableId)>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -116,10 +116,75 @@ pub(in crate::passes::analysis) fn signature_input_for_environment(
             }
         }
     }
+    let methods = external_method_identities(environment, &declarations)?;
     Ok(etas_types::api::ReflectionSignatureInput {
         declarations: declarations.into_iter().collect(),
         effect_targets: effect_targets.into_iter().collect(),
+        methods: methods.into_iter().collect(),
     })
+}
+
+fn external_method_identities(
+    environment: Option<&crate::ProjectEnvironmentInput>,
+    declarations: &BTreeMap<Vec<String>, etas_code::DefinitionKey>,
+) -> Result<BTreeMap<Vec<String>, etas_code::CallableId>, crate::code::descriptor::ProjectionError>
+{
+    let mut by_agent = BTreeMap::new();
+    let mut budget = etas_code::descriptor::DescriptorLimits::default().max_edges;
+    let Some(environment) = environment else {
+        return Ok(BTreeMap::new());
+    };
+    for origin in &environment.external_definition_origins {
+        let Some(headers) = origin
+            .descriptors
+            .as_ref()
+            .and_then(|set| set.headers.as_ref())
+        else {
+            continue;
+        };
+        for agent in &headers.agents {
+            let Some(selected) = etas_types::select_external_methods(agent).map_err(|message| {
+                crate::code::descriptor::ProjectionError::Invalid(message.into())
+            })?
+            else {
+                continue;
+            };
+            if let Some(previous) = by_agent.insert(agent.identity.clone(), selected.clone())
+                && previous != selected
+            {
+                return Err(crate::code::descriptor::ProjectionError::Invalid(
+                    "external agent has conflicting method selection facts".into(),
+                ));
+            }
+        }
+    }
+    let mut result = BTreeMap::new();
+    for (path, identity) in declarations {
+        let Some(methods) = by_agent.get(identity) else {
+            continue;
+        };
+        budget = budget.checked_sub(methods.len()).ok_or_else(|| {
+            crate::code::descriptor::ProjectionError::Invalid(
+                "external method identity index exceeds its resource budget".into(),
+            )
+        })?;
+        for (name, selection) in methods {
+            let etas_types::ExternalMethodSelection::Selected(callable) = selection else {
+                continue;
+            };
+            let mut method_path = path.clone();
+            method_path.push(name.clone());
+            if result
+                .insert(method_path, callable.clone())
+                .is_some_and(|previous| previous != *callable)
+            {
+                return Err(crate::code::descriptor::ProjectionError::Invalid(
+                    "external method path has conflicting checked identities".into(),
+                ));
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn insert_declaration(
@@ -331,5 +396,80 @@ mod tests {
             path == "Console.stdout_write"
                 && matches!(target, etas_code::descriptor::EffectTargetInfo::Action { name, .. } if name == "stdout_write")
         }));
+    }
+
+    #[test]
+    fn external_method_selection_preserves_identity_visibility_and_ambiguity() {
+        use etas_code::{
+            CallableId, ImplementationKey, MethodId,
+            descriptor::{AgentHeaderInfo, AgentMethodInfo, TypeInfoRef},
+        };
+        let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
+            "etas.test.method-selection",
+            b"package",
+        ));
+        let agent = DefinitionKey::new(
+            package,
+            vec!["library".into()],
+            vec!["Worker".into()],
+            DefinitionKind::Agent,
+        )
+        .unwrap();
+        let make = |name: &str, fingerprint: &[u8], inherent, is_public| AgentMethodInfo {
+            callable: CallableId::method(
+                MethodId::new(
+                    ImplementationKey::new(
+                        package,
+                        vec!["library".into()],
+                        agent.clone(),
+                        None,
+                        CodeFingerprint::of_bytes("etas.test.implementation", fingerprint),
+                    )
+                    .unwrap(),
+                    name.into(),
+                )
+                .unwrap(),
+            ),
+            inherent,
+            is_public,
+            specs: vec![],
+        };
+        let run = make("run", b"run", true, true);
+        let spec = make("explain", b"spec", false, true);
+        let inherent = make("explain", b"inherent", true, true);
+        let a = make("ambiguous", b"a", false, true);
+        let b = make("ambiguous", b"b", false, true);
+        let private = make("hidden", b"private", true, false);
+        let header = AgentHeaderInfo {
+            identity: agent,
+            component: TypeInfoRef(0),
+            default_entry: Some(run.callable.clone()),
+            methods: vec![
+                spec.callable.clone(),
+                inherent.callable.clone(),
+                a.callable.clone(),
+                b.callable.clone(),
+                private.callable.clone(),
+            ],
+            method_info: Some(vec![run.clone(), spec, inherent.clone(), a, b, private]),
+            tools: vec![],
+            annotations: vec![],
+            specs: vec![],
+        };
+        use etas_types::ExternalMethodSelection as Selection;
+        let selected = etas_types::select_external_methods(&header)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected["run"], Selection::Selected(run.callable));
+        assert_eq!(selected["explain"], Selection::Selected(inherent.callable));
+        assert_eq!(selected["ambiguous"], Selection::Ambiguous);
+        assert_eq!(selected["hidden"], Selection::Private);
+        let mut no_facts = header;
+        no_facts.method_info = None;
+        assert!(
+            etas_types::select_external_methods(&no_facts)
+                .unwrap()
+                .is_none()
+        );
     }
 }

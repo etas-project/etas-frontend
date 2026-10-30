@@ -22,6 +22,7 @@ pub struct ExternalDescriptorIdentities<'a> {
     registry: &'a etas_std::StdRegistry,
     declarations: BTreeMap<Vec<String>, etas_code::DefinitionKey>,
     effects: BTreeMap<String, EffectTargetInfo>,
+    methods: BTreeMap<Vec<String>, etas_code::CallableId>,
 }
 
 impl<'a> ExternalDescriptorIdentities<'a> {
@@ -39,8 +40,14 @@ impl<'a> ExternalDescriptorIdentities<'a> {
             .iter()
             .cloned()
             .collect::<BTreeMap<_, _>>();
+        let methods = identities
+            .methods
+            .iter()
+            .cloned()
+            .collect::<BTreeMap<_, _>>();
         if declarations.len() != identities.declarations.len()
             || effects.len() != identities.effect_targets.len()
+            || methods.len() != identities.methods.len()
         {
             return Err("external descriptor identity index contains duplicate paths");
         }
@@ -48,6 +55,7 @@ impl<'a> ExternalDescriptorIdentities<'a> {
             registry,
             declarations,
             effects,
+            methods,
         })
     }
 }
