@@ -29,6 +29,12 @@ pub enum AssignabilityReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeConstraint {
+    DiscardValue {
+        value: TypeId,
+        output: TypeId,
+        unit: TypeId,
+        origin: ConstraintOrigin,
+    },
     HandlerInstantiation {
         parameters: Vec<(String, TypeId, TypeId)>,
         requests: Vec<etas_hir::HirExprId>,
