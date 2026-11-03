@@ -192,14 +192,29 @@ impl EffectSemantics<'_> {
         mut state: EffectState,
     ) -> EffectState {
         if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr).cloned() {
-            if self.types.facts.checked_method_calls.get(&expr).is_some_and(|method|
-                matches!(method.target, etas_types::method::MethodTarget::Standard {
-                    operation: etas_std::FlowSourceMethodOperation::CheckedIndex, ..
-                })) {
+            if self
+                .types
+                .facts
+                .checked_method_calls
+                .get(&expr)
+                .is_some_and(|method| {
+                    matches!(
+                        method.target,
+                        etas_types::method::MethodTarget::Standard {
+                            operation: etas_std::FlowSourceMethodOperation::CheckedIndex,
+                            ..
+                        }
+                    )
+                })
+            {
                 return if self.types.facts.index_facts.contains_key(&expr) {
                     state
                 } else {
-                    self.reject_effect_state(span, "checked index method has no index operation fact", state)
+                    self.reject_effect_state(
+                        span,
+                        "checked index method has no index operation fact",
+                        state,
+                    )
                 };
             }
             if self.method_receiver_type_missing(expr) {
