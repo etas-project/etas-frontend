@@ -69,17 +69,6 @@ impl<'a> ProjectMetadataProjection<'a> {
         input: &PackageMetadataBuildInput,
         header: &PackageMetadataHeader,
     ) -> Result<Vec<EncodedMetadataSection>, PackageMetadataError> {
-        if input.definition_origin.is_none()
-            && self.checked.types.agent_methods.values().any(|method| {
-                method.private_to.is_none()
-                    && matches!(self.checked.items.get(method.body), Some(HirItem::Flow(_)))
-            })
-        {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "agent method metadata requires a canonical package definition origin"
-                    .into(),
-            });
-        }
         let external_modules = self.external_modules()?;
         let identity_input = input
             .definition_origin

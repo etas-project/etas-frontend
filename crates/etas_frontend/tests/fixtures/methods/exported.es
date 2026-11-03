@@ -7,6 +7,10 @@ public spec Encode {
 public type Packet = { value: i32 };
 public type Encoded = { value: i32 };
 
+agent Hidden() -> unit { return; }
+type PrivatePacket = { value: i32 };
+impl PrivatePacket { public flow value(self) -> i32 { return self.value; } }
+
 impl Packet {
     public flow new(value: i32) -> Packet ![] {
         return Packet { value };

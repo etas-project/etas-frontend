@@ -6,13 +6,48 @@ impl ProjectMetadataProjection<'_> {
         &self,
         identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Vec<etas_package_metadata::PublishedMethod>, PackageMetadataError> {
-        let mut methods = BTreeMap::new();
-        for method in self
+        let declarations = self
             .checked
             .types
             .methods
             .entries()
-            .filter(|method| method.public)
+            .filter(|method| {
+                method.public
+                    && matches!(
+                        method.target,
+                        MethodTarget::Source { .. } | MethodTarget::Agent { .. }
+                    )
+            })
+            .collect::<Vec<_>>();
+        if declarations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut methods = BTreeMap::new();
+        let selection = self.exported_definition_items()?;
+        let head = |ty| match self.checked.type_store.get(ty) {
+            Some(Type::Applied { constructor, .. }) => TypeId(constructor.0),
+            _ => ty,
+        };
+        let subjects = selection
+            .iter()
+            .filter_map(|item| {
+                let symbol = self.checked.items.get(*item)?.symbol()?;
+                match self.checked.types.symbol_types.get(&symbol)? {
+                    etas_types::SymbolTypeFact::Type { constructor }
+                    | etas_types::SymbolTypeFact::NominalType { constructor, .. } => {
+                        Some(TypeId(constructor.0))
+                    }
+                    etas_types::SymbolTypeFact::TypeAlias { target, .. } => Some(head(*target)),
+                    etas_types::SymbolTypeFact::Agent { signature } => {
+                        Some(head(signature.component))
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        for method in declarations
+            .into_iter()
+            .filter(|method| subjects.contains(&head(method.receiver_type)))
         {
             let (symbol, callable) = match method.target {
                 MethodTarget::Source {
@@ -21,8 +56,21 @@ impl ProjectMetadataProjection<'_> {
                 | MethodTarget::Agent { symbol, callable } => (symbol, callable),
                 _ => continue,
             };
+            let identities = identities
+                .ok_or_else(|| invalid("public method requires canonical package origins"))?;
+            if !crate::code::definition::selected_callable(
+                self.checked,
+                identities,
+                symbol,
+                callable,
+                Some(&selection),
+            )
+            .map_err(|error| invalid(&error.to_string()))?
+            {
+                continue;
+            }
             let identity = identities
-                .and_then(|index| index.method(symbol))
+                .method(symbol)
                 .cloned()
                 .ok_or_else(|| invalid("public method requires a canonical method identity"))?;
             let names = method
