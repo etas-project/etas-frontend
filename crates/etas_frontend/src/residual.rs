@@ -10,6 +10,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod application;
+pub use application::CheckedResidualApplication;
+
 use etas_code::{
     CallableId, CodeFingerprint, RevisionInfo, RevisionInputs,
     contract::CanonicalEffect,
@@ -239,15 +242,17 @@ impl CheckedResidualPlans {
     /// Checks exact obligation instances against the verified plans and the
     /// target support captured by this checked program. This is installability,
     /// not native engine installation or permission to run an invocation.
-    pub(crate) fn supports_references(&self, required: &BTreeSet<ResidualObligationRef>) -> bool {
+    pub fn supports_references(&self, required: &BTreeSet<ResidualObligationRef>) -> bool {
         if required.len() > MAX_BOUND_OBLIGATIONS {
             return false;
         }
         required.iter().all(|reference| {
-            let mut covering = self
-                .plans
-                .iter()
-                .filter(|plan| plan.references.contains(reference));
+            let mut covering = self.plans.iter().filter(|plan| {
+                plan.plan
+                    .obligations()
+                    .get(reference.obligation())
+                    .is_some_and(|obligation| obligation.accepts_reference(reference))
+            });
             let Some(plan) = covering.next() else {
                 return false;
             };
@@ -469,13 +474,30 @@ impl CheckedResidualPlans {
             .get(&item)
             .ok_or_else(|| owner_error("residual owner has no checked effect summary"))?;
         let row = |row: &etas_effects::EffectRow| -> Result<CodeFingerprint, ResidualBindingError> {
-            let projector = DefinitionDescriptorProjector::from_input(
+            let mut projector = DefinitionDescriptorProjector::from_input(
                 self.descriptor_input(program),
                 identities,
                 self.limits,
             );
+            match declaration {
+                etas_hir::HirItem::Flow(flow) if !flow.type_params.is_empty() => {}
+                etas_hir::HirItem::Tool(tool) if !tool.type_params.is_empty() => {}
+                _ => {
+                    return projector
+                        .finish_analysis_row_contract_fingerprint(owner.clone(), row)
+                        .map_err(projection_owner_error);
+                }
+            }
+            let input = self.descriptor_input(program);
+            let signature = crate::code::definition::callable_signature(input, item)
+                .ok_or_else(|| owner_error("residual owner signature is missing"))?;
+            let (names, declared) = crate::code::definition::callable_source_header(input, item)
+                .map_err(projection_owner_error)?;
             projector
-                .finish_analysis_row_contract_fingerprint(owner.clone(), row)
+                .project_signature(owner.clone(), signature, &names, declared)
+                .map_err(projection_owner_error)?;
+            projector
+                .finish_scoped_analysis_row_contract_fingerprint(&owner, row)
                 .map_err(projection_owner_error)
         };
         let requested = row(&summary.requested_actions)?;

@@ -683,7 +683,7 @@ fn check_trace_plan_source_links(
         .unwrap();
     let frozen_plan = SemanticResidualPlan::build(
         frozen_obligations,
-        vec![SemanticPlanComponent::Trace(frozen_component)],
+        vec![SemanticPlanComponent::Trace(Box::new(frozen_component))],
         vec![layout.clone()],
         vec![SemanticPlanMapping {
             obligation: frozen_obligation.id(),
@@ -735,7 +735,7 @@ fn check_trace_plan_source_links(
         .unwrap();
     let forged_plan = SemanticResidualPlan::build(
         forged_obligations,
-        vec![SemanticPlanComponent::Trace(forged_component)],
+        vec![SemanticPlanComponent::Trace(Box::new(forged_component))],
         vec![layout.clone()],
         vec![SemanticPlanMapping {
             obligation: forged_obligation.id(),
@@ -760,7 +760,7 @@ fn check_trace_plan_source_links(
     obligations.insert(obligation.clone()).unwrap();
     let plan = SemanticResidualPlan::build(
         obligations,
-        vec![SemanticPlanComponent::Trace(component)],
+        vec![SemanticPlanComponent::Trace(Box::new(component))],
         vec![layout],
         vec![SemanticPlanMapping {
             obligation: obligation.id(),
@@ -963,7 +963,7 @@ fn check_trace_plan_source_links(
     bad_obligations.insert(bad_obligation.clone()).unwrap();
     let bad_plan = SemanticResidualPlan::build(
         bad_obligations,
-        vec![SemanticPlanComponent::Trace(bad_component)],
+        vec![SemanticPlanComponent::Trace(Box::new(bad_component))],
         vec![layout.clone()],
         vec![SemanticPlanMapping {
             obligation: bad_obligation.id(),

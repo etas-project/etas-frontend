@@ -275,8 +275,7 @@ impl etas_effects::TraceMonitorProjector for CheckedResidualIdentities<'_> {
     fn project_trace_monitor(
         &self,
         request: etas_effects::TraceMonitorProjectionRequest<'_>,
-    ) -> Result<etas_code::residual::monitor::CompiledTraceAlternatives, ResidualIdentityError>
-    {
+    ) -> Result<etas_code::residual::monitor::TraceComponentMonitor, ResidualIdentityError> {
         use crate::code::descriptor::{TraceSourceLinkLimits, TraceTemplateProjectionError};
         let registry = request.registry;
         let index = self.index(registry)?;
@@ -303,29 +302,53 @@ impl etas_effects::TraceMonitorProjector for CheckedResidualIdentities<'_> {
             .project_signature(owner.clone(), signature, &names, declared)
             .map_err(projection_error)?;
         let limits = request.source_limits;
-        let projection = projector
-            .finish_analyzed_trace_template(
-                &owner,
-                request.lowering,
-                TraceSourceLinkLimits {
-                    max_sources: limits.max_sources,
-                    max_sites: limits.max_sites,
-                    max_clauses: limits.max_clauses,
-                    max_snapshot_bytes: limits.max_snapshot_bytes,
-                    identity: limits.identity,
-                },
-            )
-            .map_err(|error| match error {
-                TraceTemplateProjectionError::Projection(error) => projection_error(error),
-                TraceTemplateProjectionError::Lower(
-                    etas_effects::trace_spec::TraceRulesLoweringError::Interrupted(interruption),
-                ) => ResidualIdentityError::Interrupted(interruption),
-                error => ResidualIdentityError::Unavailable(format!(
-                    "trace monitor projection is unsupported: {error:?}"
-                )),
-            })?;
+        let source_limits = TraceSourceLinkLimits {
+            max_sources: limits.max_sources,
+            max_sites: limits.max_sites,
+            max_clauses: limits.max_clauses,
+            max_snapshot_bytes: limits.max_snapshot_bytes,
+            identity: limits.identity,
+        };
+        let projection = if names.is_empty() {
+            projector
+                .finish_analyzed_trace_template(&owner, request.lowering, source_limits)
+                .map(|projection| {
+                    etas_code::residual::monitor::TraceComponentMonitor::Concrete(
+                        std::sync::Arc::new(projection.into_monitor()),
+                    )
+                })
+        } else {
+            projector
+                .finish_analyzed_symbolic_trace_template(
+                    &owner,
+                    request.lowering,
+                    source_limits,
+                    etas_code::residual::pattern::PatternTemplateLimits {
+                        pattern: request.lowering.limits.evidence.pattern,
+                        types: Default::default(),
+                        descriptor: self.limits,
+                        max_binding_steps:
+                            etas_code::residual::type_template::TypeTemplateLimits::default()
+                                .max_work,
+                    },
+                )
+                .map(|projection| {
+                    etas_code::residual::monitor::TraceComponentMonitor::Symbolic(
+                        projection.template,
+                    )
+                })
+        }
+        .map_err(|error| match error {
+            TraceTemplateProjectionError::Projection(error) => projection_error(error),
+            TraceTemplateProjectionError::Lower(
+                etas_effects::trace_spec::TraceRulesLoweringError::Interrupted(interruption),
+            ) => ResidualIdentityError::Interrupted(interruption),
+            error => ResidualIdentityError::Unavailable(format!(
+                "trace monitor projection is unsupported: {error:?}"
+            )),
+        })?;
         self.checkpoint()?;
-        Ok(projection.into_monitor())
+        Ok(projection)
     }
 }
 

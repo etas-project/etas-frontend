@@ -552,11 +552,16 @@ fn checked_program_carries_bound_plans_and_shared_action_identity() {
     else {
         panic!("trace component");
     };
+    let etas_code::residual::monitor::TraceComponentMonitor::Concrete(monitor) =
+        component.monitor()
+    else {
+        panic!("concrete trace component");
+    };
     let covered = |name: &str| {
         let effect = residual
             .canonical_action(&checked, main, &gate_action(&checked, name))
             .unwrap();
-        component
+        monitor
             .patterns()
             .values()
             .any(|pattern| pattern.covers(&effect))
