@@ -9,8 +9,8 @@ pub(super) fn materialize(ctx: &mut TypePipelineContext<'_>, state: &mut BodyPip
                 intrinsic: Some(intrinsic),
                 qualified_path,
                 overload,
-                operation,
-            } if *operation != etas_std::FlowSourceMethodOperation::CheckedIndex => {
+                ..
+            } => {
                 let callable_type = ctx.interner.intern(Type::Function(FlowType {
                     input: fact.signature.params.clone(),
                     output: fact.signature.output,
