@@ -791,6 +791,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                         path.clone(),
                         visibility,
                         callable,
+                        &[],
                         &generic_names,
                     )
                 })
@@ -1044,6 +1045,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 path,
                 visibility,
                 callable,
+                &method.parameter_names,
                 generic_names,
             )?),
         })
@@ -1068,6 +1070,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         path: Vec<String>,
         visibility: MetadataVisibility,
         signature: &etas_types::CallableSignature,
+        param_names: &[String],
         outer_names: &BTreeSet<String>,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
         let mut generic_names = outer_names.clone();
@@ -1081,7 +1084,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             path,
             generic_params: self
                 .callable_generic_params_in_scope(&signature.generic_params, outer_names)?,
-            param_names: Vec::new(),
+            param_names: param_names.to_vec(),
             input: signature
                 .params
                 .iter()

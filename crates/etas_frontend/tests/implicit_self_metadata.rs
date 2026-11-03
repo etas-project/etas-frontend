@@ -5,7 +5,10 @@ fn source_generic_spec_method_evidence_survives_real_metadata_projection_and_bin
     let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
         r#"
 module api;
-public spec Encoder { flow encode(self) -> i32; }
+public spec Encoder {
+    flow encode(self) -> i32;
+    flow encode_with(self, amount: i32) -> i32;
+}
 public flow encode<T ~ Encoder>(value: T) -> i32 { return value::Encoder.encode(); }
 flow main() -> unit { return; }
 "#,
@@ -26,6 +29,21 @@ flow main() -> unit { return; }
         &artifact.bytes,
     )
     .expect("binary evidence replay");
+    let declaration = &metadata.public_metadata.spec_signatures[0];
+    for (name, parameters) in [
+        ("encode", vec!["self"]),
+        ("encode_with", vec!["self", "amount"]),
+    ] {
+        let signature = declaration
+            .methods
+            .iter()
+            .find(|method| method.name == name)
+            .unwrap()
+            .signature
+            .as_ref()
+            .unwrap();
+        assert_eq!(signature.param_names, parameters);
+    }
     let summary = metadata
         .public_metadata
         .effect_summaries
