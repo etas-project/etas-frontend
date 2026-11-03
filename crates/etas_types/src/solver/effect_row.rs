@@ -72,20 +72,10 @@ pub(super) fn infer_bindings_from_type_pairs(
     pairs: &[(TypeId, TypeId)],
     type_bindings: &HashMap<String, TypeId>,
     substitutions: &Substitution,
-    params: &[String],
+    scopes: EffectRowParameterScopes<'_>,
     bindings: &mut HashMap<String, EffectRowRef>,
 ) -> Vec<EffectRowInference> {
-    infer_scoped_bindings_from_pairs(
-        store,
-        pairs,
-        type_bindings,
-        substitutions,
-        EffectRowParameterScopes {
-            inferred: params,
-            lexical: &[],
-        },
-        bindings,
-    )
+    infer_scoped_bindings_from_pairs(store, pairs, type_bindings, substitutions, scopes, bindings)
 }
 
 fn infer_scoped_bindings_from_pairs(

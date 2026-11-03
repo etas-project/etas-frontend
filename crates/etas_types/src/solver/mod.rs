@@ -789,12 +789,21 @@ fn solve_callable_constraint(
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
+        let lexical_rows = input
+            .rigid_type_parameters
+            .iter()
+            .filter(|param| param.kind == crate::CallableGenericParamKind::Effect)
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>();
         let inferences = effect_row::infer_bindings_from_type_pairs(
             store,
             &pairs,
             &report.named_substitutions,
             &report.substitutions,
-            &effect_param_names,
+            effect_row::EffectRowParameterScopes {
+                inferred: &effect_param_names,
+                lexical: &lexical_rows,
+            },
             &mut effect_row_bindings,
         );
         let deferred_names = inferences

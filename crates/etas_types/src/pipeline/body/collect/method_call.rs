@@ -190,11 +190,23 @@ pub(super) fn collect_selected<E>(
             .zip(&owner_params)
             .map(|(old, new)| (old.subject, new.subject))
             .collect();
-        let ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+        let mut ty = ctx.ctx.interner.intern(Type::Function(FlowType {
             input: signature.params.clone(),
             output: signature.output,
             effects: signature.effects.clone(),
         }));
+        if let Some(instantiated) = super::callable_instantiation::signature_hints(
+            ctx,
+            ty,
+            &signature.generic_params,
+            &checked_generic_args,
+            span,
+        ) {
+            signature.params = instantiated.input.clone();
+            signature.output = instantiated.output;
+            signature.effects = instantiated.effects.clone();
+            ty = ctx.ctx.interner.intern(Type::Function(instantiated));
+        }
         candidates.push(CallableCandidate {
             ty,
             signature,

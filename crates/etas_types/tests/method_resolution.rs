@@ -57,3 +57,25 @@ fn delayed_method_results_materialize_generic_record_projections() {
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert_eq!(output.facts.checked_method_calls.len(), 2);
 }
+
+#[test]
+fn method_result_substitutes_effect_arguments_in_the_callers_namespace() {
+    let output = check(include_str!("fixtures/method_resolution/outer_row.es"));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 2);
+    for fact in output.facts.checked_method_calls.values() {
+        let Some(etas_types::Type::Function(result)) = output.store.get(fact.signature.output)
+        else {
+            panic!("method result is not a callable");
+        };
+        let row = result.effects.as_ref().unwrap();
+        assert_eq!(row.tail.as_deref(), Some("E"));
+        assert_eq!(row.effects.len(), 1);
+        assert_eq!(row.effects[0].name, "Console.stdout_write");
+        assert!(
+            fact.instantiation
+                .deferred_effect_row_obligations
+                .is_empty()
+        );
+    }
+}
