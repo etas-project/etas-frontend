@@ -39,13 +39,14 @@ pub(super) fn collect(
             Some(Type::Applied { constructor, .. }) => crate::TypeId(constructor.0),
             _ => method.self_type,
         };
-        let owner_params = ctx.type_generics(constructor).cloned().unwrap_or_default();
         let mut fact = MethodSignatureFact {
             name: method.name.clone(),
             owner: MethodOwner::Inherent(constructor),
             receiver,
             receiver_type: method.self_type,
-            owner_params,
+            // The impl subject is already lowered. Constructor parameters belong
+            // to the type declaration, not to this closed implementation.
+            owner_params: Vec::new(),
             signature: signature.clone(),
             parameter_names: flow
                 .params

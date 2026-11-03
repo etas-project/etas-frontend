@@ -166,3 +166,19 @@ fn delayed_chain_receivers_infer_named_empty_sequences_and_lambda_parameters() {
         Some(etas_types::Type::Map { .. })
     ));
 }
+
+#[test]
+fn closed_impl_owners_do_not_rebind_the_type_declarations_parameters() {
+    let output = check(include_str!("fixtures/method_resolution/closed_owner.es"));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 2);
+    for call in output.facts.checked_method_calls.values() {
+        let declaration = output
+            .facts
+            .methods
+            .declaration(&call.target, &call.evidence)
+            .unwrap();
+        assert!(declaration.owner_params.is_empty());
+        assert!(call.owner_bindings.is_empty());
+    }
+}
