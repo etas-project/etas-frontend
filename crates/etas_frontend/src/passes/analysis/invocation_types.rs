@@ -16,8 +16,8 @@ use crate::{
 
 pub struct PrepareInvocationTypesPass;
 
-/// Materializes types for statically resolved source calls before effect
-/// analysis. Dynamic and deferred calls remain the responsibility of the
+/// Materializes types for statically resolved source calls and callable values
+/// before effect analysis. Dynamic and deferred calls remain the responsibility of the
 /// later, effect-informed invocation pass.
 pub struct PrepareDirectInvocationTypesPass;
 
@@ -51,11 +51,13 @@ impl Pass<ProjectContext> for PrepareDirectInvocationTypesPass {
             if !fact.deferred_effect_row_obligations.is_empty() {
                 continue;
             }
-            let Some(etas_hir::HirExpr::Call { callee, .. }) = hir.hir.exprs.get(*expr) else {
-                continue;
-            };
-            let Some(etas_hir::HirExpr::Path(path)) = hir.hir.exprs.get(*callee) else {
-                continue;
+            let path = match hir.hir.exprs.get(*expr) {
+                Some(etas_hir::HirExpr::Call { callee, .. }) => match hir.hir.exprs.get(*callee) {
+                    Some(etas_hir::HirExpr::Path(path)) => path,
+                    _ => continue,
+                },
+                Some(etas_hir::HirExpr::Path(path)) => path,
+                _ => continue,
             };
             let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
                 continue;
