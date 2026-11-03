@@ -90,6 +90,9 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     if facts.known_std_types.json_value.is_none() {
         facts.known_std_types.json_value = body.known_std_types.json_value;
     }
+    if facts.known_std_types.message.is_none() {
+        facts.known_std_types.message = body.known_std_types.message;
+    }
     if facts.known_std_types.priority_queue.is_none() {
         facts.known_std_types.priority_queue = body.known_std_types.priority_queue;
     }

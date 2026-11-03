@@ -48,3 +48,12 @@ fn ambiguous_default_method_is_rejected_but_explicit_selection_has_a_target() {
     );
     assert_eq!(output.facts.checked_method_calls.len(), 1);
 }
+
+#[test]
+fn delayed_method_results_materialize_generic_record_projections() {
+    let output = check(include_str!(
+        "fixtures/method_resolution/generic_projection.es"
+    ));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 2);
+}

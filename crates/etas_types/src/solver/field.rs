@@ -68,6 +68,22 @@ fn projected_fields(
     known: &crate::KnownStdTypes,
     base: TypeId,
 ) -> Result<Option<crate::RecordType>, crate::TypeSubstitutionError> {
+    if let Some(Type::Message(payload)) = store.get(base) {
+        let Some(owner) = known.message else {
+            return Ok(None);
+        };
+        let Some(Type::Nominal(declaration)) = store.get(owner) else {
+            return Err(crate::TypeSubstitutionError::InvalidApplication(owner));
+        };
+        let Some(mut fields) = record_fields(store, owner)? else {
+            return Ok(None);
+        };
+        let substitutions = declaration.params.iter().cloned().zip([*payload]).collect();
+        for field in &mut fields.fields {
+            field.ty = crate::substitute_named_params_in_store(store, field.ty, &substitutions)?;
+        }
+        return Ok(Some(fields));
+    }
     let Some(fields) = known.projected_field_templates(store, base) else {
         return Ok(None);
     };

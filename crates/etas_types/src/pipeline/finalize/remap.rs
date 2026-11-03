@@ -731,6 +731,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .filesystem_io_error
         .map(|ty| remapper.ty(ty));
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.message = facts.known_std_types.message.map(|ty| remapper.ty(ty));
     for ty in facts.known_std_types.runtime_types.values_mut() {
         *ty = remapper.ty(*ty);
     }

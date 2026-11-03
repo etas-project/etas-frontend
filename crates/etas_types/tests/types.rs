@@ -3020,6 +3020,25 @@ flow main(input: string) -> Option<Message<string>> {
 }
 
 #[test]
+fn message_constructor_chain_keeps_inferred_payload_for_methods_and_fields() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "module app.main; import std.agent.message.Message; flow main() -> string { let message = Message.new(\"payload\"); return message.body; }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    let (call, _) = hir.exprs.iter().find(|(_, expr)| matches!(expr, etas_hir::HirExpr::MethodCall { method, .. } if method == "new")).unwrap();
+    let ty = output.facts.expr_types[&call];
+    assert!(
+        matches!(output.store.get(ty), Some(Type::Message(_))),
+        "{:?}",
+        output.store.get(ty)
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
 fn check_program_types_message_body_as_payload() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
