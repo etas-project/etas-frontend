@@ -82,8 +82,8 @@ pub use project::{
     SourceSet, UnitKind, UnitNode, UnitTarget, UnitTree,
 };
 pub use residual::{
-    CheckedResidualBinding, CheckedResidualPlan, CheckedResidualPlans, ResidualActionError,
-    ResidualBindingError,
+    CheckedResidualApplication, CheckedResidualBinding, CheckedResidualPlan, CheckedResidualPlans,
+    ResidualActionError, ResidualBindingError,
 };
 pub use session::{
     AllocationSnapshot, CheckMemoryReport, DefinitionTarget, DiagnosticDelta,

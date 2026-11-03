@@ -23,10 +23,17 @@ impl TraceSpecMaterializer<'_> {
             return Ok(Some(Vec::new()));
         }
         let mut bindings = Vec::with_capacity(arguments.len());
-        for (source, checked_id) in reference.spec_args.iter().zip(arguments) {
+        for source in &reference.spec_args {
             let Some(ty) = self.hir.types.get(*source) else {
                 return Err(EffectPipelineError::MissingTypeFact { ty: *source });
             };
+            // Keep the declaration recipe separate from its checked application.
+            let checked_id = self
+                .types
+                .facts
+                .type_refs
+                .get(source)
+                .ok_or(EffectPipelineError::MissingTypeFact { ty: *source })?;
             let Some(checked) = self.types.store.get(*checked_id) else {
                 return Err(EffectPipelineError::InvalidCallableFacts {
                     reason: "trace spec argument has no checked type".into(),

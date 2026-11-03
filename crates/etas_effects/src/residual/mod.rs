@@ -17,8 +17,8 @@ use etas_code::residual::{
     },
     model::{ResidualKind, ResidualObligation, ResidualObligationSet, ResidualSetLimits},
     monitor::{
-        AlternativeLimits, CompiledTraceAlternatives, CompiledTraceComponent,
-        ConcreteEvidenceLimits, MAX_TRACE_TEMPLATE_NODES, TraceComponentLimits,
+        AlternativeLimits, ConcreteEvidenceLimits, MAX_TRACE_TEMPLATE_NODES, TraceComponentLimits,
+        TraceComponentMonitor,
     },
     pattern::ActionPatternLimits,
     plan::{SemanticPlanComponent, SemanticPlanLimits, SemanticPlanMapping, SemanticResidualPlan},
@@ -149,9 +149,6 @@ pub enum ResidualPlanFailure {
     MissingProjector,
     Projection(String),
     Identity(String),
-    /// The obligation depends on generic substitutions; bound specialization
-    /// of semantic plans is not implemented.
-    GenericSubstitution,
     Plan(String),
     Verification(String),
 }
@@ -309,7 +306,7 @@ impl<'a> ResidualPlanInput<'a> {
         &self,
         type_fact_index: usize,
         item: HirItemId,
-    ) -> Result<Result<CompiledTraceAlternatives, ResidualPlanFailure>, EffectPipelineError> {
+    ) -> Result<Result<TraceComponentMonitor, ResidualPlanFailure>, EffectPipelineError> {
         let Some(projector) = self.projector else {
             return Ok(Err(ResidualPlanFailure::MissingProjector));
         };
@@ -439,9 +436,6 @@ fn lower_requirement(
             Ok(identity) => identity,
             Err(failure) => return Ok(Err(failure)),
         };
-        if !identity.inputs().static_bindings.is_empty() {
-            return Ok(Err(ResidualPlanFailure::GenericSubstitution));
-        }
         let reference = match identity
             .reference(input.limits.identity.max_generic_arguments, input.control)
         {
@@ -462,10 +456,8 @@ fn lower_requirement(
             Ok(obligation) => obligation,
             Err(error) => return Ok(Err(ResidualPlanFailure::Identity(format!("{error:?}")))),
         };
-        let component = match CompiledTraceComponent::compile(
+        let component = match monitor.compile_component(
             obligation.clone(),
-            monitor.template(),
-            monitor.patterns(),
             &layout,
             input.limits.component(),
         ) {
@@ -485,7 +477,7 @@ fn lower_requirement(
             }
             Err(error) => return Ok(Err(ResidualPlanFailure::Plan(format!("{error:?}")))),
         }
-        components.push(SemanticPlanComponent::Trace(component));
+        components.push(SemanticPlanComponent::Trace(Box::new(component)));
         references.push((reference, *clause));
     }
     let plan = match SemanticResidualPlan::build(
@@ -646,8 +638,19 @@ fn verify_plan(
             Err(failure) => return Ok(Err(failure)),
         };
         let id: ObligationId = identity.id();
-        if reference.obligation() != id || !reference.substitutions().is_empty() {
+        if reference.obligation() != id {
             return failure("plan obligation identity differs from its source");
+        }
+        match identity.validate_reference(
+            reference,
+            input.limits.identity.max_generic_arguments,
+            input.control,
+        ) {
+            Ok(()) => {}
+            Err(crate::trace_spec::TraceObligationReferenceError::Interrupted(interruption)) => {
+                return Err(EffectPipelineError::Interrupted(interruption));
+            }
+            Err(_) => return failure("plan obligation bindings differ from its source"),
         }
         let Some(SemanticPlanComponent::Trace(component)) = lowered.plan.component_for(id) else {
             return failure("plan obligation has no trace component");

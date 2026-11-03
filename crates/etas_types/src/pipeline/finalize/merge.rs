@@ -8,7 +8,7 @@ pub fn merge_body_deltas<'a>(
         crate::TypeInterner::from_store(crate::TypeStore::with_base(base.types.clone()));
     for body in bodies {
         let body_facts = super::remap::remap_body_delta(body, base, &mut interner)?;
-        merge_facts(&mut facts, body_facts);
+        merge_facts(&mut facts, body_facts)?;
         diagnostics.extend(body.diagnostics.iter().cloned());
     }
     super::runtime_layouts::materialize(&facts, &mut interner)
@@ -35,7 +35,19 @@ pub fn merge_body_deltas_with_application<'a>(
     )
 }
 
-fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
+fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(), String> {
+    for conformance in body.trace_spec_conformances {
+        let target = facts
+            .trace_spec_conformances
+            .iter_mut()
+            .find(|fact| {
+                fact.item == conformance.item
+                    && fact.symbol == conformance.symbol
+                    && fact.span == conformance.span
+            })
+            .ok_or("instantiated trace conformance has no declaration fact")?;
+        *target = conformance;
+    }
     facts.type_generics.extend(body.type_generics);
     facts
         .external_type_aliases
@@ -108,4 +120,5 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) {
         .generic_instantiations
         .extend(body.generic_instantiations);
     facts.try_facts.extend(body.try_facts);
+    Ok(())
 }

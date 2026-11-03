@@ -216,16 +216,38 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         owner: GenericOwner,
         row: &etas_effects::EffectRow,
     ) -> Result<etas_code::CodeFingerprint, ProjectionError> {
+        let scope = self.scope(owner, &[])?;
+        self.finish_row_contract_fingerprint(scope, row)
+    }
+
+    pub(crate) fn finish_scoped_analysis_row_contract_fingerprint(
+        self,
+        owner: &GenericOwner,
+        row: &etas_effects::EffectRow,
+    ) -> Result<etas_code::CodeFingerprint, ProjectionError> {
+        let scope = self
+            .scopes
+            .iter()
+            .position(|scope| &scope.owner == owner)
+            .ok_or_else(|| ProjectionError::MissingIdentity("checked row owner".into()))?;
+        self.finish_row_contract_fingerprint(scope, row)
+    }
+
+    fn finish_row_contract_fingerprint(
+        mut self,
+        scope: usize,
+        row: &etas_effects::EffectRow,
+    ) -> Result<etas_code::CodeFingerprint, ProjectionError> {
         let mut references = Vec::new();
         if row.effects.is_empty() {
-            references.push(self.project_closed_analysis_row(owner, row)?);
+            references.push(self.analysis_row(row, scope)?);
         } else {
             for effect in row.effects.iter() {
                 let singleton = etas_effects::EffectRow {
                     effects: etas_effects::EffectSet::one(effect.clone()),
                     open: row.open,
                 };
-                references.push(self.project_closed_analysis_row(owner.clone(), &singleton)?);
+                references.push(self.analysis_row(&singleton, scope)?);
             }
         }
         let mut budget =

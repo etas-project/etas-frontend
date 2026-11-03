@@ -2,10 +2,8 @@ use std::cell::Cell;
 
 use etas_code::{
     CodeFingerprint, DefinitionKey, DefinitionKind, PackageKey, StableSourceKey,
-    StableSourceOrigin,
-    contract::CanonicalEffect,
-    descriptor::EffectTargetInfo,
-    residual::{monitor::CompiledTraceAlternatives, pattern::ActionPattern},
+    StableSourceOrigin, contract::CanonicalEffect, descriptor::EffectTargetInfo,
+    residual::pattern::ActionPattern,
 };
 use etas_core::{DiagnosticCode, EffectDiagnosticCode};
 
@@ -57,7 +55,8 @@ impl crate::TraceMonitorProjector for LabelProjector {
     fn project_trace_monitor(
         &self,
         request: crate::TraceMonitorProjectionRequest<'_>,
-    ) -> Result<CompiledTraceAlternatives, crate::ResidualIdentityError> {
+    ) -> Result<etas_code::residual::monitor::TraceComponentMonitor, crate::ResidualIdentityError>
+    {
         let call = self.calls.get() + 1;
         self.calls.set(call);
         if self.unavailable {
@@ -107,7 +106,11 @@ impl crate::TraceMonitorProjector for LabelProjector {
             }
         }
         lower_analyzed_trace_rules(lowering, projections)
-            .map(|lowered| lowered.monitor)
+            .map(|lowered| {
+                etas_code::residual::monitor::TraceComponentMonitor::Concrete(std::sync::Arc::new(
+                    lowered.monitor,
+                ))
+            })
             .map_err(|error| crate::ResidualIdentityError::Unavailable(format!("{error:?}")))
     }
 }
