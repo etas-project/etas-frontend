@@ -183,10 +183,42 @@ impl EffectSemantics<'_> {
             .checked_method_calls
             .get(&call)
             .ok_or_else(|| invalid("method evidence has no checked call fact"))?;
+        let lexical_owner = *self
+            .context
+            .view()
+            .index()
+            .expr_item
+            .get(&call)
+            .ok_or_else(|| invalid("method evidence has no checked lexical owner"))?;
+        let snapshot = self.callable_environment(environment)?;
+        let (types, rows) = self.native_environment_generics(lexical_owner, &snapshot.generics)?;
+        let names = types.iter().cloned().collect::<HashMap<_, _>>();
+        let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
+        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
+            .with_effect_arguments(&type_rows);
+        let mut arguments = self.call_generic_bindings(call);
+        for (_, ty) in &mut arguments.types {
+            *ty = substitution.substitute(*ty)?;
+        }
+        for (_, row) in &mut arguments.effect_rows {
+            *row = substitution.substitute_effect_row(row.clone())?;
+        }
+        self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
+        if let etas_types::method::MethodTarget::Source { callable, .. } = fact.target {
+            return self
+                .capture_source_method_implementation(
+                    callable,
+                    environment,
+                    snapshot,
+                    etas_types::GenericInstantiationFact {
+                        type_bindings: arguments.types,
+                        effect_row_bindings: arguments.effect_rows,
+                        deferred_effect_row_obligations: Vec::new(),
+                    },
+                )
+                .map(MethodEvidence::Resolved);
+        }
         if let etas_types::method::MethodTarget::External { identity } = &fact.target {
-            let snapshot = self.callable_environment(environment)?;
-            let mut arguments = self.call_generic_bindings(call);
-            self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
             return self
                 .capture_external_method(
                     identity,
@@ -215,19 +247,6 @@ impl EffectSemantics<'_> {
         else {
             return Err(invalid("method witness has no checked spec arguments"));
         };
-        let lexical_owner = *self
-            .context
-            .view()
-            .index()
-            .expr_item
-            .get(&call)
-            .ok_or_else(|| invalid("method evidence has no checked lexical owner"))?;
-        let snapshot = self.callable_environment(environment)?;
-        let (types, rows) = self.native_environment_generics(lexical_owner, &snapshot.generics)?;
-        let names = types.iter().cloned().collect::<HashMap<_, _>>();
-        let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
-            .with_effect_arguments(&type_rows);
         let receiver = substitution.substitute(fact.receiver_type)?;
         let args = spec_args
             .iter()
@@ -260,14 +279,6 @@ impl EffectSemantics<'_> {
         let declaration = method_fact
             .signature_in(&self.types.facts)
             .ok_or_else(|| invalid("method evidence callable signature is missing"))?;
-        let mut arguments = self.call_generic_bindings(call);
-        for (_, ty) in &mut arguments.types {
-            *ty = substitution.substitute(*ty)?;
-        }
-        for (_, row) in &mut arguments.effect_rows {
-            *row = substitution.substitute_effect_row(row.clone())?;
-        }
-        self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
         if let Some(EffectUnit::Item(item)) =
             self.checked_method_witness_target(receiver, &args, member)
         {
@@ -402,6 +413,21 @@ impl EffectSemantics<'_> {
         let arguments = method
             .implementation_instantiation(declaration, implementation, &arguments)
             .map_err(|reason| invalid(&reason))?;
+        self.capture_source_method_implementation(item, invocation, snapshot, arguments)
+    }
+
+    pub(super) fn capture_source_method_implementation(
+        &self,
+        item: HirItemId,
+        invocation: CallableEnvironmentId,
+        snapshot: CallableEnvironment,
+        arguments: etas_types::GenericInstantiationFact,
+    ) -> Result<LatentSource, EffectSpecializationError> {
+        let Some(etas_types::ItemSignature::Flow(implementation)) =
+            self.types.facts.item_signatures.get(&item)
+        else {
+            return Err(invalid("method implementation has no checked signature"));
+        };
         let mut generics = BTreeMap::new();
         for (position, parameter) in implementation.generic_params.iter().enumerate() {
             let value = match parameter.kind {

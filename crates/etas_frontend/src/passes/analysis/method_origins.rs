@@ -72,7 +72,14 @@ impl Pass<ProjectContext> for BindMethodOriginsPass {
             );
         };
         let mut origins = HashMap::new();
-        if !signatures.facts.external_methods.is_empty() {
+        if !signatures.facts.external_methods.is_empty()
+            && signatures.facts.methods.entries().any(|method| {
+                matches!(
+                    method.target,
+                    MethodTarget::Source { .. } | MethodTarget::Agent { .. }
+                )
+            })
+        {
             let identities = CheckedResidualIdentities::new(CheckedResidualIdentityInput {
                 hir: &hir.hir,
                 types: signatures,

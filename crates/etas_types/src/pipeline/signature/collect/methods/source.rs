@@ -109,10 +109,15 @@ pub(super) fn collect(
                     };
                     // Availability follows the public spec surface, not free-flow visibility.
                     fact.public = ctx
-                        .hir
-                        .symbols
-                        .get(implementation.spec_symbol)
-                        .is_some_and(|symbol| symbol.visibility == Visibility::Public);
+                        .signature_facts
+                        .external_specs
+                        .aliases
+                        .contains_key(&implementation.spec_symbol)
+                        || ctx
+                            .hir
+                            .canonical_source_symbol(implementation.spec_symbol)
+                            .and_then(|symbol| ctx.hir.symbols.get(symbol))
+                            .is_some_and(|symbol| symbol.visibility == Visibility::Public);
                     result.push(fact.clone());
                 }
             }
