@@ -870,11 +870,8 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for method in &mut facts.external_methods {
         method.self_type = remapper.ty(method.self_type);
-        if let crate::method::MethodEvidence::Implementation { subject, args, .. } =
-            &mut method.evidence
-        {
-            *subject = remapper.ty(*subject);
-            for ty in args {
+        for implementation in &mut method.implementations {
+            for ty in &mut implementation.args {
                 *ty = remapper.ty(*ty);
             }
         }

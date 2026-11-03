@@ -12,8 +12,14 @@ pub struct ExternalMethodFact {
     pub owner_params: Vec<crate::CallableGenericParam>,
     pub signature: CallableSignature,
     pub parameter_names: Vec<Option<String>>,
-    pub spec_member: Option<crate::SpecMethodIdentity>,
-    pub evidence: MethodEvidence,
+    pub implementations: Vec<ExternalMethodImplementationFact>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct ExternalMethodImplementationFact {
+    pub member: crate::SpecMethodIdentity,
+    pub spec: crate::CheckedSpecRef,
+    pub args: Vec<TypeId>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]

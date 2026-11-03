@@ -57,6 +57,11 @@ pub(super) fn apply(
                 .find(|(_, method)| &method.identity == identity)
                 .ok_or("external implementation references an unavailable method")?;
             let name = identity.name();
+            if provided.self_type != self_type {
+                return Err(
+                    "external method receiver differs from its implementation subject".into(),
+                );
+            }
             if !names.insert(name) {
                 return Err("external implementation has duplicate method evidence".into());
             }
@@ -68,7 +73,10 @@ pub(super) fn apply(
                 .signature_in(&ctx.signature_facts)
                 .cloned()
                 .ok_or("external spec method signature is missing")?;
-            let actual = provided.signature.clone();
+            let mut actual = provided.signature.clone();
+            if provided.receiver == crate::method::MethodReceiver::Component {
+                actual.params.remove(0);
+            }
             let expected = crate::lower::spec_method::specialize(
                 &mut ctx.interner,
                 &expected,
@@ -91,12 +99,13 @@ pub(super) fn apply(
         Ok(()) => {
             for (index, member) in pending {
                 let method = &mut ctx.signature_facts.external_methods[index];
-                method.spec_member = Some(member);
-                method.evidence = crate::method::MethodEvidence::Implementation {
-                    spec: spec.clone(),
-                    subject: self_type,
-                    args: args.to_vec(),
-                };
+                method.implementations.push(
+                    crate::facts::methods::ExternalMethodImplementationFact {
+                        member,
+                        spec: spec.clone(),
+                        args: args.to_vec(),
+                    },
+                );
             }
             true
         }

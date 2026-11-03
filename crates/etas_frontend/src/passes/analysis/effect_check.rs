@@ -1,7 +1,7 @@
 mod anchors;
 mod body_artifacts;
 mod external_metadata;
-mod residual_identity;
+pub(super) mod residual_identity;
 
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,

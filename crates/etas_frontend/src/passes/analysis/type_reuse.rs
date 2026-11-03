@@ -4,7 +4,9 @@ use etas_utils::{
 };
 
 use crate::incremental::{BodyArtifactIdentity, dependency_fingerprints_match};
-use crate::passes::artifacts::{AFFECTED_MODULE_SET, TYPE_ENVIRONMENT, TYPE_OUTPUT, UNIT_TREE};
+use crate::passes::artifacts::{
+    AFFECTED_MODULE_SET, BOUND_METHOD_ORIGINS, TYPE_ENVIRONMENT, TYPE_OUTPUT, UNIT_TREE,
+};
 use crate::{BODY_UNIT_KIND, ProjectContext};
 
 pub struct ReuseTypeBodyFactsPass;
@@ -16,6 +18,7 @@ impl Pass<ProjectContext> for ReuseTypeBodyFactsPass {
                 UNIT_TREE,
                 AFFECTED_MODULE_SET,
                 TYPE_ENVIRONMENT,
+                BOUND_METHOD_ORIGINS,
             ]))
             .produces(ArtifactSet::from_iter([ArtifactRef::unit_kind(
                 TYPE_OUTPUT,

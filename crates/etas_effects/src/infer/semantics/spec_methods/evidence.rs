@@ -184,22 +184,27 @@ impl EffectSemantics<'_> {
             .get(&call)
             .ok_or_else(|| invalid("method evidence has no checked call fact"))?;
         if let etas_types::method::MethodTarget::External { identity } = &fact.target {
+            let snapshot = self.callable_environment(environment)?;
+            let mut arguments = self.call_generic_bindings(call);
+            self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
             return self
                 .capture_external_method(
                     identity,
                     &fact.signature,
                     environment,
-                    self.callable_environment(environment)?,
-                    fact.instantiation.clone(),
+                    snapshot,
+                    (
+                        arguments.types,
+                        arguments
+                            .effect_rows
+                            .iter()
+                            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+                            .collect(),
+                    ),
                 )
                 .map(MethodEvidence::Resolved);
         }
-        let etas_types::method::MethodTarget::BoundSpec {
-            spec: etas_types::CheckedSpecRef::Source(spec),
-            member,
-            ..
-        } = &fact.target
-        else {
+        let etas_types::method::MethodTarget::BoundSpec { spec, member, .. } = &fact.target else {
             return Err(invalid(
                 "method evidence has no checked bound witness recipe",
             ));
@@ -210,10 +215,6 @@ impl EffectSemantics<'_> {
         else {
             return Err(invalid("method witness has no checked spec arguments"));
         };
-        let spec = self
-            .type_symbols
-            .canonical_symbol(self.hir, *spec)
-            .ok_or_else(|| invalid("method evidence has no canonical spec identity"))?;
         let lexical_owner = *self
             .context
             .view()
@@ -236,14 +237,23 @@ impl EffectSemantics<'_> {
                     .map_err(EffectSpecializationError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let signature = self
-            .types
-            .facts
-            .spec_signatures
-            .get(&spec)
-            .ok_or_else(|| invalid("method evidence spec signature is missing"))?;
-        let method_fact = signature
-            .methods
+        let (parameter_names, members) = match spec {
+            etas_types::CheckedSpecRef::Source(symbol) => self
+                .type_symbols
+                .canonical_symbol(self.hir, *symbol)
+                .and_then(|symbol| self.types.facts.spec_signatures.get(&symbol))
+                .map(|spec| (&spec.param_names, &spec.methods)),
+            etas_types::CheckedSpecRef::External(identity) => self
+                .types
+                .facts
+                .external_specs
+                .signatures
+                .get(identity)
+                .map(|spec| (&spec.param_names, &spec.methods)),
+            _ => None,
+        }
+        .ok_or_else(|| invalid("method evidence spec signature is missing"))?;
+        let method_fact = members
             .iter()
             .find(|candidate| candidate.identity == *member)
             .ok_or_else(|| invalid("method evidence declaration is missing"))?;
@@ -314,7 +324,7 @@ impl EffectSemantics<'_> {
             ));
         }
         let mut bound_bindings = names;
-        bound_bindings.extend(signature.param_names.iter().cloned().zip(args));
+        bound_bindings.extend(parameter_names.iter().cloned().zip(args));
         bound_bindings.extend(arguments.types);
         let mut type_rows = type_rows;
         type_rows.extend(arguments.effect_rows);

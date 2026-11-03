@@ -34,7 +34,14 @@ impl EffectSemantics<'_> {
             &implementation.signature,
             invocation,
             snapshot,
-            arguments,
+            (
+                arguments.type_bindings,
+                arguments
+                    .effect_row_bindings
+                    .iter()
+                    .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+                    .collect(),
+            ),
         )
     }
 
@@ -44,7 +51,7 @@ impl EffectSemantics<'_> {
         signature: &etas_types::CallableSignature,
         invocation: CallableEnvironmentId,
         snapshot: CallableEnvironment,
-        arguments: GenericInstantiationFact,
+        arguments: super::super::callable_generics::GenericSubstitutions,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let graph = self
             .implementation_identities
@@ -63,21 +70,19 @@ impl EffectSemantics<'_> {
             let value = match parameter.kind {
                 etas_types::CallableGenericParamKind::Type => CallableGenericValue::Type(
                     arguments
-                        .type_bindings
+                        .0
                         .iter()
                         .find(|(name, _)| name == &parameter.name)
                         .map(|(_, ty)| *ty)
                         .ok_or_else(|| invalid("external method type argument is missing"))?,
                 ),
                 etas_types::CallableGenericParamKind::Effect => CallableGenericValue::EffectRow(
-                    self.row_from_type_ref(
-                        arguments
-                            .effect_row_bindings
-                            .iter()
-                            .find(|(name, _)| name == &parameter.name)
-                            .map(|(_, row)| row)
-                            .ok_or_else(|| invalid("external method effect argument is missing"))?,
-                    ),
+                    arguments
+                        .1
+                        .iter()
+                        .find(|(name, _)| name == &parameter.name)
+                        .map(|(_, row)| row.clone())
+                        .ok_or_else(|| invalid("external method effect argument is missing"))?,
                 ),
             };
             generics.insert(

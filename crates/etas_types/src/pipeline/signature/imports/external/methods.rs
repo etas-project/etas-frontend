@@ -52,8 +52,7 @@ pub(super) fn apply(
                 owner_params,
                 signature,
                 parameter_names,
-                spec_member: None,
-                evidence: crate::method::MethodEvidence::Inherent,
+                implementations: Vec::new(),
             });
     }
 }
