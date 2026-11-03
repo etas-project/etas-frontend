@@ -195,7 +195,7 @@ impl DefinitionDescriptorProjector<'_> {
             .iter()
             .filter(|handler| match handler {
                 etas_effects::ParameterHandlerScopeRef::Native(handler) => {
-                    !self.handler_is_disjoint(*handler, exits)
+                    !self.error_handler_is_disjoint(*handler, exits)
                 }
                 etas_effects::ParameterHandlerScopeRef::External { .. } => true,
             })
@@ -211,7 +211,7 @@ impl DefinitionDescriptorProjector<'_> {
             .collect()
     }
 
-    fn handler_is_disjoint(&self, handler: HirExprId, exits: &CallableExitSummary) -> bool {
+    fn error_handler_is_disjoint(&self, handler: HirExprId, exits: &CallableExitSummary) -> bool {
         let Some(span) = self.handler_scope_source(handler) else {
             return false;
         };
@@ -226,7 +226,15 @@ impl DefinitionDescriptorProjector<'_> {
             .peekable();
         evidence.peek().is_some()
             && evidence.all(|gap| {
-                gap.normal_control && coverage.rows_disjoint(&gap.handled, &gap.body_escaping)
+                // Escaping rows bound propagated Error instances, not action
+                // requests that an intrinsic may handle by default.
+                gap.normal_control
+                    && gap
+                        .handled
+                        .effects
+                        .iter()
+                        .all(|effect| matches!(effect, Effect::Error(_)))
+                    && coverage.rows_disjoint(&gap.handled, &gap.body_escaping)
             })
     }
 
