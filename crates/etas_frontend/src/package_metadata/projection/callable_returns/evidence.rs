@@ -133,12 +133,7 @@ impl ProjectMetadataProjection<'_> {
             .checked_method_calls
             .get(&call)
             .ok_or_else(|| invalid("method evidence has no checked call fact"))?;
-        let etas_types::method::MethodTarget::BoundSpec {
-            spec: etas_types::CheckedSpecRef::Source(symbol),
-            member,
-            ..
-        } = &fact.target
-        else {
+        let etas_types::method::MethodTarget::BoundSpec { spec, member, .. } = &fact.target else {
             return Err(invalid(
                 "method evidence has no checked bound witness recipe",
             ));
@@ -149,24 +144,41 @@ impl ProjectMetadataProjection<'_> {
         else {
             return Err(invalid("method evidence has no checked spec arguments"));
         };
-        let symbol = self
-            .checked
-            .hir
-            .canonical_source_symbol(*symbol)
-            .ok_or_else(|| invalid("method evidence has no canonical spec symbol"))?;
-        let spec = self
-            .symbol_canonical_path(symbol)
-            .ok_or_else(|| invalid("method evidence spec has no exportable identity"))?;
-        let declaration = self
-            .checked
-            .types
-            .spec_signatures
-            .get(&symbol)
-            .and_then(|spec| {
-                spec.methods
-                    .iter()
-                    .find(|candidate| candidate.identity == *member)
-            })
+        let (spec, methods) = match spec {
+            etas_types::CheckedSpecRef::Source(symbol) => {
+                let symbol = self
+                    .checked
+                    .hir
+                    .canonical_source_symbol(*symbol)
+                    .ok_or_else(|| invalid("method evidence has no canonical spec symbol"))?;
+                let path = self
+                    .symbol_canonical_path(symbol)
+                    .ok_or_else(|| invalid("method evidence spec has no exportable identity"))?;
+                let declaration = self
+                    .checked
+                    .types
+                    .spec_signatures
+                    .get(&symbol)
+                    .ok_or_else(|| invalid("method evidence spec declaration is missing"))?;
+                (path, &declaration.methods)
+            }
+            etas_types::CheckedSpecRef::External(identity) => {
+                let declaration = self
+                    .checked
+                    .types
+                    .external_specs
+                    .signatures
+                    .get(identity)
+                    .ok_or_else(|| {
+                        invalid("method evidence external spec declaration is missing")
+                    })?;
+                (identity.path.clone(), &declaration.methods)
+            }
+            _ => return Err(invalid("method evidence has no portable spec identity")),
+        };
+        let declaration = methods
+            .iter()
+            .find(|candidate| candidate.identity == *member)
             .ok_or_else(|| invalid("method evidence has no checked method declaration"))?;
         let signature = declaration
             .signature_in(&self.checked.types)
