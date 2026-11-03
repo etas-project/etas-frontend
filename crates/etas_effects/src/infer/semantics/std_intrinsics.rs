@@ -809,7 +809,8 @@ impl EffectSemantics<'_> {
                 let summary = self.summary_from_std_flow(call, symbol, flow, span);
                 let mut summary = match reducer {
                     etas_std::StdActionReducer::ReadUntilLimit { .. } => summary.repeated(),
-                    etas_std::StdActionReducer::BoundedFileRead { .. } => {
+                    etas_std::StdActionReducer::BoundedFileRead { .. }
+                    | etas_std::StdActionReducer::BoundedDirectoryList { .. } => {
                         self.separate_reducer_default_effects(summary, call, flow, *stable_id, span)
                     }
                 };
