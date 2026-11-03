@@ -229,7 +229,11 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 // choose one solved summary. This does not merge their behavior.
                 let mut dependencies = std::collections::BTreeSet::new();
                 for implementation in &self.types.facts.spec_impls {
-                    if implementation.spec_symbol != spec {
+                    if self
+                        .type_symbols
+                        .canonical_symbol(self.hir, implementation.spec_symbol)
+                        != Some(spec)
+                    {
                         continue;
                     }
                     for candidate in implementation
@@ -364,7 +368,8 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             None
         };
         let summary = match &frozen {
-            Some(crate::FrozenCallableSummary::Solved(summary)) => summary.as_ref(),
+            Some(crate::FrozenCallableSummary::Solved(summary))
+            | Some(crate::FrozenCallableSummary::Replaced { pinned: summary }) => summary.as_ref(),
             Some(crate::FrozenCallableSummary::AnalyzePinnedSource) => summary,
             Some(crate::FrozenCallableSummary::Unavailable) => {
                 return self.incomplete_at(
@@ -718,7 +723,8 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
     ) -> Self::Domain {
         if let Some(item) = self.frozen_call_targets.get(&site.call).copied() {
             match self.frozen_calls.get(&item).cloned() {
-                Some(crate::FrozenCallableSummary::Solved(summary)) => {
+                Some(crate::FrozenCallableSummary::Solved(summary))
+                | Some(crate::FrozenCallableSummary::Replaced { pinned: summary }) => {
                     return InterproceduralSemantics::direct_call(
                         self,
                         context,

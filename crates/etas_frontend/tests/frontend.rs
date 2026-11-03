@@ -3646,9 +3646,7 @@ flow main() -> i64 {
                 revision: ProjectRevision(1),
                 source_changes: Vec::new(),
                 dependency_overlay_changes: Vec::new(),
-                environment_change: Some(EnvironmentChange::Replace(Box::new(
-                    ProjectEnvironmentInput::default(),
-                ))),
+                environment_change: Some(EnvironmentChange::Replace(Box::default())),
                 option_changes: Vec::new(),
             },
         )
@@ -4087,9 +4085,7 @@ fn frontend_session_project_wide_changes_invalidate_graph_and_affect_all_modules
             revision: ProjectRevision(1),
             source_changes: Vec::new(),
             dependency_overlay_changes: Vec::new(),
-            environment_change: Some(EnvironmentChange::Replace(Box::new(
-                ProjectEnvironmentInput::default(),
-            ))),
+            environment_change: Some(EnvironmentChange::Replace(Box::default())),
             option_changes: Vec::new(),
         },
         ProjectChangeSet {

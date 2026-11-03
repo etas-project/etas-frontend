@@ -18,9 +18,14 @@ use crate::{
 pub(super) fn external_implementations(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
+    std_registry: &etas_std::StdRegistry,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>> {
+) -> Result<
+    Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>>,
+    String,
+> {
+    let mut contracts = ExternalContractIndex::new(environment, std_registry)?;
     let mut result: Vec<
         etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>,
     > = Vec::new();
@@ -50,6 +55,7 @@ pub(super) fn external_implementations(
                         identity: method.identity.clone(), graph_key,
                         graph: std::sync::Arc::new(method.callable.clone()),
                         values: crate::project::lower_callable_graph(&method.callable, types)?,
+                        callable_contract: contracts.get_callable(&etas_code::CallableId::method(method.identity.clone()))?,
                     }))
                 })();
                 match checked {
@@ -64,7 +70,7 @@ pub(super) fn external_implementations(
             }
         }
     }
-    result
+    Ok(result)
 }
 
 pub(super) fn external_effect_metadata(
@@ -364,7 +370,7 @@ type ContractCandidate<'a> = (
 
 struct ExternalContractIndex<'a> {
     paths: HashMap<crate::ExternalPackageId, HashMap<Vec<String>, &'a etas_code::DefinitionKey>>,
-    candidates: BTreeMap<&'a etas_code::DefinitionKey, Vec<ContractCandidate<'a>>>,
+    candidates: BTreeMap<etas_code::CallableId, Vec<ContractCandidate<'a>>>,
     graphs: HashMap<usize, Arc<etas_code::descriptor::DescriptorGraphInput>>,
     fingerprints: HashMap<usize, etas_code::CodeFingerprint>,
     definition_paths: Arc<BTreeMap<etas_code::DefinitionKey, Vec<Vec<String>>>>,
@@ -411,12 +417,10 @@ impl<'a> ExternalContractIndex<'a> {
                 && let Some(headers) = &set.headers
             {
                 for header in &headers.callables {
-                    if let Some(identity) = header.id.as_declaration() {
-                        candidates
-                            .entry(identity)
-                            .or_default()
-                            .push((index, set, header));
-                    }
+                    candidates
+                        .entry(header.id.clone())
+                        .or_default()
+                        .push((index, set, header));
                 }
             }
         }
@@ -437,6 +441,18 @@ impl<'a> ExternalContractIndex<'a> {
         let Some(identity) = self.paths.get(&package).and_then(|paths| paths.get(path)) else {
             return Ok(None);
         };
+        if !identity.kind().is_callable() {
+            return Ok(None);
+        }
+        let identity = etas_code::CallableId::declaration((*identity).clone())
+            .map_err(|error| error.to_string())?;
+        self.get_callable(&identity)
+    }
+
+    fn get_callable(
+        &mut self,
+        identity: &etas_code::CallableId,
+    ) -> Result<Option<etas_effects::ExternalCallableContract>, String> {
         let Some(candidates) = self.candidates.get(identity) else {
             return Ok(None);
         };

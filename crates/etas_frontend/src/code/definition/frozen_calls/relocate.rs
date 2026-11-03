@@ -84,14 +84,18 @@ impl<'a> Relocation<'a> {
                 origin.scope.clone(),
                 to.native.graph.type_fingerprint(origin.descriptor)?,
             );
-            if target_types
-                .insert(key, origin.local)
-                .is_some_and(|previous| previous != origin.local)
-            {
-                return Err(invalid(
-                    "canonical type has ambiguous native target identities",
-                ));
-            }
+            // The descriptor key proves canonical identity even when a store
+            // contains both a source handle and its imported canonical handle.
+            target_types
+                .entry(key)
+                .and_modify(|previous| {
+                    if target.type_store.nominal_identity(origin.local).is_some()
+                        || target.type_store.parameter_identity(origin.local).is_some()
+                    {
+                        *previous = origin.local;
+                    }
+                })
+                .or_insert(origin.local);
         }
         let mut types: BTreeMap<GenericOwner, HashMap<TypeId, TypeId>> = BTreeMap::new();
         for origin in &from.native.type_origins {

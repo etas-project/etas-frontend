@@ -236,7 +236,7 @@ impl EffectSemantics<'_> {
                         Value::EffectRow(self.specialize_effect_row(&row, &[], types, rows)?)
                     }
                     Value::EffectRowFromCall { row, source } => {
-                        let specialized = self.specialize_effect_row(&row, &[], &types, &rows)?;
+                        let specialized = self.specialize_effect_row(&row, &[], types, rows)?;
                         if specialized == row {
                             Value::EffectRowFromCall { row, source }
                         } else {

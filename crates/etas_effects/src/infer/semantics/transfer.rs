@@ -393,10 +393,14 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 source @ LatentSource::Metadata(_),
             )) => match self.latent_source_summary(source, span) {
                 Ok(summary) => {
-                    state
-                        .exits
-                        .gaps
-                        .insert(crate::OutcomeAnalysisGap::ExternalCall(expr));
+                    if let LatentSource::Metadata(source) = source {
+                        self.inputs
+                            .metadata_call_targets
+                            .entry(expr)
+                            .or_default()
+                            .insert(source);
+                    }
+                    self.note_call_outcomes(expr, None, &summary, &mut state);
                     state.summary.seq_assign(&summary);
                     AnalysisStep::handled(state)
                 }

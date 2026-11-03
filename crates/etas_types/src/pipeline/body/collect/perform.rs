@@ -148,13 +148,20 @@ pub fn collect_perform<E>(
         arg_types.push(actual);
     }
 
-    let output = expected.unwrap_or_else(|| {
-        if signature.generic_params.is_empty() {
-            signature.output
-        } else {
-            ctx.fresh_type_var()
-        }
-    });
+    let output = if matches!(
+        ctx.ctx.interner.store().get(signature.output),
+        Some(Type::Primitive(PrimitiveType::Never))
+    ) {
+        signature.output
+    } else {
+        expected.unwrap_or_else(|| {
+            if signature.generic_params.is_empty() {
+                signature.output
+            } else {
+                ctx.fresh_type_var()
+            }
+        })
+    };
     let callee = ctx.ctx.interner.intern(Type::Function(FlowType {
         input: signature.params.clone(),
         output: signature.output,

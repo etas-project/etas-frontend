@@ -96,6 +96,7 @@ pub struct ExternalSpecImplementationMetadata {
     pub graph_key: etas_code::CodeFingerprint,
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub values: Vec<ExternalCallableValueMetadata>,
+    pub callable_contract: Option<ExternalCallableContract>,
 }
 
 pub(crate) struct ExternalCallableEffectView<'a> {

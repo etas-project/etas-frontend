@@ -16,10 +16,10 @@ use self::external_metadata::{
 };
 use crate::incremental::CheckScope;
 use crate::passes::artifacts::{
-    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, PARSED_SOURCE_SET,
-    PREPARED_EFFECT_REGISTRY, PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS, SOURCE_SET,
-    TYPE_ENVIRONMENT, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, VERIFIED_RESIDUAL_PLANS,
-    global_with_diagnostics,
+    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_CATALOG, MODULE_INDEX,
+    PARSED_SOURCE_SET, PREPARED_EFFECT_REGISTRY, PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS,
+    SOURCE_SET, TYPE_ENVIRONMENT, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
+    VERIFIED_RESIDUAL_PLANS, global_with_diagnostics,
 };
 use crate::{ProjectContext, UnitKind, UnitTarget};
 
@@ -31,6 +31,7 @@ impl Pass<ProjectContext> for PrepareEffectRegistryPass {
             .requires(ArtifactSet::from([
                 HIR_OUTPUT,
                 MODULE_INDEX,
+                MODULE_CATALOG,
                 SIGNATURE_FACTS,
                 TYPE_ENVIRONMENT,
                 RESOLVED_IMPORTS,
@@ -66,7 +67,10 @@ impl Pass<ProjectContext> for PrepareEffectRegistryPass {
             );
         };
         let environment = environment.environment();
-        let anchors = ExternalImportAnchorIndex::build(imports, environment);
+        let Some(catalog) = context.module_catalog.as_ref() else {
+            return PassResult::failed("effect preparation requires the module catalog");
+        };
+        let anchors = ExternalImportAnchorIndex::build(imports, environment, catalog);
         let mut diagnostics = Vec::new();
         let mut metadata =
             match external_effect_metadata(environment, signatures, &anchors, &mut diagnostics) {
@@ -181,6 +185,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             .requires(ArtifactSet::from([
                 HIR_OUTPUT,
                 MODULE_INDEX,
+                MODULE_CATALOG,
                 TYPE_OUTPUT,
                 PREPARED_EFFECT_REGISTRY,
                 RESOLVED_IMPORTS,
@@ -223,7 +228,11 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             return PassResult::failed("effect checking requires validated external metadata");
         };
         let environment = validated_environment.environment();
-        let external_anchors = ExternalImportAnchorIndex::build(resolved_imports, environment);
+        let Some(catalog) = context.module_catalog.as_ref() else {
+            return PassResult::failed("effect checking requires the module catalog");
+        };
+        let external_anchors =
+            ExternalImportAnchorIndex::build(resolved_imports, environment, catalog);
         let mut external_metadata_diagnostics = Vec::new();
         let Some(prepared) = context.prepared_effect_registry.take() else {
             return PassResult::failed("effect checking requires the prepared effect registry");
@@ -239,12 +248,16 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             Ok(summaries) => summaries,
             Err(error) => return PassResult::failed(error),
         };
-        let external_implementations = external_metadata::external_implementations(
+        let external_implementations = match external_metadata::external_implementations(
             environment,
             types,
+            &context.std_registry,
             &external_anchors,
             &mut external_metadata_diagnostics,
-        );
+        ) {
+            Ok(implementations) => implementations,
+            Err(error) => return PassResult::failed(error),
+        };
         let external_trace_specs = external_trace_spec_summaries(
             environment,
             types,

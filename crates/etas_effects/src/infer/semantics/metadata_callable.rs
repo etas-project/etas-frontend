@@ -231,6 +231,28 @@ impl EffectSemantics<'_> {
             });
         }
         let (types, rows) = self.metadata_environment_generics_in_mode(source, mode)?;
+        if let Some(method) = self
+            .implementation_graphs
+            .get(&source.graph)
+            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
+            && graph.sources.as_slice() == [CallableValueSource::Value(source.value)]
+            && let Some(contract) = &method.callable_contract
+        {
+            summary.exits = self.external_callback_outcomes(
+                contract,
+                &summary,
+                &etas_types::FlowType {
+                    input: checked.params.clone(),
+                    output: checked.output,
+                    effects: None,
+                },
+                span,
+                &types,
+                &self
+                    .metadata_evidence_generics(source)
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
+            )?;
+        }
         summary = self
             .specialize_summary_with_bindings(&summary, &[], &types, &rows)
             .map_err(|error| match error {

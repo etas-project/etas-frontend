@@ -136,7 +136,9 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
                 let matches = match spec {
                     etas_types::CheckedSpecRef::Source(symbol) => {
                         self.symbols.canonical_symbol(self.hir, *symbol)
-                            == Some(implementation.spec_symbol)
+                            == self
+                                .symbols
+                                .canonical_symbol(self.hir, implementation.spec_symbol)
                     }
                     etas_types::CheckedSpecRef::External(identity) => {
                         self.facts

@@ -190,7 +190,10 @@ impl EffectSemantics<'_> {
             }
             LatentSource::Unit(EffectUnit::Item(item)) if self.frozen_calls.contains_key(&item) => {
                 match self.frozen_calls.get(&item)? {
-                    crate::FrozenCallableSummary::Solved(summary) => Some((**summary).clone()),
+                    crate::FrozenCallableSummary::Solved(summary)
+                    | crate::FrozenCallableSummary::Replaced { pinned: summary } => {
+                        Some((**summary).clone())
+                    }
                     crate::FrozenCallableSummary::AnalyzePinnedSource => self
                         .inputs
                         .unit_effects

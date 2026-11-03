@@ -87,6 +87,7 @@ pub struct ExternalSignatureInput {
     pub package_anchors: Vec<(ExternalPackageKey, etas_core::Span)>,
     pub metadata: Vec<ExternalPublicMetadataInput>,
     pub symbol_bindings: Vec<ExternalSymbolBindingInput>,
+    pub source_spec_bindings: Vec<ExternalSymbolBindingInput>,
     pub action_bindings: Vec<ExternalActionBindingInput>,
     pub definition_bindings: Vec<(SymbolId, etas_code::DefinitionKey)>,
     pub agent_reflections: Vec<(

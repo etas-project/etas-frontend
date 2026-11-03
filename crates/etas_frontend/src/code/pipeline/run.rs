@@ -212,6 +212,10 @@ pub(crate) fn analyze_body_with_dependencies(
                         reason: "checked original baseline has no descriptor artifact".into(),
                         missing_artifact: Some(super::passes::CANDIDATE_DESCRIPTORS),
                     })?,
+                analysis
+                    .descriptors
+                    .as_ref()
+                    .and_then(|descriptors| descriptors.applied_contract.clone()),
             )?),
             None => {
                 return Err(CandidateAnalysisError::Pipeline {

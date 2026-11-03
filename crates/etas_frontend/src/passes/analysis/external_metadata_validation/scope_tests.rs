@@ -6,6 +6,7 @@ fn empty_external_trace_choice_is_not_treated_as_empty_trace() {
         &ProjectExternalActionTraceInput::Choice(Vec::new()),
         &GenericScope::default(),
         &[],
+        0,
     )
     .unwrap_err();
     assert!(error.contains("choice requires an alternative"), "{error}");
@@ -13,7 +14,8 @@ fn empty_external_trace_choice_is_not_treated_as_empty_trace() {
         validate_action_trace(
             &ProjectExternalActionTraceInput::Empty,
             &GenericScope::default(),
-            &[]
+            &[],
+            0,
         )
         .is_ok()
     );

@@ -62,6 +62,7 @@ impl BodyEffectOutput {
         expressions!(
             handled_body_requests,
             native_call_targets,
+            metadata_call_targets,
             generic_effect_rows,
             expr_effects,
             handler_values,

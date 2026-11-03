@@ -48,12 +48,7 @@ pub(crate) fn analyze(
         applied_candidate.map_or_else(|| catalog.descriptors(), |applied| applied.descriptors());
     let mut checks = Vec::new();
     for (id, expected) in baseline.callables() {
-        let completed = completed_baseline.and_then(|baseline| {
-            baseline
-                .catalog()
-                .callable(id)
-                .map(|callable| (baseline.catalog().descriptors(), callable))
-        });
+        let completed = completed_baseline.and_then(|baseline| baseline.callable(id));
         let mut record = |component, relation| {
             checks.push(CallableContractCheck {
                 callable: id.clone(),
@@ -143,12 +138,7 @@ pub(crate) fn analyze(
                     let expected = match baseline.request_instances(id) {
                         Some(instances) => Some(instances.clone()),
                         None => completed_baseline
-                            .map(|baseline| {
-                                crate::code::definition::callable_request_instances(
-                                    baseline.catalog(),
-                                    id,
-                                )
-                            })
+                            .map(|baseline| baseline.request_instances(id))
                             .transpose()?
                             .flatten(),
                     };

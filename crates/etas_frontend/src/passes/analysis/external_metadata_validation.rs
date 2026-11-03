@@ -14,7 +14,7 @@ use crate::{
 };
 
 use crate::passes::artifacts::{
-    MODULE_INDEX, RESOLVED_IMPORTS, SOURCE_SET, VALIDATED_EXTERNAL_ENVIRONMENT,
+    MODULE_CATALOG, MODULE_INDEX, RESOLVED_IMPORTS, SOURCE_SET, VALIDATED_EXTERNAL_ENVIRONMENT,
     global_with_diagnostics,
 };
 
@@ -38,6 +38,7 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
                 RESOLVED_IMPORTS,
                 SOURCE_SET,
                 MODULE_INDEX,
+                MODULE_CATALOG,
             ]))
             .produces(global_with_diagnostics([VALIDATED_EXTERNAL_ENVIRONMENT]))
     }
@@ -829,8 +830,12 @@ fn external_package_import_span(
     package: ExternalPackageId,
 ) -> Option<etas_core::Span> {
     let resolved = context.resolved_imports.as_ref()?;
-    crate::project::ExternalImportAnchorIndex::build(resolved, &context.input.environment)
-        .package_span(package)
+    crate::project::ExternalImportAnchorIndex::build(
+        resolved,
+        &context.input.environment,
+        context.module_catalog.as_ref()?,
+    )
+    .package_span(package)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1684,7 +1689,12 @@ fn validate_effect_summaries(
                     .then_some(name.clone())
             })
             .collect::<Vec<_>>();
-        validate_action_trace(&summary.action_trace, scope, &callable_parameters)?;
+        validate_action_trace(
+            &summary.action_trace,
+            scope,
+            &callable_parameters,
+            parameter_names.len(),
+        )?;
         if let Some(behavior) = &summary.behavior {
             if behavior
                 .independent_determinism
@@ -1805,25 +1815,32 @@ fn validate_action_trace(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
+    root_parameter_count: usize,
 ) -> Result<(), String> {
     validate_action_trace_resource_bounds(trace)?;
-    validate_action_trace_semantics(trace, scope, parameter_names)
+    validate_action_trace_semantics(trace, scope, parameter_names, root_parameter_count)
 }
 
 fn validate_action_trace_semantics(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
+    root_parameter_count: usize,
 ) -> Result<(), String> {
     match trace {
         ProjectExternalActionTraceInput::Empty => Ok(()),
         ProjectExternalActionTraceInput::Event { action, .. } => validate_effect_ref(action, scope),
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
-            requests::validate_target(parameter, scope, parameter_names)
+            requests::validate_target(parameter, scope, parameter_names, root_parameter_count)
         }
         ProjectExternalActionTraceInput::Seq(children) => {
             for child in children {
-                validate_action_trace_semantics(child, scope, parameter_names)?;
+                validate_action_trace_semantics(
+                    child,
+                    scope,
+                    parameter_names,
+                    root_parameter_count,
+                )?;
             }
             Ok(())
         }
@@ -1832,12 +1849,17 @@ fn validate_action_trace_semantics(
                 return Err("external action trace choice requires an alternative".into());
             }
             for child in children {
-                validate_action_trace_semantics(child, scope, parameter_names)?;
+                validate_action_trace_semantics(
+                    child,
+                    scope,
+                    parameter_names,
+                    root_parameter_count,
+                )?;
             }
             Ok(())
         }
         ProjectExternalActionTraceInput::Repeat(child) => {
-            validate_action_trace_semantics(child, scope, parameter_names)
+            validate_action_trace_semantics(child, scope, parameter_names, root_parameter_count)
         }
         ProjectExternalActionTraceInput::UnknownOrder(actions) => {
             for action in actions {
@@ -1853,7 +1875,7 @@ fn validate_action_trace_semantics(
                 validate_effect_ref(action, scope)?;
             }
             for parameter in parameter_calls {
-                requests::validate_target(parameter, scope, parameter_names)?;
+                requests::validate_target(parameter, scope, parameter_names, root_parameter_count)?;
             }
             Ok(())
         }

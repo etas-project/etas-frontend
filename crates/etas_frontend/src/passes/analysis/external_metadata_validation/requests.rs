@@ -36,7 +36,7 @@ pub(super) fn validate(
         }
     }
     for parameter in &template.parameters {
-        validate_target(&parameter.parameter, scope, parameters)?;
+        validate_target(&parameter.parameter, scope, parameters, parameters.len())?;
         nodes = nodes.saturating_add(parameter.excluded.len());
         for effect in &parameter.excluded {
             validate_effect_ref(effect, scope)?;
@@ -52,6 +52,7 @@ pub(super) fn validate_target(
     target: &etas_package_metadata::CallableRequestTarget,
     scope: &GenericScope,
     parameters: &[String],
+    root_parameter_count: usize,
 ) -> Result<(), String> {
     use etas_package_metadata::{CallableRequestTarget, SpecMethodGenericArgument};
     target
@@ -86,7 +87,7 @@ pub(super) fn validate_target(
             .map_err(|error| error.to_string())?;
         argument
             .sources
-            .validate_references(Some((parameters.len(), &scope.parameter_kinds)))
+            .validate_references(Some((root_parameter_count, &scope.parameter_kinds)))
             .map_err(|error| error.to_string())?;
     }
     Ok(())

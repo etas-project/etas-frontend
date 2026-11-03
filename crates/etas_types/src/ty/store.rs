@@ -626,6 +626,13 @@ impl TypeInterner {
     }
 }
 
+fn canonical_type(ty: Type) -> Type {
+    match ty {
+        Type::Tuple(elements) if elements.is_empty() => Type::Primitive(PrimitiveType::Unit),
+        ty => ty,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,12 +828,5 @@ mod tests {
             bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
         assert_eq!(restored.parameter_identity(first), Some(&first_key));
         assert!(TypeUnifier::new(&restored).unify(first, second).is_err());
-    }
-}
-
-fn canonical_type(ty: Type) -> Type {
-    match ty {
-        Type::Tuple(elements) if elements.is_empty() => Type::Primitive(PrimitiveType::Unit),
-        ty => ty,
     }
 }

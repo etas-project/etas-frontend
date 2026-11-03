@@ -123,6 +123,18 @@ pub(super) fn compute_reachability(
             .iter()
             .map(|metadata| (metadata.package, metadata))
             .collect(),
+        module_paths: environment
+            .external_definition_origins
+            .iter()
+            .flat_map(|origin| {
+                origin.origins.modules.iter().map(|module| {
+                    (
+                        (origin.package, module.canonical_path.clone()),
+                        module.path.clone(),
+                    )
+                })
+            })
+            .collect(),
         tool_bindings: environment
             .tool_bindings
             .iter()
@@ -223,6 +235,7 @@ struct RuntimeSourceRequirementPlanner<'a> {
     namespaces: &'a crate::project::DependencyModuleNamespaces,
     packages: BTreeMap<ExternalPackageId, &'a ProjectExternalPackageInput>,
     metadata: BTreeMap<ExternalPackageId, &'a ProjectExternalPublicMetadataInput>,
+    module_paths: BTreeMap<(ExternalPackageId, Vec<String>), Vec<String>>,
     tool_bindings: BTreeSet<&'a str>,
     loaded_overlays: BTreeSet<(ExternalPackageId, ModulePath)>,
     requirements: RuntimeSourceRequirements,
@@ -302,14 +315,18 @@ impl RuntimeSourceRequirementPlanner<'_> {
                         .packages
                         .get(owner)
                         .ok_or("spec implementation has no owning package")?;
-                    let module = implementation_method
-                        .identity
-                        .implementation()
-                        .module()
-                        .to_vec();
-                    if module.is_empty() {
-                        return Err("spec implementation has no checked source module".into());
-                    }
+                    let module = self
+                        .module_paths
+                        .get(&(
+                            *owner,
+                            implementation_method
+                                .identity
+                                .implementation()
+                                .module()
+                                .to_vec(),
+                        ))
+                        .ok_or("spec implementation has no checked source module origin")?
+                        .clone();
                     if self.loaded_overlays.contains(&(
                         *owner,
                         ModulePath {

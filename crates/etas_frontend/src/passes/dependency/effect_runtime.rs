@@ -103,6 +103,10 @@ fn complete(context: &mut ProjectContext) -> Result<(), String> {
         let module = ModulePath {
             segments: namespace.path.clone(),
         };
+        if modules.modules.iter().any(|(_, loaded)| loaded.path == module
+            && matches!(loaded.origin, crate::ModuleOrigin::DependencySourceOverlay { package: owner, .. } if owner == package.id)) {
+            continue;
+        }
         let source = modules
             .dependency_namespaces
             .source_for_namespace(package.id, &module)?;

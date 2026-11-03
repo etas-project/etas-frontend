@@ -97,7 +97,11 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
             }
         }
     }
-    for binding in &input.symbol_bindings {
+    for binding in input
+        .symbol_bindings
+        .iter()
+        .chain(&input.source_spec_bindings)
+    {
         let identity = ExternalSpecIdentity {
             package: binding.package.0,
             path: binding.path.clone(),

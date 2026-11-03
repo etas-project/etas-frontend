@@ -355,6 +355,9 @@ fn infer_row_binding(
         // An unannotated callable has an unsolved latent row, not a proven
         // empty row. Its expression origin is solved by effect analysis.
         state.results[state.current].deferred.insert(tail.clone());
+        state.results[state.current]
+            .deferred_fixed
+            .push((tail.clone(), empty_row()));
         return;
     }
     let actual = actual.cloned().unwrap_or_else(empty_row);

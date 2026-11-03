@@ -37,14 +37,16 @@ impl NativeTypeCorrespondence {
     ) -> Result<Self, ProjectionError> {
         let mut declarations = BTreeMap::new();
         for (ty, identity) in native_type_declarations(target.type_store, target_identities) {
-            if declarations
-                .insert(identity, ty)
-                .is_some_and(|old| old != ty)
-            {
-                return Err(ProjectionError::Invalid(
-                    "ambiguous target type declaration".into(),
-                ));
-            }
+            declarations
+                .entry(identity)
+                .and_modify(|previous| {
+                    if target.type_store.nominal_identity(ty).is_some()
+                        || target.type_store.parameter_identity(ty).is_some()
+                    {
+                        *previous = ty;
+                    }
+                })
+                .or_insert(ty);
         }
         let declarations = native_type_declarations(source.type_store, source_identities)
             .filter_map(|(ty, identity)| declarations.get(identity).map(|target| (ty, *target)))
