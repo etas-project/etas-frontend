@@ -54,6 +54,50 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
         let (Some(hir), Some(base)) = (&context.hir, &context.type_environment) else {
             return PassResult::failed("body type check requires prepared signature environment");
         };
+        if let Some(application) = context
+            .candidate
+            .as_ref()
+            .and_then(|candidate| candidate.bound_application.as_ref())
+            .filter(|application| application.owner == item)
+        {
+            let result = match manager.execution_control() {
+                Some(control) => etas_types::check_instantiated_body_delta_controlled(
+                    &hir.hir,
+                    base,
+                    item,
+                    &application.arguments,
+                    context.std_registry.clone(),
+                    control,
+                ),
+                None => etas_types::check_instantiated_body_delta(
+                    &hir.hir,
+                    base,
+                    item,
+                    &application.arguments,
+                    context.std_registry.clone(),
+                ),
+            };
+            let output = match result {
+                Ok(output) => output,
+                Err(etas_types::BodyInstantiationError::Interrupted(interruption)) => {
+                    return PassResult::interrupted(interruption);
+                }
+                Err(error) => return PassResult::failed(error.to_string()),
+            };
+            context
+                .diagnostics
+                .extend(output.diagnostics().iter().cloned());
+            let Some(candidate) = context.candidate.as_mut() else {
+                return PassResult::failed("bound body lost its candidate environment");
+            };
+            if candidate.bound_body.replace(output).is_some() {
+                return PassResult::failed("bound candidate body was checked more than once");
+            }
+            return PassResult::changed(
+                PreservedArtifacts::All,
+                ArtifactSet::from_iter([ArtifactRef::unit_kind(TYPE_OUTPUT, BODY_UNIT_KIND)]),
+            );
+        }
         let output = match manager.execution_control() {
             Some(control) => match etas_types::check_body_delta_controlled(
                 &hir.hir,

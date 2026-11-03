@@ -273,6 +273,47 @@ impl Parser<'_> {
         }
     }
 
+    pub(crate) fn trace_effect_pattern(&mut self) -> EffectRef {
+        let path = self.path();
+        let args = if self.cursor.at_punct(Punct::Lt)
+            && self.cursor.nth(1).kind != TokenKind::Punct(Punct::Lt)
+        {
+            self.cursor.bump();
+            let args = self.comma_list(Punct::Gt, |this| this.trace_effect_pattern_arg());
+            self.expect_punct(Punct::Gt, "expected `>` after effect pattern arguments");
+            args
+        } else {
+            Vec::new()
+        };
+        let span = args.last().map_or(path.span, EffectArg::span);
+        EffectRef {
+            span: path.span.cover(span),
+            path,
+            args,
+        }
+    }
+
+    fn trace_effect_pattern_arg(&mut self) -> EffectArg {
+        if self.cursor.peek().kind.is_ident_like()
+            && self.slice(self.cursor.peek().span) != "_"
+            && self.cursor.nth(1).kind == TokenKind::Punct(Punct::Tilde)
+        {
+            let name = self.name("expected pattern variable name");
+            self.expect_punct(Punct::Tilde, "expected `~` after pattern variable");
+            let first = self.type_param_bound();
+            let mut span = name.span.cover(first.span);
+            let mut bounds = vec![first];
+            while self.cursor.eat_punct(Punct::Plus).is_some() {
+                let bound = self.type_param_bound();
+                span = span.cover(bound.span);
+                bounds.push(bound);
+            }
+            EffectArg::PatternBinding { name, bounds, span }
+        } else {
+            self.effect_arg()
+        }
+    }
+
     pub(crate) fn effect_args(&mut self) -> Vec<EffectArg> {
         if !self.cursor.at_punct(Punct::Lt)
             || self.cursor.nth(1).kind == TokenKind::Punct(Punct::Lt)

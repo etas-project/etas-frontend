@@ -7,10 +7,10 @@ use etas_code::{
 };
 use etas_utils::PipelineExecutionControl;
 
-use super::{NativeAgentDefinitionView, NativeDefinitionError};
+use super::{NativeDefinitionError, NativeDefinitionView};
 use crate::code::descriptor::ProjectionError;
 
-impl NativeAgentDefinitionView {
+impl NativeDefinitionView {
     pub fn diff(
         &self,
         other: &Self,
@@ -47,9 +47,7 @@ impl NativeAgentDefinitionView {
             .data
             .base()
             .contract()
-            .header()
-            .default_entry
-            .as_ref()
+            .entry()
             .map(|id| {
                 let callable = self
                     .0

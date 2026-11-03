@@ -30,6 +30,9 @@ pub fn solve_spec_obligations(
             CheckedSpecRef::External(identity) => {
                 external::type_satisfies(store, facts, ty, identity, &args)
             }
+            CheckedSpecRef::Canonical(identity) => {
+                external::canonical_type_satisfies(store, facts, ty, identity, &args)
+            }
         };
         if !satisfied {
             report.push(SolverFailure {
@@ -76,6 +79,9 @@ fn type_satisfies_spec(
     if let Some(path) = facts.std_spec_aliases.get(&spec_symbol)
         && std_type_satisfies_spec(store, facts, ty, path, args)
     {
+        return true;
+    }
+    if external::evidence_satisfies(store, facts, ty, &CheckedSpecRef::Source(spec_symbol), args) {
         return true;
     }
     facts.impls.iter().any(|impl_fact| {
@@ -191,7 +197,7 @@ fn arg_matches(store: &TypeStore, actual: TypeId, expected: TypeId) -> bool {
     }
     matches!(
         store.get(expected),
-        Some(Type::Named(NamedTypeRef { name, source_parameter: None })) if is_schematic_type_param(name)
+        Some(Type::Named(NamedTypeRef { name, source_parameter: None })) if store.parameter_identity(expected).is_none() && is_schematic_type_param(name)
     )
 }
 
@@ -205,7 +211,7 @@ fn type_same(store: &TypeStore, lhs: TypeId, rhs: TypeId) -> bool {
 
 fn resolve_named(store: &TypeStore, ty: TypeId, substitutions: &HashMap<String, TypeId>) -> TypeId {
     match store.get(ty) {
-        Some(Type::Named(NamedTypeRef { name, .. })) => {
+        Some(Type::Named(NamedTypeRef { name, .. })) if store.parameter_identity(ty).is_none() => {
             substitutions.get(name).copied().unwrap_or(ty)
         }
         _ => ty,
@@ -225,6 +231,13 @@ fn checked_spec_name(facts: &SpecFacts, spec: &CheckedSpecRef) -> String {
         CheckedSpecRef::Source(symbol) => spec_name(facts, *symbol),
         CheckedSpecRef::Std(path) => path.join("."),
         CheckedSpecRef::External(identity) => identity.path.join("."),
+        CheckedSpecRef::Canonical(identity) => identity
+            .module()
+            .iter()
+            .chain(identity.declaration())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("."),
     }
 }
 
@@ -239,4 +252,386 @@ fn display_type_name(store: &TypeStore, ty: TypeId) -> String {
 
 fn is_schematic_type_param(name: &str) -> bool {
     name.chars().next().is_some_and(char::is_uppercase)
+}
+
+#[cfg(test)]
+mod canonical_parameter_tests {
+    use super::*;
+
+    #[test]
+    fn foreign_binder_is_not_a_wildcard_or_unrelated_named_binding() {
+        let owner = etas_code::DefinitionKey::new(
+            etas_code::PackageKey::from_name_and_version("caller", "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["Tree".into()],
+            etas_code::DefinitionKind::Type,
+        )
+        .unwrap();
+        let mut types = crate::TypeInterner::new();
+        let parameter = types
+            .intern_canonical_parameter(
+                crate::ty::CanonicalTypeParameterIdentity::new(owner, 0).unwrap(),
+                "T".into(),
+            )
+            .unwrap();
+        let boolean = types.primitive(crate::PrimitiveType::Bool);
+        assert!(!arg_matches(types.store(), boolean, parameter));
+        assert_eq!(
+            resolve_named(
+                types.store(),
+                parameter,
+                &HashMap::from([("T".into(), boolean)])
+            ),
+            parameter
+        );
+    }
+
+    #[test]
+    fn canonical_spec_requires_checked_impl_and_super_spec_facts() {
+        use crate::facts::specs::{CanonicalSpecImplFact, CanonicalSpecSignatureFact};
+        use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+        let key = |package: &str, name: &str| {
+            DefinitionKey::new(
+                PackageKey::from_name_and_version(package, "1.0.0").unwrap(),
+                vec!["app".into()],
+                vec![name.into()],
+                DefinitionKind::Spec,
+            )
+            .unwrap()
+        };
+        let base = key("first", "Base");
+        let derived = key("first", "Derived");
+        let same_name_other_package = key("other", "Base");
+        let mut types = crate::TypeInterner::new();
+        let actual = types.primitive(crate::PrimitiveType::Bool);
+        let unrelated = types.primitive(crate::PrimitiveType::I32);
+        let mut facts = SpecFacts::default();
+        facts.canonical.signatures.insert(
+            base.clone(),
+            CanonicalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec![],
+                param_kinds: vec![],
+                param_bounds: vec![],
+                super_specs: vec![],
+            },
+        );
+        facts.canonical.signatures.insert(
+            derived.clone(),
+            CanonicalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec![],
+                param_kinds: vec![],
+                param_bounds: vec![],
+                super_specs: vec![crate::CheckedSpecBound {
+                    spec: CheckedSpecRef::Canonical(base.clone()),
+                    args: vec![],
+                }],
+            },
+        );
+        facts.canonical.impls.push(CanonicalSpecImplFact {
+            self_type: actual,
+            spec: derived,
+            args: vec![],
+        });
+        let obligation = |ty, spec| SpecObligation {
+            ty,
+            spec: CheckedSpecRef::Canonical(spec),
+            args: vec![],
+            span: etas_core::Span::new(etas_core::SourceId(0), etas_core::TextRange::default()),
+        };
+        assert!(
+            solve_spec_obligations(
+                types.store(),
+                &facts,
+                &[obligation(actual, base.clone())],
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+        assert!(
+            !solve_spec_obligations(
+                types.store(),
+                &facts,
+                &[obligation(unrelated, base)],
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+        assert!(
+            !solve_spec_obligations(
+                types.store(),
+                &facts,
+                &[obligation(actual, same_name_other_package)],
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn canonical_super_spec_checks_intermediate_generic_bounds() {
+        use crate::facts::specs::{CanonicalSpecImplFact, CanonicalSpecSignatureFact};
+        use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+        let package = PackageKey::from_name_and_version("caller", "1.0.0").unwrap();
+        let key = |name: &str| {
+            DefinitionKey::new(
+                package,
+                vec!["app".into()],
+                vec![name.into()],
+                DefinitionKind::Spec,
+            )
+            .unwrap()
+        };
+        let base = key("Base");
+        let derived = key("Derived");
+        let marker = key("Marker");
+        let mut types = crate::TypeInterner::new();
+        let subject = types.primitive(crate::PrimitiveType::String);
+        let argument = types.primitive(crate::PrimitiveType::Bool);
+        let binder = types
+            .intern_canonical_parameter(
+                crate::ty::CanonicalTypeParameterIdentity::new(derived.clone(), 0).unwrap(),
+                "T".into(),
+            )
+            .unwrap();
+        let mut facts = SpecFacts::default();
+        let signature = |names: Vec<String>, bounds, supers| CanonicalSpecSignatureFact {
+            kind: crate::SpecKind::TypeSpec,
+            param_kinds: vec![crate::CallableGenericParamKind::Type; names.len()],
+            param_names: names,
+            param_bounds: bounds,
+            super_specs: supers,
+        };
+        facts
+            .canonical
+            .signatures
+            .insert(marker.clone(), signature(vec![], vec![], vec![]));
+        facts.canonical.signatures.insert(
+            base.clone(),
+            signature(vec!["T".into()], vec![vec![]], vec![]),
+        );
+        facts.canonical.signatures.insert(
+            derived.clone(),
+            signature(
+                vec!["T".into()],
+                vec![vec![crate::CheckedSpecBound {
+                    spec: CheckedSpecRef::Canonical(marker.clone()),
+                    args: vec![],
+                }]],
+                vec![crate::CheckedSpecBound {
+                    spec: CheckedSpecRef::Canonical(base.clone()),
+                    args: vec![binder],
+                }],
+            ),
+        );
+        facts.canonical.impls.push(CanonicalSpecImplFact {
+            self_type: subject,
+            spec: derived,
+            args: vec![argument],
+        });
+        let obligation = SpecObligation {
+            ty: subject,
+            spec: CheckedSpecRef::Canonical(base),
+            args: vec![argument],
+            span: etas_core::Span::new(etas_core::SourceId(0), etas_core::TextRange::default()),
+        };
+        assert!(
+            !solve_spec_obligations(
+                types.store(),
+                &facts,
+                std::slice::from_ref(&obligation),
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+        facts.canonical.impls.push(CanonicalSpecImplFact {
+            self_type: argument,
+            spec: marker,
+            args: vec![],
+        });
+        assert!(
+            solve_spec_obligations(types.store(), &facts, &[obligation], &HashMap::new())
+                .failures
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mixed_external_canonical_generic_bound_cycles_fail_closed() {
+        use crate::facts::specs::{
+            CanonicalSpecSignatureFact, ExternalSpecIdentity, ExternalSpecSignatureFact,
+        };
+        use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+        let canonical = DefinitionKey::new(
+            PackageKey::from_name_and_version("caller", "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["A".into()],
+            DefinitionKind::Spec,
+        )
+        .unwrap();
+        let external = ExternalSpecIdentity {
+            package: 7,
+            path: vec!["dep".into(), "B".into()],
+        };
+        let mut types = crate::TypeInterner::new();
+        let argument = types.primitive(crate::PrimitiveType::Bool);
+        let canonical_t = types
+            .intern_canonical_parameter(
+                crate::ty::CanonicalTypeParameterIdentity::new(canonical.clone(), 0).unwrap(),
+                "T".into(),
+            )
+            .unwrap();
+        let external_t = types.intern(crate::Type::Named(crate::NamedTypeRef {
+            name: "T".into(),
+            source_parameter: None,
+        }));
+        let mut facts = SpecFacts::default();
+        facts.canonical.signatures.insert(
+            canonical.clone(),
+            CanonicalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec!["T".into()],
+                param_kinds: vec![crate::CallableGenericParamKind::Type],
+                param_bounds: vec![vec![crate::CheckedSpecBound {
+                    spec: CheckedSpecRef::External(external.clone()),
+                    args: vec![canonical_t],
+                }]],
+                super_specs: vec![],
+            },
+        );
+        facts.external_signatures.insert(
+            external,
+            ExternalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec!["T".into()],
+                generic_params: vec![crate::CallableGenericParam {
+                    kind: crate::CallableGenericParamKind::Type,
+                    name: "T".into(),
+                    subject: external_t,
+                    bounds: vec![crate::CheckedSpecBound {
+                        spec: CheckedSpecRef::Canonical(canonical.clone()),
+                        args: vec![external_t],
+                    }],
+                }],
+                methods: vec![],
+                super_specs: vec![],
+            },
+        );
+        let obligation = SpecObligation {
+            ty: argument,
+            spec: CheckedSpecRef::Canonical(canonical),
+            args: vec![argument],
+            span: etas_core::Span::new(etas_core::SourceId(0), etas_core::TextRange::default()),
+        };
+        assert!(
+            !solve_spec_obligations(types.store(), &facts, &[obligation], &HashMap::new())
+                .failures
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn canonical_spec_closure_checks_arguments_and_terminates_on_cycles() {
+        use crate::facts::specs::{CanonicalSpecImplFact, CanonicalSpecSignatureFact};
+        use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+        let key = |name: &str| {
+            DefinitionKey::new(
+                PackageKey::from_name_and_version("caller", "1.0.0").unwrap(),
+                vec!["app".into()],
+                vec![name.into()],
+                DefinitionKind::Spec,
+            )
+            .unwrap()
+        };
+        let base = key("Base");
+        let derived = key("Derived");
+        let unrelated = key("Unrelated");
+        let mut types = crate::TypeInterner::new();
+        let subject = types.primitive(crate::PrimitiveType::String);
+        let boolean = types.primitive(crate::PrimitiveType::Bool);
+        let integer = types.primitive(crate::PrimitiveType::I32);
+        let mut facts = SpecFacts::default();
+        facts.canonical.signatures.insert(
+            base.clone(),
+            CanonicalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec!["T".into()],
+                param_kinds: vec![crate::CallableGenericParamKind::Type],
+                param_bounds: vec![vec![]],
+                super_specs: vec![crate::CheckedSpecBound {
+                    spec: CheckedSpecRef::Canonical(derived.clone()),
+                    args: vec![],
+                }],
+            },
+        );
+        facts.canonical.signatures.insert(
+            derived.clone(),
+            CanonicalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec![],
+                param_kinds: vec![],
+                param_bounds: vec![],
+                super_specs: vec![crate::CheckedSpecBound {
+                    spec: CheckedSpecRef::Canonical(base.clone()),
+                    args: vec![boolean],
+                }],
+            },
+        );
+        facts.canonical.signatures.insert(
+            unrelated.clone(),
+            CanonicalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec![],
+                param_kinds: vec![],
+                param_bounds: vec![],
+                super_specs: vec![],
+            },
+        );
+        facts.canonical.impls.push(CanonicalSpecImplFact {
+            self_type: subject,
+            spec: derived,
+            args: vec![],
+        });
+        let obligation = |spec, args| SpecObligation {
+            ty: subject,
+            spec: CheckedSpecRef::Canonical(spec),
+            args,
+            span: etas_core::Span::new(etas_core::SourceId(0), etas_core::TextRange::default()),
+        };
+        assert!(
+            solve_spec_obligations(
+                types.store(),
+                &facts,
+                &[obligation(base.clone(), vec![boolean])],
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+        assert!(
+            !solve_spec_obligations(
+                types.store(),
+                &facts,
+                &[obligation(base, vec![integer])],
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+        assert!(
+            !solve_spec_obligations(
+                types.store(),
+                &facts,
+                &[obligation(unrelated, vec![])],
+                &HashMap::new()
+            )
+            .failures
+            .is_empty()
+        );
+    }
 }

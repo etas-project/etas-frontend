@@ -13,30 +13,30 @@ pub(crate) struct ExternalImportAnchorIndex {
 }
 
 impl ExternalImportAnchorIndex {
-    pub(crate) fn build(imports: &ResolvedImports, environment: &ProjectEnvironmentInput) -> Self {
+    pub(crate) fn build(
+        imports: &ResolvedImports,
+        environment: &ProjectEnvironmentInput,
+        catalog: &crate::ModuleCatalog,
+    ) -> Self {
         let mut index = Self::default();
         for import in &imports.imports {
-            index.insert_target(&import.target, import.span);
+            index.insert_target(&import.target, import.span, catalog);
             if let ImportTarget::Module(module) = &import.target
                 && let Some(members) = imports.module_members.get(&module.key())
             {
                 for target in members.values() {
-                    index.insert_target(target, import.span);
+                    index.insert_target(target, import.span, catalog);
                 }
             }
         }
         for import in &imports.wildcard_imports {
-            let ResolvedModuleTarget::External {
-                package: Some(package),
-                path,
-                ..
-            } = &import.target_module
-            else {
-                continue;
-            };
-            index.insert_module(*package, path.segments.clone(), import.span);
+            index.insert_target(
+                &ImportTarget::Module(import.target_module.clone()),
+                import.span,
+                catalog,
+            );
             for target in import.targets.values() {
-                index.insert_target(target, import.span);
+                index.insert_target(target, import.span, catalog);
             }
         }
         let mut dependencies = BTreeMap::<_, Vec<_>>::new();
@@ -62,7 +62,7 @@ impl ExternalImportAnchorIndex {
         index
     }
 
-    fn insert_target(&mut self, target: &ImportTarget, span: Span) {
+    fn insert_target(&mut self, target: &ImportTarget, span: Span, catalog: &crate::ModuleCatalog) {
         match target {
             ImportTarget::ExternalItem {
                 package: Some(package),
@@ -80,6 +80,31 @@ impl ExternalImportAnchorIndex {
                 path,
                 ..
             }) => self.insert_module(*package, path.segments.clone(), span),
+            ImportTarget::SourceItem {
+                module_key, name, ..
+            } => {
+                if let Some(record) = catalog.modules.get(*module_key)
+                    && let super::module_catalog::ModuleOrigin::DependencySourceOverlay {
+                        package,
+                        ..
+                    } = record.origin
+                {
+                    let mut item = record.path.segments.clone();
+                    item.push(name.clone());
+                    self.insert_item(package, item, span);
+                    self.insert_module(package, record.path.segments.clone(), span);
+                }
+            }
+            ImportTarget::Module(ResolvedModuleTarget::Source { key, .. }) => {
+                if let Some(record) = catalog.modules.get(*key)
+                    && let super::module_catalog::ModuleOrigin::DependencySourceOverlay {
+                        package,
+                        ..
+                    } = record.origin
+                {
+                    self.insert_module(package, record.path.segments.clone(), span);
+                }
+            }
             _ => {}
         }
     }
@@ -177,6 +202,7 @@ mod tests {
         let index = ExternalImportAnchorIndex::build(
             &imports,
             &environment(&[(1, 2), (2, 3), (2, 4), (3, 4), (5, 6)]),
+            &crate::ModuleCatalog::default(),
         );
         assert_eq!(index.package_span(ExternalPackageId(2)), Some(first.span));
         assert_eq!(index.package_span(ExternalPackageId(3)), Some(direct.span));

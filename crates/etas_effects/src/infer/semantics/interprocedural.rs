@@ -186,6 +186,38 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Some(fact) = self.types.facts.reflections.get(&expr) {
+            use etas_types::facts::reflection::CheckedReflectionTarget;
+            let declaration = match fact.target {
+                CheckedReflectionTarget::Callable { declaration }
+                | CheckedReflectionTarget::Agent { declaration, .. }
+                | CheckedReflectionTarget::AgentDefaultEntry { declaration, .. } => {
+                    Some(declaration)
+                }
+                _ => None,
+            };
+            if let Some(symbol) =
+                declaration.and_then(|symbol| self.type_symbols.canonical_symbol(self.hir, symbol))
+                && let Some(SymbolDef::Item { item }) =
+                    self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
+            {
+                let unit = if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Agent(_)))
+                {
+                    match self.agent_default_call_target(*item) {
+                        CallTarget::Direct(unit) => Some(unit),
+                        _ => None,
+                    }
+                } else {
+                    Some(EffectUnit::Item(*item))
+                };
+                if let Some(unit) = unit
+                    && self.analysis_units.contains(&unit)
+                    && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
+                {
+                    return vec![unit];
+                }
+            }
+        }
         if let Some(HirExpr::SpecMethodCall {
             spec_path, method, ..
         }) = self.hir.exprs.get(expr)
@@ -197,7 +229,11 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 // choose one solved summary. This does not merge their behavior.
                 let mut dependencies = std::collections::BTreeSet::new();
                 for implementation in &self.types.facts.spec_impls {
-                    if implementation.spec_symbol != spec {
+                    if self
+                        .type_symbols
+                        .canonical_symbol(self.hir, implementation.spec_symbol)
+                        != Some(spec)
+                    {
                         continue;
                     }
                     for candidate in implementation
@@ -291,7 +327,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 _ => captures.values.values().flatten().copied().collect(),
             };
             for source in sources {
-                if let LatentSource::Unit(unit) | LatentSource::Reference { unit, .. } = source
+                if let LatentSource::FrozenContract { unit, .. }
+                | LatentSource::Unit(unit)
+                | LatentSource::Reference { unit, .. } = source
                     && !matches!(unit, EffectUnit::Item(item) if self.frozen_calls.get(&item).is_some_and(crate::FrozenCallableSummary::uses_snapshot))
                 {
                     dependencies.insert(unit);
@@ -330,7 +368,8 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             None
         };
         let summary = match &frozen {
-            Some(crate::FrozenCallableSummary::Solved(summary)) => summary.as_ref(),
+            Some(crate::FrozenCallableSummary::Solved(summary))
+            | Some(crate::FrozenCallableSummary::Replaced { pinned: summary }) => summary.as_ref(),
             Some(crate::FrozenCallableSummary::AnalyzePinnedSource) => summary,
             Some(crate::FrozenCallableSummary::Unavailable) => {
                 return self.incomplete_at(
@@ -349,6 +388,10 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         }
         let summary = match self.specialize_summary_for_call(callee, &site, &state, summary, None) {
             Ok(summary) => summary,
+            Err(super::specialize::EffectSpecializationError::Interrupted(interruption)) => {
+                self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                return state;
+            }
             Err(error) => {
                 return self.incomplete_at(
                     site.span,
@@ -357,7 +400,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 );
             }
         };
-        self.note_call_outcomes(site.call, callee, &summary, &mut state);
+        self.note_call_outcomes(site.call, Some(callee), &summary, &mut state);
         state.summary.seq_assign(&summary);
         state = self.validate_returned_flow_source(&site, state);
         self.record_latent_realization(callee, site.call);
@@ -383,9 +426,63 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             for source in sources {
                 let mut summary = match self.latent_source_summary(source, site.span) {
                     Ok(summary) => summary,
-                    Err(error) => return self.incomplete_at(site.span, error.to_string(), state),
+                    Err(error) => {
+                        return self.incomplete_at(site.span, error.to_string(), state);
+                    }
                 };
-                if let LatentSource::Metadata(source) = source {
+                if let LatentSource::ExternalFrozen { reflection } = source {
+                    let Some(metadata) = self.external_reflection_metadata(reflection) else {
+                        return self.incomplete_at(
+                            site.span,
+                            "external frozen callable has no unique checked metadata",
+                            state,
+                        );
+                    };
+                    summary = match self.external_call_summary_from_metadata(
+                        metadata,
+                        &site,
+                        &mut state,
+                        Some(reflection),
+                    ) {
+                        Ok(Some(summary)) => summary,
+                        Ok(None) => {
+                            return self.incomplete_at(
+                                site.span,
+                                "external frozen callable has incomplete checked effect facts",
+                                state,
+                            );
+                        }
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
+                } else if let LatentSource::ExternalReference { value, .. } = source {
+                    let Some(metadata) = self.external_reference_metadata(value) else {
+                        return self.incomplete_at(
+                            site.span,
+                            "external callable reference has no unique checked metadata",
+                            state,
+                        );
+                    };
+                    summary = match self.external_call_summary_from_metadata(
+                        metadata,
+                        &site,
+                        &mut state,
+                        Some(value),
+                    ) {
+                        Ok(Some(summary)) => summary,
+                        Ok(None) => {
+                            return self.incomplete_at(
+                                site.span,
+                                "external callable reference has incomplete checked effect facts",
+                                state,
+                            );
+                        }
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
+                } else if let LatentSource::Metadata(source) = source {
                     summary = match self.metadata_value_call(source, &site, &mut state) {
                         Ok(summary) => summary,
                         Err(error) => {
@@ -405,11 +502,33 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         }
                         _ => {}
                     }
-                } else if let LatentSource::Unit(unit)
+                } else if let LatentSource::FrozenContract { unit, .. }
+                | LatentSource::Unit(unit)
                 | LatentSource::Reference { unit, .. }
                 | LatentSource::Captured { unit, .. } = source
                 {
                     let environment = match source {
+                        LatentSource::FrozenContract {
+                            unit,
+                            reference: Some(value),
+                            environment,
+                        } => {
+                            match self.reference_invocation_environment(LatentSource::Reference {
+                                unit,
+                                value,
+                                environment,
+                            }) {
+                                Ok(environment) => environment,
+                                Err(error) => {
+                                    return self.incomplete_at(site.span, error.to_string(), state);
+                                }
+                            }
+                        }
+                        LatentSource::FrozenContract {
+                            reference: None,
+                            environment,
+                            ..
+                        } => environment,
                         LatentSource::Captured { environment, .. } => Some(environment),
                         LatentSource::Reference { .. } => {
                             match self.reference_invocation_environment(source) {
@@ -476,6 +595,59 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             target: crate::ParameterCallTarget::Native(symbol),
                             output,
                             source: site.span.into(),
+                        });
+                        let arguments = match self.hir.exprs.get(site.call) {
+                            Some(etas_hir::HirExpr::Call { args, .. }) => args
+                                .iter()
+                                .map(|arg| {
+                                    let (name, value) = match arg {
+                                        etas_hir::HirArg::Positional(value) => (None, *value),
+                                        etas_hir::HirArg::Named { name, value, .. } => {
+                                            (Some(name.clone()), *value)
+                                        }
+                                    };
+                                    let ty = *self.types.facts.expr_types.get(&value)?;
+                                    let expression = self.hir.exprs.get(value)?;
+                                    let checked_value =
+                                        super::argument_values::checked_literal_value(
+                                            self.hir, self.types, expression, ty,
+                                        )
+                                        .or_else(|| {
+                                            self.argument_writes.input_value(
+                                                self.hir,
+                                                self.types,
+                                                context.unit,
+                                                expression,
+                                                ty,
+                                            )
+                                        });
+                                    Some(crate::ParameterExitArgument {
+                                        name,
+                                        ty,
+                                        source: expression.span(&self.hir.blocks).into(),
+                                        value: checked_value,
+                                    })
+                                })
+                                .collect(),
+                            _ => None,
+                        };
+                        let handler_context = match self.enclosing_handler_context(site.call) {
+                            Ok(value) => value,
+                            Err(interruption) => {
+                                self.callable_summaries.borrow_mut().interruption =
+                                    Some(interruption);
+                                return state;
+                            }
+                        };
+                        state.exits.record_parameter_exit(crate::ParameterExitFact {
+                            target: crate::ParameterCallTarget::Native(symbol),
+                            output,
+                            source: site.span.into(),
+                            arguments,
+                            handler_free: handler_context.free,
+                            enclosing_handled: handler_context.handled,
+                            enclosing_handlers: handler_context.handlers,
+                            prefix: state.summary.action_trace.clone(),
                         });
                     } else {
                         other_unproved_control = true;
@@ -551,7 +723,8 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
     ) -> Self::Domain {
         if let Some(item) = self.frozen_call_targets.get(&site.call).copied() {
             match self.frozen_calls.get(&item).cloned() {
-                Some(crate::FrozenCallableSummary::Solved(summary)) => {
+                Some(crate::FrozenCallableSummary::Solved(summary))
+                | Some(crate::FrozenCallableSummary::Replaced { pinned: summary }) => {
                     return InterproceduralSemantics::direct_call(
                         self,
                         context,

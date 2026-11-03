@@ -25,6 +25,57 @@ impl Builder<'_, '_> {
                 ));
             }
             let instance = match source {
+                CallableReturnSource::ExternalFrozen { reflection } => {
+                    let reference = self.external_reference(reflection, true)?;
+                    output.insert(CallableValueSource::FrozenContract(
+                        self.reserve_reference(reference, scope)?,
+                    ));
+                    continue;
+                }
+                CallableReturnSource::ExternalReference { value, frozen } => {
+                    let reference = self.external_reference(value, frozen)?;
+                    let index = self.reserve_reference(reference, scope)?;
+                    output.insert(if frozen {
+                        CallableValueSource::FrozenContract(index)
+                    } else {
+                        CallableValueSource::Value(index)
+                    });
+                    continue;
+                }
+                CallableReturnSource::FrozenContract {
+                    unit,
+                    reference,
+                    environment,
+                } => {
+                    let index = if let Some(value) = reference {
+                        let mut references = self
+                            .projection
+                            .checked
+                            .effects
+                            .callable_references
+                            .keys()
+                            .filter(|reference| {
+                                reference.value == value && reference.environment.is_none()
+                            });
+                        let reference = match (references.next(), references.next()) {
+                            (Some(reference), None) => {
+                                let mut reference = reference.clone();
+                                reference.environment = environment;
+                                reference
+                            }
+                            _ => {
+                                return Err(invalid(
+                                    "frozen contract reference has no unique checked callable fact",
+                                ));
+                            }
+                        };
+                        self.reserve_reference(reference, scope)?
+                    } else {
+                        self.reserve(Instance { unit, environment }, scope)?
+                    };
+                    output.insert(CallableValueSource::FrozenContract(index));
+                    continue;
+                }
                 CallableReturnSource::Parameter(symbol) => {
                     if let Some(environment) = environment {
                         let snapshot = self
@@ -72,12 +123,17 @@ impl Builder<'_, '_> {
                     environment: Some(environment),
                 },
                 CallableReturnSource::Metadata(source) => {
-                    output.insert(CallableValueSource::Value(self.reserve_foreign(
-                        ForeignInstance {
-                            source,
-                            root: scope,
+                    let index = self.reserve_foreign(ForeignInstance {
+                        source,
+                        root: scope,
+                    })?;
+                    output.insert(
+                        if source.analysis == etas_effects::CallableAnalysisKind::FrozenContract {
+                            CallableValueSource::FrozenContract(index)
+                        } else {
+                            CallableValueSource::Value(index)
                         },
-                    )?));
+                    );
                     continue;
                 }
                 CallableReturnSource::Reference(mut reference) => {
@@ -128,12 +184,47 @@ impl Builder<'_, '_> {
 }
 
 impl Builder<'_, '_> {
+    fn external_reference(
+        &self,
+        value: etas_hir::HirExprId,
+        frozen: bool,
+    ) -> Result<etas_effects::CallableReturnReference, PackageMetadataError> {
+        let mut matches = self.projection.checked.effects.callable_references.keys().filter(|reference| {
+            reference.value == value && reference.environment.is_none()
+                && matches!(&reference.target, etas_effects::CallableReferenceTarget::External { frozen: actual, .. } if *actual == frozen)
+        });
+        match (matches.next(), matches.next()) {
+            (Some(reference), None) => Ok(reference.clone()),
+            _ => Err(invalid(
+                "external callable has no unique checked reference analysis",
+            )),
+        }
+    }
     pub(super) fn checked_origin(
         &self,
         origin: CallableValueOrigin,
     ) -> Result<Option<(CallableReturnSource, Option<CallableEnvironmentId>)>, PackageMetadataError>
     {
         Ok(Some(match origin {
+            CallableValueOrigin::ExternalFrozen { reflection } => {
+                (CallableReturnSource::ExternalFrozen { reflection }, None)
+            }
+            CallableValueOrigin::ExternalReference { value, frozen } => (
+                CallableReturnSource::ExternalReference { value, frozen },
+                None,
+            ),
+            CallableValueOrigin::FrozenContract {
+                unit,
+                reference,
+                environment,
+            } => (
+                CallableReturnSource::FrozenContract {
+                    unit,
+                    reference,
+                    environment,
+                },
+                environment,
+            ),
             CallableValueOrigin::Parameter { symbol, .. } => {
                 (CallableReturnSource::Parameter(symbol), None)
             }

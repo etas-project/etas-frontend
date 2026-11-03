@@ -9,6 +9,7 @@ use etas_code::{
     diagnostic::DiagnosticSeverity,
     report::{CheckReport, CheckStatus},
 };
+mod residual;
 
 #[derive(Debug)]
 pub enum CheckReportError {
@@ -48,14 +49,9 @@ impl CandidateBodyAnalysis {
             .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error);
         let catalog = self.definition_catalog(limits)?;
         let frozen = self.frozen().contract();
-        let default =
-            frozen
-                .header()
-                .default_entry
-                .as_ref()
-                .ok_or(CheckReportError::IncompleteAnalysis(
-                    "candidate has no frozen default entry",
-                ))?;
+        let default = frozen.entry().ok_or(CheckReportError::IncompleteAnalysis(
+            "candidate has no frozen default entry",
+        ))?;
         let expected = frozen
             .callables()
             .find(|(id, _)| *id == default)
@@ -119,9 +115,14 @@ impl CandidateBodyAnalysis {
                 "proven candidate has no native emission artifact",
             ));
         }
+        let runtime_checks = residual::runtime_checks(self)?;
         Ok(CheckReport {
             status: if compatible && !source_rejected {
-                CheckStatus::Accepted
+                if runtime_checks.is_empty() {
+                    CheckStatus::Accepted
+                } else {
+                    CheckStatus::Guarded
+                }
             } else {
                 CheckStatus::Rejected
             },
@@ -133,9 +134,7 @@ impl CandidateBodyAnalysis {
             effects: analysis.effects,
             determinism: analysis.determinism,
             trace: analysis.trace,
-            // The current native backend cannot install residual guards. Its
-            // unsupported obligations above are rejection diagnostics.
-            runtime_checks: Vec::new(),
+            runtime_checks,
         })
     }
 }

@@ -4,8 +4,8 @@ use etas_code::{
     CallableId, CodeFingerprint, DefinitionKey, DefinitionKind, ImplementationHeader,
     ImplementationKey, MethodId, PackageKey,
     definition::{
-        AgentDefinition, AnalysisUnavailableReason, BaseRevisionInput, DefinitionAnalysisState,
-        DefinitionError, FrozenDefinition, FrozenDefinitionInput,
+        AnalysisUnavailableReason, BaseRevisionInput, DefinitionAnalysisState, DefinitionError,
+        DefinitionSnapshot, FrozenDefinition, FrozenDefinitionInput,
     },
     descriptor::{
         DescriptorGraph, DescriptorGraphInput, DescriptorLimits, PrimitiveInfo, SignatureInfo,
@@ -75,7 +75,7 @@ fn base_input(kind: DefinitionKind, has_entry: bool) -> FrozenDefinitionInput<St
 fn body_edit_shares_frozen_base_and_invalidates_only_the_new_snapshot() {
     let syntax = NativeCodeSyntaxOperations::default();
     let body = syntax.parse_body("return;").unwrap();
-    let original = AgentDefinition::from_base(
+    let original = DefinitionSnapshot::from_base(
         FrozenDefinition::new(base_input(DefinitionKind::Agent, true)).unwrap(),
         BaseRevisionInput {
             content: body.identity().content(),
@@ -139,7 +139,7 @@ fn body_edit_shares_frozen_base_and_invalidates_only_the_new_snapshot() {
 #[test]
 fn bare_agent_edit_does_not_invent_a_default_entry_or_analysis() {
     let syntax = NativeCodeSyntaxOperations::default();
-    let bare: AgentDefinition<_, Vec<String>> = AgentDefinition::from_base(
+    let bare: DefinitionSnapshot<_, Vec<String>> = DefinitionSnapshot::from_base(
         FrozenDefinition::new(base_input(DefinitionKind::Agent, false)).unwrap(),
         BaseRevisionInput {
             body: None,
@@ -165,7 +165,7 @@ fn bare_agent_edit_does_not_invent_a_default_entry_or_analysis() {
 fn unavailable_retained_bodies_do_not_erase_actual_revision_content() {
     let base = FrozenDefinition::new(base_input(DefinitionKind::Agent, true)).unwrap();
     let snapshot = |content| {
-        AgentDefinition::<_, Vec<String>>::from_base(
+        DefinitionSnapshot::<_, Vec<String>>::from_base(
             base.clone(),
             BaseRevisionInput {
                 body: None,
@@ -188,7 +188,7 @@ fn snapshot_rejects_missing_entry_and_mismatched_retained_content() {
     let syntax = NativeCodeSyntaxOperations::default();
     let body = syntax.parse_body("return;").unwrap();
     let snapshot = |base, content| {
-        AgentDefinition::<_, Vec<String>>::from_base(
+        DefinitionSnapshot::<_, Vec<String>>::from_base(
             base,
             BaseRevisionInput {
                 body: Some(body.clone()),
@@ -212,10 +212,14 @@ fn snapshot_rejects_missing_entry_and_mismatched_retained_content() {
 }
 
 #[test]
-fn frozen_base_requires_nominal_agent_and_real_callable_descriptor() {
+fn frozen_base_requires_an_editable_owner_and_real_callable_descriptor() {
+    assert!(matches!(
+        FrozenDefinition::new(base_input(DefinitionKind::Type, true)),
+        Err(DefinitionError::UnsupportedDefinitionKind)
+    ));
     assert!(matches!(
         FrozenDefinition::new(base_input(DefinitionKind::Flow, true)),
-        Err(DefinitionError::NotAgent)
+        Err(DefinitionError::InvalidDefaultEntry)
     ));
     let mut input = base_input(DefinitionKind::Agent, true);
     input.default_entry = Some(TypeInfoRef(0));
@@ -227,6 +231,23 @@ fn frozen_base_requires_nominal_agent_and_real_callable_descriptor() {
     input.default_entry = Some(TypeInfoRef(u32::MAX));
     assert!(matches!(
         FrozenDefinition::new(input),
+        Err(DefinitionError::InvalidDefaultEntry)
+    ));
+}
+
+#[test]
+fn frozen_flow_uses_its_own_declaration_not_an_agent_method() {
+    let mut input = base_input(DefinitionKind::Flow, true);
+    input.default_callable = Some(CallableId::declaration(input.identity.clone()).unwrap());
+    let base = FrozenDefinition::new(input).unwrap();
+    assert_eq!(base.identity().kind(), DefinitionKind::Flow);
+    assert_eq!(
+        base.default_callable().unwrap().as_declaration(),
+        Some(base.identity())
+    );
+    assert!(base.signature().is_some());
+    assert!(matches!(
+        FrozenDefinition::new(base_input(DefinitionKind::Flow, false)),
         Err(DefinitionError::InvalidDefaultEntry)
     ));
 }

@@ -55,6 +55,7 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
             .cloned()
             .collect::<Vec<_>>();
         let mut ids = files.iter().map(|source| source.id).collect::<HashSet<_>>();
+        let mut stable_source_keys = original.stable_source_keys.clone();
         let mut revisions = candidate.revisions.values().collect::<Vec<_>>();
         revisions.sort_by_key(|revision| revision.relocated.source().id.0);
         for revision in revisions {
@@ -63,6 +64,27 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
                 return PassResult::failed(
                     "candidate body source identity collides with the frozen source archive",
                 );
+            }
+            if let Some(key) = revision.stable_source_key {
+                let entries = &mut stable_source_keys;
+                entries.retain(|entry| entry.key != key || ids.contains(&entry.source));
+                if entries.iter().any(|entry| {
+                    (entry.source == source.id && entry.key != key)
+                        || (entry.source != source.id && entry.key == key)
+                }) {
+                    return PassResult::failed(
+                        "candidate generated source has a conflicting stable identity",
+                    );
+                }
+                if !entries
+                    .iter()
+                    .any(|entry| entry.source == source.id && entry.key == key)
+                {
+                    entries.push(crate::ProjectStableSourceKeyInput {
+                        source: source.id,
+                        key,
+                    });
+                }
             }
             files.push(SourceFile {
                 id: source.id,
@@ -80,7 +102,8 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
             return PassResult::failed("candidate source archive has no source identity");
         };
         candidate.dependency_source_ids.clear();
-        for source in &candidate.dependency_sources {
+        for entry in &candidate.dependency_sources {
+            let source = &entry.source;
             let SourceKind::DependencySourceOverlay {
                 package,
                 import_root,
@@ -118,6 +141,18 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
             };
             next = id;
             let id = etas_core::SourceId(id);
+            if stable_source_keys
+                .iter()
+                .any(|existing| existing.key == entry.stable_key)
+            {
+                return PassResult::failed(
+                    "candidate dependency source has a conflicting stable identity",
+                );
+            }
+            stable_source_keys.push(crate::ProjectStableSourceKeyInput {
+                source: id,
+                key: entry.stable_key,
+            });
             candidate.dependency_source_ids.push(id);
             files.push(SourceFile {
                 id,
@@ -129,6 +164,7 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
         }
         context.sources = Some(Arc::new(SourceSet {
             files,
+            stable_source_keys,
             project_root: original.project_root.clone(),
             source_root: original.source_root.clone(),
             environment_fingerprint: original.environment_fingerprint.clone(),

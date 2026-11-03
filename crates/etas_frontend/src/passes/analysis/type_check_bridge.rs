@@ -4,7 +4,7 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 
 mod behavior_types;
 mod impl_methods;
-mod reflection;
+pub(super) mod reflection;
 
 use crate::{
     ExternalPackageId, ImportTarget, ModuleId, ModulePath, ProjectContext,
@@ -61,7 +61,10 @@ fn external_signature_input(
             "type imports require resolved imports".into(),
         )
     })?;
-    let anchors = crate::project::ExternalImportAnchorIndex::build(imports, environment);
+    let catalog = context.module_catalog.as_ref().ok_or_else(|| {
+        crate::code::descriptor::ProjectionError::MissingIdentity("module catalog".into())
+    })?;
+    let anchors = crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
     let mut input = etas_types::ExternalSignatureInput {
         package_anchors: environment
             .external_packages
@@ -79,6 +82,7 @@ fn external_signature_input(
             .map(convert_external_metadata)
             .collect::<Result<_, _>>()?,
         symbol_bindings: Vec::new(),
+        source_spec_bindings: Vec::new(),
         action_bindings: Vec::new(),
         definition_bindings: Vec::new(),
         agent_reflections: Vec::new(),
@@ -86,6 +90,26 @@ fn external_signature_input(
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
         for resolved in &resolved_imports.imports {
+            if let Some(symbol) = hir_module_for_source_module(context, resolved.from)
+                .and_then(|module| hir.modules_arena.get(module))
+                .and_then(|module| {
+                    import_binding_symbol_for_import(
+                        module,
+                        resolved.import.source,
+                        resolved.span,
+                        &resolved.local_name,
+                    )
+                })
+            {
+                source_spec_bindings(
+                    hir,
+                    catalog,
+                    &resolved.target,
+                    symbol,
+                    resolved.span,
+                    &mut input.source_spec_bindings,
+                );
+            }
             let ImportTarget::ExternalItem {
                 package: Some(package),
                 module_path,
@@ -121,6 +145,16 @@ fn external_signature_input(
         let wildcard_counts = wildcard_import_name_counts(&resolved_imports.wildcard_imports);
         for wildcard in &resolved_imports.wildcard_imports {
             for (name, target) in &wildcard.targets {
+                if let Some(symbol) = wildcard_alias_symbol(context, wildcard, name) {
+                    source_spec_bindings(
+                        hir,
+                        catalog,
+                        target,
+                        symbol,
+                        wildcard.span,
+                        &mut input.source_spec_bindings,
+                    );
+                }
                 let ImportTarget::ExternalItem {
                     package: Some(package),
                     module_path,
@@ -177,6 +211,49 @@ fn external_signature_input(
 
 fn external_package_key(package: ExternalPackageId) -> etas_types::ExternalPackageKey {
     etas_types::ExternalPackageKey(package.0)
+}
+
+fn source_spec_bindings(
+    hir: &etas_hir::HirProgram,
+    catalog: &crate::ModuleCatalog,
+    target: &ImportTarget,
+    symbol: etas_hir::SymbolId,
+    span: etas_core::Span,
+    output: &mut Vec<etas_types::ExternalSymbolBindingInput>,
+) {
+    let ImportTarget::SourceItem {
+        module_key, name, ..
+    } = target
+    else {
+        return;
+    };
+    let Some(module) = catalog.modules.get(*module_key) else {
+        return;
+    };
+    let crate::CatalogModuleOrigin::DependencySourceOverlay { package, .. } = module.origin else {
+        return;
+    };
+    let Some(source) = hir.canonical_source_symbol(symbol) else {
+        return;
+    };
+    let Some(etas_hir::SymbolDef::Item { item }) =
+        hir.symbols.get(source).map(|symbol| &symbol.def)
+    else {
+        return;
+    };
+    if !matches!(hir.items.get(*item), Some(etas_hir::HirItem::Spec(_))) {
+        return;
+    }
+    let mut path = module.path.segments.clone();
+    path.push(name.clone());
+    for symbol in [symbol, source] {
+        output.push(etas_types::ExternalSymbolBindingInput {
+            symbol,
+            package: external_package_key(package),
+            path: path.clone(),
+            span,
+        });
+    }
 }
 
 fn external_item_path(module_path: &ModulePath, name: &str) -> Vec<String> {
@@ -365,6 +442,7 @@ fn convert_external_spec_signature(
         path: signature.path.clone(),
         kind: convert_external_spec_kind(signature.kind),
         param_names: signature.param_names.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         callable: signature
             .callable
             .as_ref()
@@ -451,12 +529,15 @@ fn convert_external_trace_spec_conformance(
             crate::ProjectExternalTraceSpecConformanceTargetInput::Inline => {
                 etas_types::ExternalTraceSpecConformanceTargetInput::Inline
             }
-            crate::ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args } => {
-                etas_types::ExternalTraceSpecConformanceTargetInput::Named {
-                    spec: spec.clone(),
-                    args: args.iter().map(convert_external_type).collect(),
-                }
-            }
+            crate::ProjectExternalTraceSpecConformanceTargetInput::Named {
+                spec,
+                definition,
+                args,
+            } => etas_types::ExternalTraceSpecConformanceTargetInput::Named {
+                spec: spec.clone(),
+                definition: definition.clone(),
+                args: args.iter().map(convert_external_type).collect(),
+            },
         },
     }
 }
@@ -530,7 +611,7 @@ fn convert_external_action_signature(
     }
 }
 
-fn convert_external_generic_params(
+pub(super) fn convert_external_generic_params(
     params: &[crate::ProjectExternalCallableGenericParamInput],
 ) -> Vec<etas_types::ExternalCallableGenericParamInput> {
     params

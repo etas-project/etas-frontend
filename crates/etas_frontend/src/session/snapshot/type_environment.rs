@@ -100,6 +100,16 @@ pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, Stri
     append(&mut parts, "external-impls", &facts.external_specs.impls)?;
     append(
         &mut parts,
+        "canonical-spec-signatures",
+        sorted(&facts.canonical_specs.signatures),
+    )?;
+    append(
+        &mut parts,
+        "canonical-spec-impls",
+        &facts.canonical_specs.impls,
+    )?;
+    append(
+        &mut parts,
         "external-callables",
         facts
             .external_callable_spec_satisfactions
@@ -134,4 +144,94 @@ fn append(parts: &mut Vec<String>, name: &str, value: impl Serialize) -> Result<
             .map_err(|error| format!("invalid checked spec environment: {error}"))?
     ));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn external_spec_method_changes_environment_fingerprint() {
+        use etas_types::facts::specs::{
+            ExternalSpecIdentity, ExternalSpecSignatureFact, SpecMethodFact, SpecMethodIdentity,
+        };
+        let identity = ExternalSpecIdentity {
+            package: 1,
+            path: vec!["dep".into(), "Show".into()],
+        };
+        let mut facts = TypeFacts::default();
+        facts.external_specs.signatures.insert(
+            identity.clone(),
+            ExternalSpecSignatureFact {
+                kind: etas_types::SpecKind::TypeSpec,
+                param_names: vec![],
+                generic_params: vec![],
+                methods: vec![SpecMethodFact {
+                    receiver_param: None,
+                    identity: SpecMethodIdentity::External {
+                        package: 1,
+                        path: vec!["dep".into(), "Show".into(), "show".into()],
+                    },
+                    name: "show".into(),
+                    signature: Some(etas_types::CallableSignature {
+                        generic_params: vec![],
+                        params: vec![etas_types::TypeId(1)],
+                        output: etas_types::TypeId(2),
+                        effects: None,
+                        requested_actions: None,
+                    }),
+                }],
+                super_specs: vec![],
+            },
+        );
+        let before = fingerprint(&facts).unwrap();
+        facts
+            .external_specs
+            .signatures
+            .get_mut(&identity)
+            .unwrap()
+            .methods[0]
+            .signature
+            .as_mut()
+            .unwrap()
+            .output = etas_types::TypeId(3);
+        assert_ne!(before, fingerprint(&facts).unwrap());
+    }
+
+    #[test]
+    fn canonical_spec_evidence_changes_environment_fingerprint() {
+        let original = TypeFacts::default();
+        let mut modified = original.clone();
+        let key = etas_code::DefinitionKey::new(
+            etas_code::PackageKey::from_name_and_version("caller", "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["Allowed".into()],
+            etas_code::DefinitionKind::Spec,
+        )
+        .unwrap();
+        modified.canonical_specs.signatures.insert(
+            key.clone(),
+            etas_types::facts::specs::CanonicalSpecSignatureFact {
+                kind: etas_types::SpecKind::TypeSpec,
+                param_names: vec![],
+                param_kinds: vec![],
+                param_bounds: vec![],
+                super_specs: vec![],
+            },
+        );
+        assert_ne!(
+            fingerprint(&original).unwrap(),
+            fingerprint(&modified).unwrap()
+        );
+        let before_impl = fingerprint(&modified).unwrap();
+        modified
+            .canonical_specs
+            .impls
+            .push(etas_types::facts::specs::CanonicalSpecImplFact {
+                self_type: etas_types::TypeId(1),
+                spec: key,
+                args: vec![],
+            });
+        assert_ne!(before_impl, fingerprint(&modified).unwrap());
+    }
 }

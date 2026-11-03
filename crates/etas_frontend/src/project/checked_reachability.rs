@@ -307,16 +307,36 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
             return;
         }
         if matches!(expression.data(), HirExpr::SpecMethodCall { .. }) {
+            let deferred = self.checked.effects.expr_effects.get(&expression.id()).is_some_and(|summary|
+                summary.action_trace.parameter_calls().iter().any(|call|
+                    matches!(call.target, etas_effects::ParameterCallTarget::SpecMethod { call, .. } if call == expression.id())));
+            let metadata = self
+                .checked
+                .effects
+                .metadata_call_targets
+                .get(&expression.id())
+                .is_some_and(|targets| {
+                    !targets.is_empty()
+                        && targets.iter().all(|target| {
+                            matches!(
+                                self.checked.effects.metadata_callables.get(target),
+                                Some(etas_effects::facts::MetadataCallableAnalysis::Solved { .. })
+                            )
+                        })
+                });
             let Some(targets) = self
                 .checked
                 .effects
                 .native_call_targets
                 .get(&expression.id())
             else {
-                self.error = Some(CheckedReachabilityError::MissingSpecMethod(expression.id()));
+                // A generic method is linked when its checked binding is applied.
+                if !deferred && !metadata {
+                    self.error = Some(CheckedReachabilityError::MissingSpecMethod(expression.id()));
+                }
                 return;
             };
-            if targets.is_empty() {
+            if targets.is_empty() && !deferred && !metadata {
                 self.error = Some(CheckedReachabilityError::MissingSpecMethod(expression.id()));
                 return;
             }

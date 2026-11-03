@@ -1,10 +1,14 @@
 mod diagnostic_anchor;
 pub mod effect;
+mod external_trace;
 pub mod facts;
 pub mod infer;
 pub mod pipeline;
 mod pipeline_error;
 pub mod requirement;
+pub mod residual;
+mod residual_identity;
+pub mod substitution;
 pub mod trace_spec;
 pub mod validate;
 
@@ -13,11 +17,11 @@ pub use effect::{
     ActionRef, COMMAND_RUN_ACTION, COMMAND_TAG, CONSOLE_STDERR_WRITE_ACTION,
     CONSOLE_STDIN_READ_ALL_ACTION, CONSOLE_STDIN_READ_LINE_ACTION, CONSOLE_STDOUT_WRITE_ACTION,
     CONSOLE_TAG, CoreEffect, DependencyEffectAction, DependencyEffectExtension,
-    DependencyEffectMetadata, DependencyEffectTag, ERROR_TAG, Effect, EffectActionArgKind,
-    EffectActionId, EffectActionSig, EffectCoverage, EffectRegistry, EffectRow, EffectSet,
-    EffectTag, EffectTagId, EffectVarId, ExtensionGraph, FILE_IO_TAG, HUMAN_TAG,
-    MEMORY_READ_ACTION, MEMORY_TAG, MEMORY_WRITE_ACTION, MemoryPlaceDecl, NETWORK_TAG, SECRET_TAG,
-    TIME_TAG, ToolProviderBindingMetadata, UnresolvedDependencyEffectExtension,
+    DependencyEffectMetadata, DependencyEffectTag, DependencySourceEffectBinding, ERROR_TAG,
+    Effect, EffectActionArgKind, EffectActionId, EffectActionSig, EffectCoverage, EffectRegistry,
+    EffectRow, EffectSet, EffectTag, EffectTagId, EffectVarId, ExtensionGraph, FILE_IO_TAG,
+    HUMAN_TAG, MEMORY_READ_ACTION, MEMORY_TAG, MEMORY_WRITE_ACTION, MemoryPlaceDecl, NETWORK_TAG,
+    SECRET_TAG, TIME_TAG, ToolProviderBindingMetadata, UnresolvedDependencyEffectExtension,
     effect_var_id_from_name,
 };
 pub use facts::{
@@ -31,19 +35,21 @@ pub use facts::{
     TraceSpecClauseFact, TraceSpecFacts, TryCaptureFact,
 };
 pub use infer::{
-    ActionEvent, ActionEventSource, ActionRequestInstance, ActionTraceDomain, CallableExitSummary,
-    CallableOutcome, CallableReferenceTarget, CallableReturnReference, CallableReturnSource,
-    DefaultHandlerContribution, DefaultHandlerEffects, Determinism, EffectSummary, EffectUnit,
-    ExitTraceFact, FrontendRejectionReason, FrozenSourceLocation, HostRequirementKind,
-    HostRequirementSet, InterpreterFeatureKind, InterpreterOrchestrationRequirementSet,
-    InterpreterSupport, MetadataCallableSource, OutcomeAnalysisGap, ParameterCallTarget,
-    ParameterRequest, RequestInstantiationSummary, ResidualCheckSet, ReturnObservation,
-    RuntimeRequirementReason,
+    ActionEvent, ActionEventSource, ActionRequestInstance, ActionTraceDomain, CallableAnalysisKind,
+    CallableExitSummary, CallableOutcome, CallableReferenceTarget, CallableReturnReference,
+    CallableReturnSource, DefaultHandlerContribution, DefaultHandlerEffects, Determinism,
+    EffectSummary, EffectUnit, ExitTraceFact, FrontendRejectionReason, FrozenSourceLocation,
+    HandlerGapEvidence, HostRequirementKind, HostRequirementSet, InterpreterFeatureKind,
+    InterpreterOrchestrationRequirementSet, InterpreterSupport, MetadataCallableSource,
+    OutcomeAnalysisGap, ParameterArgumentValue, ParameterCallTarget, ParameterExitArgument,
+    ParameterExitFact, ParameterHandlerScopeRef, ParameterRequest, RequestInstantiationSummary,
+    ResidualCheckSet, ReturnObservation, RuntimeRequirementReason,
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
-    EffectPipelineOutput, ExternalActionRequestMetadata, ExternalActionTraceMetadata,
-    ExternalArtifactAnchor, ExternalCallableRequestTarget, ExternalCallableValueMetadata,
+    EffectPipelineOutput, EffectSourceSnapshot, ExternalActionRequestMetadata,
+    ExternalActionTraceMetadata, ExternalArtifactAnchor, ExternalCallableContract,
+    ExternalCallableRequestTarget, ExternalCallableValueMetadata,
     ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
     ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
     ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,
@@ -51,11 +57,16 @@ pub use pipeline::{
     ExternalSpecMethodCallableArgument, ExternalSpecMethodGenericArgument,
     ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata,
     ExternalTraceSpecEffectMetadata, ExternalTraceSpecEffectRowMetadata,
-    ExternalTraceSpecSummaryMetadata, RunEffectPipeline,
+    ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry, RunEffectPipeline,
+    TraceSpecPipelineAnalysis,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{
     LimitBudgetKind, LimitKind, LimitRequirement, LimitValue, RequirementFact, RequirementSet,
+};
+pub use residual_identity::{
+    ResidualIdentityError, ResidualIdentityProvider, TraceMonitorProjectionRequest,
+    TraceMonitorProjector, TraceMonitorSourceLimits,
 };
 mod frozen;
 pub use frozen::{

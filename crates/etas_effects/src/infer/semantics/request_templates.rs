@@ -1,5 +1,5 @@
 use super::{engine::EffectSemantics, shared::*, specialize::EffectSpecializationError};
-use crate::{ActionRequestInstance, ParameterRequest, RequestInstantiationSummary};
+use crate::RequestInstantiationSummary;
 
 impl EffectSemantics<'_> {
     pub(super) fn checked_request_instance(
@@ -42,84 +42,20 @@ impl EffectSemantics<'_> {
                 }
             }
         }
-        Ok(RequestInstantiationSummary::action(action, bindings))
-    }
-
-    pub(super) fn specialize_request_types(
-        &self,
-        summary: &RequestInstantiationSummary,
-        bindings: &[(String, TypeId)],
-    ) -> Result<RequestInstantiationSummary, EffectSpecializationError> {
-        let RequestInstantiationSummary::Available {
-            actions,
-            parameters,
-        } = summary
-        else {
-            return Ok(RequestInstantiationSummary::Unavailable);
+        let substitutions = bindings.iter().cloned().collect();
+        let lower = |ty| {
+            etas_types::substitute_named_params_in_store(&self.types.store, ty, &substitutions)
         };
-        let bindings_map = bindings.iter().cloned().collect();
-        let action = |action: &Effect| -> Result<Effect, EffectSpecializationError> {
-            let row = self.specialize_effect_row(
-                &EffectRow::closed(crate::EffectSet::one(action.clone())),
-                &[],
-                bindings,
-                &[],
-            )?;
-            let mut effects = row.effects.iter();
-            let action = effects
-                .next()
-                .cloned()
-                .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
-            if effects.next().is_some() || row.open.is_some() {
-                return Err(EffectSpecializationError::InvalidCallableReturnSources);
-            }
-            Ok(action)
-        };
-        let actions = actions
-            .iter()
-            .map(|instance| {
-                Ok(ActionRequestInstance {
-                    action: action(&instance.action)?,
-                    type_bindings: instance
-                        .type_bindings
-                        .as_ref()
-                        .map(|bindings| {
-                            bindings
-                                .iter()
-                                .map(|(name, ty)| {
-                                    Ok((
-                                        name.clone(),
-                                        etas_types::substitute_named_params_in_store(
-                                            &self.types.store,
-                                            *ty,
-                                            &bindings_map,
-                                        )?,
-                                    ))
-                                })
-                                .collect::<Result<_, EffectSpecializationError>>()
-                        })
-                        .transpose()?,
-                })
-            })
-            .collect::<Result<_, EffectSpecializationError>>()?;
-        let parameters = parameters
-            .iter()
-            .map(|parameter| {
-                Ok(ParameterRequest {
-                    target: parameter.target,
-                    parameter: parameter.parameter.clone(),
-                    span: parameter.span,
-                    excluded: parameter
-                        .excluded
-                        .iter()
-                        .map(action)
-                        .collect::<Result<_, _>>()?,
-                })
-            })
-            .collect::<Result<_, EffectSpecializationError>>()?;
-        Ok(RequestInstantiationSummary::Available {
-            actions,
-            parameters,
-        })
+        Ok(RequestInstantiationSummary::action(
+            action,
+            bindings,
+            etas_types::ActionRequestSignature {
+                params: inputs
+                    .iter()
+                    .map(|ty| lower(*ty))
+                    .collect::<Result<_, _>>()?,
+                output: lower(output)?,
+            },
+        ))
     }
 }

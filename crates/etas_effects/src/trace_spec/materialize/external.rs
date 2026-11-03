@@ -41,30 +41,25 @@ impl TraceSpecMaterializer<'_> {
             return Some((name, clauses));
         }
 
-        let SymbolDef::ImportAlias { path, .. } = &declaration.def else {
+        let SymbolDef::ImportAlias { .. } = &declaration.def else {
             self.diagnostic(
                 span,
                 "trace spec conformance must resolve to a source or external trace spec",
             );
             return None;
         };
-        let Some(summary) = self
-            .external_trace_specs
-            .iter()
-            .find(|summary| summary.trace_spec.as_slice() == path.as_slice())
+        let Ok(summary) = checked_external_summary(self.types, symbol, self.external_trace_specs)
         else {
             self.diagnostic(
                 span,
-                format!(
-                    "external trace spec `{}` requires package metadata trace clauses",
-                    path.join(".")
-                ),
+                "external trace spec requires unique checked package metadata",
             );
             return None;
         };
         let summary = summary.metadata.clone();
+        let name = summary.trace_spec.join(".");
         let clauses = self.clauses_from_external_summary(&summary, span)?;
-        Some((path.join("."), clauses))
+        Some((name, clauses))
     }
 
     pub(super) fn clauses_from_external_summary(
@@ -72,7 +67,7 @@ impl TraceSpecMaterializer<'_> {
         summary: &ExternalTraceSpecSummaryMetadata,
         span: Span,
     ) -> Option<TraceSpecClauseAlternatives> {
-        if summary.clauses.is_empty() {
+        if summary.alternatives.is_empty() || summary.alternatives.iter().any(Vec::is_empty) {
             self.diagnostic(
                 span,
                 format!(
@@ -82,12 +77,16 @@ impl TraceSpecMaterializer<'_> {
             );
             return None;
         }
-        let clauses = summary
-            .clauses
+        summary
+            .alternatives
             .iter()
-            .map(|clause| self.clause_from_external_metadata(clause, span))
-            .collect::<Option<Vec<_>>>()?;
-        Some(vec![clauses])
+            .map(|clauses| {
+                clauses
+                    .iter()
+                    .map(|clause| self.clause_from_external_metadata(clause, span))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .collect()
     }
 
     fn clause_from_external_metadata(
@@ -103,6 +102,8 @@ impl TraceSpecMaterializer<'_> {
                     label: pattern.label.clone(),
                 };
                 Some(TraceSpecClause::Allow {
+                    source_path: None,
+                    source_clause: None,
                     pattern,
                     fact,
                     span,
@@ -115,6 +116,8 @@ impl TraceSpecMaterializer<'_> {
                     label: pattern.label.clone(),
                 };
                 Some(TraceSpecClause::Deny {
+                    source_path: None,
+                    source_clause: None,
                     pattern,
                     fact,
                     span,
@@ -132,6 +135,8 @@ impl TraceSpecMaterializer<'_> {
                     target_label: target.label.clone(),
                 };
                 Some(TraceSpecClause::RequireBefore {
+                    source_path: None,
+                    source_clause: None,
                     guard,
                     target,
                     fact,
@@ -153,6 +158,8 @@ impl TraceSpecMaterializer<'_> {
                     obligation_label: obligation.label.clone(),
                 };
                 Some(TraceSpecClause::RequireAfter {
+                    source_path: None,
+                    source_clause: None,
                     target,
                     obligation,
                     fact,
@@ -249,4 +256,36 @@ impl TraceSpecMaterializer<'_> {
         );
         None
     }
+}
+
+pub(in crate::trace_spec) fn checked_external_summary<'a>(
+    types: &etas_types::TypeOutput,
+    symbol: SymbolId,
+    summaries: &'a [crate::AnchoredExternalMetadata<ExternalTraceSpecSummaryMetadata>],
+) -> Result<&'a crate::AnchoredExternalMetadata<ExternalTraceSpecSummaryMetadata>, &'static str> {
+    let identity = types
+        .facts
+        .external_specs
+        .aliases
+        .get(&symbol)
+        .ok_or("external trace spec has no checked package identity")?;
+    let signature = types
+        .facts
+        .external_specs
+        .signatures
+        .get(identity)
+        .ok_or("external trace spec has no checked signature")?;
+    if signature.kind != etas_types::SpecKind::TraceSpec {
+        return Err("external spec is not a trace spec");
+    }
+    let mut matching = summaries.iter().filter(|summary| {
+        summary.package == identity.package && summary.metadata.trace_spec == identity.path
+    });
+    let result = matching
+        .next()
+        .ok_or("external trace spec metadata is missing")?;
+    if matching.next().is_some() {
+        return Err("external trace spec metadata is ambiguous");
+    }
+    Ok(result)
 }

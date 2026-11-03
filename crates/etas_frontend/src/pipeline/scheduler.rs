@@ -33,6 +33,13 @@ pub(crate) struct FrontendPipelineRequest {
 }
 
 pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPipelineRun {
+    run_controlled_check_pipeline(request, None)
+}
+
+pub(crate) fn run_controlled_check_pipeline(
+    request: FrontendPipelineRequest,
+    control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
+) -> FrontendPipelineRun {
     let FrontendPipelineRequest {
         input,
         incremental,
@@ -58,16 +65,13 @@ pub(crate) fn run_check_pipeline(request: FrontendPipelineRequest) -> FrontendPi
         ProjectContext::new_with_std_registry(input, std_registry)
     }
     .with_check_scope(check_scope);
-    run_context_pipeline(context, project_pipeline(), collect_timing, memory_probe)
-}
-
-pub(crate) fn run_context_pipeline(
-    context: ProjectContext,
-    pipeline: Pipeline<ProjectContext>,
-    collect_timing: bool,
-    memory_probe: Option<crate::session::FrontendMemoryProbe>,
-) -> FrontendPipelineRun {
-    run_controlled_context_pipeline(context, pipeline, collect_timing, memory_probe, None)
+    run_controlled_context_pipeline(
+        context,
+        project_pipeline(),
+        collect_timing,
+        memory_probe,
+        control,
+    )
 }
 
 pub(crate) fn run_controlled_context_pipeline(

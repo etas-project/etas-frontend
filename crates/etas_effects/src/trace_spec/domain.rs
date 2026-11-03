@@ -86,6 +86,7 @@ impl TraceSpecSummary {
             && self.owner.is_none()
             && self.action_trace == ActionTraceDomain::Empty
             && self.requested_actions.effects.is_empty()
+            && self.requested_actions.open.is_none()
             && !self.incomplete
     }
 }
@@ -125,4 +126,35 @@ fn row_less_equal(left: &EffectRow, right: &EffectRow) -> bool {
             (Some(left), Some(right)) => left == right,
             (Some(_), None) => false,
         }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_action_row_is_not_lattice_bottom() {
+        let open = TraceSpecSummary {
+            requested_actions: EffectRow {
+                effects: Default::default(),
+                open: Some(crate::EffectVarId(7)),
+            },
+            ..Default::default()
+        };
+        let action = crate::Effect::Action(
+            crate::EffectRegistry::with_standard_effects()
+                .action_by_name("Console.stdout_write")
+                .unwrap(),
+        );
+        let closed = TraceSpecSummary {
+            action_trace: ActionTraceDomain::UnknownOrder(crate::EffectSet::one(action.clone())),
+            requested_actions: EffectRow::closed(crate::EffectSet::one(action)),
+            ..Default::default()
+        };
+        for (mut left, right) in [(open.clone(), closed.clone()), (closed, open)] {
+            assert!(left.join_assign(&right));
+            assert_eq!(left.requested_actions.open, Some(crate::EffectVarId(7)));
+            assert!(!left.requested_actions.effects.is_empty());
+        }
+    }
 }

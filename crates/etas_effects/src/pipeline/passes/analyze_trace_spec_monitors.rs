@@ -32,24 +32,23 @@ impl<'a> Pass<EffectPipelineContext<'a>> for AnalyzeTraceSpecMonitorsPass {
         let Some(mut effects) = context.effects.take() else {
             return context.fail(missing(EffectStage::AnalyzeTraceSpecs, "effect facts"));
         };
+        let input = crate::trace_spec::TraceSpecAnalysisInput {
+            source_snapshots: context.input.source_snapshots,
+            external_trace_specs: context.input.external_trace_specs,
+            hir: context.input.hir,
+            types: context.input.types,
+            registry,
+            models,
+            units,
+            external_summaries: context.input.external_summaries,
+        };
         let analysis = match manager.execution_control() {
             Some(control) => crate::trace_spec::analyze_trace_spec_monitors_controlled(
-                context.input.hir,
-                context.input.types,
-                registry,
+                input,
                 &mut effects,
-                models,
-                units,
                 control,
             ),
-            None => crate::trace_spec::analyze_trace_spec_monitors(
-                context.input.hir,
-                context.input.types,
-                registry,
-                &mut effects,
-                models,
-                units,
-            ),
+            None => crate::trace_spec::analyze_trace_spec_monitors(input, &mut effects),
         };
         match analysis {
             Ok(analysis) => context.trace_spec_analysis = Some(analysis),

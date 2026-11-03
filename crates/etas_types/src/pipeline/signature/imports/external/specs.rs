@@ -20,8 +20,9 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
                         crate::ExternalSpecKindInput::Trace => SpecKind::TraceSpec,
                     },
                     param_names: signature.param_names.clone(),
-                    super_specs: Vec::new(),
+                    generic_params: Vec::new(),
                     methods: Vec::new(),
+                    super_specs: Vec::new(),
                 },
             );
         }
@@ -31,9 +32,37 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
             continue;
         };
         for signature in &metadata.spec_signatures {
+            if signature.param_names.len() != signature.generic_params.len()
+                || signature
+                    .param_names
+                    .iter()
+                    .zip(&signature.generic_params)
+                    .any(|(name, param)| name != &param.name)
+            {
+                incomplete_external_type_facts(
+                    ctx,
+                    span,
+                    "external spec generic parameter facts are incomplete or inconsistent"
+                        .to_owned(),
+                );
+                continue;
+            }
             let identity = ExternalSpecIdentity {
                 package: metadata.package.0,
                 path: signature.path.clone(),
+            };
+            let Some(generic_params) = lower_external_callable_generic_params(
+                ctx,
+                span,
+                metadata.package,
+                &signature.path,
+                &signature.generic_params,
+            ) else {
+                continue;
+            };
+            let Some(methods) = lower_external_spec_methods(ctx, metadata.package, span, signature)
+            else {
+                continue;
             };
             let mut supers = Vec::new();
             for bound in &signature.super_specs {
@@ -56,19 +85,23 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
                     .collect();
                 supers.push(crate::CheckedSpecBound { spec, args });
             }
-            let methods = lower_external_spec_methods(ctx, metadata.package, span, signature);
             if let Some(fact) = ctx
                 .signature_facts
                 .external_specs
                 .signatures
                 .get_mut(&identity)
             {
-                fact.super_specs = supers;
+                fact.generic_params = generic_params;
                 fact.methods = methods;
+                fact.super_specs = supers;
             }
         }
     }
-    for binding in &input.symbol_bindings {
+    for binding in input
+        .symbol_bindings
+        .iter()
+        .chain(&input.source_spec_bindings)
+    {
         let identity = ExternalSpecIdentity {
             package: binding.package.0,
             path: binding.path.clone(),

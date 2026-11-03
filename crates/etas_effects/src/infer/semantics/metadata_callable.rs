@@ -155,9 +155,11 @@ impl EffectSemantics<'_> {
         span: Span,
         mode: CallableSummaryMode,
     ) -> Result<CallableSummaryPlan, EffectSpecializationError> {
-        let (graph, node, checked) = self
-            .metadata_callable(source)
-            .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+        let (graph, node, checked) = self.metadata_callable(source).ok_or_else(|| {
+            EffectSpecializationError::InvalidCallableEnvironment {
+                reason: "metadata callable summary has no checked graph node".into(),
+            }
+        })?;
         let parameter_targets = node
             .parameter_bindings
             .iter()
@@ -169,6 +171,30 @@ impl EffectSemantics<'_> {
                         parameter: binding.parameter,
                     },
                 )
+            })
+            .collect::<Vec<_>>();
+        let symbolic_parameter_bounds = node
+            .parameter_bindings
+            .iter()
+            .filter(|binding| {
+                binding.parameter.scope == CallableValueScope::Value(source.value)
+                    && metadata_trace_mentions_parameter(&node.action_trace, &binding.label)
+                    && node.handler_requests.as_ref().is_some_and(|requests| {
+                        requests
+                            .parameters
+                            .iter()
+                            .any(|request| matches!(&request.parameter, etas_package_metadata::CallableRequestTarget::Parameter(name) if name == &binding.label))
+                    })
+            })
+            .filter_map(|binding| {
+                let ty = *checked.params.get(binding.parameter.position as usize)?;
+                let Some(etas_types::Type::Function(function)) = self.types.store.get(ty) else {
+                    return None;
+                };
+                function
+                    .effects
+                    .as_ref()
+                    .map(|row| self.row_from_type_ref(row))
             })
             .collect::<Vec<_>>();
         let mut summary = self
@@ -184,10 +210,13 @@ impl EffectSemantics<'_> {
                     handled_requested_actions: &checked.handled_requested_actions,
                     default_handler_effects: Some(&checked.default_handler_effects),
                     action_trace: &checked.action_trace,
+                    symbolic_parameter_bounds: &symbolic_parameter_bounds,
                 },
                 span,
             )
-            .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+            .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                reason: "metadata callable effect summary or parameter bindings are invalid".into(),
+            })?;
         if let Some(proof) = self.frozen_graphs.get(&source.graph) {
             summary.exits = proof
                 .exits
@@ -195,14 +224,45 @@ impl EffectSemantics<'_> {
                 .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?
                 .clone();
         }
-        let (determinism, support) = behavior::lower(&node.behavior);
-        if summary.determinism > determinism || !summary.support.less_equal(&support) {
-            return Err(EffectSpecializationError::InvalidCallableReturnSources);
+        if !apply_metadata_behavior(&mut summary, &node.behavior) {
+            return Err(EffectSpecializationError::InvalidCallableEnvironment {
+                reason: "metadata callable behavior is inconsistent with its decoded effects"
+                    .into(),
+            });
         }
-        summary.determinism = determinism;
-        summary.support = support;
         let (types, rows) = self.metadata_environment_generics_in_mode(source, mode)?;
-        summary = self.specialize_summary_with_bindings(&summary, &[], &types, &rows)?;
+        if let Some(method) = self
+            .implementation_graphs
+            .get(&source.graph)
+            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
+            && graph.sources.as_slice() == [CallableValueSource::Value(source.value)]
+            && let Some(contract) = &method.callable_contract
+        {
+            summary.exits = self.external_callback_outcomes(
+                contract,
+                &summary,
+                &etas_types::FlowType {
+                    input: checked.params.clone(),
+                    output: checked.output,
+                    effects: None,
+                },
+                span,
+                &types,
+                &self
+                    .metadata_evidence_generics(source)
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
+            )?;
+        }
+        summary = self
+            .specialize_summary_with_bindings(&summary, &[], &types, &rows)
+            .map_err(|error| match error {
+                EffectSpecializationError::InvalidCallableReturnSources => {
+                    EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata callable generic summary cannot be specialized".into(),
+                    }
+                }
+                other => other,
+            })?;
         let environment = source
             .environment
             .map(|id| self.callable_environment(id))
@@ -322,11 +382,16 @@ impl EffectSemantics<'_> {
         let mut found = BTreeSet::new();
         for source in sources {
             match source {
-                CallableValueSource::Value(value) => {
+                CallableValueSource::Value(value) | CallableValueSource::FrozenContract(value) => {
                     let source = crate::MetadataCallableSource {
                         graph: key,
                         value: *value,
                         environment: environment_id,
+                        analysis: if matches!(source, CallableValueSource::FrozenContract(_)) {
+                            crate::CallableAnalysisKind::FrozenContract
+                        } else {
+                            crate::CallableAnalysisKind::CheckedRevision
+                        },
                     };
                     self.metadata_callable(source)
                         .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
@@ -529,7 +594,16 @@ impl EffectSemantics<'_> {
         {
             return Err(EffectSpecializationError::InvalidCallableParameterInterface);
         }
-        let mut summary = self.latent_source_summary(LatentSource::Metadata(source), site.span)?;
+        let mut summary = self
+            .latent_source_summary(LatentSource::Metadata(source), site.span)
+            .map_err(|error| match error {
+                EffectSpecializationError::InvalidCallableReturnSources => {
+                    EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata callable has no solved latent summary".into(),
+                    }
+                }
+                other => other,
+            })?;
         let targets = (0..node.params.len())
             .map(|position| crate::ParameterCallTarget::Graph {
                 graph: source.graph,
@@ -542,15 +616,37 @@ impl EffectSemantics<'_> {
         let bindings = self.call_trace_bindings(site, &targets)?;
         let inferred = self.inferred_callback_parameters(&targets, &params)?;
         let template = summary.action_trace.clone();
-        self.merge_parameter_call_summaries(&mut summary, &template, &bindings, state, &inferred)?;
-        summary.action_trace = self.specialize_parameter_call_trace(&template, &bindings, state)?;
+        self.merge_parameter_call_summaries(&mut summary, &template, &bindings, state, &inferred)
+            .map_err(|error| match error {
+                EffectSpecializationError::InvalidCallableReturnSources => {
+                    EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata callable parameter summary cannot be instantiated".into(),
+                    }
+                }
+                other => other,
+            })?;
+        summary.action_trace = self
+            .specialize_parameter_call_trace(&template, &bindings, state)
+            .map_err(|error| match error {
+                EffectSpecializationError::InvalidCallableReturnSources => {
+                    EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata callable parameter trace cannot be instantiated".into(),
+                    }
+                }
+                other => other,
+            })?;
         if let Some(bound) = &signature.effects {
             let coverage = crate::EffectCoverage {
                 registry: self.registry,
                 types: &self.types.store,
             };
             if !coverage.row_covers(&self.row_from_type_ref(bound), &summary.escaping_effects) {
-                return Err(EffectSpecializationError::InvalidCallableReturnSources);
+                return Err(EffectSpecializationError::InvalidCallableEnvironment {
+                    reason: format!(
+                        "metadata callable escaping effects {:?} exceed checked callable row {:?}",
+                        summary.escaping_effects, bound
+                    ),
+                });
             }
         }
         if let Some(returned) = &node.returned_sources {
@@ -577,6 +673,47 @@ impl EffectSemantics<'_> {
     }
 }
 
+fn metadata_trace_mentions_parameter(
+    trace: &etas_package_metadata::ActionTrace,
+    label: &str,
+) -> bool {
+    use etas_package_metadata::ActionTrace;
+    let mut pending = vec![trace];
+    while let Some(trace) = pending.pop() {
+        match trace {
+            ActionTrace::ParameterCall { parameter: etas_package_metadata::CallableRequestTarget::Parameter(name) } if name == label => return true,
+            ActionTrace::Seq(parts) | ActionTrace::Choice(parts) => pending.extend(parts),
+            ActionTrace::Repeat(part) => pending.push(part),
+            ActionTrace::Widened {
+                parameter_calls, ..
+            } if parameter_calls.iter().any(|parameter| matches!(parameter, etas_package_metadata::CallableRequestTarget::Parameter(name) if name == label)) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+pub(super) fn apply_metadata_behavior(
+    summary: &mut crate::EffectSummary,
+    metadata: &etas_package_metadata::CallableValueBehavior,
+) -> bool {
+    let (determinism, support) = behavior::lower(metadata);
+    let independent = metadata
+        .independent_determinism
+        .map(behavior::lower_determinism);
+    if summary.determinism > determinism
+        || !summary.support.less_equal(&support)
+        || independent.is_some_and(|value| value > determinism)
+        || (summary.action_trace.has_parameter_calls() && independent.is_none())
+    {
+        return false;
+    }
+    summary.determinism = determinism;
+    summary.independent_determinism = independent;
+    summary.support = support;
+    true
+}
+
 mod behavior;
 
 fn is_captured_parameter(
@@ -600,6 +737,7 @@ mod tests {
             graph,
             value: 1,
             environment: None,
+            analysis: crate::CallableAnalysisKind::CheckedRevision,
         };
         let scopes = [
             CallableValueScope::Root,

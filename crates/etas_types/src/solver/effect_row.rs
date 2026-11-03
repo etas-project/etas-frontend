@@ -15,6 +15,8 @@ pub fn rows_equal(lhs: &EffectRowRef, rhs: &EffectRowRef) -> bool {
 pub struct EffectRowInference {
     pub matches: bool,
     pub deferred: BTreeSet<String>,
+    pub deferred_fixed: Vec<(String, EffectRowRef)>,
+    pub concrete: Vec<(String, crate::EffectRowEquation)>,
 }
 
 pub fn infer_bindings_from_types(
@@ -54,6 +56,46 @@ pub(super) fn infer_scoped_bindings_from_types(
     scopes: EffectRowParameterScopes<'_>,
     bindings: &mut HashMap<String, EffectRowRef>,
 ) -> EffectRowInference {
+    let mut results = infer_scoped_bindings_from_pairs(
+        store,
+        &[(expected, actual)],
+        type_bindings,
+        substitutions,
+        scopes,
+        bindings,
+    );
+    results.remove(0)
+}
+
+pub(super) fn infer_bindings_from_type_pairs(
+    store: &TypeStore,
+    pairs: &[(TypeId, TypeId)],
+    type_bindings: &HashMap<String, TypeId>,
+    substitutions: &Substitution,
+    params: &[String],
+    bindings: &mut HashMap<String, EffectRowRef>,
+) -> Vec<EffectRowInference> {
+    infer_scoped_bindings_from_pairs(
+        store,
+        pairs,
+        type_bindings,
+        substitutions,
+        EffectRowParameterScopes {
+            inferred: params,
+            lexical: &[],
+        },
+        bindings,
+    )
+}
+
+fn infer_scoped_bindings_from_pairs(
+    store: &TypeStore,
+    pairs: &[(TypeId, TypeId)],
+    type_bindings: &HashMap<String, TypeId>,
+    substitutions: &Substitution,
+    scopes: EffectRowParameterScopes<'_>,
+    bindings: &mut HashMap<String, EffectRowRef>,
+) -> Vec<EffectRowInference> {
     let inputs = InferenceInputs {
         store,
         type_bindings,
@@ -63,14 +105,24 @@ pub(super) fn infer_scoped_bindings_from_types(
     };
     let mut state = InferenceState {
         bindings,
-        result: EffectRowInference {
-            matches: true,
-            deferred: BTreeSet::new(),
-        },
+        results: vec![
+            EffectRowInference {
+                matches: true,
+                ..EffectRowInference::default()
+            };
+            pairs.len()
+        ],
+        current: 0,
+        equations: Vec::new(),
         visited: HashSet::new(),
     };
-    infer_type(&inputs, &mut state, expected, actual);
-    state.result
+    for (index, &(expected, actual)) in pairs.iter().enumerate() {
+        state.current = index;
+        state.visited.clear();
+        infer_type(&inputs, &mut state, expected, actual);
+    }
+    solve_row_equations(&inputs, &mut state);
+    state.results
 }
 
 struct InferenceInputs<'a> {
@@ -83,8 +135,17 @@ struct InferenceInputs<'a> {
 
 struct InferenceState<'a> {
     bindings: &'a mut HashMap<String, EffectRowRef>,
-    result: EffectRowInference,
+    results: Vec<EffectRowInference>,
+    current: usize,
+    equations: Vec<RowEquation>,
     visited: HashSet<(TypeId, TypeId)>,
+}
+
+struct RowEquation {
+    parameter: String,
+    fixed: Vec<EffectRef>,
+    actual: EffectRowRef,
+    origin: usize,
 }
 
 fn infer_type(
@@ -93,7 +154,7 @@ fn infer_type(
     expected: TypeId,
     actual: TypeId,
 ) {
-    if !state.result.matches {
+    if !state.results[state.current].matches {
         return;
     }
     let expected = resolve_type(
@@ -293,7 +354,10 @@ fn infer_row_binding(
     {
         // An unannotated callable has an unsolved latent row, not a proven
         // empty row. Its expression origin is solved by effect analysis.
-        state.result.deferred.insert(tail.clone());
+        state.results[state.current].deferred.insert(tail.clone());
+        state.results[state.current]
+            .deferred_fixed
+            .push((tail.clone(), empty_row()));
         return;
     }
     let actual = actual.cloned().unwrap_or_else(empty_row);
@@ -302,7 +366,7 @@ fn infer_row_binding(
         .as_ref()
         .filter(|tail| inputs.params.contains(tail))
     else {
-        state.result.matches &= rows_equivalent(
+        state.results[state.current].matches &= rows_equivalent(
             inputs.store,
             expected,
             &actual,
@@ -311,58 +375,141 @@ fn infer_row_binding(
         );
         return;
     };
-    let residual_effects =
-        expected
-            .effects
-            .iter()
-            .try_fold(actual.effects.clone(), |mut remaining, expected| {
-                let index = remaining.iter().position(|actual| {
-                    effect_refs_equivalent(
-                        inputs.store,
-                        expected,
-                        actual,
-                        inputs.type_bindings,
-                        inputs.substitutions,
-                    )
-                })?;
-                remaining.remove(index);
-                Some(remaining)
-            });
-    let Some(residual_effects) = residual_effects else {
-        state.result.matches = false;
-        return;
-    };
-    if let Some(bound) = state.bindings.get(tail) {
-        let residual = EffectRowRef {
-            effects: residual_effects,
-            tail: actual.tail.clone(),
-        };
-        state.result.matches &= rows_equivalent(
+    state.equations.push(RowEquation {
+        parameter: tail.clone(),
+        fixed: expected.effects.clone(),
+        actual,
+        origin: state.current,
+    });
+}
+
+fn solve_row_equations(inputs: &InferenceInputs<'_>, state: &mut InferenceState<'_>) {
+    let equivalent = |lhs: &EffectRef, rhs: &EffectRef| {
+        effect_refs_equivalent(
             inputs.store,
-            bound,
-            &residual,
+            lhs,
+            rhs,
             inputs.type_bindings,
             inputs.substitutions,
-        );
-        return;
-    }
-    // The signature being instantiated and the enclosing declaration are
-    // separate binders, even when both spell their row parameter `E`.
-    if actual.tail.as_deref() == Some(tail) && !inputs.lexical_params.contains(tail) {
-        if residual_effects.is_empty() {
-            state.result.deferred.insert(tail.clone());
-        } else {
-            state.result.matches = false;
+        )
+    };
+    let equations = std::mem::take(&mut state.equations);
+    let mut grouped: std::collections::BTreeMap<&str, Vec<&RowEquation>> =
+        std::collections::BTreeMap::new();
+    for equation in &equations {
+        if equation.actual.tail.as_deref() != Some(equation.parameter.as_str())
+            || inputs.lexical_params.contains(&equation.parameter)
+        {
+            state.results[equation.origin].concrete.push((
+                equation.parameter.clone(),
+                crate::EffectRowEquation {
+                    fixed: EffectRowRef {
+                        effects: equation.fixed.clone(),
+                        tail: None,
+                    },
+                    actual: equation.actual.clone(),
+                },
+            ));
         }
-        return;
+        grouped
+            .entry(&equation.parameter)
+            .or_default()
+            .push(equation);
     }
-    state.bindings.insert(
-        tail.clone(),
-        EffectRowRef {
-            effects: residual_effects,
-            tail: actual.tail.clone(),
-        },
-    );
+    for (parameter, group) in grouped {
+        let explicit = state.bindings.get(parameter).cloned();
+        let mut inferred: Option<EffectRowRef> = None;
+        for equation in &group {
+            if !equation.fixed.iter().all(|fixed| {
+                equation
+                    .actual
+                    .effects
+                    .iter()
+                    .any(|actual| equivalent(fixed, actual))
+            }) {
+                state.results[equation.origin].matches = false;
+                continue;
+            }
+            let residual = equation
+                .actual
+                .effects
+                .iter()
+                .filter(|actual| !equation.fixed.iter().any(|fixed| equivalent(fixed, actual)))
+                .cloned()
+                .collect::<Vec<_>>();
+            // Same-spelled caller and callee binders are distinct only when
+            // the former is a checked lexical parameter.
+            if equation.actual.tail.as_deref() == Some(parameter)
+                && !inputs.lexical_params.iter().any(|name| name == parameter)
+            {
+                if residual.is_empty() {
+                    state.results[equation.origin]
+                        .deferred
+                        .insert(parameter.to_owned());
+                    state.results[equation.origin].deferred_fixed.push((
+                        parameter.to_owned(),
+                        EffectRowRef {
+                            effects: equation.fixed.clone(),
+                            tail: None,
+                        },
+                    ));
+                } else {
+                    state.results[equation.origin].matches = false;
+                }
+                continue;
+            }
+            if explicit.is_none() {
+                let row = inferred.get_or_insert_with(|| EffectRowRef {
+                    effects: Vec::new(),
+                    tail: equation.actual.tail.clone(),
+                });
+                if row.tail != equation.actual.tail {
+                    state.results[equation.origin].matches = false;
+                }
+                for effect in residual {
+                    if !row
+                        .effects
+                        .iter()
+                        .any(|existing| equivalent(existing, &effect))
+                    {
+                        row.effects.push(effect);
+                    }
+                }
+            }
+        }
+        let Some(bound) = explicit.or(inferred) else {
+            continue;
+        };
+        for equation in &group {
+            if equation.actual.tail.as_deref() == Some(parameter)
+                && !inputs.lexical_params.iter().any(|name| name == parameter)
+            {
+                continue;
+            }
+            let mut combined = equation.fixed.clone();
+            for effect in &bound.effects {
+                if !combined.iter().any(|fixed| equivalent(fixed, effect)) {
+                    combined.push(effect.clone());
+                }
+            }
+            let actual = &equation.actual;
+            let matches = bound.tail == actual.tail
+                && combined
+                    .iter()
+                    .all(|effect| actual.effects.iter().any(|a| equivalent(effect, a)))
+                && actual
+                    .effects
+                    .iter()
+                    .all(|effect| combined.iter().any(|a| equivalent(effect, a)));
+            state.results[equation.origin].matches &= matches;
+        }
+        if group
+            .iter()
+            .all(|equation| state.results[equation.origin].matches)
+        {
+            state.bindings.insert(parameter.to_owned(), bound);
+        }
+    }
 }
 
 fn rows_equivalent(
@@ -373,11 +520,15 @@ fn rows_equivalent(
     substitutions: &Substitution,
 ) -> bool {
     lhs.tail == rhs.tail
-        && lhs.effects.len() == rhs.effects.len()
         && lhs.effects.iter().all(|lhs| {
             rhs.effects
                 .iter()
                 .any(|rhs| effect_refs_equivalent(store, lhs, rhs, type_bindings, substitutions))
+        })
+        && rhs.effects.iter().all(|rhs| {
+            lhs.effects
+                .iter()
+                .any(|lhs| effect_refs_equivalent(store, lhs, rhs, type_bindings, substitutions))
         })
 }
 
@@ -572,6 +723,21 @@ fn types_equivalent(
                 && lhs.len() == rhs.len()
                 && lhs.iter().zip(rhs).all(|(lhs, rhs)| recurse!(*lhs, *rhs))
         }
+        (Some(left @ Type::Nominal(_)), Some(right @ Type::Nominal(_)))
+        | (Some(left @ Type::Enum(_)), Some(right @ Type::Enum(_))) => {
+            match (store.nominal_identity(lhs), store.nominal_identity(rhs)) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => left == right,
+                _ => false,
+            }
+        }
+        (Some(Type::Named(left)), Some(Type::Named(right))) => {
+            match (store.parameter_identity(lhs), store.parameter_identity(rhs)) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => left == right,
+                _ => false,
+            }
+        }
         (Some(lhs), Some(rhs)) => lhs == rhs,
         _ => false,
     }
@@ -588,7 +754,9 @@ fn resolve_type(
     while visited.insert(current) {
         let next = match store.get(current) {
             Some(Type::Var(var)) => substitutions.get(*var),
-            Some(Type::Named(name)) => type_bindings.get(&name.name).copied(),
+            Some(Type::Named(name)) if store.parameter_identity(current).is_none() => {
+                type_bindings.get(&name.name).copied()
+            }
             _ => None,
         };
         let Some(next) = next else {

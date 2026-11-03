@@ -43,6 +43,7 @@ use super::{PackageMetadataBuildInput, PackageMetadataError, PackageMetadataHead
 mod callable_returns;
 mod re_exports;
 mod request_templates;
+mod spec_projection;
 mod type_projection;
 use callable_returns::invalid;
 use type_projection::{metadata_effect_arg, metadata_effect_row_ref, metadata_type};
@@ -266,7 +267,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
         metadata.trace_spec_conformances = self.trace_spec_conformances(identities)?;
         metadata.effect_summaries = self.effect_summaries()?;
-        metadata.trace_spec_summaries = self.trace_spec_summaries()?;
+        metadata.trace_spec_summaries = self.trace_spec_summaries(identities)?;
         for (_, module) in self.checked.module_index.modules.iter() {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
@@ -581,6 +582,33 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })?,
             etas_types::CheckedSpecRef::Std(path) => path.clone(),
             etas_types::CheckedSpecRef::External(identity) => identity.path.clone(),
+            etas_types::CheckedSpecRef::Canonical(identity) => {
+                if !self.checked.foreign_type_bindings.verifies_spec(identity) {
+                    return Err(PackageMetadataError::InvalidMetadataType {
+                        reason: "canonical spec is missing checked origin proof".into(),
+                    });
+                }
+                spec_projection::checked_canonical_spec_path(
+                    identity,
+                    &self.checked.types.canonical_specs,
+                    &self.checked.types.external_specs,
+                    self.checked.external_definition_origins(),
+                    (
+                        &self
+                            .checked
+                            .definition_environment
+                            .environment()
+                            .external_public_metadata,
+                        &self
+                            .checked
+                            .definition_environment
+                            .environment()
+                            .external_modules,
+                    ),
+                    &self.checked.type_store,
+                    &|key| self.checked.foreign_type_bindings.verifies_marker_spec(key),
+                )?
+            }
         };
         Ok(MetadataSpecBound {
             spec,
@@ -680,6 +708,11 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &etas_types::SpecSignature,
     ) -> Result<MetadataSpecSignature, PackageMetadataError> {
+        if signature.params.len() != signature.param_names.len() {
+            return Err(PackageMetadataError::InvalidMetadataType {
+                reason: "spec generic parameter facts are incomplete".into(),
+            });
+        }
         let generic_names = signature
             .param_names
             .iter()
@@ -694,6 +727,71 @@ impl<'a> ProjectMetadataProjection<'a> {
                 etas_types::SpecKind::TraceSpec => MetadataSpecKind::Trace,
             },
             param_names: signature.param_names.clone(),
+            generic_params: signature
+                .params
+                .iter()
+                .zip(&signature.param_names)
+                .map(|(param, expected_name)| {
+                    let symbol = self.checked.symbols.get(*param).ok_or_else(|| {
+                        PackageMetadataError::MissingExportSignature { path: path.clone() }
+                    })?;
+                    if symbol.name != *expected_name {
+                        return Err(PackageMetadataError::InvalidMetadataType {
+                            reason:
+                                "spec generic parameter identity differs from its checked signature"
+                                    .into(),
+                        });
+                    }
+                    let declared_bounds = match &symbol.def {
+                        etas_hir::SymbolDef::TypeParam { bounds, .. } => bounds.len(),
+                        etas_hir::SymbolDef::EffectParam { .. } => 0,
+                        _ => {
+                            return Err(PackageMetadataError::InvalidMetadataType {
+                                reason: "spec generic parameter does not resolve to a parameter"
+                                    .into(),
+                            });
+                        }
+                    };
+                    let checked_bounds = self
+                        .checked
+                        .types
+                        .type_param_bounds
+                        .get(param)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    if checked_bounds.len() != declared_bounds {
+                        return Err(PackageMetadataError::InvalidMetadataType {
+                            reason: "spec generic parameter bounds are incomplete".into(),
+                        });
+                    }
+                    let bounds = self
+                        .checked
+                        .types
+                        .type_param_bounds
+                        .get(param)
+                        .into_iter()
+                        .flatten()
+                        .map(|bound| {
+                            self.checked_spec_bound_metadata(
+                                &etas_types::CheckedSpecBound {
+                                    spec: etas_types::CheckedSpecRef::Source(bound.spec_symbol),
+                                    args: bound.args.clone(),
+                                },
+                                &generic_names,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    Ok(etas_package_metadata::GenericParam {
+                        name: symbol.name.clone(),
+                        kind: if symbol.kind == etas_hir::SymbolKind::EffectParam {
+                            etas_package_metadata::GenericParamKind::Effect
+                        } else {
+                            etas_package_metadata::GenericParamKind::Type
+                        },
+                        bounds,
+                    })
+                })
+                .collect::<Result<Vec<_>, PackageMetadataError>>()?,
             callable: signature
                 .callable
                 .as_ref()
@@ -840,6 +938,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                         }
                         etas_types::TraceSpecConformanceTarget::Named { spec_symbol, args } => {
                             MetadataTraceSpecConformanceTarget::Named {
+                                definition: identities.and_then(|index| index.symbol(*spec_symbol)).cloned().ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                                    reason: "trace spec conformance target has no checked stable definition identity".to_owned(),
+                                })?,
                                 spec: self.symbol_canonical_path(*spec_symbol).ok_or_else(
                                     || PackageMetadataError::InvalidMetadataType {
                                         reason: "trace spec conformance target has no canonical metadata path"
@@ -1137,10 +1238,105 @@ impl<'a> ProjectMetadataProjection<'a> {
 
     fn effect_summaries(&self) -> Result<Vec<MetadataEffectSummary>, PackageMetadataError> {
         let mut summaries = Vec::new();
+        for (item, signature) in &self.checked.types.item_signatures {
+            let callable = match signature {
+                etas_types::ItemSignature::Flow(_) | etas_types::ItemSignature::Tool(_) => true,
+                etas_types::ItemSignature::Agent(agent) => agent.callable().is_some(),
+                etas_types::ItemSignature::TopLevelLet(_) => false,
+            };
+            if callable && let Some(path) = self.item_path(*item) {
+                if !self.checked.effects.item_effects.contains_key(item) {
+                    return Err(PackageMetadataError::InvalidMetadataType {
+                        reason: format!(
+                            "{} is missing checked effect summary facts",
+                            path.join(".")
+                        ),
+                    });
+                }
+                let public = self
+                    .checked
+                    .hir
+                    .items
+                    .get(*item)
+                    .and_then(etas_hir::HirItem::symbol)
+                    .and_then(|symbol| self.checked.hir.symbols.get(symbol))
+                    .is_some_and(|symbol| symbol.visibility == etas_hir::Visibility::Public);
+                let requires_contract = matches!(
+                    signature,
+                    etas_types::ItemSignature::Flow(_) | etas_types::ItemSignature::Agent(_)
+                ) || matches!(
+                    self.checked.hir.items.get(*item),
+                    Some(etas_hir::HirItem::Tool(etas_hir::HirToolDecl {
+                        body: etas_hir::HirToolBody::Source(_),
+                        ..
+                    }))
+                );
+                if public && requires_contract && self.public_contract_for_item(*item).is_none() {
+                    return Err(PackageMetadataError::InvalidMetadataType {
+                        reason: format!(
+                            "{} is missing checked public effect contract facts",
+                            path.join(".")
+                        ),
+                    });
+                }
+            }
+        }
+        for contract in &self.checked.effects.public_contracts {
+            if let Some(path) = self.item_path(contract.item)
+                && !self
+                    .checked
+                    .effects
+                    .item_effects
+                    .contains_key(&contract.item)
+            {
+                return Err(PackageMetadataError::InvalidMetadataType {
+                    reason: format!("{} is missing checked effect summary facts", path.join(".")),
+                });
+            }
+        }
         for (item, summary) in &self.checked.effects.item_effects {
             let Some(path) = self.item_path(*item) else {
                 continue;
             };
+            if !summary.residual_checks.is_empty() {
+                return Err(PackageMetadataError::InvalidMetadataType {
+                    reason: format!(
+                        "{} has residual obligations requiring validated residual plans",
+                        path.join(".")
+                    ),
+                });
+            }
+            if let Some(contract) = self.public_contract_for_item(*item) {
+                if !contract.residual_checks.is_empty() {
+                    return Err(PackageMetadataError::InvalidMetadataType {
+                        reason: format!(
+                            "{} has public residual obligations requiring validated residual plans",
+                            path.join(".")
+                        ),
+                    });
+                }
+                for latent in &contract.latent_flows {
+                    let fact = self
+                        .checked
+                        .effects
+                        .latent_effects
+                        .get(&latent.value)
+                        .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                            reason: format!(
+                                "{} is missing checked latent effect facts",
+                                path.join(".")
+                            ),
+                        })?;
+                    if !fact.summary.residual_checks.is_empty() {
+                        return Err(PackageMetadataError::InvalidMetadataType {
+                            reason: format!(
+                                "{} has latent residual obligations requiring validated residual plans",
+                                path.join(".")
+                            ),
+                        });
+                    }
+                }
+            }
             let type_generic_names = self
                 .checked
                 .types
@@ -1168,6 +1364,8 @@ impl<'a> ProjectMetadataProjection<'a> {
                 )?,
             };
             summaries.push(MetadataEffectSummary {
+                residual_checks: summary.residual_checks.iter().cloned().collect(),
+                behavior: callable_returns::behavior(summary),
                 handler_requests: self.request_template_metadata(
                     &summary.handler_requests,
                     &type_generic_names,
@@ -1233,27 +1431,62 @@ impl<'a> ProjectMetadataProjection<'a> {
         Ok(summaries)
     }
 
-    fn trace_spec_summaries(&self) -> Result<Vec<MetadataTraceSpecSummary>, PackageMetadataError> {
+    fn trace_spec_summaries(
+        &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<Vec<MetadataTraceSpecSummary>, PackageMetadataError> {
         let mut summaries = Vec::new();
-        for (item, facts) in &self.checked.effects.trace_specs.items {
-            let Some(HirItem::Spec(spec)) = self.checked.hir.items.get(*item) else {
+        for (item, declaration) in self.checked.hir.items.iter() {
+            let HirItem::Spec(spec) = declaration else {
                 continue;
             };
             if !matches!(spec.kind, etas_hir::HirSpecKind::TraceSpec) {
                 continue;
             }
-            let Some(path) = self.item_path(*item) else {
+            let Some(path) = self.item_path(item) else {
                 continue;
             };
-            let mut clauses = Vec::new();
-            for fact in facts {
-                if let Some(clause) = self.trace_spec_clause_metadata(fact)? {
-                    clauses.push(clause);
-                }
-            }
+            let alternatives = self
+                .checked
+                .effects
+                .trace_specs
+                .declaration_alternatives
+                .get(&item)
+                .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                    reason: format!(
+                        "trace spec {} is missing checked alternatives",
+                        path.join(".")
+                    ),
+                })?;
+            let alternatives = alternatives.iter().map(|facts| {
+                facts.iter().map(|clause| {
+                    use etas_effects::trace_spec::TraceSpecClause;
+                    let has_bounds = match clause {
+                        TraceSpecClause::Allow { pattern, .. } | TraceSpecClause::Deny { pattern, .. } => !pattern.arg_bounds.is_empty(),
+                        TraceSpecClause::RequireBefore { guard, target, .. } => !guard.arg_bounds.is_empty() || !target.arg_bounds.is_empty(),
+                        TraceSpecClause::RequireAfter { target, obligation, .. } => !target.arg_bounds.is_empty() || !obligation.arg_bounds.is_empty(),
+                        TraceSpecClause::Limit { .. } => false,
+                    };
+                    if has_bounds {
+                        return Err(PackageMetadataError::InvalidMetadataType {
+                            reason: format!("trace spec {} has selector bounds unsupported by package metadata", path.join(".")),
+                        });
+                    }
+                    self.trace_spec_clause_metadata(&clause.fact())?.ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                        reason: format!("trace spec {} has a clause unsupported by package metadata", path.join(".")),
+                    })
+                }).collect::<Result<Vec<_>, _>>()
+            }).collect::<Result<Vec<_>, _>>()?;
             summaries.push(MetadataTraceSpecSummary {
                 trace_spec: path,
-                clauses,
+                definition: identities
+                    .and_then(|index| index.symbol(spec.symbol))
+                    .cloned()
+                    .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                        reason: "trace spec summary has no checked stable definition identity"
+                            .to_owned(),
+                    })?,
+                alternatives,
             });
         }
         summaries.sort_by(|left, right| left.trace_spec.cmp(&right.trace_spec));
@@ -1266,6 +1499,7 @@ impl<'a> ProjectMetadataProjection<'a> {
     ) -> Result<Option<MetadataTraceSpecClause>, PackageMetadataError> {
         Ok(match fact {
             TraceSpecClauseFact::Allow { pattern, .. } => Some(MetadataTraceSpecClause {
+                selector_bounds: Vec::new(),
                 kind: MetadataTraceSpecClauseKind::Allow,
                 pattern: Some(self.metadata_effect_row(pattern)?),
                 guard: None,
@@ -1273,6 +1507,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 obligation: None,
             }),
             TraceSpecClauseFact::Deny { pattern, .. } => Some(MetadataTraceSpecClause {
+                selector_bounds: Vec::new(),
                 kind: MetadataTraceSpecClauseKind::Deny,
                 pattern: Some(self.metadata_effect_row(pattern)?),
                 guard: None,
@@ -1281,6 +1516,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             }),
             TraceSpecClauseFact::RequireBefore { guard, target, .. } => {
                 Some(MetadataTraceSpecClause {
+                    selector_bounds: Vec::new(),
                     kind: MetadataTraceSpecClauseKind::RequireBefore,
                     pattern: None,
                     guard: Some(self.metadata_effect_row(guard)?),
@@ -1291,6 +1527,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             TraceSpecClauseFact::RequireAfter {
                 target, obligation, ..
             } => Some(MetadataTraceSpecClause {
+                selector_bounds: Vec::new(),
                 kind: MetadataTraceSpecClauseKind::RequireAfter,
                 pattern: None,
                 guard: None,
@@ -1451,6 +1688,19 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .transpose()?
                         .unwrap_or_default();
                     Ok(MetadataLatentFlowSummary {
+                        residual_checks: self
+                            .checked
+                            .effects
+                            .latent_effects
+                            .get(&latent.value)
+                            .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
+                                reason: "missing checked latent effect facts".into(),
+                            })?
+                            .summary
+                            .residual_checks
+                            .iter()
+                            .cloned()
+                            .collect(),
                         declared_bound,
                         inferred_effects: self
                             .effect_row_metadata(
@@ -1803,6 +2053,21 @@ impl<'a> ProjectMetadataProjection<'a> {
         visibility: MetadataVisibility,
         signature: &AgentSignature,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
+        let header_item = match signature
+            .default_entry
+            .as_ref()
+            .and_then(|entry| entry.method)
+        {
+            Some(method) => {
+                self.checked
+                    .types
+                    .agent_methods
+                    .get(&method)
+                    .ok_or_else(|| invalid("agent default entry has no checked method"))?
+                    .body
+            }
+            None => item,
+        };
         let Some(signature) = signature.callable() else {
             return Ok(MetadataCallableSignature {
                 path,
@@ -1822,7 +2087,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         Ok(MetadataCallableSignature {
             path,
             generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
-            param_names: self.callable_param_names(item)?,
+            param_names: self.callable_param_names(header_item)?,
             input: signature
                 .params
                 .iter()

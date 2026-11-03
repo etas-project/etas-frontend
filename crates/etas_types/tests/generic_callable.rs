@@ -1,6 +1,49 @@
 use etas_types::{PrimitiveType, Type};
 
 #[test]
+fn generic_call_solves_overlapping_effect_equations_for_all_arguments() {
+    for (left, right) in [("a", "b"), ("b", "a")] {
+        let source = format!(
+            r#"
+module app;
+effect Gate {{ action a() -> unit; action b() -> unit; }}
+flow both<effect E>(first: () -> unit ![Gate.{left}, E], second: () -> unit ![Gate.{right}, E]) -> unit ![E] {{
+    first(); second();
+}}
+flow full() -> unit ![Gate.a, Gate.b] {{ return; }}
+flow main() -> unit ![Gate.a, Gate.b] {{ both(full, full); }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(17),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = etas_hir::lower_program(&parsed.value);
+        let output = etas_types::check_program(&hir);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let binding = output
+            .facts
+            .generic_instantiations
+            .values()
+            .flat_map(|fact| &fact.effect_row_bindings)
+            .find(|(name, _)| name == "E")
+            .expect("checked E binding");
+        let names = binding
+            .1
+            .effects
+            .iter()
+            .map(|effect| effect.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from(["app.Gate.a", "app.Gate.b"])
+        );
+    }
+}
+
+#[test]
 fn declared_generic_parameters_are_instantiated_independently_of_their_spelling() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(17),
@@ -86,6 +129,51 @@ flow main() -> UserId { return apply(identity, UserId("checked")); }
         output.store.get(fact.type_bindings[0].1),
         Some(Type::Nominal(_))
     ));
+}
+
+#[test]
+fn underconstrained_generic_callable_reference_is_rejected() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(17),
+        None,
+        r#"
+module app;
+flow identity<T>(value: T) -> T { return value; }
+flow consume<U>(callback: (U) -> U ![]) -> unit { return; }
+flow main() -> unit { consume(identity); }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = etas_types::check_program(&etas_hir::lower_program(&parsed.value));
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == etas_core::DiagnosticCode::Type(etas_core::TypeDiagnosticCode::IncompleteTypeFacts)),
+        "underconstrained callable was accepted: {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn unresolved_type_inside_callable_application_is_rejected() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(17),
+        None,
+        r#"
+module app;
+flow identity<T>(value: T) -> T { return value; }
+flow consume<U>(callback: (Array<U>) -> Array<U> ![]) -> unit { return; }
+flow main() -> unit { consume(identity); }
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = etas_types::check_program(&etas_hir::lower_program(&parsed.value));
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("generic callable value has an unresolved type argument")),
+        "nested unresolved callable was accepted: {:?}",
+        output.diagnostics
+    );
 }
 
 #[test]

@@ -134,7 +134,9 @@ impl EffectSemantics<'_> {
             .spec_impls
             .iter()
             .filter(|implementation| {
-                implementation.spec_symbol == spec_symbol
+                self.type_symbols
+                    .canonical_symbol(self.hir, implementation.spec_symbol)
+                    == Some(spec_symbol)
                     && same(implementation.self_type, receiver)
                     && implementation.args.len() == args.len()
                     && implementation

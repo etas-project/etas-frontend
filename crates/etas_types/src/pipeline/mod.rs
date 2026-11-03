@@ -44,10 +44,12 @@ pub fn check_top_level_items(
         signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),
         symbols: std::sync::Arc::new(symbols::TypeSymbolIndex::build(hir)),
         signature_base: None,
+        body_parameters: None,
         diagnostics: Vec::new(),
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
+        external_type_aliases: std::collections::HashMap::new(),
     };
     for (item, data) in hir.items.iter() {
         if matches!(data, etas_hir::HirItem::TopLevelLet(_)) {
@@ -85,11 +87,15 @@ fn body_delta_output(
     base: &crate::SignatureEnvironment,
     item: etas_hir::HirItemId,
 ) -> crate::BodyTypeOutput {
+    let (types, nominal_identities, parameter_identities) =
+        ctx.interner.into_store().into_local_parts();
     crate::BodyTypeOutput {
         owner: item,
         base: base.types.identity(),
         base_len: base.types.len(),
-        types: ctx.interner.into_store().into_local_types(),
+        types,
+        nominal_identities,
+        parameter_identities,
         facts: ctx.signature_facts,
         diagnostics: ctx.diagnostics,
     }
@@ -137,10 +143,12 @@ fn infer_outputs_with_checkpoint<E>(
         signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),
         symbols: std::sync::Arc::new(symbols::TypeSymbolIndex::build(hir)),
         signature_base: None,
+        body_parameters: None,
         diagnostics: seed.diagnostics,
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
+        external_type_aliases: std::collections::HashMap::new(),
     };
     body::output_inference::run_with_checkpoint(&mut ctx, checkpoint)?;
     checkpoint()?;

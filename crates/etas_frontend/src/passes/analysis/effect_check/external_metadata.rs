@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
 use etas_types::{EffectArgRef, TypeOutput};
@@ -15,9 +18,14 @@ use crate::{
 pub(super) fn external_implementations(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
+    std_registry: &etas_std::StdRegistry,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>> {
+) -> Result<
+    Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>>,
+    String,
+> {
+    let mut contracts = ExternalContractIndex::new(environment, std_registry)?;
     let mut result: Vec<
         etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>,
     > = Vec::new();
@@ -47,6 +55,7 @@ pub(super) fn external_implementations(
                         identity: method.identity.clone(), graph_key,
                         graph: std::sync::Arc::new(method.callable.clone()),
                         values: crate::project::lower_callable_graph(&method.callable, types)?,
+                        callable_contract: contracts.get_callable(&etas_code::CallableId::method(method.identity.clone()))?,
                     }))
                 })();
                 match checked {
@@ -61,7 +70,7 @@ pub(super) fn external_implementations(
             }
         }
     }
-    result
+    Ok(result)
 }
 
 pub(super) fn external_effect_metadata(
@@ -258,11 +267,16 @@ pub(super) fn tool_provider_bindings(
 pub(super) fn external_effect_summaries(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
+    std_registry: &etas_std::StdRegistry,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalEffectSummaryMetadata>> {
+) -> Result<
+    Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalEffectSummaryMetadata>>,
+    String,
+> {
     let mut summaries = Vec::new();
     let mut seen = HashSet::<(Option<String>, Vec<String>)>::new();
+    let mut contracts = ExternalContractIndex::new(environment, std_registry)?;
     for metadata in &environment.external_public_metadata {
         if anchors.package_span(metadata.package).is_none() {
             continue;
@@ -285,14 +299,18 @@ pub(super) fn external_effect_summaries(
                 continue;
             };
             seen.insert((package_identity.clone(), summary.item.clone()));
-            match external_effect_summary_metadata(
-                summary,
-                package_identity.clone(),
-                import_root.clone(),
-                &param_names_by_item,
-                &generic_params_by_item,
-                types,
-            ) {
+            let contract = contracts.get(metadata.package, &summary.item);
+            match contract.and_then(|contract| {
+                external_effect_summary_metadata(
+                    summary,
+                    package_identity.clone(),
+                    import_root.clone(),
+                    &param_names_by_item,
+                    &generic_params_by_item,
+                    types,
+                    contract,
+                )
+            }) {
                 Ok(summary) => summaries.push(etas_effects::AnchoredExternalMetadata {
                     package: metadata.package.0,
                     span: summary_span,
@@ -341,7 +359,128 @@ pub(super) fn external_effect_summaries(
             ));
         }
     }
-    summaries
+    Ok(summaries)
+}
+
+type ContractCandidate<'a> = (
+    usize,
+    &'a etas_code::descriptor::DefinitionDescriptorSet,
+    &'a etas_code::descriptor::CallableHeaderInfo,
+);
+
+struct ExternalContractIndex<'a> {
+    paths: HashMap<crate::ExternalPackageId, HashMap<Vec<String>, &'a etas_code::DefinitionKey>>,
+    candidates: BTreeMap<etas_code::CallableId, Vec<ContractCandidate<'a>>>,
+    graphs: HashMap<usize, Arc<etas_code::descriptor::DescriptorGraphInput>>,
+    fingerprints: HashMap<usize, etas_code::CodeFingerprint>,
+    definition_paths: Arc<BTreeMap<etas_code::DefinitionKey, Vec<Vec<String>>>>,
+}
+
+impl<'a> ExternalContractIndex<'a> {
+    fn new(
+        environment: &'a ProjectEnvironmentInput,
+        std_registry: &etas_std::StdRegistry,
+    ) -> Result<Self, String> {
+        let mut paths = HashMap::new();
+        let mut candidates = BTreeMap::<_, Vec<_>>::new();
+        let mut definition_paths = BTreeMap::<etas_code::DefinitionKey, Vec<Vec<String>>>::new();
+        let package = crate::code::identity::standard_package_key(std_registry)
+            .map_err(|error| error.to_string())?;
+        for symbol in std_registry.symbols() {
+            if let Some(identity) =
+                crate::code::identity::standard_definition_key(std_registry, package, symbol)
+                    .map_err(|error| error.to_string())?
+            {
+                definition_paths
+                    .entry(identity)
+                    .or_default()
+                    .push(symbol.qualified_path.clone());
+            }
+        }
+        for (index, origin) in environment.external_definition_origins.iter().enumerate() {
+            for binding in &origin.origins.declarations {
+                definition_paths
+                    .entry(binding.definition.clone())
+                    .or_default()
+                    .push(binding.path());
+            }
+            paths.insert(
+                origin.package,
+                origin
+                    .origins
+                    .declarations
+                    .iter()
+                    .map(|binding| (binding.path(), &binding.definition))
+                    .collect(),
+            );
+            if let Some(set) = &origin.descriptors
+                && let Some(headers) = &set.headers
+            {
+                for header in &headers.callables {
+                    candidates
+                        .entry(header.id.clone())
+                        .or_default()
+                        .push((index, set, header));
+                }
+            }
+        }
+        Ok(Self {
+            paths,
+            candidates,
+            graphs: HashMap::new(),
+            fingerprints: HashMap::new(),
+            definition_paths: Arc::new(definition_paths),
+        })
+    }
+
+    fn get(
+        &mut self,
+        package: crate::ExternalPackageId,
+        path: &[String],
+    ) -> Result<Option<etas_effects::ExternalCallableContract>, String> {
+        let Some(identity) = self.paths.get(&package).and_then(|paths| paths.get(path)) else {
+            return Ok(None);
+        };
+        if !identity.kind().is_callable() {
+            return Ok(None);
+        }
+        let identity = etas_code::CallableId::declaration((*identity).clone())
+            .map_err(|error| error.to_string())?;
+        self.get_callable(&identity)
+    }
+
+    fn get_callable(
+        &mut self,
+        identity: &etas_code::CallableId,
+    ) -> Result<Option<etas_effects::ExternalCallableContract>, String> {
+        let Some(candidates) = self.candidates.get(identity) else {
+            return Ok(None);
+        };
+        let Some((index, set, header)) = candidates.first().copied() else {
+            return Ok(None);
+        };
+        if candidates
+            .iter()
+            .any(|(_, other_set, other_header)| *other_set != set || *other_header != header)
+        {
+            return Err(
+                "conflicting external callable contracts for one declaration identity".into(),
+            );
+        }
+        Ok(Some(etas_effects::ExternalCallableContract {
+            definition_paths: self.definition_paths.clone(),
+            descriptor_fingerprint: *self
+                .fingerprints
+                .entry(index)
+                .or_insert_with(|| etas_package_metadata::definition_descriptors_fingerprint(set)),
+            header: Arc::new(header.clone()),
+            graph: self
+                .graphs
+                .entry(index)
+                .or_insert_with(|| Arc::new(set.graph.clone()))
+                .clone(),
+        }))
+    }
 }
 
 fn external_effect_summary_metadata(
@@ -351,7 +490,24 @@ fn external_effect_summary_metadata(
     param_names_by_item: &HashMap<Vec<String>, Vec<String>>,
     generic_params_by_item: &HashMap<Vec<String>, ExternalGenericParams>,
     types: &TypeOutput,
+    callable_contract: Option<etas_effects::ExternalCallableContract>,
 ) -> Result<etas_effects::ExternalEffectSummaryMetadata, String> {
+    if let Some(contract) = &callable_contract {
+        let Some(etas_code::descriptor::TypeInfo::Function(signature)) = contract
+            .graph
+            .types
+            .get(contract.header.signature.0 as usize)
+        else {
+            return Err("external callable contract has no checked function signature".into());
+        };
+        let params = param_names_by_item.get(&summary.item).map_or(0, Vec::len);
+        if signature.parameters.len() != params {
+            return Err(
+                "external callable contract and effect summary have different parameter arity"
+                    .into(),
+            );
+        }
+    }
     let latent_flows = summary
         .latent_flows
         .iter()
@@ -363,10 +519,19 @@ fn external_effect_summary_metadata(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_effects::ExternalEffectSummaryMetadata {
+        callable_contract,
+        behavior: summary.behavior.clone(),
         handler_requests: summary.handler_requests.as_ref().map(|template| {
             Ok::<_, String>(etas_effects::ExternalRequestInstantiationMetadata {
                 actions: template.actions.iter().map(|instance| Ok(etas_effects::ExternalActionRequestMetadata {
                     action: lower_external_effect_metadata(&instance.action, types)?,
+                    signature: instance.signature.as_ref().map(|signature| {
+                        let lower = |ty| etas_types::lower::external::external_type_id_from_output(types, &super::super::type_check_bridge::convert_external_type(ty)).map_err(|error| error.message);
+                        Ok::<_, String>(etas_types::ActionRequestSignature {
+                            params: signature.params.iter().map(lower).collect::<Result<_, _>>()?,
+                            output: lower(&signature.output)?,
+                        })
+                    }).transpose()?,
                     type_bindings: instance.type_bindings.as_ref().map(|bindings| bindings.iter().map(|(name, ty)| {
                         Ok((name.clone(), etas_types::lower::external::external_type_id_from_output(types, &super::super::type_check_bridge::convert_external_type(ty)).map_err(|error| error.message)?))
                     }).collect::<Result<_, String>>()).transpose()?,
@@ -574,38 +739,49 @@ fn external_trace_spec_summary_metadata(
     summary: &crate::ProjectExternalTraceSpecSummaryInput,
     types: &TypeOutput,
 ) -> Result<etas_effects::ExternalTraceSpecSummaryMetadata, String> {
-    let clauses = summary
-        .clauses
+    let alternatives = summary
+        .alternatives
         .iter()
-        .map(|clause| {
-            Ok(etas_effects::ExternalTraceSpecClauseMetadata {
-                kind: external_trace_spec_clause_kind(clause.kind),
-                pattern: clause
-                    .pattern
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-                guard: clause
-                    .guard
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-                target: clause
-                    .target
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-                obligation: clause
-                    .obligation
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-            })
+        .map(|clauses| {
+            clauses
+                .iter()
+                .map(|clause| {
+                    if !clause.selector_bounds.is_empty() {
+                        return Err(
+                            "trace selector bounds require checked replay support".to_owned()
+                        );
+                    }
+                    Ok(etas_effects::ExternalTraceSpecClauseMetadata {
+                        kind: external_trace_spec_clause_kind(clause.kind),
+                        pattern: clause
+                            .pattern
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                        guard: clause
+                            .guard
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                        target: clause
+                            .target
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                        obligation: clause
+                            .obligation
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_effects::ExternalTraceSpecSummaryMetadata {
         trace_spec: summary.trace_spec.clone(),
-        clauses,
+        definition: summary.definition.clone(),
+        alternatives,
     })
 }
 

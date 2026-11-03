@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use etas_code::{
     CodeFingerprint, DefinitionKey, PackageKey, RevisionInfo,
     definition::{
-        AgentDefinitionLease, AgentDefinitionRef, AnalysisUnavailableReason,
-        CodeDefinitionOperations, DefinitionOperationError, DefinitionResource,
+        AnalysisUnavailableReason, CodeDefinitionOperations, DefinitionLease,
+        DefinitionOperationError, DefinitionRef, DefinitionResource,
     },
     report::CheckStatus,
     syntax::{CodeSyntaxOperations, SyntaxOperationError},
@@ -99,6 +99,34 @@ fn catalog(
 const SOURCE: &str = "module app; import std.io.println; agent Worker() -> i32 { return 1; } impl agent Worker { public flow help() -> i32 { return 9; } } flow inspect() -> unit { let d = ^Worker; return; }";
 
 #[test]
+fn read_only_method_leases_share_counted_coordinates_and_release_the_owner() {
+    let (catalog, expressions) = catalog(&[SOURCE], &[]);
+    let store = NativeDefinitionStore::new(
+        catalog,
+        Arc::new(NativeCodeSyntaxOperations::default()),
+        Default::default(),
+    );
+    let original = store.reflect_agent(expressions[0]).unwrap();
+    let baseline = store.retained_bytes().unwrap();
+    let mut methods = Vec::new();
+    for _ in 0..100 {
+        let mut selected = store.methods(&original).unwrap();
+        assert_eq!(selected.len(), 1);
+        methods.push(selected.pop().unwrap());
+    }
+    assert!(
+        methods
+            .windows(2)
+            .all(|pair| Arc::ptr_eq(&pair[0].snapshot.coordinates, &pair[1].snapshot.coordinates))
+    );
+    assert_eq!(store.retained_bytes().unwrap(), baseline);
+    drop(original);
+    assert_eq!(store.retained_bytes().unwrap(), baseline);
+    drop(methods);
+    assert_eq!(store.retained_bytes().unwrap(), 0);
+}
+
+#[test]
 fn real_native_definitions_share_the_frozen_base_and_invalidate_edited_analysis() {
     let (catalog, expressions) = catalog(&[SOURCE], &["app.Worker"]);
     let syntax = Arc::new(NativeCodeSyntaxOperations::default());
@@ -107,13 +135,7 @@ fn real_native_definitions_share_the_frozen_base_and_invalidate_edited_analysis(
     let original_view = store.resolve(&original).unwrap();
     assert!(original_view.signature().is_some());
     assert!(original_view.current_analysis().is_ok());
-    let method = original_view
-        .environment()
-        .unwrap()
-        .contract()
-        .header()
-        .methods[0]
-        .clone();
+    let method = original_view.environment().unwrap().contract().methods()[0].clone();
     assert!(
         original_view
             .current_method_analysis(&method)
@@ -230,7 +252,7 @@ struct ClaimedDefinition {
     identity: DefinitionKey,
     revision: RevisionInfo,
 }
-impl AgentDefinitionLease for ClaimedDefinition {
+impl DefinitionLease for ClaimedDefinition {
     fn identity(&self) -> &DefinitionKey {
         &self.identity
     }
@@ -252,7 +274,7 @@ fn definition_and_syntax_handles_require_the_exact_originating_backend_lease() {
         store.resolve(&foreign),
         Err(DefinitionOperationError::ForeignDefinition)
     ));
-    let claimed = AgentDefinitionRef::from_backend(Arc::new(ClaimedDefinition {
+    let claimed = DefinitionRef::from_backend(Arc::new(ClaimedDefinition {
         identity: original.identity().clone(),
         revision: original.revision().clone(),
     }));
@@ -341,7 +363,7 @@ fn object_quota_and_shared_memory_accounting_follow_live_leases() {
     assert!(
         retained
             <= MemoryFootprint::of(&original).estimated_bytes()
-                + (copies.capacity() * size_of::<AgentDefinitionRef>()) as u64
+                + (copies.capacity() * size_of::<DefinitionRef>()) as u64
                 + 1024
     );
     assert!(matches!(

@@ -284,6 +284,40 @@ pub fn lower_external_type(
             ty
         }
         crate::ExternalTypeInput::Applied { path, args } => {
+            if let Some((params, target)) = ctx.external_type_aliases.get(path).cloned() {
+                if params.len() != args.len() {
+                    invalid_external_metadata(
+                        ctx,
+                        span,
+                        format!(
+                            "invalid external package metadata: alias `{}` expects {} arguments, got {}",
+                            path.join("."),
+                            params.len(),
+                            args.len()
+                        ),
+                    );
+                    return ctx.interner.primitive(PrimitiveType::Never);
+                }
+                let substitutions = params
+                    .into_iter()
+                    .zip(args.iter().map(|arg| lower_external_type(ctx, span, arg)))
+                    .collect();
+                return match crate::substitute_named_params(
+                    &mut ctx.interner,
+                    target,
+                    &substitutions,
+                ) {
+                    Ok(ty) => ty,
+                    Err(error) => {
+                        invalid_external_metadata(
+                            ctx,
+                            span,
+                            format!("external alias substitution failed: {error}"),
+                        );
+                        ctx.interner.primitive(PrimitiveType::Never)
+                    }
+                };
+            }
             let Some(constructor) = checked_external_or_std_type(ctx, path) else {
                 invalid_external_metadata(
                     ctx,
@@ -492,6 +526,14 @@ pub fn lower_external_type_declaration(
             }
             let ty = lower_external_type(ctx, span, target);
             ctx.external_type_paths.insert(path.to_vec(), ty);
+            ctx.external_type_aliases.insert(
+                path.to_vec(),
+                (params.iter().map(|param| param.name.clone()).collect(), ty),
+            );
+            ctx.signature_facts.external_type_aliases.insert(
+                path.to_vec(),
+                (params.iter().map(|param| param.name.clone()).collect(), ty),
+            );
             ty
         }
         Some(crate::ExternalTypeInput::Nominal {
@@ -514,6 +556,7 @@ pub fn lower_external_type_declaration(
         }
         None => {
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                read_only_erased_view: false,
                 name: path.join("."),
                 params: params.iter().map(|param| param.name.clone()).collect(),
                 representation: None,
@@ -535,6 +578,7 @@ fn complete_external_nominal(
         id
     } else {
         ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: path.join("."),
             params: params.iter().map(|param| param.name.clone()).collect(),
             representation,
@@ -638,7 +682,11 @@ fn external_type_by_path(store: &TypeStore, path: &[String]) -> Option<TypeId> {
     })
 }
 
-fn primitive_from_external_name(name: &str) -> Option<PrimitiveType> {
+pub fn is_valid_external_primitive(name: &str) -> bool {
+    primitive_from_external_name(name).is_some()
+}
+
+pub(crate) fn primitive_from_external_name(name: &str) -> Option<PrimitiveType> {
     Some(match name {
         "bool" => PrimitiveType::Bool,
         "i8" => PrimitiveType::I8,
@@ -664,7 +712,7 @@ fn primitive_from_external_name(name: &str) -> Option<PrimitiveType> {
     })
 }
 
-fn external_trust_wrapper(wrapper: &str) -> Option<TrustWrapper> {
+pub(crate) fn external_trust_wrapper(wrapper: &str) -> Option<TrustWrapper> {
     Some(match wrapper {
         "Trusted" | "trusted" => TrustWrapper::Trusted,
         "Secret" | "secret" => TrustWrapper::Secret,

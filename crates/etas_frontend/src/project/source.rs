@@ -46,6 +46,16 @@ impl HirOutput {
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct SourceBundle {
     pub sources: Vec<CoreSourceFile>,
+    pub stable_source_keys: Vec<crate::ProjectStableSourceKeyInput>,
+}
+
+impl SourceBundle {
+    pub fn stable_source_key(
+        &self,
+        source: SourceId,
+    ) -> Result<etas_code::StableSourceKey, crate::SourcePackageOriginError> {
+        crate::output::resolve_stable_source_key(&self.stable_source_keys, source)
+    }
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -55,11 +65,13 @@ pub struct SourceSet {
     pub environment_fingerprint: String,
     pub external_modules_fingerprint: String,
     pub files: Vec<SourceFile>,
+    pub stable_source_keys: Vec<crate::ProjectStableSourceKeyInput>,
 }
 
 impl SourceSet {
     pub fn to_source_bundle(&self) -> SourceBundle {
         SourceBundle {
+            stable_source_keys: self.stable_source_keys.clone(),
             sources: self
                 .files
                 .iter()

@@ -11,6 +11,18 @@ pub(super) fn validate(
         .saturating_add(template.parameters.len());
     for action in &template.actions {
         validate_effect_ref(&action.action, scope)?;
+        if let Some(signature) = &action.signature {
+            nodes = nodes
+                .saturating_add(signature.params.len())
+                .saturating_add(1);
+            for ty in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.output))
+            {
+                validate_type(ty, scope, false)?;
+            }
+        }
         if let Some(bindings) = &action.type_bindings {
             nodes = nodes.saturating_add(bindings.len());
             let mut names = HashSet::new();
@@ -24,7 +36,7 @@ pub(super) fn validate(
         }
     }
     for parameter in &template.parameters {
-        validate_target(&parameter.parameter, scope, parameters)?;
+        validate_target(&parameter.parameter, scope, parameters, parameters.len())?;
         nodes = nodes.saturating_add(parameter.excluded.len());
         for effect in &parameter.excluded {
             validate_effect_ref(effect, scope)?;
@@ -40,6 +52,7 @@ pub(super) fn validate_target(
     target: &etas_package_metadata::CallableRequestTarget,
     scope: &GenericScope,
     parameters: &[String],
+    root_parameter_count: usize,
 ) -> Result<(), String> {
     use etas_package_metadata::{CallableRequestTarget, SpecMethodGenericArgument};
     target
@@ -74,7 +87,7 @@ pub(super) fn validate_target(
             .map_err(|error| error.to_string())?;
         argument
             .sources
-            .validate_references(Some((parameters.len(), &scope.parameter_kinds)))
+            .validate_references(Some((root_parameter_count, &scope.parameter_kinds)))
             .map_err(|error| error.to_string())?;
     }
     Ok(())

@@ -18,6 +18,8 @@ use crate::{
     },
 };
 
+mod frozen_applications;
+
 pub(crate) const CANDIDATE_INVOCATION_TYPES: ArtifactKey =
     ArtifactKey::new("code", "candidate_invocation_types");
 pub(crate) struct MaterializeCandidateInvocationTypesPass;
@@ -77,9 +79,33 @@ impl Pass<ProjectContext> for MaterializeCandidateInvocationTypesPass {
             };
             types.store = prepared.store.clone();
             context.native_instantiations = Some(prepared.plan.clone());
-            let checked = Arc::make_mut(checked);
-            checked.type_store = prepared.store;
-            checked.native_instantiations = prepared.plan;
+            let data = Arc::make_mut(checked);
+            data.type_store = prepared.store;
+            data.native_instantiations = prepared.plan;
+            let frozen_applications = match frozen_applications::prepare(
+                candidate.overlay.frozen(),
+                checked,
+                candidate.descriptor_limits,
+                manager.execution_control(),
+            ) {
+                Ok(program) => program,
+                Err(InstantiationError::Interrupted(interruption)) => {
+                    return PassResult::interrupted(interruption);
+                }
+                Err(InstantiationError::Invalid(reason)) => return PassResult::failed(reason),
+                Err(InstantiationError::Resource { reason, .. }) => {
+                    return PassResult::interrupted(etas_utils::PipelineInterruption {
+                        kind: etas_utils::PipelineInterruptionKind::ResourceLimit,
+                        reason,
+                    });
+                }
+            };
+            let Some(candidate) = &mut context.candidate else {
+                return PassResult::failed(
+                    "candidate disappeared during frozen application preparation",
+                );
+            };
+            candidate.frozen_application_program = Some(frozen_applications);
         }
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
     }
@@ -93,9 +119,32 @@ fn materialize(
     control: Option<&dyn PipelineExecutionControl>,
 ) -> Result<instantiation::PreparedInstantiations, InstantiationError> {
     let source = frozen.checked();
-    if source.native_instantiations.instances.is_empty() {
+    let mut interner = TypeInterner::from_store((*target.type_store).clone());
+    // Callable interfaces are runtime ABI roots even when an unrelated caller
+    // body is intentionally outside candidate reachability.
+    for signature in target.types.item_signatures.values() {
+        if let Some(control) = control {
+            control
+                .checkpoint()
+                .map_err(InstantiationError::Interrupted)?;
+        }
+        let signature = match signature {
+            etas_types::ItemSignature::Flow(signature)
+            | etas_types::ItemSignature::Tool(signature) => Some(signature),
+            etas_types::ItemSignature::Agent(signature) => signature.callable(),
+            etas_types::ItemSignature::TopLevelLet(_) => None,
+        };
+        if let Some(signature) = signature {
+            interner.intern(etas_types::Type::Function(etas_types::FlowType {
+                input: signature.params.clone(),
+                output: signature.output,
+                effects: signature.effects.clone(),
+            }));
+        }
+    }
+    if source.native_instantiations.instances().is_empty() {
         return Ok(instantiation::PreparedInstantiations {
-            store: target.type_store.clone(),
+            store: Arc::new(interner.into_store()),
             plan: target.native_instantiations.clone(),
         });
     }
@@ -121,9 +170,10 @@ fn materialize(
         .native_callables()
         .map(|(id, item)| (item, id))
         .collect::<HashMap<_, _>>();
-    let mut interner = TypeInterner::from_store((*target.type_store).clone());
     let mut seeds = Vec::new();
-    for instance in &source.native_instantiations.instances {
+    let budget =
+        etas_types::TypeSubstitutionBudget::new(limits.max_nodes, limits.max_edges, control);
+    for instance in source.native_instantiations.instances() {
         if let Some(control) = control {
             control
                 .checkpoint()
@@ -157,7 +207,8 @@ fn materialize(
                 declaration_types: correspondence.declarations(),
                 effect_names: correspondence.effect_names(),
             })
-            .with_expansion_depth(limits.max_expansion_depth);
+            .with_expansion_depth(limits.max_expansion_depth)
+            .with_budget(&budget);
         let arguments = instance
             .arguments
             .iter()

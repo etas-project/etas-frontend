@@ -39,7 +39,7 @@ pub fn collect_expr<E>(
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Reflect(reflection) => {
-            super::reflection::collect_reflection(ctx, expr, &reflection)
+            super::reflection::collect_reflection(ctx, expr, &reflection, expected)
         }
         HirExpr::Path(path) => {
             let ty = collect_path(ctx, expr, &path, expected);
@@ -968,19 +968,27 @@ pub fn callable_candidate_from_fact<E>(
         SymbolTypeFact::Agent { signature } => signature.callable()?.clone(),
         _ => return None,
     };
+    callable_candidate_from_signature(ctx, signature, instantiate_schematics)
+}
+
+pub(super) fn callable_candidate_from_signature<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    signature: crate::CallableSignature,
+    instantiate_schematics: bool,
+) -> Option<crate::CallableCandidate> {
     let signature = if instantiate_schematics {
         instantiate_callable_signature(ctx, signature)?
     } else {
         signature
     };
     let ty = ctx.ctx.interner.intern(Type::Function(FlowType {
-        input: signature.params,
+        input: signature.params.clone(),
         output: signature.output,
-        effects: signature.effects,
+        effects: signature.effects.clone(),
     }));
     Some(crate::CallableCandidate {
         ty,
-        generic_params: signature.generic_params,
+        signature,
         operation: crate::CallableCandidateOperation::Call,
     })
 }

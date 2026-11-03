@@ -68,10 +68,11 @@ impl Pass<ProjectContext> for ValidateHandlerInstantiationsPass {
             {
                 return PassResult::interrupted(error);
             }
-            let proof = if obligation
-                .parameters
-                .iter()
-                .all(|parameter| parameter.parametric)
+            let proof = if obligation.overload.is_none()
+                && obligation
+                    .parameters
+                    .iter()
+                    .all(|parameter| parameter.parametric)
             {
                 Ok(Vec::new())
             } else {

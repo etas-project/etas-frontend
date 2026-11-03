@@ -10,11 +10,13 @@ use crate::passes::{
     ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
     FinalizeProjectHirPass, FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
-    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareInvocationTypesPass,
-    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
+    PrepareEffectRegistryPass, PrepareInvocationTypesPass, ResolveEntryItemPass,
+    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
-    ValidateItemAnnotationsPass, ValidateTopLevelLetPass, VerifyInterpreterSupportPass,
+    ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
+    VerifyInterpreterSupportPass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
@@ -89,6 +91,11 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(RetainDefinitionSourcesPass)
         .pass(ComputeDefinitionAnalysisReachabilityPass)
         .pass(PrepareBodyTypeEnvironmentPass)
+        .pass(PrepareEffectRegistryPass);
+    if candidate {
+        pipeline.push_pass(crate::code::pipeline::passes::PrepareCandidateApplicationPass);
+    }
+    pipeline = pipeline
         .pass(ReuseTypeBodyFactsPass)
         .for_each(
             UnitSelector::AffectedArtifact {
@@ -102,7 +109,9 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(FinalizeTypeFactsPass)
         .pass(CompleteTypedAnalysisReachabilityPass)
         .pass(CompleteTypedRuntimeReachabilityPass)
+        .pass(PrepareDirectInvocationTypesPass)
         .pass(RunEffectPipelinePass)
+        .pass(ValidateResidualBackendSupportPass)
         .pass(CompleteEffectRuntimeReachabilityPass)
         .pass(MaterializeGenericEffectRowsPass)
         .pass(ValidateHandlerInstantiationsPass)
@@ -179,6 +188,15 @@ flow main() -> i64 {
             .iter()
             .find(|record| record.pass == "RunEffectPipelinePass")
             .expect("RunEffectPipelinePass record");
+        let prepared_registry = run
+            .records
+            .iter()
+            .find(|record| record.pass == "PrepareEffectRegistryPass")
+            .expect("PrepareEffectRegistryPass record");
+        assert!(prepared_registry.produced.iter_refs().any(|artifact| {
+            artifact.key.name == "prepared_effect_registry"
+                && artifact.scope == ArtifactScope::Global
+        }));
         assert!(effect_pipeline.produced.iter_refs().any(|artifact| {
             artifact.key.name == "effect_facts" && artifact.scope == ArtifactScope::Global
         }));
@@ -218,6 +236,11 @@ flow main() -> i64 {
             pass_position("ComputeEntryReachabilityPass")
                 < pass_position("BuildSignatureFactsPass")
         );
+        assert!(
+            pass_position("PrepareBodyTypeEnvironmentPass")
+                < pass_position("PrepareEffectRegistryPass")
+        );
+        assert!(pass_position("PrepareEffectRegistryPass") < pass_position("TypeCheckBodyPass"));
         assert!(
             pass_position("RunEffectPipelinePass") < pass_position("ValidateEntryContractPass")
         );

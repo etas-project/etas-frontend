@@ -2,15 +2,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use etas_code::{
     definition::{
-        AgentDefinition, AgentDefinitionRef, AnalysisFingerprint, BaseRevisionInput,
-        DefinitionAnalysisState,
+        AnalysisFingerprint, BaseRevisionInput, DefinitionAnalysisState, DefinitionRef,
+        DefinitionSnapshot,
     },
     descriptor::DescriptorLimits,
 };
 
-use super::{
-    DefinitionProvenance, NativeAgentDefinition, NativeDefinitionError, NativeDefinitionStore,
-};
+use super::{DefinitionProvenance, NativeDefinition, NativeDefinitionError, NativeDefinitionStore};
 use crate::code::{descriptor::ProjectionError, service::CheckedCandidate};
 
 impl NativeDefinitionStore {
@@ -18,12 +16,16 @@ impl NativeDefinitionStore {
     /// behavior as a new contract. A user-created report cannot enter here.
     pub fn reflect_checked(
         &self,
-        definition: &AgentDefinitionRef,
+        definition: &DefinitionRef,
         candidate: &CheckedCandidate,
         limits: DescriptorLimits,
-    ) -> Result<AgentDefinitionRef, NativeDefinitionError> {
+    ) -> Result<DefinitionRef, NativeDefinitionError> {
         let original = self.resolve(definition)?;
-        if !Arc::ptr_eq(original.environment()?, candidate.frozen())
+        let matches_environment = original
+            .environment()
+            .is_ok_and(|environment| Arc::ptr_eq(environment, candidate.frozen()))
+            || candidate.matches_external_definition(self, definition);
+        if !matches_environment
             || original.identity() != candidate.identity()
             || original.revision() != candidate.revision()
         {
@@ -53,7 +55,7 @@ impl NativeDefinitionStore {
                     .ok_or(NativeDefinitionError::CandidateInputMismatch)
             })
             .transpose()?;
-        let data = AgentDefinition::from_base(
+        let data = DefinitionSnapshot::from_base(
             original.0.data.shared_base(),
             BaseRevisionInput {
                 body,
@@ -68,7 +70,7 @@ impl NativeDefinitionStore {
             return Err(NativeDefinitionError::CandidateInputMismatch);
         }
         let mut auxiliary = BTreeMap::new();
-        for id in &original.environment()?.contract().header().methods {
+        for id in candidate.frozen().contract().methods() {
             let callable = catalog.callable(id).ok_or_else(|| {
                 NativeDefinitionError::Projection(ProjectionError::MissingIdentity(
                     "checked auxiliary callable".into(),
@@ -83,10 +85,20 @@ impl NativeDefinitionStore {
             ),
             summaries: Arc::new(auxiliary),
         };
-        self.publish(NativeAgentDefinition {
+        for (id, snapshot) in &original.0.method_snapshots {
+            if snapshot.revision.content
+                != catalog
+                    .body_content(id, &self.syntax)
+                    .map_err(NativeDefinitionError::Projection)?
+            {
+                return Err(NativeDefinitionError::CandidateInputMismatch);
+            }
+        }
+        self.publish(NativeDefinition {
             data,
-            environment: super::DefinitionEnvironment::Native(original.environment()?.clone()),
+            environment: super::DefinitionEnvironment::Native(candidate.frozen().clone()),
             auxiliary,
+            method_snapshots: original.0.method_snapshots.clone(),
             analysis_configuration: original.0.analysis_configuration,
             analysis_graph: catalog.descriptors().clone(),
             reflection_body_access: original.0.reflection_body_access,
@@ -95,6 +107,8 @@ impl NativeDefinitionStore {
                 snapshot: candidate.snapshot_fingerprint(),
             },
             implementation: Some(Arc::new(candidate.clone())),
+            external_application: original.0.external_application.clone(),
+            external_restoration: candidate.external_restoration.clone(),
         })
         .map_err(Into::into)
     }

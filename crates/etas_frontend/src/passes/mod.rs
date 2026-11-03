@@ -2,7 +2,7 @@ mod analysis;
 pub(crate) mod artifacts;
 mod common;
 mod dependency;
-mod execution;
+pub(crate) mod execution;
 mod graph;
 mod hir;
 mod module;
@@ -13,16 +13,17 @@ mod source;
 pub use analysis::{
     AnalyzeLoopProgressPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
     InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
-    PrepareInvocationTypesPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass,
-    RunEffectPipelinePass, TypeCheckBodyPass, ValidateExternalEnvironmentPass,
-    ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
+    PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
+    RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
 pub use dependency::{
     CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
     CompleteTypedRuntimeReachabilityPass, ComputeDefinitionAnalysisReachabilityPass,
     ComputeEntryReachabilityPass,
 };
-pub use execution::VerifyInterpreterSupportPass;
+pub use execution::{ValidateResidualBackendSupportPass, VerifyInterpreterSupportPass};
 pub use graph::{
     BuildImportGraphPass, ComputeAffectedModulesPass, ComputeModuleTopoOrderPass,
     DetectImportCyclesPass,

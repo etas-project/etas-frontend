@@ -29,6 +29,14 @@ pub(super) fn has_latent_output(
     graph: &DescriptorGraph,
     signature: TypeInfoRef,
 ) -> Result<bool, ProjectionError> {
+    let result = latent_output(graph, signature)?;
+    Ok(result.intrinsic || !result.parameters.is_empty())
+}
+
+fn latent_output(
+    graph: &DescriptorGraph,
+    signature: TypeInfoRef,
+) -> Result<Latent, ProjectionError> {
     let Some(TypeInfo::Function(signature)) = graph.type_info(signature) else {
         return Err(invalid("contract has no callable signature"));
     };
@@ -65,7 +73,7 @@ pub(super) fn has_latent_output(
     let result = states
         .get(&root)
         .ok_or_else(|| invalid("contract output has no latent classification"))?;
-    Ok(result.intrinsic || !result.parameters.is_empty())
+    Ok(result.clone())
 }
 
 fn children(node: &TypeInfo) -> Vec<TypeInfoRef> {

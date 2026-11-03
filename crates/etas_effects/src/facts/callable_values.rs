@@ -35,6 +35,12 @@ pub enum CallableGenericParameter {
 pub enum CallableGenericValue {
     Type(etas_types::TypeId),
     EffectRow(EffectRow),
+    /// The open row was supplied at a checked call site. The site is a
+    /// session-local lookup, not portable identity or evidence by itself.
+    EffectRowFromCall {
+        row: EffectRow,
+        source: HirExprId,
+    },
 }
 
 #[derive(
@@ -51,6 +57,21 @@ pub enum CallableGenericValue {
     etas_core::RetainedSize,
 )]
 pub enum CallableValueOrigin {
+    /// The caller-visible transformer of a definition, not an edited body's analysis.
+    FrozenContract {
+        unit: EffectUnit,
+        reference: Option<HirExprId>,
+        environment: Option<CallableEnvironmentId>,
+    },
+    /// The validated metadata contract named by a checked external reflection.
+    ExternalFrozen {
+        reflection: HirExprId,
+    },
+    /// A checked external callable captured at its generic instantiation site.
+    ExternalReference {
+        value: HirExprId,
+        frozen: bool,
+    },
     MetadataSpecMethod {
         invocation: CodeFingerprint,
         environment: CallableEnvironmentId,

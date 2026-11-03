@@ -19,6 +19,257 @@ fn checked(source: &str) -> CheckedProgram {
     output.checked.unwrap()
 }
 
+fn checked_with_stable_source(source: &str) -> CheckedProgram {
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
+    input.options.entry_policy = etas_frontend::EntryPolicy::Optional;
+    let package = PackageKey::from_name_and_version("app", "1.0.0").unwrap();
+    let key = etas_code::StableSourceKey::new(
+        etas_code::StableSourceOrigin::Package(package),
+        &["src".into(), "app.es".into()],
+    )
+    .unwrap();
+    input
+        .environment
+        .stable_source_keys
+        .push(etas_frontend::ProjectStableSourceKeyInput {
+            source: input.sources[0].id,
+            key,
+        });
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    output.checked.unwrap()
+}
+
+#[test]
+fn analyzed_trace_projection_rejects_changed_imported_spec_snapshot() {
+    use etas_code::residual::{
+        identity::ObligationIdentityLimits,
+        monitor::{AlternativeLimits, ConcreteEvidenceLimits},
+        pattern::ActionPatternLimits,
+    };
+    use etas_frontend::code::descriptor::{
+        TraceSourceLinkError, TraceSourceLinkLimits, TraceTemplateProjectionError,
+    };
+    let app = SourceInput::anonymous(
+        "module app; import lib.safe.Safe as S; flow main() -> unit ![] ~ S { return; }",
+    );
+    let mut lib =
+        SourceInput::anonymous("module lib.safe; public spec Safe: trace = -Console.stdout_write;");
+    lib.id = etas_core::SourceId(1);
+    let mut input = ProjectInput::single_source(app);
+    input.options.entry_policy = etas_frontend::EntryPolicy::Optional;
+    input.sources.push(lib);
+    let package = PackageKey::from_name_and_version("app", "1.0.0").unwrap();
+    for (source, file) in [
+        (etas_core::SourceId(0), "app.es"),
+        (etas_core::SourceId(1), "safe.es"),
+    ] {
+        input
+            .environment
+            .stable_source_keys
+            .push(etas_frontend::ProjectStableSourceKeyInput {
+                source,
+                key: etas_code::StableSourceKey::new(
+                    etas_code::StableSourceOrigin::Package(package),
+                    &["src".into(), file.into()],
+                )
+                .unwrap(),
+            });
+    }
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let snapshots = checked
+        .sources
+        .sources
+        .iter()
+        .map(|file| etas_effects::EffectSourceSnapshot {
+            source: file.id,
+            key: checked.sources.stable_source_key(file.id).unwrap(),
+            text: &file.text,
+        })
+        .collect::<Vec<_>>();
+    let types = etas_types::TypeOutput {
+        facts: checked.types.clone(),
+        store: checked.type_store.clone(),
+        diagnostics: vec![],
+    };
+    let mut effects = etas_effects::EffectOutput::default();
+    let models = etas_effects::trace_spec::materialize_trace_spec_models(
+        &checked.hir,
+        &types,
+        &checked.effect_registry,
+        &[],
+        &snapshots,
+        &mut effects,
+    )
+    .unwrap();
+    let trace_specs = std::mem::take(&mut effects.facts.trace_specs);
+    effects.facts = checked.effects.as_ref().clone();
+    effects.facts.trace_specs = trace_specs;
+    let units = checked
+        .effects
+        .unit_effects
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    let analysis = etas_effects::trace_spec::analyze_trace_spec_monitors(
+        etas_effects::trace_spec::TraceSpecAnalysisInput {
+            source_snapshots: &snapshots,
+            external_trace_specs: &[],
+            hir: &checked.hir,
+            types: &types,
+            registry: &checked.effect_registry,
+            models: &models,
+            units: &units,
+            external_summaries: &[],
+        },
+        &mut effects,
+    )
+    .unwrap();
+    let item = flow(&checked, "main");
+    let index = models.referenced_fact_indices[&item][0];
+    let dispositions =
+        etas_effects::trace_spec::collect_trace_static_dispositions(&analysis, None, None).unwrap();
+    let limits = AlternativeLimits {
+        evidence: ConcreteEvidenceLimits {
+            pattern: ActionPatternLimits {
+                max_selectors: 4,
+                max_identity_segments: 16,
+                max_identity_bytes: 128,
+                max_literal_bytes: 128,
+            },
+            max_bindings: 4,
+            max_value_bytes: 128,
+        },
+        max_alternatives: 4,
+        max_clauses: 12,
+        max_patterns: 4,
+        max_checks_per_event: 32,
+        max_product_work_per_event: 128,
+    };
+    let input = etas_effects::trace_spec::AnalyzedTraceLoweringInput {
+        analysis: &analysis,
+        dispositions: &dispositions,
+        type_fact_index: index,
+        item,
+        limits,
+        control: None,
+    };
+    let source_limits = TraceSourceLinkLimits {
+        max_sources: 8,
+        max_sites: 16,
+        max_clauses: 16,
+        max_snapshot_bytes: 4096,
+        identity: ObligationIdentityLimits {
+            max_generic_arguments: 16,
+            max_structural_site_depth: 64,
+        },
+    };
+    let identities =
+        DefinitionIdentityIndex::build(&checked, &origins(&checked, "locked:app@1")).unwrap();
+    let HirItem::Flow(decl) = &checked.hir.items[item] else {
+        panic!("flow")
+    };
+    let owner = GenericOwner::Declaration(identities.symbol(decl.symbol).unwrap().clone());
+    let project = |program: &etas_frontend::CheckedProgramData, limits| {
+        let mut projector =
+            DefinitionDescriptorProjector::new(program, &identities, DescriptorLimits::default());
+        project_flow(&mut projector, &checked, &identities, item);
+        projector.finish_analyzed_trace_template(&owner, input, limits)
+    };
+    let template_limits = etas_code::residual::pattern::PatternTemplateLimits {
+        pattern: limits.evidence.pattern,
+        types: etas_code::residual::type_template::TypeTemplateLimits::default(),
+        descriptor: DescriptorLimits::default(),
+        max_binding_steps: 128,
+    };
+    let project_symbolic = |program: &etas_frontend::CheckedProgramData, limits| {
+        let mut projector =
+            DefinitionDescriptorProjector::new(program, &identities, DescriptorLimits::default());
+        project_flow(&mut projector, &checked, &identities, item);
+        projector.finish_analyzed_symbolic_trace_template(&owner, input, limits, template_limits)
+    };
+    let concrete = project(&checked, source_limits).unwrap();
+    let symbolic = project_symbolic(&checked, source_limits).unwrap();
+    assert_eq!(
+        symbolic
+            .template
+            .instantiate(&BTreeMap::new(), &BTreeMap::new(), template_limits, limits)
+            .unwrap()
+            .template_id(),
+        concrete.monitor().template_id()
+    );
+    let mut altered = (*checked).clone();
+    altered
+        .sources
+        .sources
+        .iter_mut()
+        .find(|file| file.id == etas_core::SourceId(1))
+        .unwrap()
+        .text =
+        std::sync::Arc::from("module lib.safe; public spec Safe: trace = +Console.stdout_write;");
+    assert!(matches!(
+        project(&altered, source_limits),
+        Err(TraceTemplateProjectionError::SourceLink(
+            TraceSourceLinkError::MismatchedClauseSite(_)
+        ))
+    ));
+    assert!(matches!(
+        project_symbolic(&altered, source_limits),
+        Err(TraceTemplateProjectionError::SourceLink(
+            TraceSourceLinkError::MismatchedClauseSite(_)
+        ))
+    ));
+    let mut altered_facts = (*checked).clone();
+    std::sync::Arc::make_mut(&mut altered_facts.effects)
+        .trace_specs
+        .conformances
+        .get_mut(&item)
+        .unwrap()[0]
+        .alternatives
+        .clear();
+    assert!(matches!(
+        project(&altered_facts, source_limits),
+        Err(TraceTemplateProjectionError::AnalyzedSourceMismatch)
+    ));
+    assert!(matches!(
+        project_symbolic(&altered_facts, source_limits),
+        Err(TraceTemplateProjectionError::AnalyzedSourceMismatch)
+    ));
+    let max_bytes = checked
+        .sources
+        .sources
+        .iter()
+        .map(|s| s.text.len())
+        .sum::<usize>()
+        - 1;
+    assert!(matches!(
+        project(
+            &checked,
+            TraceSourceLinkLimits {
+                max_snapshot_bytes: max_bytes,
+                ..source_limits
+            }
+        ),
+        Err(TraceTemplateProjectionError::SourceLink(
+            TraceSourceLinkError::SnapshotBytesLimit
+        ))
+    ));
+    assert!(matches!(
+        project_symbolic(
+            &checked,
+            TraceSourceLinkLimits {
+                max_snapshot_bytes: max_bytes,
+                ..source_limits
+            }
+        ),
+        Err(TraceTemplateProjectionError::SourceLink(
+            TraceSourceLinkError::SnapshotBytesLimit
+        ))
+    ));
+}
+
 fn origins(checked: &CheckedProgram, source: &str) -> DefinitionOrigins {
     let key = |value: &str| {
         PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
@@ -80,6 +331,1433 @@ fn signature(graph: &DescriptorGraph, reference: TypeInfoRef) -> &SignatureInfo 
         panic!("function")
     };
     signature
+}
+
+fn check_trace_plan_source_links(
+    checked: &CheckedProgram,
+    item: HirItemId,
+    projection: &etas_frontend::code::descriptor::TraceTemplateProjection,
+    monitor_limits: etas_code::residual::monitor::AlternativeLimits,
+) {
+    use etas_code::residual::{
+        binding::{BindingLayout, BindingLayoutLimits},
+        identity::{
+            ActivationSiteId, BehaviorContractRef, CheckedSourceSnapshot, GenericArgumentIdentity,
+            GenericParameterId, ObligationId, ObligationIdentityInputs, ObligationIdentityLimits,
+            ResidualObligationRef, ResidualRuleKind, SemanticScopeId, SourceStructuralSite,
+        },
+        model::{ResidualKind, ResidualObligation, ResidualObligationSet, ResidualSetLimits},
+        monitor::{AlternativeRule, CompiledTraceComponent, TraceComponentLimits},
+        plan::{
+            SemanticPlanComponent, SemanticPlanLimits, SemanticPlanMapping, SemanticResidualPlan,
+        },
+    };
+    use etas_effects::trace_spec::{
+        TraceObligationSourceLimits, TracePlanSourceBinding, TracePlanSourceError,
+        TracePlanSourceInput, TracePlanSourceLimits, validate_trace_plan_sources,
+    };
+
+    let file = &checked.sources.sources[0];
+    let key = checked.sources.stable_source_key(file.id).unwrap();
+    let snapshots = [etas_effects::EffectSourceSnapshot {
+        source: file.id,
+        key,
+        text: &file.text,
+    }];
+    let types = etas_types::TypeOutput {
+        facts: checked.types.clone(),
+        store: checked.type_store.clone(),
+        diagnostics: vec![],
+    };
+    let pipeline = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
+        source_snapshots: &snapshots,
+        residual_identity: None,
+        trace_monitor_projector: None,
+        frozen_calls: None,
+        std_registry: &checked.std_registry,
+        dependency_metadata: None,
+        tool_bindings: &[],
+        external_trace_specs: &[],
+        hir: &checked.hir,
+        types: &types,
+        external_summaries: &[],
+        external_artifact_anchors: &[],
+        reachable_items: None,
+    })
+    .unwrap();
+    let models = &pipeline.effects.facts.trace_specs;
+    let (analysis, dispositions) = pipeline.trace_specs.into_parts();
+    let index = types
+        .facts
+        .trace_spec_conformances
+        .iter()
+        .position(|fact| fact.item == item)
+        .unwrap();
+    let identities =
+        DefinitionIdentityIndex::build(checked, &origins(checked, "locked:app@1")).unwrap();
+    let HirItem::Flow(decl) = &checked.hir.items[item] else {
+        panic!("flow")
+    };
+    let generic_owner = GenericOwner::Declaration(identities.symbol(decl.symbol).unwrap().clone());
+    let input = etas_effects::trace_spec::AnalyzedTraceLoweringInput {
+        analysis: &analysis,
+        dispositions: &dispositions,
+        type_fact_index: index,
+        item,
+        limits: monitor_limits,
+        control: None,
+    };
+    let source_limits = etas_frontend::code::descriptor::TraceSourceLinkLimits {
+        max_sources: 8,
+        max_sites: 16,
+        max_clauses: 16,
+        max_snapshot_bytes: 64 * 1024,
+        identity: ObligationIdentityLimits {
+            max_generic_arguments: 16,
+            max_structural_site_depth: 64,
+        },
+    };
+    let mut projector =
+        DefinitionDescriptorProjector::new(checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, checked, &identities, item);
+    let analyzed = projector
+        .finish_analyzed_trace_template(&generic_owner, input, source_limits)
+        .unwrap();
+    assert_eq!(
+        analyzed.monitor().template_id(),
+        projection.monitor().template_id()
+    );
+    let other = flow(checked, "broad");
+    let mut projector =
+        DefinitionDescriptorProjector::new(checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, checked, &identities, item);
+    assert!(matches!(
+        projector.finish_analyzed_trace_template(
+            &generic_owner,
+            etas_effects::trace_spec::AnalyzedTraceLoweringInput {
+                item: other,
+                ..input
+            },
+            source_limits
+        ),
+        Err(etas_frontend::code::descriptor::TraceTemplateProjectionError::CallableOwnerMismatch)
+    ));
+    let HirItem::Flow(other_decl) = &checked.hir.items[other] else {
+        panic!("flow")
+    };
+    let other_owner =
+        GenericOwner::Declaration(identities.symbol(other_decl.symbol).unwrap().clone());
+    let mut projector =
+        DefinitionDescriptorProjector::new(checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, checked, &identities, item);
+    assert!(matches!(
+        projector.finish_analyzed_trace_template(&other_owner, input, source_limits),
+        Err(etas_frontend::code::descriptor::TraceTemplateProjectionError::CallableOwnerMismatch)
+    ));
+    let mut altered = (**checked).clone();
+    altered.sources.sources[0].text = std::sync::Arc::from("different source revision");
+    let mut projector =
+        DefinitionDescriptorProjector::new(&altered, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, checked, &identities, item);
+    assert!(matches!(
+        projector.finish_analyzed_trace_template(&generic_owner, input, source_limits),
+        Err(etas_frontend::code::descriptor::TraceTemplateProjectionError::AnalyzedSourceMismatch)
+    ));
+    let mut projector =
+        DefinitionDescriptorProjector::new(checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, checked, &identities, item);
+    assert!(matches!(
+        projector.finish_analyzed_trace_template(
+            &generic_owner,
+            input,
+            etas_frontend::code::descriptor::TraceSourceLinkLimits {
+                max_snapshot_bytes: 0,
+                ..source_limits
+            }
+        ),
+        Err(
+            etas_frontend::code::descriptor::TraceTemplateProjectionError::SourceLink(
+                etas_frontend::code::descriptor::TraceSourceLinkError::SnapshotBytesLimit
+            )
+        )
+    ));
+    struct CancelAnalyzed;
+    impl etas_utils::PipelineExecutionControl for CancelAnalyzed {
+        fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+            Err(etas_utils::PipelineInterruption {
+                kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                reason: "test cancellation".into(),
+            })
+        }
+    }
+    let mut projector =
+        DefinitionDescriptorProjector::new(checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, checked, &identities, item);
+    assert!(matches!(
+        projector.finish_analyzed_trace_template(
+            &generic_owner,
+            etas_effects::trace_spec::AnalyzedTraceLoweringInput {
+                control: Some(&CancelAnalyzed),
+                ..input
+            },
+            source_limits
+        ),
+        Err(
+            etas_frontend::code::descriptor::TraceTemplateProjectionError::Lower(
+                etas_effects::trace_spec::TraceRulesLoweringError::Interrupted(_)
+            )
+        )
+    ));
+    let source = analysis.source_conformance(index).unwrap();
+    let owner = source.source_owner.as_ref().unwrap();
+    let spec = source.source_instance.as_ref().unwrap();
+    let clause_id = projection.alternatives()[0][0].source_clause.unwrap();
+    let site = &models.source_clause_sites[&clause_id];
+    let identity_limits = ObligationIdentityLimits {
+        max_generic_arguments: 16,
+        max_structural_site_depth: 64,
+    };
+    let snapshot = CheckedSourceSnapshot::new(key, file.text.as_bytes());
+    let owner_site = SourceStructuralSite {
+        location: owner.declaration(),
+        source_bytes: file.text.as_bytes(),
+        structural_path: &[],
+    };
+    let scope_limits = etas_effects::trace_spec::TraceObligationSourceLimits {
+        max_snapshots: 4,
+        max_snapshot_bytes: 64 * 1024,
+        identity: identity_limits,
+    };
+    let scope_input = |snapshots| etas_effects::trace_spec::TraceCallableScopeInput {
+        analysis: &analysis,
+        dispositions: &dispositions,
+        type_fact_index: index,
+        item,
+        hir: &checked.hir,
+        snapshots,
+        limits: scope_limits,
+        control: None,
+    };
+    let scope =
+        etas_effects::trace_spec::checked_trace_callable_scope(scope_input(&snapshots)).unwrap();
+    assert_eq!(scope.owner, owner.id());
+    assert_eq!(
+        scope.scope,
+        SemanticScopeId::from_source_site(owner.id(), &owner_site, identity_limits).unwrap()
+    );
+    assert_eq!(
+        scope.activation,
+        ActivationSiteId::from_source_site(owner.id(), &owner_site, identity_limits).unwrap()
+    );
+    let stale_text = file.text.replace("Gate", "GATE");
+    let stale = [etas_effects::EffectSourceSnapshot {
+        text: &stale_text,
+        ..snapshots[0]
+    }];
+    assert!(matches!(
+        etas_effects::trace_spec::checked_trace_callable_scope(scope_input(&stale)),
+        Err(etas_effects::trace_spec::TraceCallableScopeError::OwnerMismatch)
+    ));
+    let layout_limits = BindingLayoutLimits {
+        max_bindings: 4,
+        max_projections_per_binding: 4,
+        max_total_projections: 4,
+    };
+    let layout = BindingLayout::new(BTreeMap::new(), layout_limits).unwrap();
+    let expected_identity = ObligationIdentityInputs {
+        origin: site.location().clone(),
+        owner: owner.id(),
+        contract: BehaviorContractRef::SourceConstraint,
+        spec: spec.id(),
+        clause: clause_id,
+        rule: site
+            .rule(
+                &snapshot,
+                ResidualRuleKind::TraceContract,
+                &[],
+                identity_limits,
+            )
+            .unwrap(),
+        scope: scope.scope,
+        activation: scope.activation,
+        static_bindings: Default::default(),
+    };
+    let identity = etas_effects::trace_spec::trace_obligation_identity(
+        etas_effects::trace_spec::TraceObligationIdentityInput {
+            scope: scope_input(&snapshots),
+            alternative_index: 0,
+            clause_index: 0,
+            clause_sites: &models.source_clause_sites,
+            contract: BehaviorContractRef::SourceConstraint,
+            rule_kind: ResidualRuleKind::TraceContract,
+            rule_suffix: &[],
+            max_identity_work: 1024,
+        },
+    )
+    .unwrap();
+    assert_eq!(identity.inputs(), &expected_identity);
+    let frozen_contract = BehaviorContractRef::FrozenInput(
+        etas_code::residual::identity::BehaviorContractId::from_canonical_fingerprint(
+            CodeFingerprint::from_bytes([94; 32]),
+        ),
+    );
+    let frozen_identity = etas_effects::trace_spec::trace_obligation_identity(
+        etas_effects::trace_spec::TraceObligationIdentityInput {
+            scope: scope_input(&snapshots),
+            alternative_index: 0,
+            clause_index: 0,
+            clause_sites: &models.source_clause_sites,
+            contract: frozen_contract,
+            rule_kind: ResidualRuleKind::TraceContract,
+            rule_suffix: &[],
+            max_identity_work: 1024,
+        },
+    )
+    .unwrap();
+    let identity_id = identity.id();
+    let obligation = ResidualObligation::new(
+        identity.inputs().clone(),
+        ResidualKind::TraceContract {
+            monitor: projection.monitor().template_id(),
+        },
+        layout.id(),
+        identity_limits,
+    )
+    .unwrap();
+    assert_eq!(obligation.id(), identity_id);
+    let mut patterns = BTreeMap::new();
+    for clause in projection.alternatives().iter().flatten() {
+        match &clause.rule {
+            AlternativeRule::Allow(pattern) | AlternativeRule::Deny(pattern) => {
+                patterns.insert(pattern.id(), pattern.clone());
+            }
+            AlternativeRule::Before { guard, target } => {
+                patterns.insert(guard.id(), guard.clone());
+                patterns.insert(target.id(), target.clone());
+            }
+        }
+    }
+    let component = CompiledTraceComponent::compile(
+        obligation.clone(),
+        projection.monitor().template(),
+        &patterns,
+        &layout,
+        TraceComponentLimits {
+            identity: identity_limits,
+            layout: layout_limits,
+            monitor: monitor_limits,
+        },
+    )
+    .unwrap();
+    let component_id = component.id();
+    let frozen_obligation = ResidualObligation::new(
+        frozen_identity.into_inputs(),
+        ResidualKind::TraceContract {
+            monitor: projection.monitor().template_id(),
+        },
+        layout.id(),
+        identity_limits,
+    )
+    .unwrap();
+    let frozen_component = CompiledTraceComponent::compile(
+        frozen_obligation.clone(),
+        projection.monitor().template(),
+        &patterns,
+        &layout,
+        TraceComponentLimits {
+            identity: identity_limits,
+            layout: layout_limits,
+            monitor: monitor_limits,
+        },
+    )
+    .unwrap();
+    let frozen_component_id = frozen_component.id();
+    let mut frozen_obligations = ResidualObligationSet::new(ResidualSetLimits {
+        identity: identity_limits,
+        max_obligations: 2,
+        max_generic_arguments: 16,
+    });
+    frozen_obligations
+        .insert(frozen_obligation.clone())
+        .unwrap();
+    let frozen_plan = SemanticResidualPlan::build(
+        frozen_obligations,
+        vec![SemanticPlanComponent::Trace(frozen_component)],
+        vec![layout.clone()],
+        vec![SemanticPlanMapping {
+            obligation: frozen_obligation.id(),
+            component: frozen_component_id,
+        }],
+        SemanticPlanLimits {
+            max_obligations: 2,
+            max_components: 2,
+            max_layouts: 2,
+            max_mappings: 2,
+            max_plan_nodes: 16,
+            identity: identity_limits,
+            layout: layout_limits,
+        },
+    )
+    .unwrap();
+    let mut forged_identity = identity.inputs().clone();
+    forged_identity.scope =
+        SemanticScopeId::from_canonical_fingerprint(CodeFingerprint::from_bytes([93; 32]));
+    let forged_obligation = ResidualObligation::new(
+        forged_identity,
+        ResidualKind::TraceContract {
+            monitor: projection.monitor().template_id(),
+        },
+        layout.id(),
+        identity_limits,
+    )
+    .unwrap();
+    let forged_component = CompiledTraceComponent::compile(
+        forged_obligation.clone(),
+        projection.monitor().template(),
+        &patterns,
+        &layout,
+        TraceComponentLimits {
+            identity: identity_limits,
+            layout: layout_limits,
+            monitor: monitor_limits,
+        },
+    )
+    .unwrap();
+    let forged_component_id = forged_component.id();
+    let mut forged_obligations = ResidualObligationSet::new(ResidualSetLimits {
+        identity: identity_limits,
+        max_obligations: 2,
+        max_generic_arguments: 16,
+    });
+    forged_obligations
+        .insert(forged_obligation.clone())
+        .unwrap();
+    let forged_plan = SemanticResidualPlan::build(
+        forged_obligations,
+        vec![SemanticPlanComponent::Trace(forged_component)],
+        vec![layout.clone()],
+        vec![SemanticPlanMapping {
+            obligation: forged_obligation.id(),
+            component: forged_component_id,
+        }],
+        SemanticPlanLimits {
+            max_obligations: 2,
+            max_components: 2,
+            max_layouts: 2,
+            max_mappings: 2,
+            max_plan_nodes: 16,
+            identity: identity_limits,
+            layout: layout_limits,
+        },
+    )
+    .unwrap();
+    let mut obligations = ResidualObligationSet::new(ResidualSetLimits {
+        identity: identity_limits,
+        max_obligations: 2,
+        max_generic_arguments: 16,
+    });
+    obligations.insert(obligation.clone()).unwrap();
+    let plan = SemanticResidualPlan::build(
+        obligations,
+        vec![SemanticPlanComponent::Trace(component)],
+        vec![layout],
+        vec![SemanticPlanMapping {
+            obligation: obligation.id(),
+            component: component_id,
+        }],
+        SemanticPlanLimits {
+            max_obligations: 2,
+            max_components: 2,
+            max_layouts: 2,
+            max_mappings: 2,
+            max_plan_nodes: 16,
+            identity: identity_limits,
+            layout: layout_limits,
+        },
+    )
+    .unwrap();
+    let limits = TracePlanSourceLimits {
+        max_obligations: 2,
+        max_bindings: 2,
+        max_clause_sites: 16,
+        max_total_identity_work: 64,
+        source: TraceObligationSourceLimits {
+            max_snapshots: 1,
+            max_snapshot_bytes: file.text.len(),
+            identity: identity_limits,
+        },
+    };
+    let reference = ResidualObligationRef::new(obligation.id(), Default::default()).unwrap();
+    let expected = [reference.clone()].into_iter().collect();
+    let binding = || TracePlanSourceBinding {
+        reference: &reference,
+        type_fact_index: index,
+        alternative_index: 0,
+        clause_index: 0,
+        rule_suffix: &[],
+    };
+    let forged_reference =
+        ResidualObligationRef::new(forged_obligation.id(), Default::default()).unwrap();
+    let frozen_reference =
+        ResidualObligationRef::new(frozen_obligation.id(), Default::default()).unwrap();
+    let frozen_expected = [frozen_reference.clone()].into_iter().collect();
+    let validate_frozen = |expected_contract| {
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &frozen_plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &frozen_expected,
+            bindings: &[TracePlanSourceBinding {
+                reference: &frozen_reference,
+                ..binding()
+            }],
+            limits,
+            control: None,
+        })
+    };
+    assert_eq!(validate_frozen(frozen_contract), Ok(()));
+    assert_eq!(
+        validate_frozen(BehaviorContractRef::SourceConstraint),
+        Err(TracePlanSourceError::SourceIdentityMismatch(
+            frozen_obligation.id()
+        ))
+    );
+    assert_eq!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &forged_plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &[forged_reference.clone()].into_iter().collect(),
+            bindings: &[TracePlanSourceBinding {
+                reference: &forged_reference,
+                ..binding()
+            }],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::SourceIdentityMismatch(
+            forged_obligation.id()
+        ))
+    );
+    let verify = |bindings: &[TracePlanSourceBinding<'_>], limits| {
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &expected,
+            bindings,
+            limits,
+            control: None,
+        })
+    };
+    assert_eq!(verify(&[binding()], limits), Ok(()));
+    let reference_binding = binding();
+    let projection_input = |plan| TracePlanSourceInput {
+        plan,
+        analysis: &analysis,
+        dispositions: &dispositions,
+        hir: &checked.hir,
+        expected_contract: BehaviorContractRef::SourceConstraint,
+        clause_sites: &models.source_clause_sites,
+        snapshots: &snapshots,
+        expected: &expected,
+        bindings: std::slice::from_ref(&reference_binding),
+        limits,
+        control: None,
+    };
+    assert!(analyzed.validate_plan(projection_input(&plan)).is_ok());
+    assert!(matches!(
+        projection.validate_plan(projection_input(&plan)),
+        Err(etas_frontend::code::descriptor::TracePlanProjectionError::MissingAnalyzedSource)
+    ));
+    let wrong_binding = TracePlanSourceBinding {
+        type_fact_index: index + 1,
+        ..binding()
+    };
+    let mut wrong_input = projection_input(&plan);
+    wrong_input.bindings = std::slice::from_ref(&wrong_binding);
+    assert!(matches!(
+        analyzed.validate_plan(wrong_input),
+        Err(etas_frontend::code::descriptor::TracePlanProjectionError::SourceMismatch)
+    ));
+    let mut cancelled_input = projection_input(&plan);
+    cancelled_input.control = Some(&CancelAnalyzed);
+    assert!(matches!(
+        analyzed.validate_plan(cancelled_input),
+        Err(etas_frontend::code::descriptor::TracePlanProjectionError::Interrupted(_))
+    ));
+    let mut limited_input = projection_input(&plan);
+    limited_input.limits.max_bindings = 0;
+    assert!(matches!(
+        analyzed.validate_plan(limited_input),
+        Err(
+            etas_frontend::code::descriptor::TracePlanProjectionError::Source(
+                TracePlanSourceError::BindingLimit
+            )
+        )
+    ));
+
+    // A valid source identity alone does not prove that the plan implements
+    // the analyzed trace rules.
+    let pattern = patterns.values().next().unwrap().clone();
+    let mut forged_rules = vec![vec![AlternativeRule::Allow(pattern.clone())]];
+    let mut forged_monitor = etas_code::residual::monitor::CompiledTraceAlternatives::compile(
+        &forged_rules,
+        monitor_limits,
+    )
+    .unwrap();
+    if forged_monitor.template_id() == projection.monitor().template_id() {
+        forged_rules[0][0] = AlternativeRule::Deny(pattern);
+        forged_monitor = etas_code::residual::monitor::CompiledTraceAlternatives::compile(
+            &forged_rules,
+            monitor_limits,
+        )
+        .unwrap();
+    }
+    assert_ne!(
+        forged_monitor.template_id(),
+        projection.monitor().template_id()
+    );
+    let bad_obligation = ResidualObligation::new(
+        identity.inputs().clone(),
+        ResidualKind::TraceContract {
+            monitor: forged_monitor.template_id(),
+        },
+        obligation.bindings(),
+        identity_limits,
+    )
+    .unwrap();
+    assert_eq!(bad_obligation.id(), obligation.id());
+    let layout = plan.layout(obligation.bindings()).unwrap();
+    let bad_component = CompiledTraceComponent::compile(
+        bad_obligation.clone(),
+        forged_monitor.template(),
+        &patterns,
+        layout,
+        TraceComponentLimits {
+            identity: identity_limits,
+            layout: layout_limits,
+            monitor: monitor_limits,
+        },
+    )
+    .unwrap();
+    let bad_component_id = bad_component.id();
+    let mut bad_obligations = ResidualObligationSet::new(ResidualSetLimits {
+        identity: identity_limits,
+        max_obligations: 2,
+        max_generic_arguments: 16,
+    });
+    bad_obligations.insert(bad_obligation.clone()).unwrap();
+    let bad_plan = SemanticResidualPlan::build(
+        bad_obligations,
+        vec![SemanticPlanComponent::Trace(bad_component)],
+        vec![layout.clone()],
+        vec![SemanticPlanMapping {
+            obligation: bad_obligation.id(),
+            component: bad_component_id,
+        }],
+        SemanticPlanLimits {
+            max_obligations: 2,
+            max_components: 2,
+            max_layouts: 2,
+            max_mappings: 2,
+            max_plan_nodes: 16,
+            identity: identity_limits,
+            layout: layout_limits,
+        },
+    )
+    .unwrap();
+    assert!(validate_trace_plan_sources(projection_input(&bad_plan)).is_ok());
+    assert!(matches!(
+        analyzed.validate_plan(projection_input(&bad_plan)),
+        Err(etas_frontend::code::descriptor::TracePlanProjectionError::MonitorMismatch(id)) if id == obligation.id()
+    ));
+    let other_program =
+        checked_with_stable_source("module app; flow different() -> unit ![] { return; }");
+    assert!(matches!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &other_program.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &expected,
+            bindings: &[binding()],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::SourceIdentity { id, .. }) if id == obligation.id()
+    ));
+    assert_eq!(
+        verify(&[], limits),
+        Err(TracePlanSourceError::MissingBinding(
+            reference.fingerprint()
+        ))
+    );
+    assert_eq!(
+        verify(&[binding(), binding()], limits),
+        Err(TracePlanSourceError::DuplicateBinding(
+            reference.fingerprint()
+        ))
+    );
+    let unexpected =
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([90; 32]));
+    let unexpected = ResidualObligationRef::new(unexpected, Default::default()).unwrap();
+    assert_eq!(
+        verify(
+            &[TracePlanSourceBinding {
+                reference: &unexpected,
+                ..binding()
+            }],
+            limits
+        ),
+        Err(TracePlanSourceError::UnexpectedBinding(
+            unexpected.fingerprint()
+        ))
+    );
+    let unexpected_expected = [unexpected.clone()].into_iter().collect();
+    assert_eq!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &unexpected_expected,
+            bindings: &[TracePlanSourceBinding {
+                reference: &unexpected,
+                ..binding()
+            }],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::UnexpectedObligation(
+            unexpected.obligation()
+        ))
+    );
+    assert_eq!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &Default::default(),
+            bindings: &[],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::MissingObligation(obligation.id()))
+    );
+    let generic = ResidualObligationRef::new(
+        obligation.id(),
+        BTreeMap::from([(
+            GenericParameterId::from_canonical_fingerprint(CodeFingerprint::from_bytes([91; 32])),
+            GenericArgumentIdentity::Type(CodeFingerprint::from_bytes([92; 32])),
+        )]),
+    )
+    .unwrap();
+    let generic_expected = [reference.clone(), generic.clone()].into_iter().collect();
+    let generic_binding = TracePlanSourceBinding {
+        reference: &generic,
+        ..binding()
+    };
+    assert_eq!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &generic_expected,
+            bindings: &[binding(), generic_binding],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::Reference {
+            id: obligation.id(),
+            reference: generic.fingerprint(),
+            reason: etas_effects::trace_spec::TraceObligationReferenceError::BindingSetMismatch,
+        })
+    );
+    assert_eq!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &generic_expected,
+            bindings: &[binding()],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::MissingBinding(generic.fingerprint()))
+    );
+    assert!(matches!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &generic_expected,
+            bindings: &[
+                binding(),
+                TracePlanSourceBinding {
+                    reference: &generic,
+                    alternative_index: 1,
+                    ..binding()
+                },
+            ],
+            limits,
+            control: None,
+        }),
+        Err(TracePlanSourceError::Obligation {
+            id,
+            reference: failed_reference,
+            reason: etas_effects::trace_spec::TraceObligationSourceError::ClauseMismatch,
+        }) if id == obligation.id() && failed_reference == generic.fingerprint()
+    ));
+    assert_eq!(
+        verify(
+            &[binding()],
+            TracePlanSourceLimits {
+                max_bindings: 0,
+                ..limits
+            }
+        ),
+        Err(TracePlanSourceError::BindingLimit)
+    );
+    assert!(matches!(
+        verify(&[TracePlanSourceBinding { alternative_index: 1, ..binding() }], limits),
+        Err(TracePlanSourceError::Obligation { id, reason: etas_effects::trace_spec::TraceObligationSourceError::ClauseMismatch, .. }) if id == obligation.id()
+    ));
+    assert_eq!(
+        verify(
+            &[TracePlanSourceBinding {
+                rule_suffix: &[0],
+                ..binding()
+            }],
+            TracePlanSourceLimits {
+                max_total_identity_work: 0,
+                ..limits
+            }
+        ),
+        Err(TracePlanSourceError::IdentityWorkLimit)
+    );
+    assert_eq!(
+        verify(
+            &[binding()],
+            TracePlanSourceLimits {
+                max_clause_sites: 0,
+                ..limits
+            }
+        ),
+        Err(TracePlanSourceError::ClauseSiteLimit)
+    );
+    struct Cancel;
+    impl etas_utils::PipelineExecutionControl for Cancel {
+        fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+            Err(etas_utils::PipelineInterruption {
+                kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                reason: "cancelled by test".into(),
+            })
+        }
+    }
+    assert!(matches!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &expected,
+            bindings: &[binding()],
+            limits,
+            control: Some(&Cancel),
+        }),
+        Err(TracePlanSourceError::Interrupted(
+            etas_utils::PipelineInterruption {
+                kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                ..
+            }
+        ))
+    ));
+    struct CancelAfter(std::sync::atomic::AtomicUsize);
+    impl etas_utils::PipelineExecutionControl for CancelAfter {
+        fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+            if self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 3 {
+                return Err(etas_utils::PipelineInterruption {
+                    kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                    reason: "cancelled during binding validation".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+    let cancel = CancelAfter(std::sync::atomic::AtomicUsize::new(0));
+    assert!(matches!(
+        validate_trace_plan_sources(TracePlanSourceInput {
+            plan: &plan,
+            analysis: &analysis,
+            dispositions: &dispositions,
+            hir: &checked.hir,
+            expected_contract: BehaviorContractRef::SourceConstraint,
+            clause_sites: &models.source_clause_sites,
+            snapshots: &snapshots,
+            expected: &expected,
+            bindings: &[binding()],
+            limits,
+            control: Some(&cancel),
+        }),
+        Err(TracePlanSourceError::Interrupted(
+            etas_utils::PipelineInterruption {
+                kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                ..
+            }
+        ))
+    ));
+    assert!(cancel.0.load(std::sync::atomic::Ordering::Relaxed) >= 4);
+}
+
+#[test]
+fn record_descriptor_order_does_not_prove_selector_disjointness() {
+    use etas_code::{
+        contract::{CanonicalEffect, CanonicalSelector},
+        residual::pattern::{ActionPattern, ActionPatternLimits, ActionPatternMatch},
+    };
+    use etas_types::{Assignable, TypeRelation};
+
+    let checked = checked(
+        "module app; flow f(a: { x: i32, y: bool }, b: { y: bool, x: i32 }) -> unit ![] { return; }",
+    );
+    let item = flow(&checked, "f");
+    let HirItem::Flow(decl) = &checked.hir.items[item] else {
+        panic!("flow")
+    };
+    let ItemSignature::Flow(signature) = &checked.types.item_signatures[&item] else {
+        panic!("signature")
+    };
+    TypeRelation::new(&checked.type_store)
+        .assignable(signature.params[0], signature.params[1])
+        .unwrap();
+    let identities = DefinitionIdentityIndex::build(&checked, &origins(&checked, "app@1")).unwrap();
+    let owner = GenericOwner::Declaration(identities.symbol(decl.symbol).unwrap().clone());
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    let roots = projector
+        .project_closed_types(owner, &signature.params)
+        .unwrap();
+    let graph = projector.finish().unwrap();
+    let first = graph.type_fingerprint(roots[0]).unwrap();
+    let second = graph.type_fingerprint(roots[1]).unwrap();
+    assert_ne!(first, second);
+    let effect = etas_code::DefinitionKey::new(
+        PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([1; 32])),
+        vec!["app".into()],
+        vec!["Gate".into()],
+        DefinitionKind::Effect,
+    )
+    .unwrap();
+    let action = |ty| CanonicalEffect {
+        target: EffectTargetInfo::Action {
+            effect: effect.clone(),
+            name: "send".into(),
+        },
+        arguments: vec![CanonicalSelector::Type(ty)],
+    };
+    let limits = ActionPatternLimits {
+        max_selectors: 4,
+        max_identity_segments: 16,
+        max_identity_bytes: 128,
+        max_literal_bytes: 128,
+    };
+    let pattern = ActionPattern::new(action(first), limits).unwrap();
+    assert_eq!(
+        pattern.match_action(&action(second), limits),
+        Ok(ActionPatternMatch::NeedsConcreteSelector)
+    );
+}
+
+#[test]
+fn checked_trace_template_uses_canonical_actions_and_complete_alternatives() {
+    use etas_code::{
+        contract::{CanonicalEffect, CanonicalSelector},
+        residual::{
+            monitor::{
+                AlternativeLimits, AlternativeRule, CompiledTraceAlternatives,
+                ConcreteEvidenceLimits,
+            },
+            pattern::{ActionPattern, ActionPatternLimits},
+        },
+    };
+    use etas_frontend::code::descriptor::TraceTemplateProjectionError;
+    let checked = checked_with_stable_source(
+        r#"
+module app;
+effect Gate { action a<T>(value: T) -> unit; action b<T>(value: T) -> unit; }
+effect Child extends Gate { action c(value: i32) -> unit; }
+spec Rule<R>: trace = (+Gate.a<R> | -Gate.b<R>) & (Gate.a<R> >> Gate.b<R>);
+spec Family: trace = -Gate;
+spec AnyA: trace = -Gate.a;
+spec Reverse: trace = Gate.b<i32> << Gate.a<i32>;
+flow main() -> unit ![] ~ Rule<i32> { return; }
+flow broad() -> unit ![] ~ Family { return; }
+flow any_a() -> unit ![] ~ AnyA { return; }
+flow generic<T>() -> unit ![] ~ Rule<T> { return; }
+flow reversed() -> unit ![] ~ Reverse { return; }
+"#,
+    );
+    let identities =
+        DefinitionIdentityIndex::build(&checked, &origins(&checked, "locked:app@1")).unwrap();
+    let main = flow(&checked, "main");
+    let HirItem::Flow(decl) = &checked.hir.items[main] else {
+        panic!("flow")
+    };
+    let owner = GenericOwner::Declaration(identities.symbol(decl.symbol).unwrap().clone());
+    let alternatives = &checked.effects.trace_specs.conformances[&main][0].alternatives;
+    let pattern_limits = ActionPatternLimits {
+        max_selectors: 4,
+        max_identity_segments: 16,
+        max_identity_bytes: 128,
+        max_literal_bytes: 128,
+    };
+    let limits = AlternativeLimits {
+        evidence: ConcreteEvidenceLimits {
+            pattern: pattern_limits,
+            max_bindings: 4,
+            max_value_bytes: 128,
+        },
+        max_alternatives: 4,
+        max_clauses: 12,
+        max_patterns: 4,
+        max_checks_per_event: 32,
+        max_product_work_per_event: 128,
+    };
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    let compiled = projector
+        .finish_trace_template(&owner, alternatives, limits)
+        .unwrap();
+    let link_limits = etas_frontend::code::descriptor::TraceSourceLinkLimits {
+        max_sources: 8,
+        max_sites: 16,
+        max_clauses: 16,
+        max_snapshot_bytes: 64 * 1024,
+        identity: etas_code::residual::identity::ObligationIdentityLimits {
+            max_generic_arguments: 16,
+            max_structural_site_depth: 64,
+        },
+    };
+    let sites = &checked.effects.trace_specs.source_clause_sites;
+    compiled
+        .validate_snapshot_links(&checked.sources, sites, link_limits)
+        .unwrap();
+    check_trace_plan_source_links(&checked, main, &compiled, limits);
+    compiled
+        .validate_snapshot_links(
+            &checked.sources,
+            sites,
+            etas_frontend::code::descriptor::TraceSourceLinkLimits {
+                max_snapshot_bytes: checked.sources.sources[0].text.len(),
+                ..link_limits
+            },
+        )
+        .expect("a source shared by multiple clauses is hashed and charged once");
+    let mut missing = sites.clone();
+    let clause = compiled.alternatives()[0][0].source_clause.unwrap();
+    missing.remove(&clause);
+    assert!(matches!(
+        compiled.validate_snapshot_links(&checked.sources, &missing, link_limits),
+        Err(etas_frontend::code::descriptor::TraceSourceLinkError::MissingClauseSite(id)) if id == clause
+    ));
+    let mut stale = checked.sources.clone();
+    stale.sources[0].text = std::sync::Arc::from("changed source");
+    assert!(matches!(
+        compiled.validate_snapshot_links(&stale, sites, link_limits),
+        Err(etas_frontend::code::descriptor::TraceSourceLinkError::MismatchedClauseSite(_))
+    ));
+    assert!(matches!(
+        compiled.validate_snapshot_links(
+            &checked.sources,
+            sites,
+            etas_frontend::code::descriptor::TraceSourceLinkLimits {
+                max_snapshot_bytes: 0,
+                ..link_limits
+            },
+        ),
+        Err(etas_frontend::code::descriptor::TraceSourceLinkError::SnapshotBytesLimit)
+    ));
+    assert_eq!(compiled.alternatives().len(), alternatives.len());
+    for (projected, checked_clauses) in compiled.alternatives().iter().zip(alternatives) {
+        assert_eq!(projected.len(), checked_clauses.len());
+        for (projected, checked_clause) in projected.iter().zip(checked_clauses) {
+            assert_eq!(projected.source_clause, checked_clause.source_clause());
+            assert!(projected.source_clause.is_some());
+            let span = match checked_clause {
+                etas_effects::trace_spec::TraceSpecClause::Allow { span, .. }
+                | etas_effects::trace_spec::TraceSpecClause::Deny { span, .. }
+                | etas_effects::trace_spec::TraceSpecClause::RequireBefore { span, .. }
+                | etas_effects::trace_spec::TraceSpecClause::RequireAfter { span, .. } => *span,
+                etas_effects::trace_spec::TraceSpecClause::Limit { .. } => panic!("limit"),
+            };
+            assert_eq!(projected.span, span);
+        }
+    }
+    assert_eq!(
+        compiled.alternatives()[0][1].source_clause,
+        compiled.alternatives()[1][1].source_clause
+    );
+    assert!(matches!(
+        compiled.alternatives()[0][1].rule,
+        AlternativeRule::Before { .. }
+    ));
+
+    let gate = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(_, item)| match item {
+            HirItem::Effect(effect) if checked.hir.symbols.get(effect.symbol)?.name == "Gate" => {
+                Some(effect)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let gate = identities.symbol(gate.symbol).unwrap().clone();
+    let graph = DescriptorGraph::new(
+        DescriptorGraphInput {
+            types: vec![TypeInfo::Primitive(PrimitiveInfo::I32)],
+            ..Default::default()
+        },
+        DescriptorLimits::default(),
+    )
+    .unwrap();
+    let ty = graph.type_fingerprint(TypeInfoRef(0)).unwrap();
+    let action = |name: &str| {
+        ActionPattern::new(
+            CanonicalEffect {
+                target: EffectTargetInfo::Action {
+                    effect: gate.clone(),
+                    name: name.into(),
+                },
+                arguments: vec![CanonicalSelector::Type(ty)],
+            },
+            pattern_limits,
+        )
+        .unwrap()
+    };
+    let (a, b) = (action("a"), action("b"));
+    let AlternativeRule::Before { guard, target } = &compiled.alternatives()[0][1].rule else {
+        panic!("temporal rule")
+    };
+    assert_eq!(guard.id(), a.id());
+    assert_eq!(target.id(), b.id());
+    let expected = CompiledTraceAlternatives::compile(
+        &[
+            vec![
+                AlternativeRule::Allow(a.clone()),
+                AlternativeRule::Before {
+                    guard: a.clone(),
+                    target: b.clone(),
+                },
+            ],
+            vec![
+                AlternativeRule::Deny(b.clone()),
+                AlternativeRule::Before {
+                    guard: a,
+                    target: b,
+                },
+            ],
+        ],
+        limits,
+    )
+    .unwrap();
+    assert_eq!(compiled.monitor().template_id(), expected.template_id());
+    let reversed = flow(&checked, "reversed");
+    let HirItem::Flow(reversed_decl) = &checked.hir.items[reversed] else {
+        panic!("flow")
+    };
+    let reversed_owner =
+        GenericOwner::Declaration(identities.symbol(reversed_decl.symbol).unwrap().clone());
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, reversed);
+    let reversed_alternatives =
+        &checked.effects.trace_specs.conformances[&reversed][0].alternatives;
+    let actual = projector
+        .finish_trace_template(&reversed_owner, reversed_alternatives, limits)
+        .unwrap();
+    let AlternativeRule::Before { guard, target } = &actual.alternatives()[0][0].rule else {
+        panic!("reverse temporal rule")
+    };
+    assert_eq!(guard.id(), action("a").id());
+    assert_eq!(target.id(), action("b").id());
+    let expected = CompiledTraceAlternatives::compile(
+        &[vec![AlternativeRule::Before {
+            guard: action("a"),
+            target: action("b"),
+        }]],
+        limits,
+    )
+    .unwrap();
+    assert_eq!(actual.monitor().template_id(), expected.template_id());
+    let projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    assert!(matches!(
+        projector.finish_trace_template(&owner, alternatives, limits),
+        Err(TraceTemplateProjectionError::MissingCallableScope)
+    ));
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    assert!(matches!(
+        projector.finish_trace_template(
+            &owner,
+            alternatives,
+            AlternativeLimits {
+                max_alternatives: 1,
+                ..limits
+            }
+        ),
+        Err(TraceTemplateProjectionError::AlternativeLimit)
+    ));
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    assert!(matches!(
+        projector.finish_trace_template(
+            &owner,
+            alternatives,
+            AlternativeLimits {
+                max_clauses: 1,
+                ..limits
+            }
+        ),
+        Err(TraceTemplateProjectionError::ClauseLimit)
+    ));
+    let mut unsupported = alternatives.clone();
+    unsupported[0].push(etas_effects::trace_spec::TraceSpecClause::Limit {
+        fact: etas_effects::TraceSpecClauseFact::Limit { count: 1 },
+    });
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    assert!(matches!(
+        projector.finish_trace_template(&owner, &unsupported, limits),
+        Err(TraceTemplateProjectionError::UnsupportedLimit)
+    ));
+
+    let broad = flow(&checked, "broad");
+    let HirItem::Flow(broad_decl) = &checked.hir.items[broad] else {
+        panic!("flow")
+    };
+    let broad_owner =
+        GenericOwner::Declaration(identities.symbol(broad_decl.symbol).unwrap().clone());
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, broad);
+    let broad_alternatives = &checked.effects.trace_specs.conformances[&broad][0].alternatives;
+    let actual = projector
+        .finish_trace_template(&broad_owner, broad_alternatives, limits)
+        .unwrap();
+    let child = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(_, item)| match item {
+            HirItem::Effect(effect) if checked.hir.symbols.get(effect.symbol)?.name == "Child" => {
+                Some(effect)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let child = identities.symbol(child.symbol).unwrap().clone();
+    let family = ActionPattern::from_effect_family(
+        CanonicalEffect {
+            target: EffectTargetInfo::Effect(gate.clone()),
+            arguments: vec![],
+        },
+        vec![child.clone()],
+        pattern_limits,
+    )
+    .unwrap();
+    let expected =
+        CompiledTraceAlternatives::compile(&[vec![AlternativeRule::Deny(family.clone())]], limits)
+            .unwrap();
+    assert_eq!(actual.monitor().template_id(), expected.template_id());
+    let child_action = CanonicalEffect {
+        target: EffectTargetInfo::Action {
+            effect: child,
+            name: "c".into(),
+        },
+        arguments: vec![],
+    };
+    assert_eq!(
+        family.match_action(&child_action, pattern_limits),
+        Ok(etas_code::residual::pattern::ActionPatternMatch::Matches)
+    );
+
+    let any = flow(&checked, "any_a");
+    let HirItem::Flow(any_decl) = &checked.hir.items[any] else {
+        panic!("flow")
+    };
+    let any_owner = GenericOwner::Declaration(identities.symbol(any_decl.symbol).unwrap().clone());
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, any);
+    let actual = projector
+        .finish_trace_template(
+            &any_owner,
+            &checked.effects.trace_specs.conformances[&any][0].alternatives,
+            limits,
+        )
+        .unwrap();
+    let wildcard = ActionPattern::new(
+        CanonicalEffect {
+            target: EffectTargetInfo::Action {
+                effect: gate.clone(),
+                name: "a".into(),
+            },
+            arguments: vec![CanonicalSelector::Wildcard],
+        },
+        pattern_limits,
+    )
+    .unwrap();
+    let expected =
+        CompiledTraceAlternatives::compile(&[vec![AlternativeRule::Deny(wildcard)]], limits)
+            .unwrap();
+    assert_eq!(actual.monitor().template_id(), expected.template_id());
+
+    let generic = flow(&checked, "generic");
+    let HirItem::Flow(generic_decl) = &checked.hir.items[generic] else {
+        panic!("flow")
+    };
+    let generic_owner =
+        GenericOwner::Declaration(identities.symbol(generic_decl.symbol).unwrap().clone());
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, generic);
+    assert!(matches!(
+        projector.finish_trace_template(
+            &generic_owner,
+            &checked.effects.trace_specs.conformances[&generic][0].alternatives,
+            limits
+        ),
+        Err(TraceTemplateProjectionError::TypeSelector(
+            etas_types::ty::TypeSubstitutionError::UnresolvedType(_)
+        ))
+    ));
+    let mut bounded_alternatives = alternatives.clone();
+    let etas_effects::trace_spec::TraceSpecClause::Allow { pattern, .. } =
+        &mut bounded_alternatives[0][0]
+    else {
+        panic!("allow")
+    };
+    let etas_effects::Effect::AppliedAction(action) = pattern.row.effects.iter().next().unwrap()
+    else {
+        panic!("action")
+    };
+    pattern
+        .arg_bounds
+        .push(etas_effects::trace_spec::TraceSpecArgBound {
+            target: etas_effects::trace_spec::TraceSpecArgBoundTarget::Action(
+                action.action.clone(),
+            ),
+            arg_index: 0,
+            name: "Index".into(),
+            spec_symbol: etas_hir::SymbolId(0),
+            spec_args: vec![],
+        });
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    assert!(matches!(
+        projector.finish_trace_template(&owner, &bounded_alternatives, limits),
+        Err(TraceTemplateProjectionError::BoundedPattern)
+    ));
+    let memory_read = checked
+        .effect_registry
+        .action_by_name("Memory.read")
+        .unwrap();
+    let i32_type = checked
+        .type_store
+        .iter()
+        .find_map(|(id, ty)| {
+            matches!(
+                ty,
+                etas_types::Type::Primitive(etas_types::PrimitiveType::I32)
+            )
+            .then_some(id)
+        })
+        .unwrap();
+    let mut memory_alternatives = alternatives.clone();
+    let etas_effects::trace_spec::TraceSpecClause::Allow { pattern, .. } =
+        &mut memory_alternatives[0][0]
+    else {
+        panic!("allow")
+    };
+    pattern.row = etas_effects::EffectRow::closed(etas_effects::EffectSet::one(
+        etas_effects::Effect::AppliedAction(etas_effects::ActionInstanceRef {
+            action: memory_read.clone(),
+            args: vec![etas_types::EffectArgRef::Type(i32_type)],
+        }),
+    ));
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    assert!(matches!(
+        projector.finish_trace_template(&owner, &memory_alternatives, limits),
+        Err(TraceTemplateProjectionError::ContainmentSelector)
+    ));
+    let etas_effects::trace_spec::TraceSpecClause::Allow { pattern, .. } =
+        &mut memory_alternatives[0][0]
+    else {
+        panic!("allow")
+    };
+    pattern.row = etas_effects::EffectRow::closed(etas_effects::EffectSet::one(
+        etas_effects::Effect::AppliedAction(etas_effects::ActionInstanceRef {
+            action: memory_read,
+            args: vec![etas_types::EffectArgRef::Wildcard],
+        }),
+    ));
+    let mut projector =
+        DefinitionDescriptorProjector::new(&checked, &identities, DescriptorLimits::default());
+    project_flow(&mut projector, &checked, &identities, main);
+    assert!(
+        projector
+            .finish_trace_template(&owner, &memory_alternatives, limits)
+            .is_ok()
+    );
 }
 
 #[test]

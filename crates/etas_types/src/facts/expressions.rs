@@ -3,10 +3,12 @@ use crate::{EffectRowRef, TypeId};
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
-pub struct CheckedStdMethodFact {
+pub struct CheckedStdCallFact {
     pub qualified_path: Vec<String>,
     pub intrinsic: u32,
-    pub signature: TypeId,
+    pub overload: usize,
+    pub callable_type: TypeId,
+    pub signature: crate::CallableSignature,
 }
 
 #[derive(
@@ -24,6 +26,16 @@ pub struct FieldProjectionFact {
 pub struct DeferredEffectRowObligation {
     pub param: String,
     pub source: etas_hir::HirExprId,
+    pub fixed: EffectRowRef,
+    pub concrete: Vec<EffectRowEquation>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct EffectRowEquation {
+    pub fixed: EffectRowRef,
+    pub actual: EffectRowRef,
 }
 
 #[derive(

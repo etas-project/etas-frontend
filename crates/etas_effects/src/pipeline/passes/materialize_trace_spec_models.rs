@@ -29,6 +29,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeTraceSpecModelsPass {
             context.input.types,
             registry,
             context.input.external_trace_specs,
+            context.input.source_snapshots,
             &mut effects,
         );
         match models {

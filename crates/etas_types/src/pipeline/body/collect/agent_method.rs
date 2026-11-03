@@ -43,7 +43,7 @@ pub(super) fn deferred_candidates<E>(
         let _ = super::callable_instantiation::signature_hints(
             ctx,
             candidate.ty,
-            &candidate.generic_params,
+            &candidate.signature.generic_params,
             arguments,
             span,
         );
@@ -267,7 +267,7 @@ fn collect_selected_call<E>(
     let hints = super::callable_instantiation::signature_hints(
         ctx,
         candidate.ty,
-        &candidate.generic_params,
+        &candidate.signature.generic_params,
         &checked_args,
         span,
     );
@@ -294,7 +294,7 @@ fn collect_selected_call<E>(
     ctx.emit(TypeConstraint::Callable {
         call: Some(expr),
         callee: candidate.ty,
-        generic_params: candidate.generic_params,
+        generic_params: candidate.signature.generic_params,
         generic_args: checked_args,
         arg_exprs: args
             .iter()

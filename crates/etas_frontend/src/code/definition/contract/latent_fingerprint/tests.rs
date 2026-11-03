@@ -23,7 +23,7 @@ fn prepared() -> (DefinitionCatalog, metadata::CallableValueGraph) {
     let reflection = *checked.types.reflections.keys().next().unwrap();
     let catalog = DefinitionCatalog::build(checked, &origins, Default::default()).unwrap();
     let frozen = catalog.freeze_agent(reflection).unwrap();
-    let callable = frozen.contract().header().default_entry.as_ref().unwrap();
+    let callable = frozen.contract().entry().unwrap();
     let graph = (*frozen.contract().latent_graph(callable).unwrap().graph).clone();
     (catalog, graph)
 }

@@ -70,6 +70,65 @@ fn freeze_sources(
 }
 
 #[test]
+fn candidate_snapshot_fingerprint_includes_descriptor_limits() {
+    let (_, frozen) = freeze(
+        "module app; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let d = ^Worker; return; }",
+    );
+    let syntax = NativeCodeSyntaxOperations::default();
+    let overlay =
+        DefaultBodyOverlay::prepare(frozen, syntax.parse_body("return 1;").unwrap(), &syntax)
+            .unwrap();
+    let limits = DescriptorLimits::default();
+    let analyze = |limits| {
+        FrontendSession::new()
+            .analyze_body_overlay_with_dependencies(overlay.clone(), Vec::new(), limits, None)
+            .unwrap()
+    };
+    let original = analyze(limits);
+    assert!(
+        original.output().diagnostics.is_empty(),
+        "{:?}",
+        original.output().diagnostics
+    );
+    assert_eq!(original.fingerprint(), analyze(limits).fingerprint());
+    let original_report = original.check_report(limits).unwrap();
+    assert_eq!(original_report.snapshot_fingerprint, original.fingerprint());
+    for changed in [
+        DescriptorLimits {
+            max_nodes: limits.max_nodes + 1,
+            ..limits
+        },
+        DescriptorLimits {
+            max_edges: limits.max_edges + 1,
+            ..limits
+        },
+        DescriptorLimits {
+            max_expansion_depth: limits.max_expansion_depth + 1,
+            ..limits
+        },
+        DescriptorLimits {
+            max_text_bytes: limits.max_text_bytes + 1,
+            ..limits
+        },
+    ] {
+        let candidate = analyze(changed);
+        assert!(
+            candidate.output().diagnostics.is_empty(),
+            "{:?}",
+            candidate.output().diagnostics
+        );
+        assert_ne!(original.fingerprint(), candidate.fingerprint());
+        assert_eq!(
+            candidate
+                .check_report(changed)
+                .unwrap()
+                .snapshot_fingerprint,
+            candidate.fingerprint()
+        );
+    }
+}
+
+#[test]
 fn candidate_dependency_completion_cannot_replace_project_sources_or_add_unlocked_packages() {
     let (_, frozen) = freeze(
         "module app; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let definition = ^Worker; return; }",
@@ -93,11 +152,20 @@ fn candidate_dependency_completion_cannot_replace_project_sources_or_add_unlocke
         .unwrap();
         let result = FrontendSession::new().analyze_body_overlay_with_dependencies(
             overlay,
-            vec![SourceInput {
-                id: SourceId(u32::MAX),
-                path: Some(std::path::PathBuf::from("/unlocked/source.es")),
-                text: "module unlocked;".into(),
-                kind,
+            vec![etas_frontend::code::service::CandidateDependencySource {
+                source: SourceInput {
+                    id: SourceId(u32::MAX),
+                    path: Some(std::path::PathBuf::from("/unlocked/source.es")),
+                    text: "module unlocked;".into(),
+                    kind,
+                },
+                stable_key: etas_code::StableSourceKey::new(
+                    etas_code::StableSourceOrigin::Package(
+                        etas_code::PackageKey::from_name_and_version("unlocked", "1.0.0").unwrap(),
+                    ),
+                    &["source.es".into()],
+                )
+                .unwrap(),
             }],
             Default::default(),
             None,
@@ -106,6 +174,131 @@ fn candidate_dependency_completion_cannot_replace_project_sources_or_add_unlocke
             matches!(result, Err(etas_frontend::code::service::CandidateAnalysisError::Pipeline { reason, .. }) if reason.contains(expected))
         );
     }
+}
+
+#[test]
+fn candidate_dependency_source_keeps_stable_key_after_source_id_remapping() {
+    use etas_code::{StableSourceKey, StableSourceOrigin};
+    use etas_frontend::{
+        ExternalPackageId, ProjectDependencySourcePackage, ProjectExternalPackageInput,
+        code::service::CandidateDependencySource,
+    };
+    let package = ExternalPackageId(7);
+    let owner = PackageKey::from_name_and_version("dependency", "1.0.0").unwrap();
+    let key = StableSourceKey::new(
+        StableSourceOrigin::Package(owner),
+        &["src".into(), "dep.es".into()],
+    )
+    .unwrap();
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let d = ^Worker; return; }",
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    input
+        .environment
+        .external_packages
+        .push(ProjectExternalPackageInput {
+            id: package,
+            name: "dependency".into(),
+            version: "1.0.0".into(),
+            edition: "2026".into(),
+            import_root: "dep".into(),
+        });
+    input
+        .environment
+        .dependency_source_packages
+        .push(ProjectDependencySourcePackage {
+            package,
+            import_root: "dep".into(),
+            definition_package: owner,
+        });
+    input
+        .environment
+        .external_modules
+        .push(etas_frontend::ProjectExternalModuleInput {
+            package: Some(package),
+            id: etas_frontend::ExternalModuleId(0),
+            path: etas_frontend::ModulePath {
+                segments: vec!["dep".into()],
+            },
+            exports: vec![],
+        });
+    input.environment.external_public_metadata.push(
+        etas_frontend::ProjectExternalPublicMetadataInput {
+            package,
+            types: vec![],
+            values: vec![],
+            enums: vec![],
+            flows: vec![],
+            agents: vec![],
+            tools: vec![],
+            tool_schemas: vec![],
+            effects: vec![],
+            actions: vec![],
+            trace_specs: vec![],
+            spec_signatures: vec![],
+            spec_impls: vec![],
+            type_spec_satisfactions: vec![],
+            callable_spec_satisfactions: vec![],
+            trace_spec_conformances: vec![],
+            effect_summaries: vec![],
+            action_summaries: vec![],
+            trace_spec_summaries: vec![],
+            re_exports: vec![],
+        },
+    );
+    input.environment.external_definition_origins.push(
+        etas_frontend::ProjectExternalDefinitionOriginsInput {
+            package,
+            origins: etas_code::identity::PackageDefinitionOrigins {
+                package: owner,
+                modules: vec![etas_code::identity::DefinitionModuleOrigin {
+                    path: vec!["dep".into()],
+                    canonical_path: vec!["dep".into()],
+                }],
+                declarations: vec![],
+            },
+            descriptors: None,
+        },
+    );
+    let checked = Frontend.check_project(input).checked.unwrap();
+    let frozen = catalog(&checked)
+        .freeze_agent(reflection(&checked))
+        .unwrap();
+    let syntax = NativeCodeSyntaxOperations::default();
+    let overlay =
+        DefaultBodyOverlay::prepare(frozen, syntax.parse_body("return 1;").unwrap(), &syntax)
+            .unwrap();
+    let analysis = FrontendSession::new()
+        .analyze_body_overlay_with_dependencies(
+            overlay,
+            vec![CandidateDependencySource {
+                source: SourceInput {
+                    id: SourceId(999),
+                    path: Some("/cache/dependency/src/dep.es".into()),
+                    text: "module dep;".into(),
+                    kind: SourceKind::DependencySourceOverlay {
+                        package,
+                        import_root: "dep".into(),
+                    },
+                },
+                stable_key: key,
+            }],
+            Default::default(),
+            None,
+        )
+        .unwrap();
+    let checked = analysis.output().checked.as_ref().unwrap();
+    let dependency = checked
+        .sources
+        .sources
+        .iter()
+        .find(|source| {
+            source.path.as_deref() == Some(std::path::Path::new("/cache/dependency/src/dep.es"))
+        })
+        .unwrap();
+    assert_ne!(dependency.id, SourceId(999));
+    assert_eq!(checked.sources.stable_source_key(dependency.id), Ok(key));
 }
 
 #[test]

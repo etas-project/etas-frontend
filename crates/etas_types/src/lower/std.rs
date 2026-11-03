@@ -91,27 +91,7 @@ fn lower_std_decl_with_kind(
             }
         },
         StdDecl::Flow(flow) => SymbolTypeFact::Flow {
-            signature: CallableSignature {
-                generic_params: lower_std_generic_params(ctx, registry, &flow.type_params),
-                params: flow
-                    .params
-                    .iter()
-                    .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
-                    .collect(),
-                output: lower_std_type_with_scope(ctx, registry, &flow.output, scope),
-                effects: Some(std_effect_row_with_scope(
-                    ctx,
-                    registry,
-                    &flow.public_effects,
-                    scope,
-                )),
-                requested_actions: Some(std_effect_row_with_scope(
-                    ctx,
-                    registry,
-                    &flow.requested_actions,
-                    scope,
-                )),
-            },
+            signature: lower_std_flow_signature(ctx, registry, flow, scope),
         },
         StdDecl::Tool(tool) => SymbolTypeFact::Tool {
             signature: CallableSignature {
@@ -151,6 +131,35 @@ fn lower_std_decl_with_kind(
                 requested_actions: None,
             },
         },
+    }
+}
+
+pub fn lower_std_flow_signature(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    flow: &etas_std::FlowDecl,
+    scope: Option<&[String]>,
+) -> CallableSignature {
+    CallableSignature {
+        generic_params: lower_std_generic_params(ctx, registry, &flow.type_params),
+        params: flow
+            .params
+            .iter()
+            .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+            .collect(),
+        output: lower_std_type_with_scope(ctx, registry, &flow.output, scope),
+        effects: Some(std_effect_row_with_scope(
+            ctx,
+            registry,
+            &flow.public_effects,
+            scope,
+        )),
+        requested_actions: Some(std_effect_row_with_scope(
+            ctx,
+            registry,
+            &flow.requested_actions,
+            scope,
+        )),
     }
 }
 
@@ -369,9 +378,7 @@ fn lower_std_type_decl_with_name(
         ctx,
         registry,
         qualified_name.unwrap_or(&decl.name),
-        &decl.params,
-        decl.kind,
-        decl.representation.as_ref(),
+        decl,
         scope.as_deref(),
     )
 }
@@ -660,14 +667,18 @@ fn lower_std_type_constructor(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
     name: &str,
-    params: &[etas_std::StdGenericParam],
-    kind: TypeDeclKind,
-    representation: Option<&StdType>,
+    declaration: &etas_std::TypeDecl,
     scope: Option<&[String]>,
 ) -> TypeId {
-    let ty = if let Some(representation) = representation {
+    let params = &declaration.params;
+    let kind = declaration.kind;
+    let read_only_erased_view = declaration
+        .code_role
+        .is_some_and(etas_std::CodeTypeRole::has_read_only_erased_view);
+    let ty = if let Some(representation) = &declaration.representation {
         let representation = lower_std_type_with_scope(ctx, registry, representation, scope);
         ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view,
             name: name.to_owned(),
             params: params.iter().map(|param| param.name.clone()).collect(),
             representation: Some(representation),
@@ -681,14 +692,15 @@ fn lower_std_type_constructor(
                 lower_std_enum_layout(ctx, registry, ty, name, params, scope);
                 ty
             }
-            TypeDeclKind::Struct | TypeDeclKind::Wrapper => {
+            TypeDeclKind::Struct | TypeDeclKind::Wrapper | TypeDeclKind::Support => {
                 ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                    read_only_erased_view,
                     name: name.to_owned(),
                     params: params.iter().map(|param| param.name.clone()).collect(),
                     representation: None,
                 }))
             }
-            TypeDeclKind::Primitive | TypeDeclKind::Support | TypeDeclKind::Spec => {
+            TypeDeclKind::Primitive | TypeDeclKind::Spec => {
                 ctx.interner.intern(Type::Named(NamedTypeRef {
                     source_parameter: None,
                     name: name.to_owned(),

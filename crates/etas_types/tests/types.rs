@@ -2398,10 +2398,10 @@ flow main(
         .filter_map(|(_, ty)| match ty {
             Type::Applied { constructor, args } => {
                 let constructor = output.store.get(TypeId(constructor.0))?;
-                let Type::Named(named) = constructor else {
+                let Type::Nominal(nominal) = constructor else {
                     return None;
                 };
-                Some((named.name.as_str(), args.len()))
+                Some((nominal.name.as_str(), args.len()))
             }
             _ => None,
         })
@@ -3232,7 +3232,7 @@ flow main() -> SandboxProfile {
     };
     assert!(matches!(
         output.store.get(*ty),
-        Some(Type::Named(named)) if named.name == "std.host.sandbox.SandboxProfile"
+        Some(Type::Nominal(nominal)) if nominal.name == "std.host.sandbox.SandboxProfile"
     ));
 }
 
@@ -4214,6 +4214,58 @@ flow main() -> unit {
 }
 
 #[test]
+fn check_program_records_applied_trace_selector_type_facts() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+type Root;
+effect Gate { action read<R>() -> unit; }
+spec Safe: trace = +Gate.read<Array<Root>>;
+flow Inline() -> unit ~ (+Gate.read<Array<Root>>) { return; }
+"#,
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut selectors = Vec::new();
+    for (_, item) in hir.items.iter() {
+        let expressions = match item {
+            etas_hir::HirItem::Spec(spec) => spec.trace.iter().collect::<Vec<_>>(),
+            etas_hir::HirItem::Flow(flow) => flow
+                .conformances
+                .iter()
+                .filter_map(|conformance| match &conformance.target {
+                    etas_hir::HirDeclarationConformanceTarget::InlineTraceSpec(expr) => Some(expr),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        for expression in expressions {
+            if let etas_hir::HirSpecExpr::Allow { pattern, .. } = expression {
+                selectors.extend(pattern.args.iter().filter_map(|arg| match arg {
+                    etas_hir::HirEffectArg::Type(ty) => Some(*ty),
+                    _ => None,
+                }));
+            }
+        }
+    }
+    assert_eq!(selectors.len(), 2);
+    for selector in selectors {
+        let ty = output
+            .facts
+            .type_refs
+            .get(&selector)
+            .expect("checked selector type");
+        assert!(matches!(
+            output.store.get(*ty),
+            Some(etas_types::Type::Array(_))
+        ));
+    }
+}
+
+#[test]
 fn check_program_records_trace_spec_conformance_facts() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -4510,6 +4562,33 @@ flow encode_prompt(prompt: Prompt) -> string {
     let hir = lower_program(&parsed.value);
     let output = check_program(&hir);
 
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn check_program_instantiates_parameterized_spec_method_selection() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+spec Identity<T> {
+  flow id(input: T) -> T;
+}
+
+type Token = i32;
+
+impl Token ~ Identity<Token> {
+  flow id(input: Token) -> Token { return input; }
+}
+
+flow apply(input: Token) -> Token {
+  return input::Identity<Token>.id();
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }
 
@@ -5078,6 +5157,11 @@ flow main() -> unit ![Console.stdout_write] {
         vec![etas_types::DeferredEffectRowObligation {
             param: "E".to_owned(),
             source: lambda,
+            fixed: etas_types::EffectRowRef {
+                effects: vec![],
+                tail: None
+            },
+            concrete: vec![],
         }]
     );
 }
@@ -5144,6 +5228,11 @@ flow main() -> unit ![Console.stdout_write] {
             .map(|source| etas_types::DeferredEffectRowObligation {
                 param: "E".to_owned(),
                 source,
+                fixed: etas_types::EffectRowRef {
+                    effects: vec![],
+                    tail: None
+                },
+                concrete: vec![],
             })
             .collect::<Vec<_>>()
     );

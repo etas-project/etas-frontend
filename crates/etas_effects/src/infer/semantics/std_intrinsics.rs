@@ -75,6 +75,13 @@ impl EffectSemantics<'_> {
             }
             match self.external_call_summary_for_path(path, &site, &mut state) {
                 Ok(Some(summary)) => {
+                    if summary.exits.is_some() {
+                        state
+                            .exits
+                            .gaps
+                            .remove(&crate::OutcomeAnalysisGap::ExternalCall(site.call));
+                        self.note_call_outcomes(site.call, None, &summary, &mut state);
+                    }
                     state.summary.seq_assign(&summary);
                     return state;
                 }
@@ -184,7 +191,7 @@ impl EffectSemantics<'_> {
         span: Span,
         mut state: EffectState,
     ) -> EffectState {
-        if let Some(fact) = self.types.facts.std_method_calls.get(&expr) {
+        if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr) {
             if self.method_receiver_type_missing(expr) {
                 return self.reject_effect_state(
                     span,
@@ -585,7 +592,7 @@ impl EffectSemantics<'_> {
         Some((module_path.to_vec(), name.clone()))
     }
 
-    fn std_qualified_path_for_expr(&self, expr: HirExprId) -> Option<Vec<String>> {
+    pub(super) fn std_qualified_path_for_expr(&self, expr: HirExprId) -> Option<Vec<String>> {
         let HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
             return None;
         };
@@ -732,15 +739,40 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<crate::EffectSummary> {
         let symbol = self.callee_symbol(callee)?;
-        let symbol_data = self.hir.symbols.get(symbol)?;
-        let SymbolDef::ImportAlias { path, .. } = &symbol_data.def else {
-            return None;
-        };
+        let path = self
+            .types
+            .facts
+            .std_intrinsic_calls
+            .get(&call)
+            .map(|fact| fact.qualified_path.clone())
+            .or_else(|| self.std_qualified_path_for_expr(callee))?;
         let decl = self
             .std_registry
             .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())?;
-        let StdDecl::Flow(flow) = &decl.decl else {
+        let StdDecl::Flow(_) = &decl.decl else {
             return None;
+        };
+        let selected = self.types.facts.std_intrinsic_calls.get(&call);
+        if selected.is_none() && self.std_registry.flow_declarations(decl.id).count() > 1 {
+            return Some(
+                self.reject_effect_state(
+                    span,
+                    "overloaded standard call is missing its checked signature selection",
+                    EffectState::default(),
+                )
+                .summary,
+            );
+        }
+        let overload = selected.map_or(0, |fact| fact.overload);
+        let Some(flow) = self.std_registry.flow_declarations(decl.id).nth(overload) else {
+            return Some(
+                self.reject_effect_state(
+                    span,
+                    "checked standard call names an absent overload",
+                    EffectState::default(),
+                )
+                .summary,
+            );
         };
         let mut summary = match decl
             .intrinsic
@@ -874,10 +906,7 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> crate::EffectSummary {
         let mut summary = crate::EffectSummary::local();
-        let Some(SymbolTypeFact::Flow { signature }) =
-            self.type_symbols
-                .symbol_fact(self.hir, &self.types.facts, symbol)
-        else {
+        let Some(signature) = self.checked_std_flow_signature(call, symbol) else {
             self.diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
                 span,
@@ -954,10 +983,7 @@ impl EffectSemantics<'_> {
             tag: action.owner,
             action: action.id,
         };
-        let Some(SymbolTypeFact::Flow { signature }) =
-            self.type_symbols
-                .symbol_fact(self.hir, &self.types.facts, symbol)
-        else {
+        let Some(signature) = self.checked_std_flow_signature(call, symbol) else {
             self.diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
                 span,
@@ -1063,6 +1089,23 @@ impl EffectSemantics<'_> {
         summary
     }
 
+    fn checked_std_flow_signature(
+        &self,
+        call: HirExprId,
+        symbol: etas_hir::SymbolId,
+    ) -> Option<etas_types::CallableSignature> {
+        if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&call) {
+            return Some(fact.signature.clone());
+        }
+        match self
+            .type_symbols
+            .symbol_fact(self.hir, &self.types.facts, symbol)?
+        {
+            SymbolTypeFact::Flow { signature } => Some(signature.clone()),
+            _ => None,
+        }
+    }
+
     fn specialize_std_effect_row(
         &mut self,
         call: HirExprId,
@@ -1153,29 +1196,6 @@ impl EffectSemantics<'_> {
             }
         }
         Some(specialized)
-    }
-
-    pub(crate) fn action_effect_with_omitted_selector(&self, action: ActionRef) -> Effect {
-        let Some(signature) = self.registry.action_signature(&action) else {
-            return Effect::Action(action);
-        };
-        if signature.effect_args.is_empty() {
-            return Effect::Action(action);
-        }
-        let args = signature
-            .effect_args
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                signature
-                    .selector_defaults
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .cloned()
-                    .unwrap_or(etas_types::EffectArgRef::Wildcard)
-            })
-            .collect();
-        Effect::AppliedAction(ActionInstanceRef { action, args })
     }
 
     pub(crate) fn type_id_for_external_effect_path(&self, path: &[String]) -> Option<TypeId> {
@@ -1316,6 +1336,7 @@ mod tests {
         }));
         let concrete_arg = interner.primitive(PrimitiveType::I32);
         let wrapper = interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Wrapper".to_owned(),
             params: vec!["T".to_owned()],
             representation: None,

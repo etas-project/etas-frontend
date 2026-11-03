@@ -73,6 +73,10 @@ impl EffectSet {
         self.effects.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.effects.len()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Effect> {
         self.effects.iter()
     }

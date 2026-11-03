@@ -36,6 +36,23 @@ fn summary_solver_discards_interrupted_scc_updates() {
     assert_eq!(checks.get(), 7);
 }
 
+#[test]
+fn summary_adapter_forwards_loop_nonconvergence_with_its_body_identity() {
+    let mut semantics = TraceInterproceduralSemantics::new(HirProgram::default());
+    let summaries = super::SummaryStore::<Unit, EventDomain>::default();
+    let mut diagnostics = Vec::new();
+    let body = HirBlockId(7);
+    let mut adapter = super::adapter::SummaryApplicationAdapter::new(
+        &mut semantics,
+        Unit(0),
+        &summaries,
+        &mut diagnostics,
+    );
+    let state = adapter.loop_fixpoint_incomplete(body, EventDomain::default());
+    assert!(state.incomplete);
+    assert_eq!(semantics.incomplete_loops, vec![body]);
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct EventDomain {
     events: BTreeSet<&'static str>,
@@ -81,6 +98,8 @@ struct TraceInterproceduralSemantics {
     call_targets: BTreeMap<HirExprId, CallTarget<Unit>>,
     observed_exprs: Vec<HirExprId>,
     cancel_at_expr: Option<(HirExprId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    handle_start_event: Option<&'static str>,
+    incomplete_loops: Vec<HirBlockId>,
 }
 
 impl TraceInterproceduralSemantics {
@@ -92,6 +111,8 @@ impl TraceInterproceduralSemantics {
             call_targets: BTreeMap::new(),
             observed_exprs: Vec::new(),
             cancel_at_expr: None,
+            handle_start_event: None,
+            incomplete_loops: Vec::new(),
         }
     }
 
@@ -134,6 +155,11 @@ impl HirAnalysisSemantics for TraceInterproceduralSemantics {
     }
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain {
+        state.with_incomplete()
+    }
+
+    fn loop_fixpoint_incomplete(&mut self, body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        self.incomplete_loops.push(body);
         state.with_incomplete()
     }
 
@@ -215,6 +241,13 @@ impl HirAnalysisSemantics for TraceInterproceduralSemantics {
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
         AnalysisStep::handled(state)
+    }
+
+    fn begin_handle_body(&mut self, _: HirExprId, state: Self::Domain) -> Self::Domain {
+        match self.handle_start_event {
+            Some(event) => state.with_event(event),
+            None => state,
+        }
     }
 
     fn lambda_boundary(
@@ -456,6 +489,32 @@ fn solves_known_call_by_applying_callee_summary() {
     let caller = result.summaries.get(Unit(0)).expect("caller summary");
     assert!(caller.events.contains("callee-body"));
     assert!(!caller.incomplete);
+}
+
+#[test]
+fn summary_application_forwards_the_handled_body_entry_hook() {
+    let mut builder = HirBuilder::default();
+    let body = builder.literal();
+    let handler = builder.literal();
+    let handled = builder.expr(HirExpr::Handle {
+        body,
+        handler,
+        span: span(),
+    });
+    let root = builder.block(Vec::new(), Some(handled));
+    let mut semantics =
+        TraceInterproceduralSemantics::new(builder.finish_with_roots([root])).body(Unit(0), root);
+    semantics.handle_start_event = Some("begin-handled-body");
+    let result = InterproceduralAnalysis::new([Unit(0)], semantics).solve();
+    assert!(result.diagnostics.is_empty());
+    assert!(
+        result
+            .summaries
+            .get(Unit(0))
+            .unwrap()
+            .events
+            .contains("begin-handled-body")
+    );
 }
 
 #[test]

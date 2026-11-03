@@ -42,6 +42,11 @@ pub enum EffectConvergenceStatus {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectMaterializationInputs {
+    #[serde(default)]
+    pub external_descriptor_graphs: BTreeMap<
+        etas_code::CodeFingerprint,
+        std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
+    >,
     pub method_evidence:
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
@@ -55,6 +60,7 @@ pub struct EffectMaterializationInputs {
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataCallableGraphFact>>,
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    pub metadata_call_targets: HashMap<HirExprId, BTreeSet<crate::MetadataCallableSource>>,
     pub generic_effect_rows: HashMap<HirExprId, Vec<(String, EffectRow)>>,
     pub callable_environments: BTreeMap<super::CallableEnvironmentId, super::CallableEnvironment>,
     pub handler_action_effects: HashMap<HirHandlerArmId, crate::Effect>,
@@ -76,6 +82,11 @@ pub struct EffectMaterializationInputs {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectFacts {
+    #[serde(default)]
+    pub external_descriptor_graphs: BTreeMap<
+        etas_code::CodeFingerprint,
+        std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
+    >,
     pub method_evidence:
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
@@ -89,6 +100,7 @@ pub struct EffectFacts {
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataCallableGraphFact>>,
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    pub metadata_call_targets: HashMap<HirExprId, BTreeSet<crate::MetadataCallableSource>>,
     pub generic_effect_rows: HashMap<HirExprId, Vec<(String, EffectRow)>>,
     pub callable_environments: BTreeMap<super::CallableEnvironmentId, super::CallableEnvironment>,
     pub inferred_parameter_effects: HashMap<SymbolId, EffectSummary>,
@@ -111,6 +123,132 @@ pub struct EffectFacts {
     pub interpreter_support: InterpreterSupportFacts,
 }
 
+impl EffectFacts {
+    /// Resolve only a scope in a graph carried by the checked effect output.
+    pub fn external_handler_scope(
+        &self,
+        reference: crate::ParameterHandlerScopeRef,
+    ) -> Option<(
+        &etas_code::descriptor::DescriptorGraphInput,
+        &etas_code::descriptor::ParameterHandlerScopeInfo,
+    )> {
+        use etas_code::descriptor::{CallableOutcomeInfo, TraceInfo};
+        let crate::ParameterHandlerScopeRef::External {
+            graph,
+            parameter_call,
+            call_index,
+            scope,
+        } = reference
+        else {
+            return None;
+        };
+        let graph = self.external_descriptor_graphs.get(&graph)?;
+        let trace = graph.traces.get(parameter_call as usize)?;
+        let call = match trace {
+            TraceInfo::ParameterCall(call)
+            | TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturn(call))
+            | TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturnTemplate(call))
+                if call_index == 0 =>
+            {
+                call
+            }
+            TraceInfo::Widened {
+                parameter_calls, ..
+            } => parameter_calls.get(call_index as usize)?,
+            _ => return None,
+        };
+        Some((graph.as_ref(), call.handlers.as_ref()?.get(scope as usize)?))
+    }
+}
+
+#[cfg(test)]
+mod external_scope_tests {
+    use super::*;
+    use etas_code::descriptor::{
+        DescriptorGraphInput, EffectRowInfo, EffectRowInfoRef, ParameterCallInfo,
+        ParameterHandlerScopeInfo, ParameterInfo, PrimitiveInfo, SignatureInfo, TraceInfo,
+        TypeInfo, TypeInfoRef,
+    };
+    use etas_code::{CallableId, CodeFingerprint, DefinitionKey, DefinitionKind, PackageKey};
+
+    #[test]
+    fn widened_scope_lookup_distinguishes_parameter_calls_and_graphs() {
+        let key = CodeFingerprint::from_bytes([3; 32]);
+        let callable = CallableId::declaration(
+            DefinitionKey::new(
+                PackageKey::from_canonical_fingerprint(key),
+                vec!["lib".into()],
+                vec!["f".into()],
+                DefinitionKind::Flow,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let call = |handlers| ParameterCallInfo {
+            callable: callable.clone(),
+            signature: TypeInfoRef(1),
+            position: 0,
+            arguments: None,
+            handlers,
+        };
+        let graph = DescriptorGraphInput {
+            types: vec![
+                TypeInfo::Primitive(PrimitiveInfo::Unit),
+                TypeInfo::Function(SignatureInfo {
+                    generics: vec![],
+                    parameters: vec![ParameterInfo {
+                        name: Some("callback".into()),
+                        ty: TypeInfoRef(2),
+                    }],
+                    output: TypeInfoRef(0),
+                    declared_output: None,
+                    effects: None,
+                }),
+                TypeInfo::Function(SignatureInfo {
+                    generics: vec![],
+                    parameters: vec![],
+                    output: TypeInfoRef(0),
+                    declared_output: None,
+                    effects: None,
+                }),
+            ],
+            rows: vec![EffectRowInfo {
+                effects: vec![],
+                tail: None,
+            }],
+            binders: vec![],
+            traces: vec![TraceInfo::Widened {
+                actions: EffectRowInfoRef(0),
+                parameter_calls: vec![
+                    call(None),
+                    call(Some(vec![ParameterHandlerScopeInfo::Handle {
+                        arms: vec![],
+                    }])),
+                ],
+            }],
+        };
+        graph.validate(Default::default()).unwrap();
+        let mut facts = EffectFacts::default();
+        facts
+            .external_descriptor_graphs
+            .insert(key, std::sync::Arc::new(graph));
+        let reference = |graph, call_index, scope| crate::ParameterHandlerScopeRef::External {
+            graph,
+            parameter_call: 0,
+            call_index,
+            scope,
+        };
+        assert!(facts.external_handler_scope(reference(key, 1, 0)).is_some());
+        assert!(facts.external_handler_scope(reference(key, 0, 0)).is_none());
+        assert!(facts.external_handler_scope(reference(key, 1, 1)).is_none());
+        assert!(
+            facts
+                .external_handler_scope(reference(CodeFingerprint::from_bytes([4; 32]), 1, 0))
+                .is_none()
+        );
+    }
+}
+
 #[derive(
     Clone,
     Debug,
@@ -122,9 +260,97 @@ pub struct EffectFacts {
     etas_core::RetainedSize,
 )]
 pub struct TraceSpecFacts {
+    /// Source sites validated during this effect analysis. Consumers must
+    /// revalidate them against the retained source snapshot before use.
+    #[serde(
+        serialize_with = "serialize_clause_sites",
+        deserialize_with = "deserialize_clause_sites"
+    )]
+    pub source_clause_sites: BTreeMap<
+        etas_code::residual::identity::ClauseId,
+        etas_code::residual::identity::SourceClauseSite,
+    >,
+    /// Declaration-level OR alternatives; each inner vector is one conjunction.
+    pub declaration_alternatives:
+        HashMap<HirItemId, crate::trace_spec::TraceSpecClauseAlternatives>,
     pub items: HashMap<HirItemId, Vec<TraceSpecClauseFact>>,
     pub symbols: HashMap<SymbolId, Vec<TraceSpecClauseFact>>,
     pub conformances: HashMap<HirItemId, Vec<TraceSpecConformanceModelFact>>,
+}
+
+fn serialize_clause_sites<S>(
+    sites: &BTreeMap<
+        etas_code::residual::identity::ClauseId,
+        etas_code::residual::identity::SourceClauseSite,
+    >,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::{Error, SerializeSeq};
+    if sites.len() > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
+        return Err(S::Error::custom("trace clause site limit exceeded"));
+    }
+    let mut sequence = serializer.serialize_seq(Some(sites.len()))?;
+    for (id, site) in sites {
+        if *id != site.id() {
+            return Err(S::Error::custom(
+                "trace clause site key does not match its identity",
+            ));
+        }
+        sequence.serialize_element(site)?;
+    }
+    sequence.end()
+}
+
+fn deserialize_clause_sites<'de, D>(
+    deserializer: D,
+) -> Result<
+    BTreeMap<
+        etas_code::residual::identity::ClauseId,
+        etas_code::residual::identity::SourceClauseSite,
+    >,
+    D::Error,
+>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Sites;
+    impl<'de> serde::de::Visitor<'de> for Sites {
+        type Value = BTreeMap<
+            etas_code::residual::identity::ClauseId,
+            etas_code::residual::identity::SourceClauseSite,
+        >;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded sequence of unique trace clause sites")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            use serde::de::Error;
+            let limit = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
+            if sequence.size_hint().is_some_and(|size| size > limit) {
+                return Err(A::Error::custom("trace clause site limit exceeded"));
+            }
+            let mut sites = BTreeMap::new();
+            while let Some(site) =
+                sequence.next_element::<etas_code::residual::identity::SourceClauseSite>()?
+            {
+                if sites.len() >= limit {
+                    return Err(A::Error::custom("trace clause site limit exceeded"));
+                }
+                if sites.insert(site.id(), site).is_some() {
+                    return Err(A::Error::custom("duplicate trace clause site identity"));
+                }
+            }
+            Ok(sites)
+        }
+    }
+    deserializer.deserialize_seq(Sites)
 }
 
 /// A checked conformance's alternatives, before the legacy display projection
@@ -134,6 +360,10 @@ pub struct TraceSpecFacts {
 )]
 pub struct TraceSpecConformanceModelFact {
     pub span: Span,
+    /// Present only when the declaration and all static source bindings have
+    /// stable identities. This is not a verified residual plan.
+    #[serde(default)]
+    pub source_spec_instance: Option<etas_code::residual::identity::SourceSpecInstance>,
     pub alternatives: crate::trace_spec::TraceSpecClauseAlternatives,
 }
 
@@ -338,6 +568,7 @@ pub struct HandlerValueFact {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct HandlerArmFact {
+    pub unit: EffectUnit,
     pub action: HandlerActionFact,
     pub resumable: bool,
     pub resumes: ResumeSummary,
@@ -391,6 +622,9 @@ pub struct HandleApplicationFact {
     pub handled: EffectRow,
     pub produced: EffectRow,
     pub remaining: EffectRow,
+    /// Applied arm traces at their request positions, or an explicit widened
+    /// approximation. None means the handler's latent trace is unavailable.
+    pub action_trace: Option<crate::ActionTraceDomain>,
 }
 
 #[derive(

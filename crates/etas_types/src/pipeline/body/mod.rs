@@ -28,6 +28,7 @@ pub mod collect {
     pub mod stmt;
 }
 
+pub(crate) mod instantiation;
 pub mod materialize;
 pub mod output_inference;
 pub mod solve;
@@ -61,6 +62,15 @@ fn run_with_checkpoint<E>(
 ) -> Result<(), E> {
     checkpoint()?;
     let mut state = BodyPipelineState::new(item);
+    if let Some(parameters) = &ctx.body_parameters {
+        state
+            .spec_obligations
+            .extend(parameters.obligations.clone());
+        state
+            .provisional
+            .symbol_types
+            .extend(parameters.symbol_types.clone());
+    }
     collect_body_item(ctx, &mut state, checkpoint)?;
     let (obligations, validations) = crate::lower::type_application::take_obligations(ctx);
     state.spec_obligations.extend(obligations);

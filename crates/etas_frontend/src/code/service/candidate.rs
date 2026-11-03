@@ -13,10 +13,15 @@ pub struct CheckedCandidate {
     pub(crate) descriptors: Arc<crate::code::definition::DefinitionCatalog>,
     pub(crate) descriptor_limits: etas_code::descriptor::DescriptorLimits,
     pub(crate) program: CheckedProgram,
+    pub(crate) frozen_application_program: CheckedProgram,
     pub(crate) frozen: Arc<FrozenDefinitionEnvironment>,
     pub(crate) revision: RevisionInfo,
     pub(crate) snapshot: CodeFingerprint,
     pub(crate) entry: HirItemId,
+    pub(crate) external_restoration:
+        Option<Arc<crate::code::definition::ExternalRestorationReceipt>>,
+    /// The candidate's residual plans bound to its frozen-contract revision.
+    pub(crate) residual_binding: Option<crate::residual::CheckedResidualBinding>,
 }
 
 pub(crate) enum CandidateEmission {
@@ -25,8 +30,25 @@ pub(crate) enum CandidateEmission {
 }
 
 impl CheckedCandidate {
+    pub fn matches_external_definition(
+        &self,
+        store: &crate::code::definition::NativeDefinitionStore,
+        definition: &etas_code::definition::DefinitionRef,
+    ) -> bool {
+        self.external_restoration.as_ref().is_some_and(|receipt| {
+            store.matches_external_restoration(definition, receipt, &self.frozen)
+        })
+    }
     pub fn program(&self) -> &CheckedProgram {
         &self.program
+    }
+    /// Binding of the program's residual plans to this candidate's revision;
+    /// `None` exactly when the program requires no residual plans.
+    pub fn residual_binding(&self) -> Option<&crate::residual::CheckedResidualBinding> {
+        self.residual_binding.as_ref()
+    }
+    pub(crate) fn frozen_application_program(&self) -> &CheckedProgram {
+        &self.frozen_application_program
     }
     pub fn frozen(&self) -> &Arc<FrozenDefinitionEnvironment> {
         &self.frozen

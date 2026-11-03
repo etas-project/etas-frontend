@@ -18,7 +18,13 @@ pub(crate) fn remap_body_delta(
     if !base.accepts(output) {
         return Err("body type delta belongs to a different signature type base".to_owned());
     }
-    let source = TypeStore::with_local_types(base.types.clone(), output.types.clone());
+    let source = TypeStore::with_local_parts(
+        base.types.clone(),
+        output.types.clone(),
+        output.nominal_identities.clone(),
+        output.parameter_identities.clone(),
+    )
+    .map_err(str::to_owned)?;
     let mut remapper = TypeIdRemapper::new(&source, target);
     remapper.base_len = output.base_len;
     for index in 0..output.types.len() {
@@ -81,8 +87,64 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
             self.error = Some(format!("body type delta references missing type {}", ty.0));
             return ty;
         };
+        let identity = self
+            .source
+            .and_then(|source| source.nominal_identity(ty))
+            .cloned();
+        if let Some(parameter) = self
+            .source
+            .and_then(|source| source.parameter_identity(ty))
+            .cloned()
+        {
+            let Type::Named(name) = source_ty else {
+                self.error = Some("canonical parameter has invalid type".into());
+                return ty;
+            };
+            return match self.target.intern_canonical_parameter(parameter, name.name) {
+                Ok(mapped) => {
+                    self.ids.insert(ty, mapped);
+                    mapped
+                }
+                Err(error) => {
+                    self.error = Some(error.into());
+                    ty
+                }
+            };
+        }
         if let Type::Nominal(mut nominal) = source_ty.clone() {
-            if let Some((id, _)) = self.target.store().iter().find(|(_, data)| matches!(data, Type::Nominal(existing) if existing.name == nominal.name)) {
+            if let Some(identity) = identity {
+                let representation = nominal.representation.take();
+                let existing = self.target.canonical_nominal(&identity);
+                let mapped = match existing {
+                    Some(id) => id,
+                    None => match self
+                        .target
+                        .intern_canonical_nominal(identity, Type::Nominal(nominal.clone()))
+                    {
+                        Ok(id) => id,
+                        Err(error) => {
+                            self.error = Some(error.to_owned());
+                            return ty;
+                        }
+                    },
+                };
+                self.ids.insert(ty, mapped);
+                nominal.representation =
+                    representation.map(|representation| self.ty(representation));
+                if existing.is_some() {
+                    if self.target.store().get(mapped) != Some(&Type::Nominal(nominal)) {
+                        self.error =
+                            Some("canonical nominal identity has conflicting layouts".into());
+                    }
+                } else {
+                    self.target.define_nominal(mapped, nominal.representation);
+                }
+                return mapped;
+            }
+            if let Some((id, _)) = self.target.store().iter().find(|(id, data)| {
+                self.target.store().nominal_identity(*id).is_none()
+                    && matches!(data, Type::Nominal(existing) if existing.name == nominal.name)
+            }) {
                 self.ids.insert(ty, id);
                 return id;
             }
@@ -94,7 +156,17 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
             return mapped;
         }
         let mapped_ty = self.type_data(source_ty);
-        let mapped = self.target.intern(mapped_ty);
+        let mapped = if let Some(identity) = identity {
+            match self.target.intern_canonical_nominal(identity, mapped_ty) {
+                Ok(id) => id,
+                Err(error) => {
+                    self.error = Some(error.to_owned());
+                    return ty;
+                }
+            }
+        } else {
+            self.target.intern(mapped_ty)
+        };
         self.ids.insert(ty, mapped);
         mapped
     }
@@ -191,9 +263,16 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
                     args: args.into_iter().map(|ty| self.ty(ty)).collect(),
                 })
             }
+            // Body-local inference identities must not alias another body's pending proof.
+            Type::Var(variable) => match u32::try_from(self.target.store().len()) {
+                Ok(index) => Type::Var(crate::TypeVarId(index)),
+                Err(_) => {
+                    self.error = Some("merged type variable identity space is exhausted".into());
+                    Type::Var(variable)
+                }
+            },
             Type::Primitive(_)
             | Type::IntegerLiteral { .. }
-            | Type::Var(_)
             | Type::Enum(_)
             | Type::Named(_)
             | Type::Prompt
@@ -484,6 +563,9 @@ pub(crate) fn project_signature_facts(
 }
 
 fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '_>) {
+    for (_, target) in facts.external_type_aliases.values_mut() {
+        *target = remapper.ty(*target);
+    }
     for method in facts.type_impl_methods.values_mut() {
         method.self_type = remapper.ty(method.self_type);
     }
@@ -505,8 +587,15 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .into_iter()
         .map(|(ty, identity)| (remapper.ty(ty), identity))
         .collect();
-    for method in facts.std_method_calls.values_mut() {
-        method.signature = remapper.ty(method.signature);
+    for method in facts.std_intrinsic_calls.values_mut() {
+        method.callable_type = remapper.ty(method.callable_type);
+        remapper.callable(&mut method.signature);
+    }
+    for fact in facts.definition_operations.values_mut() {
+        fact.contract_type = remapper.ty(fact.contract_type);
+    }
+    for fact in facts.action_calls.values_mut() {
+        remapper.callable(&mut fact.signature);
     }
     for method in facts.agent_methods.values_mut() {
         method.component = remapper.ty(method.component);
@@ -523,6 +612,24 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     for fact in facts.deferred_handler_instantiations.values_mut() {
+        if let Some(overload) = &mut fact.overload {
+            for ty in overload
+                .params
+                .iter_mut()
+                .chain(std::iter::once(&mut overload.output))
+            {
+                *ty = remapper.ty(*ty);
+            }
+            for signature in &mut overload.candidates {
+                for ty in signature
+                    .params
+                    .iter_mut()
+                    .chain(std::iter::once(&mut signature.output))
+                {
+                    *ty = remapper.ty(*ty);
+                }
+            }
+        }
         for parameter in &mut fact.parameters {
             parameter.candidate = remapper.ty(parameter.candidate);
             parameter.rigid = remapper.ty(parameter.rigid);
@@ -547,6 +654,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             }
             crate::CheckedReflectionTarget::Callable { .. }
             | crate::CheckedReflectionTarget::ExternalCallable { .. } => {}
+            crate::CheckedReflectionTarget::CallableValue { signature, .. } => {
+                *signature = remapper.ty(*signature);
+            }
         }
     }
     facts.agent_components = std::mem::take(&mut facts.agent_components)
@@ -584,6 +694,13 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         for (_, row) in &mut fact.effect_row_bindings {
             *row = remapper.effect_row(row.clone());
         }
+        for obligation in &mut fact.deferred_effect_row_obligations {
+            obligation.fixed = remapper.effect_row(obligation.fixed.clone());
+            for equation in &mut obligation.concrete {
+                equation.fixed = remapper.effect_row(equation.fixed.clone());
+                equation.actual = remapper.effect_row(equation.actual.clone());
+            }
+        }
     }
     facts.known_std_types.file_read_limit_error = facts
         .known_std_types
@@ -600,6 +717,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     for ty in facts.known_std_types.runtime_values.values_mut() {
         *ty = remapper.ty(*ty);
     }
+    facts.known_std_types.json_value = facts.known_std_types.json_value.map(|ty| remapper.ty(ty));
     facts.known_std_types.priority_queue = facts
         .known_std_types
         .priority_queue
@@ -691,6 +809,14 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
                 remapper.callable(callable);
             }
         }
+        for param in &mut signature.generic_params {
+            param.subject = remapper.ty(param.subject);
+            for bound in &mut param.bounds {
+                for ty in &mut bound.args {
+                    *ty = remapper.ty(*ty);
+                }
+            }
+        }
         for bound in &mut signature.super_specs {
             for ty in &mut bound.args {
                 *ty = remapper.ty(*ty);
@@ -698,6 +824,24 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     for implementation in &mut facts.external_specs.impls {
+        implementation.self_type = remapper.ty(implementation.self_type);
+        for ty in &mut implementation.args {
+            *ty = remapper.ty(*ty);
+        }
+    }
+    for signature in facts.canonical_specs.signatures.values_mut() {
+        for bound in signature
+            .param_bounds
+            .iter_mut()
+            .flatten()
+            .chain(&mut signature.super_specs)
+        {
+            for ty in &mut bound.args {
+                *ty = remapper.ty(*ty);
+            }
+        }
+    }
+    for implementation in &mut facts.canonical_specs.impls {
         implementation.self_type = remapper.ty(implementation.self_type);
         for ty in &mut implementation.args {
             *ty = remapper.ty(*ty);
@@ -756,5 +900,173 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for fact in facts.try_facts.values_mut() {
         remapper.try_fact(fact);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{NominalTypeRef, PrimitiveType};
+    use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+
+    fn identity(package: &str) -> DefinitionKey {
+        DefinitionKey::new(
+            PackageKey::from_name_and_version(package, "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["Token".into()],
+            DefinitionKind::Type,
+        )
+        .unwrap()
+    }
+
+    fn nominal(representation: TypeId) -> Type {
+        Type::Nominal(NominalTypeRef {
+            name: "Token".into(),
+            params: Vec::new(),
+            representation: Some(representation),
+            read_only_erased_view: false,
+        })
+    }
+
+    #[test]
+    fn remap_external_spec_method_types_and_effect_arguments() {
+        use crate::facts::specs::{
+            ExternalSpecIdentity, ExternalSpecSignatureFact, SpecMethodFact, SpecMethodIdentity,
+        };
+        let mut source = TypeInterner::new();
+        let input = source.primitive(PrimitiveType::I32);
+        let output = source.primitive(PrimitiveType::String);
+        let source = source.into_store();
+        let identity = ExternalSpecIdentity {
+            package: 1,
+            path: vec!["dep".into(), "Show".into()],
+        };
+        let mut facts = crate::TypeFacts::default();
+        facts.external_specs.signatures.insert(
+            identity.clone(),
+            ExternalSpecSignatureFact {
+                kind: crate::SpecKind::TypeSpec,
+                param_names: vec![],
+                generic_params: vec![],
+                methods: vec![SpecMethodFact {
+                    receiver_param: None,
+                    identity: SpecMethodIdentity::External {
+                        package: 1,
+                        path: vec!["dep".into(), "Show".into(), "show".into()],
+                    },
+                    name: "show".into(),
+                    signature: Some(CallableSignature {
+                        generic_params: vec![],
+                        params: vec![input],
+                        output,
+                        effects: Some(EffectRowRef {
+                            effects: vec![EffectRef {
+                                name: "Error".into(),
+                                args: vec![EffectArgRef::Type(input)],
+                            }],
+                            tail: None,
+                        }),
+                        requested_actions: None,
+                    }),
+                }],
+                super_specs: vec![],
+            },
+        );
+        let mut target = TypeInterner::new();
+        target.primitive(PrimitiveType::Bool);
+        let mut remapper = TypeIdRemapper::new(&source, &mut target);
+        remap_facts(&mut facts, &mut remapper);
+        assert!(remapper.error.is_none());
+        let signature = facts.external_specs.signatures[&identity].methods[0]
+            .signature
+            .as_ref()
+            .unwrap();
+        assert_ne!(signature.params[0], input);
+        assert_eq!(
+            remapper.target.store().get(signature.params[0]),
+            Some(&Type::Primitive(PrimitiveType::I32))
+        );
+        assert_eq!(
+            remapper.target.store().get(signature.output),
+            Some(&Type::Primitive(PrimitiveType::String))
+        );
+        assert_eq!(
+            signature.effects.as_ref().unwrap().effects[0].args,
+            vec![EffectArgRef::Type(signature.params[0])]
+        );
+    }
+
+    #[test]
+    fn remap_uses_canonical_identity_and_rejects_conflicting_layout() {
+        let mut source = TypeInterner::new();
+        let boolean = source.primitive(PrimitiveType::Bool);
+        let original = source
+            .intern_canonical_nominal(identity("first"), nominal(boolean))
+            .unwrap();
+        let source = source.into_store();
+
+        let mut target = TypeInterner::new();
+        let int = target.primitive(PrimitiveType::I32);
+        let other = target
+            .intern_canonical_nominal(identity("second"), nominal(int))
+            .unwrap();
+        let mapped = {
+            let mut remapper = TypeIdRemapper::new(&source, &mut target);
+            let mapped = remapper.ty(original);
+            assert!(remapper.error.is_none());
+            mapped
+        };
+        assert_ne!(mapped, other);
+        assert_eq!(
+            target.store().nominal_identity(mapped),
+            Some(&identity("first"))
+        );
+
+        let mut conflicting = TypeInterner::new();
+        let int = conflicting.primitive(PrimitiveType::I32);
+        conflicting
+            .intern_canonical_nominal(identity("first"), nominal(int))
+            .unwrap();
+        let mut remapper = TypeIdRemapper::new(&source, &mut conflicting);
+        remapper.ty(original);
+        assert_eq!(
+            remapper.error.as_deref(),
+            Some("canonical nominal identity has conflicting layouts")
+        );
+    }
+
+    #[test]
+    fn remap_preserves_recursive_nominal_identity() {
+        let mut source = TypeInterner::new();
+        let mut declaration = match nominal(TypeId(0)) {
+            Type::Nominal(declaration) => declaration,
+            _ => unreachable!(),
+        };
+        declaration.representation = None;
+        let original = source
+            .intern_canonical_nominal(identity("recursive"), Type::Nominal(declaration))
+            .unwrap();
+        let representation = source.intern(Type::Record(crate::RecordType {
+            fields: vec![FieldType {
+                name: "next".into(),
+                ty: original,
+            }],
+        }));
+        source.define_nominal(original, Some(representation));
+        let source = source.into_store();
+        let mut target = TypeInterner::new();
+        let mut remapper = TypeIdRemapper::new(&source, &mut target);
+        let mapped = remapper.ty(original);
+        assert!(remapper.error.is_none());
+        let Some(Type::Nominal(declaration)) = remapper.target.store().get(mapped) else {
+            panic!("missing mapped nominal");
+        };
+        let Some(Type::Record(record)) = declaration
+            .representation
+            .and_then(|id| remapper.target.store().get(id))
+        else {
+            panic!("missing mapped representation");
+        };
+        assert_eq!(record.fields[0].ty, mapped);
     }
 }

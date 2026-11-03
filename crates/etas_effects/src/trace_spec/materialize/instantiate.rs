@@ -3,7 +3,7 @@ use crate::{Effect, EffectRow, TraceSpecClauseFact};
 use etas_types::{EffectArgRef, SpecSignature, TypeId, TypeStore};
 use std::collections::HashMap;
 
-pub(super) fn instantiate(
+pub(in crate::trace_spec) fn instantiate(
     alternatives: &mut TraceSpecClauseAlternatives,
     signature: &SpecSignature,
     args: &[TypeId],

@@ -23,6 +23,13 @@ pub(super) fn apply(
             .map(|spec| (spec.param_names.clone(), spec.methods.clone())),
         crate::CheckedSpecRef::Std(_) if methods.is_empty() => return true,
         crate::CheckedSpecRef::Std(_) => None,
+        crate::CheckedSpecRef::Canonical(identity) => ctx
+            .signature_facts
+            .canonical_specs
+            .signatures
+            .get(identity)
+            .filter(|_| methods.is_empty())
+            .map(|spec| (spec.param_names.clone(), Vec::new())),
     };
     let Some((parameters, declared)) = declaration else {
         incomplete_external_type_facts(

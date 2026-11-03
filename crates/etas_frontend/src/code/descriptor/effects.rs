@@ -82,6 +82,16 @@ impl DefinitionDescriptorProjector<'_> {
                             .symbol(symbol)
                             .ok_or(ProjectionError::MissingDeclaration(symbol))?
                             .clone(),
+                        CheckedSpecRef::Canonical(identity)
+                            if identity.kind() == etas_code::DefinitionKind::Spec =>
+                        {
+                            identity
+                        }
+                        CheckedSpecRef::Canonical(_) => {
+                            return Err(ProjectionError::Invalid(
+                                "canonical spec identity has the wrong kind".into(),
+                            ));
+                        }
                         CheckedSpecRef::Std(path)
                         | CheckedSpecRef::External(
                             etas_types::facts::specs::ExternalSpecIdentity { path, .. },

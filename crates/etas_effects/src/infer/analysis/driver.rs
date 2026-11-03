@@ -11,13 +11,24 @@ pub fn run_effect_analysis<'a>(
     control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
 ) -> Result<EffectAnalysisOutput, EffectPipelineError> {
     let mut output = None;
+    let analysis_units = std::sync::Arc::new(
+        units
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+    );
+    let argument_writes = std::sync::Arc::new(
+        crate::infer::semantics::argument_values::ArgumentWrites::build(input.hir, control)
+            .map_err(EffectPipelineError::Interrupted)?,
+    );
     let solved = etas_utils::FixpointEngine::default().try_solve(input, |input| {
         if let Some(control) = control {
             control
                 .checkpoint()
                 .map_err(EffectPipelineError::Interrupted)?;
         }
-        let mut semantics = EffectSemantics::from_input(input.clone());
+        let mut semantics = EffectSemantics::from_input(input.clone(), argument_writes.clone());
+        semantics.analysis_units = analysis_units.clone();
         semantics.query_control = control;
         let analysis = InterproceduralAnalysis::new(units.iter().copied(), semantics);
         let mut result = match control {

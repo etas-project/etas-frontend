@@ -49,8 +49,17 @@ impl EffectSemantics<'_> {
                 return Err(invalid());
             }
         }
+        let existing = arguments
+            .effect_rows
+            .iter()
+            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+            .collect();
         let solved = self
-            .solve_deferred_effect_row_obligations(&state, &arguments.deferred_effect_rows)?
+            .solve_deferred_effect_row_obligations(
+                &state,
+                &arguments.deferred_effect_rows,
+                &existing,
+            )?
             .into_iter()
             .collect::<Vec<_>>();
         let type_rows = self.type_row_arguments(&solved, Some(snapshot.owner))?;

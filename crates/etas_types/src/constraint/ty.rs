@@ -1,6 +1,6 @@
 use crate::{CallableGenericParam, ConstraintOrigin, EffectRowRef, TypeId};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub enum CallableGenericArg {
     Type(TypeId),
     EffectRow(EffectRowRef),
@@ -28,7 +28,27 @@ pub enum AssignabilityReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandlerActionCandidate {
+    pub signature: crate::EffectActionSignature,
+    pub parameters: Vec<(String, TypeId, TypeId)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeConstraint {
+    ControlResult {
+        output: TypeId,
+        candidates: Vec<TypeId>,
+        never: TypeId,
+        origin: ConstraintOrigin,
+    },
+    HandlerOverloadInstantiation {
+        candidates: Vec<HandlerActionCandidate>,
+        requests: Vec<etas_hir::HirExprId>,
+        params: Vec<TypeId>,
+        output: TypeId,
+        deferred: Option<(etas_hir::HirHandlerArmId, etas_hir::HirExprId)>,
+        origin: ConstraintOrigin,
+    },
     DiscardValue {
         value: TypeId,
         output: TypeId,
@@ -65,6 +85,7 @@ pub enum TypeConstraint {
         expr: etas_hir::HirExprId,
         access_module: Option<etas_hir::HirModuleId>,
         binding: super::reflection::ReflectionBinding,
+        callable_descriptor: Option<TypeId>,
         members: Vec<String>,
         output: TypeId,
         origin: ConstraintOrigin,
@@ -103,6 +124,17 @@ pub enum TypeConstraint {
         generic_params: Vec<CallableGenericParam>,
         expected: Option<TypeId>,
         lexical_effect_params: Vec<String>,
+        origin: ConstraintOrigin,
+    },
+    OverloadedCall {
+        expr: etas_hir::HirExprId,
+        callee: TypeId,
+        candidates: Vec<CallableCandidate>,
+        probes: Vec<TypeId>,
+        generic_args: Vec<CallableGenericArg>,
+        arg_exprs: Vec<Option<etas_hir::HirExprId>>,
+        args: Vec<TypeId>,
+        output: TypeId,
         origin: ConstraintOrigin,
     },
     MethodCall {
@@ -163,7 +195,7 @@ pub enum TypeConstraint {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallableCandidate {
     pub ty: TypeId,
-    pub generic_params: Vec<CallableGenericParam>,
+    pub signature: crate::CallableSignature,
     pub operation: CallableCandidateOperation,
 }
 
@@ -171,6 +203,11 @@ pub struct CallableCandidate {
 pub enum CallableCandidateOperation {
     #[default]
     Call,
+    EffectAction {
+        symbol: etas_hir::SymbolId,
+        target: etas_std::StdSymbolId,
+        overload: usize,
+    },
     AgentMethod {
         symbol: etas_hir::SymbolId,
         callable: TypeId,
@@ -181,6 +218,7 @@ pub enum CallableCandidateOperation {
     StdIntrinsic {
         qualified_path: Vec<String>,
         intrinsic: u32,
+        overload: usize,
         has_receiver: bool,
     },
 }

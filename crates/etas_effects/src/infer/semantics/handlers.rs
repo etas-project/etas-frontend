@@ -15,8 +15,42 @@ use super::engine::EffectSemantics;
 use super::state::EffectState;
 
 mod completion;
+mod result;
+mod resuming;
+
+fn handler_evaluation_is_inert(
+    entry: &EffectState,
+    handler: &EffectState,
+    expected: &EffectSummary,
+) -> bool {
+    !handler.incomplete && handler.exits == entry.exits && &handler.summary == expected
+}
 
 impl EffectSemantics<'_> {
+    fn handler_evaluation_is_inert(
+        &self,
+        expr: HirExprId,
+        entry: &EffectState,
+        handler: &EffectState,
+    ) -> bool {
+        if handler.incomplete || handler.exits != entry.exits {
+            return false;
+        }
+        let mut expected = entry.summary.clone();
+        if matches!(self.hir.exprs.get(expr), Some(HirExpr::Handler { .. })) {
+            let Some(fact) = self.inputs.handler_values.get(&expr) else {
+                return false;
+            };
+            for arm in &fact.arms {
+                let Some(summary) = self.inputs.unit_effects.get(&arm.unit) else {
+                    return false;
+                };
+                expected.merge_request_footprint_without_escaping_or_trace(summary);
+            }
+        }
+        handler_evaluation_is_inert(entry, handler, &expected)
+    }
+
     pub(crate) fn handle_parts(
         &mut self,
         expr: HirExprId,
@@ -36,45 +70,112 @@ impl EffectSemantics<'_> {
                     && parts.body.resume_state().is_none()
                     && parts.body.finish_state().is_none()
                     && parts.body.error_state().is_none();
-                let body_state = parts.body.into_joined_domain();
+                let body_normal = parts.body.normal_state().is_some();
+                let handler_only_normal = control.normal_state().is_some()
+                    && control.return_state().is_none()
+                    && control.break_state().is_none()
+                    && control.continue_state().is_none()
+                    && control.resume_state().is_none()
+                    && control.finish_state().is_none()
+                    && control.error_state().is_none();
+                let mut control = control;
+                let Some(mut handler_state) = control.take_normal_state() else {
+                    return control;
+                };
+                let mut body_state = parts.body.into_joined_domain();
                 if let Some(HirExpr::Handle { body, .. }) = self.hir.exprs.get(expr) {
                     self.inputs
                         .handled_body_requests
                         .insert(*body, body_state.summary.handler_requests.clone());
                 }
-                let mut handler_state = control.into_joined_domain();
                 if let Some(summary) = self.handler_value_item_summary(handler) {
                     handler_state
                         .summary
                         .merge_request_footprint_without_escaping_or_trace(&summary);
                 }
-                let Some((handled, produced)) = self.handler_rows_for_expr(handler, span) else {
-                    return Control::normal(body_state);
+                let rows = match self.handler_rows_for_expr(handler, span) {
+                    Ok(rows) => rows,
+                    Err(interruption) => {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        control.join_normal(handler_state);
+                        return control;
+                    }
+                };
+                let Some((handled, produced)) = rows else {
+                    let mut result = body_state;
+                    let mut summary = handler_state.summary;
+                    summary.seq_assign(&result.summary);
+                    result.summary = summary;
+                    result.exits.join_assign(&handler_state.exits);
+                    control.join_normal(self.incomplete_at(
+                        span,
+                        "handled expression requires checked handler rows",
+                        result,
+                    ));
+                    return control;
                 };
                 let coverage = EffectCoverage {
                     registry: self.registry,
                     types: &self.types.store,
                 };
-                let value_completion = only_normal
-                    && !handler_state.incomplete
-                    && self.checked_value_handler_completion(
-                        expr,
+                let definitely_handled = match self.definitely_handled_actions(handler) {
+                    Ok(row) => row,
+                    Err(interruption) => {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        control.join_normal(handler_state);
+                        return control;
+                    }
+                };
+                let inert_handler = handler_only_normal
+                    && self.handler_evaluation_is_inert(handler, &entry, &handler_state);
+                let resuming_completion = if only_normal && inert_handler {
+                    match self.checked_resuming_handler_completion(
                         handler,
-                        &entry,
-                        &body_state,
-                        (&handled, &produced),
-                    );
+                        &mut body_state,
+                        (&definitely_handled, &produced),
+                    ) {
+                        Ok(complete) => complete,
+                        Err(interruption) => {
+                            self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                            control.join_normal(handler_state);
+                            return control;
+                        }
+                    }
+                } else {
+                    false
+                };
+                let value_completion = resuming_completion
+                    || (only_normal
+                        && !handler_state.incomplete
+                        && self.checked_value_handler_completion(
+                            expr,
+                            handler,
+                            &entry,
+                            &body_state,
+                            (&handled, &produced),
+                        ));
                 let mut result = body_state;
+                if !value_completion {
+                    result.exits.handler_gaps.insert(crate::HandlerGapEvidence {
+                        source: span.into(),
+                        normal_control: only_normal && inert_handler && !result.incomplete,
+                        handled: handled.clone(),
+                        body_escaping: result.summary.escaping_effects.clone(),
+                    });
+                }
+                let mut remaining_requests = result.summary.handler_requests.clone();
+                remaining_requests.subtract_handled(&coverage, &definitely_handled);
                 result.summary.subtract_handled_effects(&coverage, &handled);
+                result.summary.handler_requests = remaining_requests;
                 let remaining = result.summary.escaping_effects.clone();
                 if !value_completion {
                     result
                         .exits
                         .gaps
-                        .insert(crate::OutcomeAnalysisGap::Handler(expr));
+                        .insert(crate::OutcomeAnalysisGap::Handler(span.into()));
                 }
                 result.summary.default_actions =
-                    coverage.subtract_handled(&result.summary.default_actions, &handled);
+                    coverage.subtract_handled(&result.summary.default_actions, &definitely_handled);
                 result.summary.record_handled_action_row(handled.clone());
                 self.remove_handled_runtime_support(&mut result.summary, &handled);
                 self.apply_runtime_support_for_row(&mut result.summary, &remaining);
@@ -92,6 +193,55 @@ impl EffectSemantics<'_> {
                 result
                     .summary
                     .require_runtime(crate::RuntimeRequirementReason::RuntimeHandler);
+                let action_trace = if value_completion {
+                    Some(result.summary.action_trace.clone())
+                } else {
+                    match self.immutable_handler_value(handler) {
+                        Ok(Some((_, fact))) => {
+                            let mut trace = result.summary.action_trace.clone();
+                            let mut arm_actions = false;
+                            for arm in &fact.arms {
+                                let Some(summary) = self.inputs.unit_effects.get(&arm.unit) else {
+                                    control.join_normal(self.incomplete_at(
+                                        span,
+                                        "handler trace requires solved arm summaries",
+                                        result,
+                                    ));
+                                    return control;
+                                };
+                                arm_actions |= summary.action_trace
+                                    != crate::ActionTraceDomain::Empty
+                                    || !summary.requested_actions.is_empty();
+                                trace.seq_assign(summary.action_trace.clone());
+                            }
+                            if result.summary.action_trace.has_parameter_calls()
+                                && !result.exits.parameter_exits.is_empty()
+                            {
+                                // Parameter calls retain checked handler-scope templates;
+                                // their arm traces are applied at callback substitution.
+                                Some(result.summary.action_trace.clone())
+                            } else if arm_actions {
+                                trace.seq_assign(crate::ActionTraceDomain::UnknownOrder(
+                                    result.summary.requested_actions.effects.clone(),
+                                ));
+                                Some(trace.repeat().stabilize_for_fixpoint(None))
+                            } else {
+                                // Trace-inert arms cannot reorder requested actions.
+                                // Their unknown control outcomes remain explicit gaps.
+                                Some(trace)
+                            }
+                        }
+                        Ok(None) => None,
+                        Err(interruption) => {
+                            self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                            control.join_normal(result);
+                            return control;
+                        }
+                    }
+                };
+                if let Some(trace) = &action_trace {
+                    result.summary.action_trace = trace.clone();
+                }
                 self.inputs.handle_applications.insert(
                     expr,
                     HandleApplicationFact {
@@ -99,9 +249,32 @@ impl EffectSemantics<'_> {
                         handled,
                         produced,
                         remaining,
+                        action_trace,
                     },
                 );
-                Control::normal(result)
+                if let Err(error) =
+                    self.record_handle_result_sources(expr, handler, body_normal, &mut result)
+                {
+                    if let super::specialize::EffectSpecializationError::Interrupted(interruption) =
+                        error
+                    {
+                        self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                        control.join_normal(result);
+                        return control;
+                    }
+                    result = self.incomplete_at(span, error.to_string(), result);
+                }
+                for exit in &mut result.exits.exits {
+                    let mut trace = handler_state.summary.action_trace.clone();
+                    trace.seq_assign(exit.trace.clone());
+                    exit.trace = trace;
+                }
+                result.exits.join_assign(&handler_state.exits);
+                let mut summary = handler_state.summary;
+                summary.seq_assign(&result.summary);
+                result.summary = summary;
+                control.join_normal(result);
+                control
             }
         }
     }
@@ -130,8 +303,16 @@ impl EffectSemantics<'_> {
         let mut inferred_produced = EffectRow::empty();
         let mut arm_facts = Vec::new();
         let mut unsupported = false;
+        let captures = match self.lambda_value_captures(expr, &state) {
+            Ok(captures) => captures,
+            Err(reason) => return self.incomplete_at(span, reason, state),
+        };
 
         for arm in handlers {
+            self.discovered_value_captures
+                .entry(EffectUnit::HandlerArm { owner, arm: *arm })
+                .or_default()
+                .join_assign(&captures);
             let Some(arm_data) = self.hir.handler_arms.get(*arm).cloned() else {
                 state = self.incomplete_at(
                     span,
@@ -212,6 +393,7 @@ impl EffectSemantics<'_> {
                 .handler_action_effects
                 .insert(*arm, effect.clone());
             arm_facts.push(HandlerArmFact {
+                unit: EffectUnit::HandlerArm { owner, arm: *arm },
                 action: HandlerActionFact {
                     effect_segments: arm_data
                         .action
@@ -297,13 +479,110 @@ impl EffectSemantics<'_> {
         &mut self,
         expr: HirExprId,
         span: Span,
-    ) -> Option<(EffectRow, EffectRow)> {
+    ) -> Result<Option<(EffectRow, EffectRow)>, etas_utils::PipelineInterruption> {
         if let Some(fact) = self.inputs.handler_values.get(&expr) {
-            return Some((fact.handled.clone(), fact.produced.clone()));
+            return Ok(Some((fact.handled.clone(), fact.produced.clone())));
         }
-        let rows = self.checked_handler_rows(expr, span)?;
-        let produced = rows.produced.unwrap_or_else(EffectRow::empty);
-        Some((rows.handled, produced))
+        let Some(rows) = self.checked_handler_rows(expr, span) else {
+            return Ok(None);
+        };
+        if let Some(produced) = rows.produced {
+            return Ok(Some((rows.handled, produced)));
+        }
+        let Some((_, fact)) = self.immutable_handler_value(expr)? else {
+            return Ok(None);
+        };
+        let coverage = EffectCoverage {
+            registry: self.registry,
+            types: &self.types.store,
+        };
+        if !coverage.row_covers(&rows.handled, &fact.handled)
+            || !coverage.row_covers(&fact.handled, &rows.handled)
+        {
+            return Ok(None);
+        }
+        Ok(Some((rows.handled, fact.produced.clone())))
+    }
+
+    fn immutable_handler_value(
+        &self,
+        mut expr: HirExprId,
+    ) -> Result<Option<(HirExprId, &HandlerValueFact)>, etas_utils::PipelineInterruption> {
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(expr) {
+            if let Some(control) = self.query_control {
+                control.checkpoint()?;
+            }
+            if let Some(fact) = self.inputs.handler_values.get(&expr) {
+                return Ok(Some((expr, fact)));
+            }
+            let Some(HirExpr::Path(path)) = self.hir.exprs.get(expr) else {
+                return Ok(None);
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                return Ok(None);
+            };
+            let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+                return Ok(None);
+            };
+            expr = match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
+                Some(etas_hir::SymbolDef::TopLevelLet { initializer, .. }) => *initializer,
+                Some(etas_hir::SymbolDef::Local {
+                    binding,
+                    pattern,
+                    initializer: Some(initializer),
+                    ..
+                }) if matches!(self.hir.stmts.get(*binding), Some(HirStmt::Let { pat, value, .. }) if pat == pattern && value == initializer)
+                    && matches!(self.hir.pats.get(*pattern), Some(etas_hir::HirPat::Binding { symbol: bound, .. }) if *bound == symbol) =>
+                {
+                    *initializer
+                }
+                _ => return Ok(None),
+            };
+        }
+        Ok(None)
+    }
+
+    pub(super) fn definitely_handled_actions(
+        &self,
+        expr: HirExprId,
+    ) -> Result<EffectRow, etas_utils::PipelineInterruption> {
+        let Some((handler, fact)) = self.immutable_handler_value(expr)? else {
+            return Ok(EffectRow::empty());
+        };
+        let Some(HirExpr::Handler { handlers, .. }) = self.hir.exprs.get(handler) else {
+            return Ok(EffectRow::empty());
+        };
+        let Some(owner) = self.hir.index().expr_item.get(&handler).copied() else {
+            return Ok(EffectRow::empty());
+        };
+        if handlers.len() != fact.arms.len() {
+            return Ok(EffectRow::empty());
+        }
+        let mut effects = EffectSet::new();
+        for (arm, arm_fact) in handlers.iter().zip(&fact.arms) {
+            if let Some(control) = self.query_control {
+                control.checkpoint()?;
+            }
+            if arm_fact.unit != (EffectUnit::HandlerArm { owner, arm: *arm }) {
+                return Ok(EffectRow::empty());
+            }
+            let (Some(data), Some(effect)) = (
+                self.hir.handler_arms.get(*arm),
+                self.inputs.handler_action_effects.get(arm),
+            ) else {
+                return Ok(EffectRow::empty());
+            };
+            if data.patterns.iter().all(|pattern| {
+                matches!(
+                    self.hir.pats.get(*pattern),
+                    Some(etas_hir::HirPat::Binding { .. } | etas_hir::HirPat::Wildcard { .. })
+                )
+            }) {
+                effects.insert(effect.clone());
+            }
+        }
+        Ok(EffectRow::closed(effects))
     }
 
     fn handler_value_item_summary(&self, expr: HirExprId) -> Option<EffectSummary> {
@@ -835,5 +1114,93 @@ impl HandlerControlScan {
             self.resumes = self.resumes.max(resumes + usize::from(resume));
             self.finishes = self.finishes.max(finishes + usize::from(!resume));
         }
+    }
+}
+
+#[cfg(test)]
+mod inert_tests {
+    use super::*;
+
+    #[test]
+    fn handler_construction_must_not_add_actions_effects_or_exit_gaps() {
+        let entry = EffectState::default();
+        assert!(handler_evaluation_is_inert(&entry, &entry, &entry.summary));
+        let action = crate::Effect::Action(crate::ActionRef {
+            tag: crate::CONSOLE_TAG,
+            action: crate::CONSOLE_STDOUT_WRITE_ACTION,
+        });
+        let mut latent = EffectSummary::local();
+        latent.record_requested_action(action.clone());
+        let mut expected = entry.summary.clone();
+        expected.merge_request_footprint_without_escaping_or_trace(&latent);
+        let mut latent_handler = entry.clone();
+        latent_handler.summary = expected.clone();
+        assert!(handler_evaluation_is_inert(
+            &entry,
+            &latent_handler,
+            &expected
+        ));
+        latent_handler.summary.action_trace =
+            crate::ActionTraceDomain::UnknownOrder([action.clone()].into_iter().collect());
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &latent_handler,
+            &expected
+        ));
+        let mut handler = entry.clone();
+        handler.summary.action_trace =
+            crate::ActionTraceDomain::UnknownOrder([action.clone()].into_iter().collect());
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
+        handler = entry.clone();
+        handler.summary.record_escaping_effect(action);
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
+        handler = entry.clone();
+        handler.summary.determinism = crate::Determinism::NonDeterministic;
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
+        handler = entry.clone();
+        handler.summary.independent_determinism = None;
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
+        handler = entry.clone();
+        handler
+            .summary
+            .require_runtime(crate::RuntimeRequirementReason::Time);
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
+        handler = entry.clone();
+        handler
+            .exits
+            .gaps
+            .insert(crate::OutcomeAnalysisGap::InvalidControlExit);
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
+        handler = entry.clone();
+        handler.incomplete = true;
+        assert!(!handler_evaluation_is_inert(
+            &entry,
+            &handler,
+            &entry.summary
+        ));
     }
 }

@@ -6,6 +6,7 @@ mod package_metadata;
 mod passes;
 mod pipeline;
 mod project;
+mod residual;
 mod session;
 mod static_annotation;
 
@@ -29,9 +30,10 @@ pub use output::{
     DiagnosticRecord, DiagnosticSpanRecord, DiagnosticSuggestionRecord, DiagnosticTextEditRecord,
     EXPRESSION_UNIT_KIND, EntryPolicy, ExternalModuleId, ExternalPackageId, ExternalSymbolId,
     ITEM_UNIT_KIND, MODULE_PART_UNIT_KIND, MODULE_UNIT_KIND, ModuleId, ModulePartId, ModulePath,
-    PROJECT_UNIT_KIND, ProjectCompileOptions, ProjectEntry, ProjectEntryFact,
-    ProjectEntryResolution, ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
-    ProjectExternalActionGenericParamInput, ProjectExternalActionRequestInput,
+    PROJECT_UNIT_KIND, ProjectCompileOptions, ProjectDependencySourcePackage, ProjectEntry,
+    ProjectEntryFact, ProjectEntryResolution, ProjectEnvironmentInput,
+    ProjectExternalActionArgKindInput, ProjectExternalActionGenericParamInput,
+    ProjectExternalActionRequestInput, ProjectExternalActionRequestSignatureInput,
     ProjectExternalActionSignatureInput, ProjectExternalActionSummaryInput,
     ProjectExternalActionTraceEventSourceInput, ProjectExternalActionTraceInput,
     ProjectExternalAgentSignatureInput, ProjectExternalCallableGenericParamInput,
@@ -48,11 +50,13 @@ pub use output::{
     ProjectExternalRequestInstantiationInput, ProjectExternalSpecBoundInput,
     ProjectExternalSpecImplInput, ProjectExternalSpecKindInput, ProjectExternalSpecMethodInput,
     ProjectExternalSpecSignatureInput, ProjectExternalToolSchemaInput,
-    ProjectExternalToolSignatureInput, ProjectExternalTraceSpecClauseInput,
+    ProjectExternalToolSignatureInput, ProjectExternalTraceSelectorBoundInput,
+    ProjectExternalTraceSelectorOperandInput, ProjectExternalTraceSpecClauseInput,
     ProjectExternalTraceSpecClauseKindInput, ProjectExternalTraceSpecConformanceInput,
     ProjectExternalTraceSpecConformanceTargetInput, ProjectExternalTraceSpecSummaryInput,
     ProjectExternalTypeInput, ProjectExternalTypeSpecSatisfactionInput, ProjectId, ProjectInput,
-    ProjectOutput, ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, SharedEffectOutput,
+    ProjectOutput, ProjectStableSourceKeyInput, ProjectStandaloneSourcePackage,
+    ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, SharedEffectOutput, SourcePackageOriginError,
     TopLevelLetFact, TopLevelLetFacts, UnitId,
 };
 pub use package_metadata::{
@@ -63,8 +67,9 @@ pub use package_metadata::{
 };
 pub(crate) use project::ProjectContext;
 pub use project::{
-    AffectedModuleSet, AstBodyRef, AstImportRef, AstItemKind, AstItemRef, CatalogModuleOrigin,
-    CatalogModuleOriginKind, CheckedCallableRoot, CheckedReachabilityError, ExportTable,
+    AffectedModuleSet, AppliedCallableBehavior, AstBodyRef, AstImportRef, AstItemKind, AstItemRef,
+    CallableApplicationError, CallableBehaviorError, CatalogModuleOrigin, CatalogModuleOriginKind,
+    CheckedCallableApplication, CheckedCallableRoot, CheckedReachabilityError, ExportTable,
     ExportedItem, FsSourceLoader, HirBodyBindings, HirExprPathResolution, HirItemBindings,
     HirOutput, HirPathResolution, ImportEdge, ImportGraph, ImportTarget, LoadedProjectInput,
     ModuleCatalog, ModuleExport, ModuleExportTable, ModuleExportTarget, ModuleIndex, ModuleInfo,
@@ -75,6 +80,10 @@ pub use project::{
     RuntimeSourceReason, RuntimeSourceReasonKind, RuntimeSourceRequirement,
     RuntimeSourceRequirements, SourceBundle, SourceFile, SourceInput, SourceKind, SourceLoader,
     SourceSet, UnitKind, UnitNode, UnitTarget, UnitTree,
+};
+pub use residual::{
+    CheckedResidualBinding, CheckedResidualPlan, CheckedResidualPlans, ResidualActionError,
+    ResidualBindingError,
 };
 pub use session::{
     AllocationSnapshot, CheckMemoryReport, DefinitionTarget, DiagnosticDelta,

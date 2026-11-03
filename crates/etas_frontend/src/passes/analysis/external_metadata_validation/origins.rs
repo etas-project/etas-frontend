@@ -18,6 +18,7 @@ pub(super) fn validate(
     packages: &BTreeMap<ExternalPackageId, &crate::ProjectExternalPackageInput>,
     modules: &BTreeMap<Vec<String>, ExternalPackageId>,
     exports: &BTreeMap<ExternalPackageId, BTreeSet<Vec<String>>>,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), Error> {
     validate_resource_bounds(environment)?;
     let metadata = environment
@@ -27,11 +28,40 @@ pub(super) fn validate(
         .collect::<BTreeMap<_, _>>();
     let mut seen = BTreeSet::new();
     let mut bindings = BTreeMap::new();
+    let mut descriptor_comparison_budget =
+        etas_code::descriptor::DescriptorLimits::default().max_edges;
+    let mut identity_index = None;
+    let mut public_exports = BTreeMap::<ExternalPackageId, BTreeSet<Vec<String>>>::new();
+    for module in &environment.external_modules {
+        let Some(package) = module.package else {
+            continue;
+        };
+        for export in &module.exports {
+            if export.visibility == etas_hir::Visibility::Public {
+                let mut path = module.path.segments.clone();
+                path.push(export.name.clone());
+                public_exports.entry(package).or_default().insert(path);
+            }
+        }
+    }
     for input in &environment.external_definition_origins {
         let fail = |reason| Error::package(input.package, reason);
-        if !packages.contains_key(&input.package) || !seen.insert(input.package) {
+        let Some(package) = packages.get(&input.package) else {
             return Err(fail(
                 "definition origins have an unknown or duplicate package binding".to_owned(),
+            ));
+        };
+        if !seen.insert(input.package) {
+            return Err(fail(
+                "definition origins have an unknown or duplicate package binding".to_owned(),
+            ));
+        }
+        let expected =
+            etas_code::PackageKey::from_name_and_version(&package.name, &package.version)
+                .map_err(|error| fail(error.to_string()))?;
+        if input.origins.package != expected {
+            return Err(fail(
+                "definition package origin does not match its name and version".to_owned(),
             ));
         }
         input
@@ -135,7 +165,409 @@ pub(super) fn validate(
             }
         }
     }
-    validate_chains(&bindings)
+    validate_chains(&bindings)?;
+    for input in &environment.external_definition_origins {
+        let metadata = metadata.get(&input.package).ok_or_else(|| {
+            Error::package(
+                input.package,
+                "definition origins have no public metadata record",
+            )
+        })?;
+        validate_type_descriptors(
+            input,
+            metadata,
+            std_registry,
+            environment,
+            &public_exports,
+            &mut descriptor_comparison_budget,
+            &mut identity_index,
+        )?;
+        validate_callable_definition_parameters(
+            input,
+            metadata,
+            std_registry,
+            environment,
+            &mut descriptor_comparison_budget,
+            &mut identity_index,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_type_descriptors<'a>(
+    input: &crate::ProjectExternalDefinitionOriginsInput,
+    metadata: &ProjectExternalPublicMetadataInput,
+    std_registry: &'a etas_std::StdRegistry,
+    environment: &ProjectEnvironmentInput,
+    public_exports: &BTreeMap<ExternalPackageId, BTreeSet<Vec<String>>>,
+    comparison_budget: &mut usize,
+    identity_index: &mut Option<etas_types::ExternalDescriptorIdentities<'a>>,
+) -> Result<(), Error> {
+    use etas_code::descriptor::TypeInfo;
+    let Some(set) = input.descriptors.as_ref() else {
+        return Ok(());
+    };
+    let roots = set
+        .declarations
+        .iter()
+        .map(|root| (&root.definition, root.ty))
+        .collect::<BTreeMap<_, _>>();
+    let public_types = metadata
+        .types
+        .iter()
+        .map(|item| (item.path.as_slice(), item))
+        .collect::<BTreeMap<_, _>>();
+    let re_exports = metadata
+        .re_exports
+        .iter()
+        .map(|export| export.exported.as_slice())
+        .collect::<BTreeSet<_>>();
+    for binding in &input.origins.declarations {
+        let path = binding.path();
+        let Some(item) = public_types.get(path.as_slice()) else {
+            continue;
+        };
+        let public_alias = match &item.ty {
+            Some(crate::ProjectExternalTypeInput::Alias { target, .. }) => Some(target.as_ref()),
+            _ => None,
+        };
+        let public_nominal = match &item.ty {
+            Some(crate::ProjectExternalTypeInput::Nominal { representation, .. }) => {
+                Some(representation.as_deref())
+            }
+            _ => None,
+        };
+        let Some(root) = roots.get(&binding.definition) else {
+            if (public_alias.is_some() || public_nominal.is_some())
+                && public_exports
+                    .get(&input.package)
+                    .is_some_and(|exports| exports.contains(&path))
+                && binding.definition.package() == input.origins.package
+                && !re_exports.contains(path.as_slice())
+            {
+                return Err(Error::package(
+                    input.package,
+                    if public_alias.is_some() {
+                        "public alias has no checked descriptor root"
+                    } else {
+                        "public nominal type has no checked descriptor root"
+                    },
+                ));
+            }
+            continue;
+        };
+        let (target, definition, parameters, expected, kind) = match (
+            public_alias,
+            public_nominal,
+            set.graph.types.get(root.0 as usize),
+        ) {
+            (
+                Some(target),
+                _,
+                Some(TypeInfo::Alias {
+                    definition,
+                    parameters,
+                    target: expected,
+                }),
+            ) => (
+                Some(target),
+                definition,
+                parameters,
+                Some(*expected),
+                "alias",
+            ),
+            (Some(_), _, _) | (None, _, Some(TypeInfo::Alias { .. })) => {
+                return Err(Error::package(
+                    input.package,
+                    "alias descriptor and public signature disagree on declaration kind",
+                ));
+            }
+            (
+                None,
+                Some(target),
+                Some(TypeInfo::Nominal {
+                    definition,
+                    parameters,
+                    representation,
+                }),
+            ) => (target, definition, parameters, *representation, "nominal"),
+            (None, Some(_), _) | (None, None, Some(TypeInfo::Nominal { .. })) => {
+                return Err(Error::package(
+                    input.package,
+                    "nominal descriptor and public signature disagree on declaration kind",
+                ));
+            }
+            _ => continue,
+        };
+        if definition != &binding.definition {
+            return Err(Error::package(
+                input.package,
+                format!("{kind} descriptor identity differs from its public origin"),
+            ));
+        }
+        if identity_index.is_none() {
+            let identities =
+                super::super::type_check_bridge::reflection::signature_input_for_environment(
+                    std_registry,
+                    Some(environment),
+                )
+                .map_err(|error| Error::package(input.package, error.to_string()))?;
+            *identity_index = Some(
+                etas_types::ExternalDescriptorIdentities::new(std_registry, &identities)
+                    .map_err(|error| Error::package(input.package, error))?,
+            );
+        }
+        let identities = identity_index.as_ref().ok_or_else(|| {
+            Error::package(input.package, "missing external descriptor identities")
+        })?;
+        let generics =
+            super::super::type_check_bridge::convert_external_generic_params(&item.generic_params);
+        let mut matcher = etas_types::ExternalDescriptorMatcher::new(
+            &set.graph,
+            identities,
+            &generics,
+            parameters,
+            comparison_budget,
+        )
+        .map_err(|error| Error::package(input.package, error))?;
+        let matches = match (target, expected) {
+            (None, None) => true,
+            (Some(target), Some(expected)) => matcher
+                .matches(
+                    &super::super::type_check_bridge::convert_external_type(target),
+                    expected,
+                )
+                .map_err(|error| Error::package(input.package, error))?,
+            _ => false,
+        };
+        if !matches {
+            return Err(Error::package(
+                input.package,
+                format!(
+                    "{kind} descriptor and public signature disagree on {}",
+                    if kind == "alias" {
+                        "target type"
+                    } else {
+                        "representation"
+                    }
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_callable_definition_parameters<'a>(
+    input: &crate::ProjectExternalDefinitionOriginsInput,
+    metadata: &ProjectExternalPublicMetadataInput,
+    std_registry: &'a etas_std::StdRegistry,
+    environment: &ProjectEnvironmentInput,
+    comparison_budget: &mut usize,
+    identity_index: &mut Option<etas_types::ExternalDescriptorIdentities<'a>>,
+) -> Result<(), Error> {
+    use etas_code::descriptor::TypeInfo;
+    let Some(set) = input.descriptors.as_ref() else {
+        return Ok(());
+    };
+    let Some(headers) = set.headers.as_ref() else {
+        return Ok(());
+    };
+    let by_callable = headers
+        .callables
+        .iter()
+        .map(|header| (&header.id, header))
+        .collect::<BTreeMap<_, _>>();
+    let mut callable_headers = headers
+        .callables
+        .iter()
+        .filter_map(|header| {
+            header
+                .id
+                .as_declaration()
+                .map(|identity| (identity, header))
+        })
+        .collect::<BTreeMap<_, _>>();
+    for agent in &headers.agents {
+        if let Some(default) = &agent.default_entry {
+            let header = by_callable.get(default).ok_or_else(|| {
+                Error::package(
+                    input.package,
+                    "agent default entry has no checked callable descriptor",
+                )
+            })?;
+            callable_headers.insert(&agent.identity, *header);
+        }
+    }
+    let mut public_signatures = BTreeMap::new();
+    for signature in &metadata.flows {
+        if public_signatures
+            .insert(
+                signature.path.as_slice(),
+                (
+                    signature.params.as_slice(),
+                    signature.param_names.as_slice(),
+                    signature.generic_params.as_slice(),
+                    &signature.output,
+                    signature.effects.as_ref(),
+                ),
+            )
+            .is_some()
+        {
+            return Err(Error::package(
+                input.package,
+                "duplicate public callable signature",
+            ));
+        }
+    }
+    for signature in &metadata.tools {
+        if public_signatures
+            .insert(
+                signature.path.as_slice(),
+                (
+                    signature.input.as_slice(),
+                    signature.param_names.as_slice(),
+                    signature.generic_params.as_slice(),
+                    &signature.output,
+                    signature.effects.as_ref(),
+                ),
+            )
+            .is_some()
+        {
+            return Err(Error::package(
+                input.package,
+                "duplicate public callable signature",
+            ));
+        }
+    }
+    for signature in &metadata.agents {
+        let Some(output) = &signature.output else {
+            continue;
+        };
+        if public_signatures
+            .insert(
+                signature.path.as_slice(),
+                (
+                    signature.input.as_slice(),
+                    signature.param_names.as_slice(),
+                    signature.generic_params.as_slice(),
+                    output,
+                    signature.effects.as_ref(),
+                ),
+            )
+            .is_some()
+        {
+            return Err(Error::package(
+                input.package,
+                "duplicate public callable signature",
+            ));
+        }
+    }
+    for binding in &input.origins.declarations {
+        let Some(header) = callable_headers.get(&binding.definition) else {
+            continue;
+        };
+        let path = binding.path();
+        let Some(&(parameters, parameter_names, generic_parameters, output, effects)) =
+            public_signatures.get(path.as_slice())
+        else {
+            continue;
+        };
+        let Some(TypeInfo::Function(signature)) = set.graph.types.get(header.signature.0 as usize)
+        else {
+            return Err(Error::package(
+                input.package,
+                "callable descriptor has no checked signature",
+            ));
+        };
+        if signature.parameters.len() != parameters.len() {
+            return Err(Error::package(
+                input.package,
+                "callable descriptor and public signature disagree on parameter count",
+            ));
+        }
+        if parameter_names.len() != signature.parameters.len()
+            || signature
+                .parameters
+                .iter()
+                .zip(parameter_names)
+                .any(|(parameter, name)| {
+                    parameter.name.as_deref() != (name != "_").then_some(name.as_str())
+                })
+        {
+            return Err(Error::package(
+                input.package,
+                "callable descriptor and public signature disagree on parameter names",
+            ));
+        }
+        {
+            let identities = match &mut *identity_index {
+                Some(identities) => identities,
+                slot @ None => {
+                    let project_identities = super::super::type_check_bridge::reflection::signature_input_for_environment(
+                        std_registry,
+                        Some(environment),
+                    )
+                    .map_err(|error| Error::package(input.package, error.to_string()))?;
+                    slot.insert(
+                        etas_types::ExternalDescriptorIdentities::new(
+                            std_registry,
+                            &project_identities,
+                        )
+                        .map_err(|error| Error::package(input.package, error))?,
+                    )
+                }
+            };
+            let generics = super::super::type_check_bridge::convert_external_generic_params(
+                generic_parameters,
+            );
+            let mut matcher = etas_types::ExternalDescriptorMatcher::new(
+                &set.graph,
+                identities,
+                &generics,
+                &signature.generics,
+                comparison_budget,
+            )
+            .map_err(|error| Error::package(input.package, error))?;
+            for (portable, public) in signature.parameters.iter().zip(parameters) {
+                if matcher
+                    .matches(
+                        &super::super::type_check_bridge::convert_external_type(public),
+                        portable.ty,
+                    )
+                    .map_err(|error| Error::package(input.package, error))?
+                {
+                    continue;
+                }
+                return Err(Error::package(
+                    input.package,
+                    "callable descriptor and public signature disagree on parameter type",
+                ));
+            }
+            if !matcher
+                .matches(
+                    &super::super::type_check_bridge::convert_external_type(output),
+                    signature.output,
+                )
+                .map_err(|error| Error::package(input.package, error))?
+            {
+                return Err(Error::package(
+                    input.package,
+                    "callable descriptor and public signature disagree on return type",
+                ));
+            }
+            let effects = effects.map(super::super::type_check_bridge::convert_external_effect_row);
+            if !matcher
+                .matches_optional_effect_row(effects.as_ref(), signature.effects)
+                .map_err(|error| Error::package(input.package, error))?
+            {
+                return Err(Error::package(
+                    input.package,
+                    "callable descriptor and public signature disagree on effect row",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_agent_entries(

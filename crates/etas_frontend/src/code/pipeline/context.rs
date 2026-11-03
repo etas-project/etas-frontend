@@ -3,15 +3,24 @@ use etas_core::Span;
 use etas_hir::HirItemId;
 use std::{collections::HashMap, sync::Arc};
 
+#[derive(Clone, Debug)]
+pub struct CandidateDependencySource {
+    pub source: crate::SourceInput,
+    pub stable_key: etas_code::StableSourceKey,
+}
+
 pub(crate) struct CandidatePipelineContext {
     pub overlay: DefaultBodyOverlay,
     pub revisions: HashMap<Span, Arc<NativeBodyRevision>>,
     pub target: Option<HirItemId>,
+    pub bound_application: Option<BoundCandidateApplication>,
+    pub bound_body: Option<etas_types::InstantiatedBodyOutput>,
+    pub frozen_application_program: Option<crate::CheckedProgram>,
     pub descriptors: Option<super::passes::CandidateDescriptors>,
     pub descriptor_limits: etas_code::descriptor::DescriptorLimits,
     pub contract_analysis: Option<crate::code::contract::CandidateContractAnalysis>,
     pub emission: Option<crate::code::service::CandidateEmission>,
-    pub dependency_sources: Vec<crate::SourceInput>,
+    pub dependency_sources: Vec<CandidateDependencySource>,
     pub dependency_source_ids: Vec<etas_core::SourceId>,
     pub snapshot: etas_code::CodeFingerprint,
     pub baseline: Option<super::baseline::CompletedBaseline>,
@@ -31,6 +40,9 @@ impl CandidatePipelineContext {
             overlay,
             revisions,
             target: None,
+            bound_application: None,
+            bound_body: None,
+            frozen_application_program: None,
             descriptors: None,
             descriptor_limits: Default::default(),
             contract_analysis: None,
@@ -44,11 +56,36 @@ impl CandidatePipelineContext {
 
     pub fn set_dependency_sources(
         &mut self,
-        mut sources: Vec<crate::SourceInput>,
+        mut sources: Vec<CandidateDependencySource>,
     ) -> Result<(), String> {
-        sources.sort_by(|left, right| left.path.cmp(&right.path));
-        let mut fingerprints = vec![self.overlay.fingerprint()];
-        for source in &sources {
+        sources.sort_by_key(|source| source.stable_key);
+        if sources
+            .windows(2)
+            .any(|pair| pair[0].stable_key == pair[1].stable_key)
+        {
+            return Err("candidate dependency sources have duplicate stable identities".into());
+        }
+        let limits = self.descriptor_limits;
+        let encoded_limits = [
+            limits.max_nodes,
+            limits.max_edges,
+            limits.max_expansion_depth,
+            limits.max_text_bytes,
+        ]
+        .into_iter()
+        .map(|value| {
+            u64::try_from(value)
+                .map(u64::to_le_bytes)
+                .map_err(|_| "candidate descriptor limit cannot be represented".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        let configuration = etas_code::CodeFingerprint::of_parts(
+            "etas.code.candidate-descriptor-limits.v1",
+            encoded_limits.iter().map(|value| value.as_slice()),
+        );
+        let mut fingerprints = vec![self.overlay.fingerprint(), configuration];
+        for entry in &sources {
+            let source = &entry.source;
             let crate::SourceKind::DependencySourceOverlay {
                 package,
                 import_root,
@@ -56,7 +93,7 @@ impl CandidatePipelineContext {
             else {
                 return Err("candidate source completion accepts only dependency overlays".into());
             };
-            let path = source
+            source
                 .path
                 .as_ref()
                 .ok_or("candidate dependency source has no file identity")?;
@@ -69,20 +106,25 @@ impl CandidatePipelineContext {
                 [
                     package.0.to_le_bytes().as_slice(),
                     import_root.as_bytes(),
-                    path.as_os_str().as_encoded_bytes(),
+                    entry.stable_key.fingerprint().as_bytes().as_slice(),
                     content.as_bytes().as_slice(),
                 ],
             ));
         }
-        if !sources.is_empty() {
-            self.snapshot = etas_code::CodeFingerprint::of_parts(
-                "etas.code.candidate-with-dependencies.v1",
-                fingerprints
-                    .iter()
-                    .map(|fingerprint| fingerprint.as_bytes().as_slice()),
-            );
-        }
+        self.snapshot = etas_code::CodeFingerprint::of_parts(
+            "etas.code.candidate-analysis-inputs.v1",
+            fingerprints
+                .iter()
+                .map(|fingerprint| fingerprint.as_bytes().as_slice()),
+        );
         self.dependency_sources = sources;
         Ok(())
     }
+}
+
+pub(crate) struct BoundCandidateApplication {
+    pub owner: HirItemId,
+    pub arguments: Vec<etas_types::CallableGenericArg>,
+    pub presented_type: Option<etas_types::TypeId>,
+    pub foreign_type_bindings: Arc<crate::code::definition::ForeignTypeBindings>,
 }
