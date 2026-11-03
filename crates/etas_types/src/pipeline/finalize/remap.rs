@@ -702,6 +702,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             }
         }
     }
+    facts.known_std_types.directory_list_limit_error = facts
+        .known_std_types
+        .directory_list_limit_error
+        .map(|ty| remapper.ty(ty));
     facts.known_std_types.file_read_limit_error = facts
         .known_std_types
         .file_read_limit_error

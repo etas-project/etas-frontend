@@ -21,6 +21,7 @@ pub enum ResourceHandleFact {
     etas_core::RetainedSize,
 )]
 pub struct KnownStdTypes {
+    pub directory_list_limit_error: Option<TypeId>,
     pub file_read_limit_error: Option<TypeId>,
     pub filesystem_io_error: Option<TypeId>,
     pub index_error: Option<TypeId>,
