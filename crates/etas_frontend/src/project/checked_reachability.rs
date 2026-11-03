@@ -306,7 +306,33 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
         if self.error.is_some() {
             return;
         }
-        if matches!(expression.data(), HirExpr::SpecMethodCall { .. }) {
+        if let Some(method) = self
+            .checked
+            .types
+            .checked_method_calls
+            .get(&expression.id())
+        {
+            match method.target {
+                etas_types::method::MethodTarget::Source { callable, .. }
+                | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                    self.pending.push(callable)
+                }
+                _ => {}
+            }
+        }
+        if self
+            .checked
+            .types
+            .checked_method_calls
+            .get(&expression.id())
+            .is_some_and(|method| {
+                matches!(
+                    method.target,
+                    etas_types::method::MethodTarget::BoundSpec { .. }
+                        | etas_types::method::MethodTarget::External { .. }
+                )
+            })
+        {
             let deferred = self.checked.effects.expr_effects.get(&expression.id()).is_some_and(|summary|
                 summary.action_trace.parameter_calls().iter().any(|call|
                     matches!(call.target, etas_effects::ParameterCallTarget::SpecMethod { call, .. } if call == expression.id())));

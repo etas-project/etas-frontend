@@ -1237,7 +1237,13 @@ fn solve_access_constraint(
             }
             let output = resolve_known_substitutions(store, report, *output);
             AccessConstraintOutcome::Solved(Box::new(field::solve_field_access(
-                store, known, base, field, output, *origin,
+                store,
+                known,
+                base,
+                field,
+                output,
+                *origin,
+                &report.substitutions,
             )))
         }
         TypeConstraint::IndexAccess {

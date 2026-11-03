@@ -14,6 +14,7 @@ pub fn solve_field_access(
     field: &str,
     output: TypeId,
     origin: ConstraintOrigin,
+    substitutions: &crate::solver::Substitution,
 ) -> SolverReport {
     let mut report = SolverReport::default();
     let projected = projected_fields(store, known, base);
@@ -50,7 +51,7 @@ pub fn solve_field_access(
         });
         return report;
     };
-    let mut unifier = TypeUnifier::new(store);
+    let mut unifier = TypeUnifier::with_substitution(store, substitutions.clone());
     if unifier.unify(found.ty, output).is_ok() {
         report.substitutions.extend(unifier.substitution());
     } else if !is_assignable(store, found.ty, output) {
