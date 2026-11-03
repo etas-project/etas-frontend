@@ -1,5 +1,7 @@
+mod bound_application;
 mod descriptors;
 mod emit;
+pub(crate) use bound_application::PrepareCandidateApplicationPass;
 pub(crate) use descriptors::{
     BuildDefinitionDescriptorsPass, CANDIDATE_DESCRIPTORS, CandidateDescriptors,
 };

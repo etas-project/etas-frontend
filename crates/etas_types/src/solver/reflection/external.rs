@@ -113,56 +113,35 @@ pub(super) fn member(
             "external agent method reflection requires published method selection facts",
         ));
     };
-    let methods = header.method_info.as_ref().ok_or_else(|| {
-        failure(
-            etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-            "external agent description has no method selection facts",
-        )
-    })?;
-    let callable = if name == "run" {
-        header.default_entry.as_ref().ok_or_else(|| {
+    let methods = super::select_external_methods(header)
+        .map_err(|message| failure(etas_core::TypeDiagnosticCode::IncompleteTypeFacts, message))?
+        .ok_or_else(|| {
             failure(
+                etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                "external agent description has no method selection facts",
+            )
+        })?;
+    let callable = match methods.get(name) {
+        Some(super::ExternalMethodSelection::Selected(callable)) => callable,
+        Some(super::ExternalMethodSelection::Private) => {
+            return Err(failure(
+                etas_core::TypeDiagnosticCode::TypeMismatch,
+                "external agent method is private to its defining module",
+            ));
+        }
+        _ if name == "run" => {
+            return Err(failure(
                 etas_core::TypeDiagnosticCode::TypeMismatch,
                 "agent has no default run method to reflect",
-            )
-        })?
-    } else {
-        let candidates = methods
-            .iter()
-            .filter(|method| {
-                method
-                    .callable
-                    .as_method()
-                    .is_some_and(|id| id.name() == name)
-            })
-            .collect::<Vec<_>>();
-        let inherent = candidates
-            .iter()
-            .copied()
-            .filter(|method| method.inherent)
-            .collect::<Vec<_>>();
-        let candidates = if inherent.is_empty() {
-            &candidates
-        } else {
-            &inherent
-        };
-        let [method] = candidates.as_slice() else {
+            ));
+        }
+        _ => {
             return Err(failure(
                 etas_core::TypeDiagnosticCode::TypeMismatch,
                 "external agent has no uniquely selected public method to reflect",
             ));
-        };
-        &method.callable
+        }
     };
-    if !methods
-        .iter()
-        .any(|method| &method.callable == callable && method.is_public)
-    {
-        return Err(failure(
-            etas_core::TypeDiagnosticCode::TypeMismatch,
-            "external agent method is private to its defining module",
-        ));
-    }
     Ok(CheckedReflectionFact {
         target: CheckedReflectionTarget::ExternalCallable {
             callable: callable.clone(),

@@ -25,7 +25,7 @@ impl Assignable for TypeRelation<'_> {
         if support_constraint_assignable(self.store, from, to) {
             return Ok(());
         }
-        let mut unifier = TypeUnifier::new(self.store);
+        let mut unifier = TypeUnifier::new(self.store).with_read_only_erasure();
         unifier.unify(from, to)
     }
 }

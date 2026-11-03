@@ -6,14 +6,7 @@ use etas_utils::{JoinSemiLattice, PartialOrder};
 use crate::{Effect, EffectRow, EffectSet, RequirementSet};
 
 #[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct EffectSummary {
     pub handler_requests: super::RequestInstantiationSummary,
@@ -30,7 +23,32 @@ pub struct EffectSummary {
     pub trace_spec_obligations: RequirementSet,
     pub requirements: RequirementSet,
     pub determinism: Determinism,
+    /// Determinism contributed by this body apart from unresolved callable parameters.
+    /// None means the independent contribution is not available from checked facts.
+    #[serde(default)]
+    pub independent_determinism: Option<Determinism>,
     pub support: InterpreterSupport,
+}
+
+impl Default for EffectSummary {
+    fn default() -> Self {
+        Self {
+            handler_requests: Default::default(),
+            default_handler_effects: None,
+            exits: None,
+            escaping_effects: Default::default(),
+            requested_actions: Default::default(),
+            default_actions: Default::default(),
+            handled_actions: Default::default(),
+            action_trace: Default::default(),
+            residual_checks: Default::default(),
+            trace_spec_obligations: Default::default(),
+            requirements: Default::default(),
+            determinism: Default::default(),
+            independent_determinism: Some(Determinism::default()),
+            support: Default::default(),
+        }
+    }
 }
 
 impl EffectSummary {
@@ -40,6 +58,9 @@ impl EffectSummary {
 
     pub fn require_runtime(&mut self, reason: RuntimeRequirementReason) {
         self.determinism.join_assign(&Determinism::RuntimeMediated);
+        if let Some(independent) = &mut self.independent_determinism {
+            independent.join_assign(&Determinism::RuntimeMediated);
+        }
         self.support.join_assign(&InterpreterSupport::from(reason));
     }
 
@@ -110,6 +131,10 @@ impl EffectSummary {
             .union_assign(&other.trace_spec_obligations);
         changed |= self.requirements.union_assign(&other.requirements);
         changed |= self.determinism.join_assign(&other.determinism);
+        changed |= join_independent_determinism(
+            &mut self.independent_determinism,
+            other.independent_determinism,
+        );
         changed |= self.support.join_assign(&other.support);
         changed
     }
@@ -138,6 +163,10 @@ impl EffectSummary {
             .union_assign(&other.trace_spec_obligations);
         changed |= self.requirements.union_assign(&other.requirements);
         changed |= self.determinism.join_assign(&other.determinism);
+        changed |= join_independent_determinism(
+            &mut self.independent_determinism,
+            other.independent_determinism,
+        );
         changed |= self.support.join_assign(&other.support);
         changed
     }
@@ -199,8 +228,26 @@ impl EffectSummary {
             .union_assign(&other.trace_spec_obligations);
         changed |= self.requirements.union_assign(&other.requirements);
         changed |= self.determinism.join_assign(&other.determinism);
+        changed |= join_independent_determinism(
+            &mut self.independent_determinism,
+            other.independent_determinism,
+        );
         changed |= self.support.join_assign(&other.support);
         changed
+    }
+}
+
+fn join_independent_determinism(
+    left: &mut Option<Determinism>,
+    right: Option<Determinism>,
+) -> bool {
+    match (left.as_mut(), right) {
+        (Some(left), Some(right)) => left.join_assign(&right),
+        (Some(_), None) => {
+            *left = None;
+            true
+        }
+        (None, _) => false,
     }
 }
 
@@ -275,6 +322,35 @@ pub enum ParameterCallTarget {
 impl ActionTraceDomain {
     const FIXPOINT_TRACE_NODE_LIMIT: usize = 32;
 
+    pub(crate) fn has_unordered_approximation(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::UnknownOrder(_) | Self::Widened { .. } => return true,
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty | Self::Event(_) | Self::ParameterCall { .. } => {}
+            }
+        }
+        false
+    }
+
+    pub fn has_parameter_calls(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::ParameterCall { .. } => return true,
+                Self::Widened {
+                    parameter_calls, ..
+                } if !parameter_calls.is_empty() => return true,
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty | Self::Event(_) | Self::UnknownOrder(_) | Self::Widened { .. } => {}
+            }
+        }
+        false
+    }
+
     pub fn seq_assign(&mut self, other: Self) -> bool {
         let joined = self.clone().seq(other);
         let changed = joined != *self;
@@ -308,29 +384,40 @@ impl ActionTraceDomain {
     }
 
     fn node_count(&self) -> usize {
-        match self {
-            Self::Empty
-            | Self::Event(_)
-            | Self::ParameterCall { .. }
-            | Self::UnknownOrder(_)
-            | Self::Widened { .. } => 1,
-            Self::Seq(parts) | Self::Choice(parts) => {
-                1 + parts.iter().map(Self::node_count).sum::<usize>()
+        let mut count = 0;
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            count += 1;
+            if count > Self::FIXPOINT_TRACE_NODE_LIMIT {
+                return count;
             }
-            Self::Repeat(inner) => 1 + inner.node_count(),
+            match trace {
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty
+                | Self::Event(_)
+                | Self::ParameterCall { .. }
+                | Self::UnknownOrder(_)
+                | Self::Widened { .. } => {}
+            }
         }
+        count
     }
 
     fn contains_repeat(&self) -> bool {
-        match self {
-            Self::Repeat(_) => true,
-            Self::Seq(parts) | Self::Choice(parts) => parts.iter().any(Self::contains_repeat),
-            Self::Empty
-            | Self::Event(_)
-            | Self::ParameterCall { .. }
-            | Self::UnknownOrder(_)
-            | Self::Widened { .. } => false,
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::Repeat(_) => return true,
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Empty
+                | Self::Event(_)
+                | Self::ParameterCall { .. }
+                | Self::UnknownOrder(_)
+                | Self::Widened { .. } => {}
+            }
         }
+        false
     }
 
     pub fn action_set(&self) -> EffectSet {
@@ -346,28 +433,19 @@ impl ActionTraceDomain {
     }
 
     fn collect_actions(&self, actions: &mut EffectSet) {
-        match self {
-            Self::Empty => {}
-            Self::UnknownOrder(set) => {
-                for action in set.iter() {
-                    actions.insert(action.clone());
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::UnknownOrder(set) | Self::Widened { actions: set, .. } => {
+                    actions.union_assign(set);
                 }
-            }
-            Self::Widened { actions: set, .. } => {
-                for action in set.iter() {
-                    actions.insert(action.clone());
+                Self::Event(event) => {
+                    actions.insert(event.action.clone());
                 }
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty | Self::ParameterCall { .. } => {}
             }
-            Self::Event(event) => {
-                actions.insert(event.action.clone());
-            }
-            Self::ParameterCall { .. } => {}
-            Self::Seq(parts) | Self::Choice(parts) => {
-                for part in parts {
-                    part.collect_actions(actions);
-                }
-            }
-            Self::Repeat(inner) => inner.collect_actions(actions),
         }
     }
 
@@ -375,50 +453,103 @@ impl ActionTraceDomain {
         &self,
         calls: &mut BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>,
     ) {
-        match self {
-            Self::ParameterCall {
-                target,
-                parameter,
-                span,
-            } => {
-                calls.insert(
-                    (*target, span.source.0, span.range.start.0, span.range.end.0),
-                    ParameterCallRef {
-                        target: *target,
-                        parameter: parameter.clone(),
-                        span: *span,
-                    },
-                );
-            }
-            Self::Widened {
-                parameter_calls, ..
-            } => {
-                for call in parameter_calls {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::ParameterCall {
+                    target,
+                    parameter,
+                    span,
+                } => {
                     calls.insert(
-                        (
-                            call.target,
-                            call.span.source.0,
-                            call.span.range.start.0,
-                            call.span.range.end.0,
-                        ),
-                        call.clone(),
+                        (*target, span.source.0, span.range.start.0, span.range.end.0),
+                        ParameterCallRef {
+                            target: *target,
+                            parameter: parameter.clone(),
+                            span: *span,
+                        },
                     );
                 }
-            }
-            Self::Seq(parts) | Self::Choice(parts) => {
-                for part in parts {
-                    part.collect_parameter_calls(calls);
+                Self::Widened {
+                    parameter_calls, ..
+                } => {
+                    for call in parameter_calls {
+                        calls.insert(
+                            (
+                                call.target,
+                                call.span.source.0,
+                                call.span.range.start.0,
+                                call.span.range.end.0,
+                            ),
+                            call.clone(),
+                        );
+                    }
                 }
+                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Repeat(inner) => pending.push(inner),
+                Self::Empty | Self::Event(_) | Self::UnknownOrder(_) => {}
             }
-            Self::Repeat(inner) => inner.collect_parameter_calls(calls),
-            Self::Empty | Self::Event(_) | Self::UnknownOrder(_) => {}
+        }
+    }
+
+    fn collect_widened(
+        self,
+        actions: &mut EffectSet,
+        calls: &mut BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>,
+    ) {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::ParameterCall {
+                    target,
+                    parameter,
+                    span,
+                } => {
+                    calls.insert(
+                        (target, span.source.0, span.range.start.0, span.range.end.0),
+                        ParameterCallRef {
+                            target,
+                            parameter,
+                            span,
+                        },
+                    );
+                }
+                Self::Widened {
+                    actions: set,
+                    parameter_calls,
+                } => {
+                    actions.union_assign(&set);
+                    for call in parameter_calls {
+                        calls.insert(
+                            (
+                                call.target,
+                                call.span.source.0,
+                                call.span.range.start.0,
+                                call.span.range.end.0,
+                            ),
+                            call,
+                        );
+                    }
+                }
+                Self::Seq(parts) | Self::Choice(parts) => {
+                    pending.extend(parts.into_iter().rev());
+                }
+                Self::Repeat(inner) => pending.push(*inner),
+                Self::Event(event) => {
+                    actions.insert(event.action);
+                }
+                Self::UnknownOrder(set) => {
+                    actions.union_assign(&set);
+                }
+                Self::Empty => {}
+            }
         }
     }
 
     fn into_widened(self) -> Self {
-        let actions = self.action_set();
+        let mut actions = EffectSet::default();
         let mut calls = BTreeMap::new();
-        self.collect_parameter_calls(&mut calls);
+        self.collect_widened(&mut actions, &mut calls);
         if actions.is_empty() && calls.is_empty() {
             Self::Empty
         } else {
@@ -434,11 +565,10 @@ impl ActionTraceDomain {
     }
 
     fn merge_widened(left: Self, right: Self) -> Self {
-        let mut actions = left.action_set();
-        actions.union_assign(&right.action_set());
+        let mut actions = EffectSet::default();
         let mut calls = BTreeMap::new();
-        left.collect_parameter_calls(&mut calls);
-        right.collect_parameter_calls(&mut calls);
+        left.collect_widened(&mut actions, &mut calls);
+        right.collect_widened(&mut actions, &mut calls);
         if actions.is_empty() && calls.is_empty() {
             Self::Empty
         } else {
@@ -562,26 +692,125 @@ pub enum ActionEventSource {
     Unknown,
 }
 
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    etas_core::RetainedSize,
-)]
+const RESIDUAL_CHECK_SCHEMA_VERSION: u32 = 1;
+const MAX_RESIDUAL_CHECK_REFERENCES: usize = 4096;
+const MAX_RESIDUAL_TOTAL_SUBSTITUTIONS: usize = 65_536;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ResidualCheckSet {
-    pub checks: BTreeSet<String>,
+    checks: BTreeSet<etas_code::residual::identity::ResidualObligationRef>,
 }
 
 impl ResidualCheckSet {
+    pub fn is_empty(&self) -> bool {
+        self.checks.is_empty()
+    }
+
+    pub fn insert(&mut self, check: etas_code::residual::identity::ResidualObligationRef) -> bool {
+        self.checks.insert(check)
+    }
+
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<Item = &etas_code::residual::identity::ResidualObligationRef> {
+        self.checks.iter()
+    }
+
     pub fn union_assign(&mut self, other: &Self) -> bool {
         let len = self.checks.len();
         self.checks.extend(other.checks.iter().cloned());
         self.checks.len() != len
     }
+}
+
+impl serde::Serialize for ResidualCheckSet {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeStruct};
+        if self.checks.len() > MAX_RESIDUAL_CHECK_REFERENCES {
+            return Err(S::Error::custom("residual reference limit exceeded"));
+        }
+        let mut substitutions = 0usize;
+        for check in &self.checks {
+            substitutions = substitutions
+                .checked_add(check.substitutions().len())
+                .ok_or_else(|| S::Error::custom("residual substitution limit exceeded"))?;
+            if substitutions > MAX_RESIDUAL_TOTAL_SUBSTITUTIONS {
+                return Err(S::Error::custom("residual substitution limit exceeded"));
+            }
+        }
+        let mut record = serializer.serialize_struct("ResidualCheckSet", 2)?;
+        record.serialize_field("schema_version", &RESIDUAL_CHECK_SCHEMA_VERSION)?;
+        record.serialize_field("checks", &self.checks)?;
+        record.end()
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireResidualCheckSet {
+    schema_version: u32,
+    #[serde(deserialize_with = "deserialize_residual_checks")]
+    checks: BTreeSet<etas_code::residual::identity::ResidualObligationRef>,
+}
+
+impl<'de> serde::Deserialize<'de> for ResidualCheckSet {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let wire = <WireResidualCheckSet as serde::Deserialize>::deserialize(deserializer)?;
+        if wire.schema_version != RESIDUAL_CHECK_SCHEMA_VERSION {
+            return Err(D::Error::custom("unsupported residual reference schema"));
+        }
+        Ok(Self {
+            checks: wire.checks,
+        })
+    }
+}
+
+fn deserialize_residual_checks<'de, D>(
+    deserializer: D,
+) -> Result<BTreeSet<etas_code::residual::identity::ResidualObligationRef>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeSet<etas_code::residual::identity::ResidualObligationRef>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded sequence of distinct residual references")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            use serde::de::Error;
+            if access
+                .size_hint()
+                .is_some_and(|size| size > MAX_RESIDUAL_CHECK_REFERENCES)
+            {
+                return Err(A::Error::custom("residual reference limit exceeded"));
+            }
+            let mut checks = BTreeSet::new();
+            let mut substitutions = 0usize;
+            while let Some(check) =
+                access.next_element::<etas_code::residual::identity::ResidualObligationRef>()?
+            {
+                if checks.len() >= MAX_RESIDUAL_CHECK_REFERENCES {
+                    return Err(A::Error::custom("residual reference limit exceeded"));
+                }
+                substitutions = substitutions
+                    .checked_add(check.substitutions().len())
+                    .ok_or_else(|| A::Error::custom("residual substitution limit exceeded"))?;
+                if substitutions > MAX_RESIDUAL_TOTAL_SUBSTITUTIONS {
+                    return Err(A::Error::custom("residual substitution limit exceeded"));
+                }
+                if !checks.insert(check) {
+                    return Err(A::Error::custom("duplicate residual reference"));
+                }
+            }
+            Ok(checks)
+        }
+    }
+    deserializer.deserialize_seq(Visitor)
 }
 
 impl PartialOrder for EffectSummary {
@@ -614,6 +843,11 @@ impl PartialOrder for EffectSummary {
             )
             && requirement_set_less_equal(&self.requirements, &other.requirements)
             && self.determinism <= other.determinism
+            && match (self.independent_determinism, other.independent_determinism) {
+                (Some(left), Some(right)) => left <= right,
+                (_, None) => true,
+                (None, Some(_)) => false,
+            }
             && self.support.less_equal(&other.support)
     }
 }
@@ -1061,6 +1295,189 @@ mod tests {
     use super::ActionTraceDomain;
 
     #[test]
+    fn residual_references_roundtrip_and_reject_legacy_or_duplicate_data() {
+        use etas_code::{
+            CodeFingerprint,
+            residual::identity::{
+                GenericArgumentIdentity, GenericParameterId, ObligationId, ResidualObligationRef,
+            },
+        };
+        use std::collections::{BTreeMap, BTreeSet};
+        let fp = |byte| CodeFingerprint::from_bytes([byte; 32]);
+        let reference = ResidualObligationRef::new(
+            ObligationId::from_canonical_fingerprint(fp(1)),
+            BTreeMap::from([(
+                GenericParameterId::from_canonical_fingerprint(fp(2)),
+                GenericArgumentIdentity::Type(fp(3)),
+            )]),
+        )
+        .unwrap();
+        let mut checks = super::ResidualCheckSet::default();
+        assert!(checks.insert(reference));
+        let encoded = bincode::serde::encode_to_vec(&checks, bincode::config::standard()).unwrap();
+        let (decoded, consumed): (super::ResidualCheckSet, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded, checks);
+        let json = serde_json::to_value(&checks).unwrap();
+        let decoded_json: super::ResidualCheckSet = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(decoded_json, checks);
+        let mut duplicated_substitution = json;
+        let substitutions = duplicated_substitution["checks"][0]["substitutions"]
+            .as_array_mut()
+            .unwrap();
+        substitutions.push(substitutions[0].clone());
+        assert!(
+            serde_json::from_value::<super::ResidualCheckSet>(duplicated_substitution).is_err()
+        );
+        let old =
+            bincode::serde::encode_to_vec(BTreeSet::<String>::new(), bincode::config::standard())
+                .unwrap();
+        assert!(
+            bincode::serde::decode_from_slice::<super::ResidualCheckSet, _>(
+                &old,
+                bincode::config::standard()
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<super::ResidualCheckSet>(
+                serde_json::json!({"schema_version": 0, "checks": []})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<super::ResidualCheckSet>(
+                serde_json::json!({"checks": ["legacy"]})
+            )
+            .is_err()
+        );
+
+        let empty_ref = ResidualObligationRef::new(
+            ObligationId::from_canonical_fingerprint(fp(4)),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let duplicate = serde_json::to_value(empty_ref).unwrap();
+        assert!(
+            serde_json::from_value::<super::ResidualCheckSet>(
+                serde_json::json!({"schema_version": 1, "checks": [duplicate.clone(), duplicate]})
+            )
+            .is_err()
+        );
+
+        #[derive(serde::Serialize)]
+        struct WireReference {
+            obligation: ObligationId,
+            substitutions: Vec<(GenericParameterId, GenericArgumentIdentity)>,
+        }
+        let pair = (
+            GenericParameterId::from_canonical_fingerprint(fp(6)),
+            GenericArgumentIdentity::Type(fp(7)),
+        );
+        let wire = WireReference {
+            obligation: ObligationId::from_canonical_fingerprint(fp(5)),
+            substitutions: vec![pair, pair],
+        };
+        let bytes = bincode::serde::encode_to_vec(wire, bincode::config::standard()).unwrap();
+        assert!(
+            bincode::serde::decode_from_slice::<ResidualObligationRef, _>(
+                &bytes,
+                bincode::config::standard()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn oversized_residual_reference_sets_cannot_be_encoded() {
+        use etas_code::{
+            CodeFingerprint,
+            residual::identity::{ObligationId, ResidualObligationRef},
+        };
+        let mut checks = super::ResidualCheckSet::default();
+        for index in 0..=super::MAX_RESIDUAL_CHECK_REFERENCES {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            checks.insert(
+                ResidualObligationRef::new(
+                    ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes(bytes)),
+                    Default::default(),
+                )
+                .unwrap(),
+            );
+        }
+        assert!(bincode::serde::encode_to_vec(&checks, bincode::config::standard()).is_err());
+    }
+
+    #[test]
+    fn residual_reference_substitution_budget_is_aggregate_and_symmetric() {
+        use etas_code::{
+            CodeFingerprint,
+            residual::identity::{
+                GenericArgumentIdentity, GenericParameterId, MAX_RESIDUAL_REFERENCE_SUBSTITUTIONS,
+                ObligationId, ResidualObligationRef,
+            },
+        };
+        use std::collections::BTreeMap;
+        let fingerprint = |index: usize| {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            CodeFingerprint::from_bytes(bytes)
+        };
+        let substitutions = (0..MAX_RESIDUAL_REFERENCE_SUBSTITUTIONS)
+            .map(|index| {
+                (
+                    GenericParameterId::from_canonical_fingerprint(fingerprint(index)),
+                    GenericArgumentIdentity::Type(fingerprint(index)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let at_limit =
+            super::MAX_RESIDUAL_TOTAL_SUBSTITUTIONS / MAX_RESIDUAL_REFERENCE_SUBSTITUTIONS;
+        let mut checks = super::ResidualCheckSet::default();
+        for index in 0..at_limit {
+            checks.insert(
+                ResidualObligationRef::new(
+                    ObligationId::from_canonical_fingerprint(fingerprint(index)),
+                    substitutions.clone(),
+                )
+                .unwrap(),
+            );
+        }
+        let encoded = bincode::serde::encode_to_vec(&checks, bincode::config::standard()).unwrap();
+        let (decoded, consumed): (super::ResidualCheckSet, usize) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert_eq!(decoded, checks);
+        checks.insert(
+            ResidualObligationRef::new(
+                ObligationId::from_canonical_fingerprint(fingerprint(at_limit)),
+                substitutions,
+            )
+            .unwrap(),
+        );
+        assert!(bincode::serde::encode_to_vec(&checks, bincode::config::standard()).is_err());
+        #[derive(serde::Serialize)]
+        struct Wire<'a> {
+            schema_version: u32,
+            checks: Vec<&'a ResidualObligationRef>,
+        }
+        let wire = Wire {
+            schema_version: super::RESIDUAL_CHECK_SCHEMA_VERSION,
+            checks: checks.iter().collect(),
+        };
+        let encoded = bincode::serde::encode_to_vec(wire, bincode::config::standard()).unwrap();
+        assert!(
+            bincode::serde::decode_from_slice::<super::ResidualCheckSet, _>(
+                &encoded,
+                bincode::config::standard()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn widening_keeps_distinct_parameter_identities_with_the_same_name_and_span() {
         let call = |symbol| ActionTraceDomain::ParameterCall {
             target: super::ParameterCallTarget::Native(etas_hir::SymbolId(symbol)),
@@ -1096,6 +1513,41 @@ mod tests {
             panic!("repeated parameter call should widen");
         };
         assert!(actions.is_empty());
+        assert_eq!(parameter_calls.len(), 1);
+        assert_eq!(parameter_calls[0].parameter, "f");
+    }
+
+    #[test]
+    fn deep_trace_widening_preserves_actions_and_parameter_calls() {
+        let registry = crate::EffectRegistry::with_standard_effects();
+        let action =
+            crate::Effect::Action(registry.action_by_name("Console.stdout_write").unwrap());
+        let span = Span::empty(SourceId(7), TextSize(11));
+        let mut trace = ActionTraceDomain::ParameterCall {
+            target: super::ParameterCallTarget::Native(etas_hir::SymbolId(3)),
+            parameter: "f".into(),
+            span,
+        };
+        for _ in 0..20_000 {
+            trace = ActionTraceDomain::Seq(vec![trace]);
+        }
+        let trace = ActionTraceDomain::Seq(vec![
+            trace,
+            ActionTraceDomain::Event(crate::ActionEvent {
+                action: action.clone(),
+                span,
+                source: crate::ActionEventSource::Perform,
+            }),
+        ]);
+        assert!(trace.action_set().iter().any(|found| found == &action));
+        let ActionTraceDomain::Widened {
+            actions,
+            parameter_calls,
+        } = trace.stabilize_for_fixpoint(None)
+        else {
+            panic!("deep trace should widen");
+        };
+        assert!(actions.iter().any(|found| found == &action));
         assert_eq!(parameter_calls.len(), 1);
         assert_eq!(parameter_calls[0].parameter, "f");
     }

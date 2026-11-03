@@ -11,6 +11,7 @@ use crate::{
 /// data. This can fill unavailable observations, never replace a frozen bound.
 pub(crate) struct CompletedBaseline {
     catalog: std::sync::Arc<DefinitionCatalog>,
+    applied: Option<std::sync::Arc<crate::code::definition::FrozenDefinitionContract>>,
 }
 
 pub(super) fn original_overlay(
@@ -29,9 +30,7 @@ pub(super) fn original_overlay(
         .ok_or_else(|| invalid("original body source is unavailable"))?;
     let callable = frozen
         .contract()
-        .header()
-        .default_entry
-        .as_ref()
+        .entry()
         .ok_or_else(|| invalid("original default callable is unavailable"))?;
     let syntax = NativeCodeSyntaxOperations::default();
     let body = match archive.overlaid_body(item) {
@@ -57,10 +56,42 @@ impl CompletedBaseline {
         &self.catalog
     }
 
+    pub(crate) fn callable(
+        &self,
+        id: &etas_code::CallableId,
+    ) -> Option<(
+        &etas_code::descriptor::DescriptorGraph,
+        &etas_code::descriptor::CallableHeaderInfo,
+    )> {
+        match &self.applied {
+            Some(applied) => applied
+                .callable(id)
+                .map(|callable| (applied.descriptors(), callable)),
+            None => self
+                .catalog
+                .callable(id)
+                .map(|callable| (self.catalog.descriptors(), callable)),
+        }
+    }
+
+    pub(crate) fn request_instances(
+        &self,
+        id: &etas_code::CallableId,
+    ) -> Result<
+        Option<std::collections::BTreeSet<etas_code::CodeFingerprint>>,
+        crate::code::descriptor::ProjectionError,
+    > {
+        match &self.applied {
+            Some(applied) => Ok(applied.request_instances(id).cloned()),
+            None => crate::code::definition::callable_request_instances(&self.catalog, id),
+        }
+    }
+
     pub(super) fn verify(
         overlay: &DefaultBodyOverlay,
         checked: &CheckedProgram,
         catalog: std::sync::Arc<DefinitionCatalog>,
+        applied: Option<std::sync::Arc<crate::code::definition::FrozenDefinitionContract>>,
     ) -> Result<Self, CandidateAnalysisError> {
         if !std::sync::Arc::ptr_eq(catalog.checked_program(), checked) {
             return Err(invalid(
@@ -93,23 +124,30 @@ impl CompletedBaseline {
             return Err(invalid("baseline body differs from the immutable original"));
         }
         for (id, expected) in frozen.contract().callables() {
-            let actual = catalog
-                .callable(id)
-                .ok_or_else(|| invalid("baseline callable is unavailable"))?;
+            let (actual_graph, actual) = match &applied {
+                Some(contract) => contract
+                    .callable(id)
+                    .map(|callable| (contract.descriptors(), callable)),
+                None => catalog
+                    .callable(id)
+                    .map(|callable| (catalog.descriptors(), callable)),
+            }
+            .ok_or_else(|| invalid("baseline callable is unavailable"))?;
             if frozen
                 .contract()
                 .descriptors()
                 .type_fingerprint(expected.signature)
                 .map_err(|error| invalid(error.to_string()))?
-                != catalog
-                    .descriptors()
+                != actual_graph
                     .type_fingerprint(actual.signature)
                     .map_err(|error| invalid(error.to_string()))?
             {
-                return Err(invalid("baseline changed a frozen callable interface"));
+                return Err(invalid(format!(
+                    "baseline changed frozen callable interface {id:?}"
+                )));
             }
         }
-        Ok(Self { catalog })
+        Ok(Self { catalog, applied })
     }
 }
 
@@ -118,11 +156,21 @@ pub(super) fn needs_completion(overlay: &DefaultBodyOverlay) -> bool {
         .frozen()
         .contract()
         .callables()
-        .any(|(_, callable)| {
+        .any(|(id, callable)| {
             let analysis = &callable.analysis;
-            analysis.effects.requested.is_none()
+            let missing_residual_summary =
+                overlay.frozen().callable_owner(id).is_none_or(|owner| {
+                    !overlay
+                        .frozen()
+                        .checked()
+                        .effects
+                        .item_effects
+                        .contains_key(&owner)
+                });
+            missing_residual_summary
+                || analysis.effects.requested.is_none()
                 || analysis.effects.escaping.is_none()
-                || analysis.determinism.is_none()
+                || (analysis.determinism.is_none() && analysis.independent_determinism.is_none())
                 || analysis.trace.is_none()
                 || analysis.outcomes.is_none()
         })

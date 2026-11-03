@@ -49,7 +49,8 @@ pub enum SourceChange {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum EnvironmentChange {
-    Replace(ProjectEnvironmentInput),
+    Replace(Box<ProjectEnvironmentInput>),
+    AddOverlaySourceKeys(Vec<crate::ProjectStableSourceKeyInput>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]

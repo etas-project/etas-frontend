@@ -102,9 +102,22 @@ pub struct HirEffectRef {
 pub enum HirEffectArg {
     Type(HirTypeId),
     Path(ResolvedPath),
-    Wildcard { span: Span },
-    String { value: String, span: Span },
-    Int { text: String, span: Span },
+    PatternBinding {
+        name: String,
+        bounds: Vec<HirTypeParamBound>,
+        span: Span,
+    },
+    Wildcard {
+        span: Span,
+    },
+    String {
+        value: String,
+        span: Span,
+    },
+    Int {
+        text: String,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]

@@ -10,8 +10,9 @@ use crate::{CheckedProgramData, ProjectContext, SourceBundle};
 use crate::passes::artifacts::{
     CALLABLE_INSTANTIATIONS, CHECKED_PROJECT, CHECKED_REFLECTION_TARGETS, DEFINITION_SOURCES,
     EFFECT_OUTPUT, GENERIC_EFFECT_BINDINGS, HANDLER_INSTANTIATIONS, HIR_OUTPUT,
-    INTERPRETER_SUPPORT, MODULE_INDEX, PROJECT_ENTRY, REACHABILITY_FACTS, RESOLVED_IMPORTS,
-    TOP_LEVEL_LET_FACTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, VALIDATED_ITEM_ANNOTATIONS,
+    INTERPRETER_SUPPORT, MODULE_INDEX, PROJECT_ENTRY, REACHABILITY_FACTS, RESIDUAL_BACKEND_SUPPORT,
+    RESOLVED_IMPORTS, TOP_LEVEL_LET_FACTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
+    VALIDATED_ITEM_ANNOTATIONS, VERIFIED_RESIDUAL_PLANS,
 };
 
 pub struct BuildCheckedProjectPass;
@@ -27,6 +28,8 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 TYPE_OUTPUT,
                 CHECKED_REFLECTION_TARGETS,
                 EFFECT_OUTPUT,
+                VERIFIED_RESIDUAL_PLANS,
+                RESIDUAL_BACKEND_SUPPORT,
                 INTERPRETER_SUPPORT,
                 PROJECT_ENTRY,
                 REACHABILITY_FACTS,
@@ -48,6 +51,9 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
     ) -> PassResult {
         context.checked = None;
         if !has_blocking_static_diagnostics(&context.diagnostics) {
+            if let Err(reason) = crate::passes::execution::validate_residual_publication(context) {
+                return PassResult::failed(reason);
+            }
             let Some(resolved_imports) = context.resolved_imports.as_ref() else {
                 return PassResult::failed(
                     "checked definition environment is missing resolved imports",
@@ -107,8 +113,36 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             let Some(instantiations) = &context.native_instantiations else {
                 return PassResult::failed("checked program is missing prepared invocation types");
             };
-            context.checked = Some(std::sync::Arc::new(CheckedProgramData {
+            let (Some(residual_plans), Some(residual_support)) =
+                (&context.residual_plans, &context.residual_support)
+            else {
+                return PassResult::failed("checked project requires verified residual artifacts");
+            };
+            let residual = match crate::residual::CheckedResidualPlans::new(
+                residual_plans,
+                residual_support,
+                &context.input.options.residual_target,
+                context.residual_identities.clone(),
+                context
+                    .candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.bound_application.is_some()),
+                context
+                    .candidate
+                    .as_ref()
+                    .map_or_else(Default::default, |candidate| candidate.descriptor_limits),
+            ) {
+                Ok(residual) => residual,
+                Err(reason) => return PassResult::failed(reason),
+            };
+            let mut data = CheckedProgramData {
                 reflection_targets: reflection_targets.clone(),
+                foreign_type_bindings: context
+                    .candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.bound_application.as_ref())
+                    .map(|application| application.foreign_type_bindings.clone())
+                    .unwrap_or_default(),
                 native_instantiations: instantiations.clone(),
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
@@ -116,6 +150,11 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 dependency_metadata_fingerprints: environment
                     .canonical_dependency_metadata_fingerprints(),
                 sources: SourceBundle {
+                    stable_source_keys: context
+                        .sources
+                        .as_ref()
+                        .map(|sources| sources.stable_source_keys.clone())
+                        .unwrap_or_default(),
                     sources: context
                         .sources
                         .as_ref()
@@ -160,7 +199,30 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 entry_fact: entry.clone(),
                 entry: entry.resolved.as_ref().map(|entry| entry.item),
                 reachability: reachability.clone(),
-            }));
+                residual: std::sync::Arc::default(),
+            };
+            // Ordinary plans are bound to their owners' checked revisions only
+            // now that every contract fact has been finalized. A candidate
+            // binds to its frozen-contract revision when it is emitted.
+            if context.candidate.is_none() && !residual.is_empty() {
+                data.residual = std::sync::Arc::new(residual);
+                let binding = match data.residual.bind_ordinary(&data) {
+                    Ok(binding) => binding,
+                    Err(error) => {
+                        return PassResult::failed(format!(
+                            "residual plans cannot be bound to their checked revisions: {error:?}"
+                        ));
+                    }
+                };
+                let Ok(residual) = std::sync::Arc::try_unwrap(std::mem::take(&mut data.residual))
+                else {
+                    return PassResult::failed("residual plans were shared before binding");
+                };
+                data.residual = std::sync::Arc::new(residual.with_binding(binding));
+            } else {
+                data.residual = std::sync::Arc::new(residual);
+            }
+            context.checked = Some(std::sync::Arc::new(data));
         }
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(CHECKED_PROJECT))
     }

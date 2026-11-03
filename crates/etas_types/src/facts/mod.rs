@@ -14,14 +14,15 @@ use std::collections::HashMap;
 use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 
 pub use effects::{
-    CheckedHandlerActionFact, DeferredHandlerInstantiation, EffectActionArgKind,
+    ActionRequestSignature, CheckedActionCallFact, CheckedHandlerActionFact,
+    DeferredHandlerInstantiation, DeferredHandlerOverload, EffectActionArgKind,
     EffectActionSignature, HandlerTypeBinding,
 };
 pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
 mod impl_methods;
 pub use expressions::{
-    CheckedIndexKind, CheckedSliceKind, CheckedStdMethodFact, DeferredEffectRowObligation,
-    FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
+    CheckedIndexKind, CheckedSliceKind, CheckedStdCallFact, DeferredEffectRowObligation,
+    EffectRowEquation, FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
 };
 pub use impl_methods::TypeImplMethodFact;
 pub use inference::CheckedAgentInferenceFact;
@@ -31,11 +32,12 @@ pub use signatures::{
     CallableSignature, FlowSignature, ItemSignature, ToolSignature, TopLevelLetSignature,
 };
 pub use specs::{
-    CallableSpecSatisfactionFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
+    CallableSpecSatisfactionFact, CanonicalSpecFacts, CanonicalSpecImplFact,
+    CanonicalSpecSignatureFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
     ExternalCallableSpecSatisfactionFact, ExternalSpecIdentity, ExternalTraceSpecConformanceFact,
-    ExternalTraceSpecConformanceTarget, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind,
-    SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
-    TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
+    ExternalTraceSpecConformanceTarget, RelocatedSpecFacts, SpecFacts, SpecImplFact,
+    SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
+    SpecSuperBoundFact, TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
     TypeSpecSatisfactionFact,
 };
 pub use symbols::{KnownStdTypes, ResourceHandleFact, SymbolTypeFact};
@@ -44,8 +46,11 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    #[serde(default)]
+    pub canonical_specs: CanonicalSpecFacts,
     pub type_impl_methods: HashMap<SymbolId, TypeImplMethodFact>,
     pub external_specs: specs::ExternalSpecFacts,
+    pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, TypeId)>,
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
     pub reflection_type_identities: HashMap<TypeId, etas_code::DefinitionKey>,
     pub reflection_declaration_identities: HashMap<Vec<String>, etas_code::DefinitionKey>,
@@ -57,9 +62,11 @@ pub struct TypeFacts {
         crate::facts::signatures::AgentMethodSignature,
     >,
     pub agent_method_calls: HashMap<HirExprId, SymbolId>,
-    pub std_method_calls: HashMap<HirExprId, CheckedStdMethodFact>,
+    pub std_intrinsic_calls: HashMap<HirExprId, CheckedStdCallFact>,
+    pub action_calls: HashMap<HirExprId, CheckedActionCallFact>,
     pub expr_types: HashMap<HirExprId, TypeId>,
     pub reflections: HashMap<HirExprId, CheckedReflectionFact>,
+    pub definition_operations: HashMap<HirExprId, reflection::CheckedDefinitionOperation>,
     pub agent_inferences: HashMap<HirExprId, CheckedAgentInferenceFact>,
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, CheckedHandlerActionFact>,
     pub deferred_handler_instantiations:
@@ -136,6 +143,7 @@ impl TypeFacts {
 impl From<&TypeFacts> for SpecFacts {
     fn from(facts: &TypeFacts) -> Self {
         Self {
+            canonical: facts.canonical_specs.clone(),
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
             external_methods: facts.external_specs.methods.clone(),

@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+};
 
 mod rows;
 use rows::EffectRowSubstitution;
@@ -17,19 +20,28 @@ pub enum TypeSubstitutionError {
     MissingTypeIdentity(TypeId),
     MissingEnumLayout(TypeId),
     MissingEffectIdentity(String),
+    MissingSpecIdentity(crate::CheckedSpecRef),
     UnresolvedParameter(TypeId),
     OpenEffectRow(String),
     CyclicType(TypeId),
     CyclicEffectRow(String),
     UnmaterializedType(Type),
+    UnresolvedType(TypeId),
     RepresentationLimit(usize),
     ExpansionDepth(usize),
+    WorkLimit {
+        resource: &'static str,
+        limit: usize,
+    },
     Interrupted(etas_utils::PipelineInterruption),
 }
 
 impl std::fmt::Display for TypeSubstitutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::WorkLimit { resource, limit } => {
+                write!(f, "type substitution exceeds {resource} limit {limit}")
+            }
             Self::Interrupted(interruption) => {
                 write!(f, "type substitution interrupted: {}", interruption.reason)
             }
@@ -53,12 +65,15 @@ impl std::fmt::Display for TypeSubstitutionError {
             Self::MissingEffectIdentity(name) => {
                 write!(f, "effect has no checked relocation identity: {name}")
             }
+            Self::MissingSpecIdentity(spec) => {
+                write!(f, "spec has no checked relocation identity: {spec:?}")
+            }
             Self::UnresolvedParameter(ty) => {
                 write!(f, "unresolved generic value type at {ty:?}")
             }
             Self::OpenEffectRow(name) => write!(
                 f,
-                "runtime type relocation requires a closed effect row, found `{name}`"
+                "type application requires a closed effect row, found `{name}`"
             ),
             Self::CyclicType(ty) => write!(f, "type graph contains a cycle at {ty:?}"),
             Self::CyclicEffectRow(name) => {
@@ -67,11 +82,85 @@ impl std::fmt::Display for TypeSubstitutionError {
             Self::UnmaterializedType(ty) => {
                 write!(f, "specialized type was not materialized: {ty:?}")
             }
+            Self::UnresolvedType(ty) => {
+                write!(
+                    f,
+                    "closed type application contains an unresolved type: {ty:?}"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for TypeSubstitutionError {}
+
+/// A shared budget for all substitutions in one compiler operation.
+pub struct TypeSubstitutionBudget<'a> {
+    max_nodes: usize,
+    max_edges: usize,
+    nodes: Cell<usize>,
+    edges: Cell<usize>,
+    control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
+}
+
+impl<'a> TypeSubstitutionBudget<'a> {
+    pub fn new(
+        max_nodes: usize,
+        max_edges: usize,
+        control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
+    ) -> Self {
+        Self {
+            max_nodes,
+            max_edges,
+            nodes: Cell::new(0),
+            edges: Cell::new(0),
+            control,
+        }
+    }
+
+    fn checkpoint(&self) -> Result<(), TypeSubstitutionError> {
+        if let Some(control) = self.control {
+            control
+                .checkpoint()
+                .map_err(TypeSubstitutionError::Interrupted)?;
+        }
+        Ok(())
+    }
+
+    fn charge(
+        &self,
+        resource: &'static str,
+        count: &Cell<usize>,
+        amount: usize,
+        limit: usize,
+    ) -> Result<(), TypeSubstitutionError> {
+        self.checkpoint()?;
+        let next = count
+            .get()
+            .checked_add(amount)
+            .ok_or(TypeSubstitutionError::WorkLimit { resource, limit })?;
+        if next > limit {
+            return Err(TypeSubstitutionError::WorkLimit { resource, limit });
+        }
+        count.set(next);
+        Ok(())
+    }
+
+    pub(super) fn node(&self) -> Result<(), TypeSubstitutionError> {
+        self.charge("nodes", &self.nodes, 1, self.max_nodes)
+    }
+    pub(super) fn edges(&self, amount: usize) -> Result<(), TypeSubstitutionError> {
+        self.charge("edges", &self.edges, amount, self.max_edges)
+    }
+
+    pub fn charge_node(&self) -> Result<(), TypeSubstitutionError> {
+        self.node()
+    }
+
+    pub fn charge_edges(&self, amount: usize) -> Result<(), TypeSubstitutionError> {
+        self.edges(amount)
+    }
+}
 
 enum SubstitutionTarget<'a> {
     Materialize(&'a mut TypeInterner),
@@ -97,21 +186,65 @@ pub struct TypeRelocationMaterializationInput<'a> {
     pub effect_names: &'a HashMap<String, String>,
 }
 
+pub fn canonical_parameters_for_application(
+    store: &TypeStore,
+    constructor: TypeId,
+    arguments: &[TypeId],
+) -> Result<HashMap<super::CanonicalTypeParameterIdentity, TypeId>, TypeSubstitutionError> {
+    let Some(owner) = store.nominal_identity(constructor) else {
+        return Ok(HashMap::new());
+    };
+    arguments
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, ty)| {
+            let index = u32::try_from(index)
+                .map_err(|_| TypeSubstitutionError::InvalidApplication(constructor))?;
+            let identity = super::CanonicalTypeParameterIdentity::new(owner.clone(), index)
+                .map_err(|_| TypeSubstitutionError::InvalidApplication(constructor))?;
+            Ok((identity, ty))
+        })
+        .collect()
+}
+
 pub struct TypeSubstitutionEngine<'a> {
     target: SubstitutionTarget<'a>,
+    existing_lookup: Option<&'a super::TypeLookupIndex>,
+    relocation_overrides: Option<&'a HashMap<TypeId, TypeId>>,
     named: Option<&'a HashMap<String, TypeId>>,
+    parameters: Option<&'a HashMap<etas_hir::SymbolId, TypeId>>,
+    canonical_parameters: Option<&'a HashMap<super::CanonicalTypeParameterIdentity, TypeId>>,
     variables: Option<&'a Substitution>,
-    parameters: Option<&'a HashMap<TypeId, TypeId>>,
+    type_parameters: Option<&'a HashMap<TypeId, TypeId>>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
     memo: HashMap<TypeId, TypeId>,
     memo_depths: HashMap<TypeId, usize>,
     expansion_depth: Option<usize>,
+    budget: Option<&'a TypeSubstitutionBudget<'a>>,
     control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
 }
 
 impl<'a> TypeSubstitutionEngine<'a> {
+    /// Whether this engine leaves identities in the existing type universe
+    /// unchanged. Relocation and materialization are never identity mappings.
+    pub fn is_identity_mapping(&self) -> bool {
+        matches!(self.target, SubstitutionTarget::Existing(_))
+            && self.named.is_none_or(HashMap::is_empty)
+            && self.parameters.is_none_or(HashMap::is_empty)
+            && self.type_parameters.is_none_or(HashMap::is_empty)
+            && self.canonical_parameters.is_none_or(HashMap::is_empty)
+            && self
+                .variables
+                .is_none_or(|values| values.iter().next().is_none())
+            && self.effect_rows.as_ref().is_none_or(|rows| match rows {
+                EffectRowSubstitution::Arguments(values)
+                | EffectRowSubstitution::Equations(values) => values.is_empty(),
+            })
+    }
+
     pub fn materializing(
         interner: &'a mut TypeInterner,
         named: &'a HashMap<String, TypeId>,
@@ -119,15 +252,20 @@ impl<'a> TypeSubstitutionEngine<'a> {
     ) -> Self {
         Self {
             target: SubstitutionTarget::Materialize(interner),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: Some(named),
-            variables,
             parameters: None,
+            canonical_parameters: None,
+            variables,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            budget: None,
             control: None,
         }
     }
@@ -135,17 +273,33 @@ impl<'a> TypeSubstitutionEngine<'a> {
     pub fn existing(store: &'a TypeStore, named: &'a HashMap<String, TypeId>) -> Self {
         Self {
             target: SubstitutionTarget::Existing(store),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: Some(named),
-            variables: None,
             parameters: None,
+            canonical_parameters: None,
+            variables: None,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            budget: None,
             control: None,
         }
+    }
+
+    /// Read already-materialized types using an index built for this store.
+    pub fn existing_indexed(
+        store: &'a TypeStore,
+        lookup: &'a super::TypeLookupIndex,
+        named: &'a HashMap<String, TypeId>,
+    ) -> Self {
+        let mut engine = Self::existing(store, named);
+        engine.existing_lookup = Some(lookup);
+        engine
     }
 
     pub fn existing_with_variables(
@@ -166,8 +320,13 @@ impl<'a> TypeSubstitutionEngine<'a> {
         self
     }
 
+    pub fn with_budget(mut self, budget: &'a TypeSubstitutionBudget<'a>) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
     pub fn with_type_parameters(mut self, parameters: &'a HashMap<TypeId, TypeId>) -> Self {
-        self.parameters = Some(parameters);
+        self.type_parameters = Some(parameters);
         self.memo.clear();
         self.memo_depths.clear();
         self
@@ -187,6 +346,9 @@ impl<'a> TypeSubstitutionEngine<'a> {
                 .checkpoint()
                 .map_err(TypeSubstitutionError::Interrupted)?;
         }
+        if let Some(budget) = self.budget {
+            budget.checkpoint()?;
+        }
         Ok(())
     }
 
@@ -205,15 +367,20 @@ impl<'a> TypeSubstitutionEngine<'a> {
     pub fn relocating(input: TypeRelocationInput<'a>) -> Self {
         Self {
             target: SubstitutionTarget::Relocate(input),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: None,
-            variables: None,
             parameters: None,
+            canonical_parameters: None,
+            variables: None,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            budget: None,
             control: None,
         }
     }
@@ -221,15 +388,20 @@ impl<'a> TypeSubstitutionEngine<'a> {
     pub fn relocating_materialized(input: TypeRelocationMaterializationInput<'a>) -> Self {
         Self {
             target: SubstitutionTarget::RelocateMaterialize(input),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: None,
-            variables: None,
             parameters: None,
+            canonical_parameters: None,
+            variables: None,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
             memo_depths: HashMap::new(),
             expansion_depth: None,
+            budget: None,
             control: None,
         }
     }
@@ -239,6 +411,38 @@ impl<'a> TypeSubstitutionEngine<'a> {
             self.target,
             SubstitutionTarget::Relocate(_) | SubstitutionTarget::RelocateMaterialize(_)
         )
+    }
+
+    /// Materialize checked scope-local mappings without copying the shared
+    /// declaration map.
+    pub fn relocating_materialized_with_overrides(
+        input: TypeRelocationMaterializationInput<'a>,
+        overrides: &'a HashMap<TypeId, TypeId>,
+    ) -> Self {
+        let mut engine = Self::relocating_materialized(input);
+        engine.relocation_overrides = Some(overrides);
+        engine
+    }
+
+    /// Source binders are identified by symbols, not by reusable display names.
+    pub fn with_source_parameters(
+        mut self,
+        parameters: &'a HashMap<etas_hir::SymbolId, TypeId>,
+    ) -> Self {
+        self.parameters = Some(parameters);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
+    pub fn with_canonical_parameters(
+        mut self,
+        parameters: &'a HashMap<super::CanonicalTypeParameterIdentity, TypeId>,
+    ) -> Self {
+        self.canonical_parameters = Some(parameters);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
     }
 
     pub fn substitute(&mut self, ty: TypeId) -> Result<TypeId, TypeSubstitutionError> {
@@ -279,15 +483,17 @@ impl<'a> TypeSubstitutionEngine<'a> {
                     return Err(TypeSubstitutionError::CyclicType(current));
                 }
                 self.check_expansion_depth()?;
+                if let Some(budget) = self.budget {
+                    budget.node()?;
+                }
                 self.active.insert(current);
                 entered.push(current);
                 pending.push((current, true));
-                pending.extend(
-                    self.dependencies(current)?
-                        .into_iter()
-                        .rev()
-                        .map(|child| (child, false)),
-                );
+                let dependencies = self.dependencies(current)?;
+                if let Some(budget) = self.budget {
+                    budget.edges(dependencies.len())?;
+                }
+                pending.extend(dependencies.into_iter().rev().map(|child| (child, false)));
             }
             self.memo
                 .get(&ty)
@@ -298,6 +504,67 @@ impl<'a> TypeSubstitutionEngine<'a> {
             self.active.remove(&current);
         }
         result
+    }
+
+    pub fn validate_closed_argument(&self, ty: TypeId) -> Result<(), TypeSubstitutionError> {
+        let mut pending = vec![ty];
+        let mut visited = HashSet::new();
+        while let Some(current) = pending.pop() {
+            if let Some(budget) = self.budget {
+                budget.checkpoint()?;
+            }
+            if !visited.insert(current) {
+                continue;
+            }
+            if let Some(budget) = self.budget {
+                budget.node()?;
+            }
+            let data = self.require_type(current)?;
+            match &data {
+                Type::Var(_) | Type::Named(_) => {
+                    return Err(TypeSubstitutionError::UnresolvedType(current));
+                }
+                Type::Function(flow) => {
+                    let row = flow
+                        .effects
+                        .as_ref()
+                        .ok_or(TypeSubstitutionError::UnresolvedType(current))?;
+                    require_closed_argument_row(row)?;
+                }
+                Type::Handler(handler) => {
+                    require_closed_argument_row(&handler.handled)?;
+                    if let HandlerProducedEffects::Explicit(row) = &handler.produced {
+                        require_closed_argument_row(row)?;
+                    }
+                }
+                _ => {}
+            }
+            let dependencies = self.dependencies(current)?;
+            if let Some(budget) = self.budget {
+                budget.edges(dependencies.len())?;
+            }
+            pending.extend(dependencies);
+        }
+        Ok(())
+    }
+
+    pub fn validate_closed_effect_argument(
+        &self,
+        row: &EffectRowRef,
+    ) -> Result<(), TypeSubstitutionError> {
+        require_closed_argument_row(row)?;
+        for effect in &row.effects {
+            if let Some(budget) = self.budget {
+                budget.node()?;
+                budget.edges(effect.args.len())?;
+            }
+            for argument in &effect.args {
+                if let EffectArgRef::Type(ty) = argument {
+                    self.validate_closed_argument(*ty)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn check_expansion_depth(&self) -> Result<(), TypeSubstitutionError> {
@@ -314,7 +581,9 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let mapped = match &self.target {
             SubstitutionTarget::Relocate(input) => input.declaration_types.contains_key(&ty),
             SubstitutionTarget::RelocateMaterialize(input) => {
-                input.declaration_types.contains_key(&ty)
+                self.relocation_overrides
+                    .is_some_and(|map| map.contains_key(&ty))
+                    || input.declaration_types.contains_key(&ty)
             }
             _ => false,
         };
@@ -427,7 +696,10 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return Ok(*mapped);
         }
         if let SubstitutionTarget::RelocateMaterialize(input) = &self.target
-            && let Some(mapped) = input.declaration_types.get(&ty)
+            && let Some(mapped) = self
+                .relocation_overrides
+                .and_then(|map| map.get(&ty))
+                .or_else(|| input.declaration_types.get(&ty))
         {
             input
                 .target
@@ -592,6 +864,8 @@ impl<'a> TypeSubstitutionEngine<'a> {
         // unique solver variables may be normalized inside them.
         let named = self.named.take();
         let parameters = self.parameters.take();
+        let type_parameters = self.type_parameters.take();
+        let canonical_parameters = self.canonical_parameters.take();
         let rows = self.effect_rows.take();
         let memo = std::mem::take(&mut self.memo);
         let depths = std::mem::take(&mut self.memo_depths);
@@ -599,6 +873,8 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let result = self.substitute(ty);
         self.named = named;
         self.parameters = parameters;
+        self.type_parameters = type_parameters;
+        self.canonical_parameters = canonical_parameters;
         self.effect_rows = rows;
         self.memo = memo;
         self.memo_depths = depths;
@@ -607,11 +883,27 @@ impl<'a> TypeSubstitutionEngine<'a> {
     }
 
     fn replacement(&self, id: TypeId, ty: &Type) -> Option<TypeId> {
-        if let Some(replacement) = self.parameters.and_then(|params| params.get(&id)) {
+        if let Some(replacement) = self.type_parameters.and_then(|params| params.get(&id)) {
             return Some(*replacement);
         }
+        let store = match &self.target {
+            SubstitutionTarget::Materialize(interner) => interner.store(),
+            SubstitutionTarget::Existing(store) => store,
+            SubstitutionTarget::Relocate(input) => input.source,
+            SubstitutionTarget::RelocateMaterialize(input) => input.source,
+        };
+        if let Some(identity) = store.parameter_identity(id) {
+            return self
+                .canonical_parameters
+                .and_then(|parameters| parameters.get(identity).copied());
+        }
         match ty {
-            Type::Named(name) => self.named.and_then(|named| named.get(&name.name).copied()),
+            Type::Named(name) => match self.parameters {
+                Some(parameters) => name
+                    .source_parameter
+                    .and_then(|symbol| parameters.get(&symbol).copied()),
+                None => self.named.and_then(|named| named.get(&name.name).copied()),
+            },
             Type::Var(var) => self.variables.and_then(|variables| variables.get(*var)),
             _ => None,
         }
@@ -641,16 +933,29 @@ impl<'a> TypeSubstitutionEngine<'a> {
         }
         match &mut self.target {
             SubstitutionTarget::Materialize(interner) => Ok(interner.intern(specialized)),
-            SubstitutionTarget::Existing(store) => store
-                .iter()
-                .find_map(|(id, candidate)| (candidate == &specialized).then_some(id))
-                .ok_or(TypeSubstitutionError::UnmaterializedType(specialized)),
+            SubstitutionTarget::Existing(store) => {
+                let found = if let Some(lookup) = self.existing_lookup {
+                    lookup.get(store, &specialized)
+                } else {
+                    store
+                        .iter()
+                        .find_map(|(id, candidate)| (candidate == &specialized).then_some(id))
+                };
+                found.ok_or(TypeSubstitutionError::UnmaterializedType(specialized))
+            }
             SubstitutionTarget::Relocate(input) => input
                 .target_types
                 .get(input.target, &specialized)
                 .ok_or(TypeSubstitutionError::UnmaterializedType(specialized)),
             SubstitutionTarget::RelocateMaterialize(input) => Ok(input.target.intern(specialized)),
         }
+    }
+}
+
+fn require_closed_argument_row(row: &EffectRowRef) -> Result<(), TypeSubstitutionError> {
+    match &row.tail {
+        Some(tail) => Err(TypeSubstitutionError::OpenEffectRow(tail.clone())),
+        None => Ok(()),
     }
 }
 
@@ -758,6 +1063,7 @@ mod tests {
         }));
         let concrete_arg = interner.primitive(PrimitiveType::I32);
         let wrapper = interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Wrapper".to_owned(),
             params: vec!["T".to_owned()],
             representation: None,
@@ -954,6 +1260,7 @@ mod tests {
     fn relocation_reuses_the_substitution_walk_for_nested_callable_and_handler_types() {
         let mut source = TypeInterner::new();
         let a = source.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.UserId".into(),
             params: vec![],
             representation: None,
@@ -971,11 +1278,13 @@ mod tests {
         }));
         let mut target = TypeInterner::new();
         target.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.Unrelated".into(),
             params: vec![],
             representation: None,
         }));
         let a2 = target.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.UserId".into(),
             params: vec![],
             representation: None,
@@ -1013,6 +1322,7 @@ mod tests {
     fn relocation_rejects_unproven_nominal_names_and_open_effect_rows() {
         let mut interner = TypeInterner::new();
         let nominal = interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.SameName".into(),
             params: vec![],
             representation: None,
@@ -1051,6 +1361,7 @@ mod tests {
     fn relocation_materializes_aggregate_types_without_inventing_declaration_identity() {
         let mut source = TypeInterner::new();
         let nominal = source.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.Id".into(),
             params: vec![],
             representation: None,
@@ -1060,6 +1371,7 @@ mod tests {
         let mut target = TypeInterner::new();
         target.primitive(PrimitiveType::Bool);
         let destination = target.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.Id".into(),
             params: vec![],
             representation: None,
@@ -1210,6 +1522,33 @@ mod tests {
     }
 
     #[test]
+    fn indexed_readonly_substitution_requires_an_existing_result() {
+        let mut interner = TypeInterner::new();
+        let parameter = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let boolean = interner.primitive(PrimitiveType::Bool);
+        let integer = interner.primitive(PrimitiveType::I32);
+        let template = interner.intern(Type::Option(parameter));
+        let expected = interner.intern(Type::Option(boolean));
+        let store = interner.into_store();
+        let index = super::super::TypeLookupIndex::new(&store);
+        let known = HashMap::from([("T".into(), boolean)]);
+        assert_eq!(
+            TypeSubstitutionEngine::existing_indexed(&store, &index, &known).substitute(template),
+            Ok(expected)
+        );
+        let unknown = HashMap::from([("T".into(), integer)]);
+        assert_eq!(
+            TypeSubstitutionEngine::existing_indexed(&store, &index, &unknown).substitute(template),
+            Err(TypeSubstitutionError::UnmaterializedType(Type::Option(
+                integer
+            )))
+        );
+    }
+
+    #[test]
     fn simultaneous_named_arguments_still_normalize_solver_variables() {
         let mut interner = TypeInterner::new();
         let parameter = interner.intern(Type::Named(NamedTypeRef {
@@ -1229,8 +1568,162 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_interrupts_a_single_type_and_effect_row_substitution() {
+    fn source_parameter_substitution_does_not_capture_same_spelled_binders() {
+        let mut interner = TypeInterner::new();
+        let own = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(etas_hir::SymbolId(31)),
+            name: "T".into(),
+        }));
+        let other = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(etas_hir::SymbolId(32)),
+            name: "T".into(),
+        }));
+        let external = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let boolean = interner.primitive(PrimitiveType::Bool);
+        let integer = interner.primitive(PrimitiveType::I32);
+        let template = interner.intern(Type::Tuple(vec![own, other, external]));
+        let expected = interner.intern(Type::Tuple(vec![boolean, other, external]));
+        let names = HashMap::from([("T".into(), integer)]);
+        let parameters = HashMap::from([(etas_hir::SymbolId(31), boolean)]);
+        assert_eq!(
+            TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+                .with_source_parameters(&parameters)
+                .substitute(template),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn relocation_uses_scope_overrides_without_copying_base_declarations() {
+        let mut source = TypeStore::new();
+        let binder = source.intern(Type::Named(NamedTypeRef {
+            name: "T".into(),
+            source_parameter: None,
+        }));
+        let declaration = source.intern(Type::Named(NamedTypeRef {
+            name: "U".into(),
+            source_parameter: None,
+        }));
+        let tuple = source.intern(Type::Tuple(vec![binder, declaration]));
+        let mut target = TypeInterner::new();
+        let boolean = target.primitive(PrimitiveType::Bool);
+        let integer = target.primitive(PrimitiveType::I32);
+        let base = HashMap::from([(declaration, integer)]);
+        let scoped = HashMap::from([(binder, boolean)]);
+        let names = HashMap::new();
+        let mapped = TypeSubstitutionEngine::relocating_materialized_with_overrides(
+            super::TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &base,
+                effect_names: &names,
+            },
+            &scoped,
+        )
+        .substitute(tuple)
+        .unwrap();
+        assert_eq!(
+            target.store().get(mapped),
+            Some(&Type::Tuple(vec![boolean, integer]))
+        );
+        assert_eq!(base, HashMap::from([(declaration, integer)]));
+    }
+
+    #[test]
+    fn relocation_budget_is_shared_across_engines_and_bounds_edges() {
+        let mut source = TypeStore::new();
+        let boolean = source.intern(Type::Primitive(PrimitiveType::Bool));
+        let tuple = source.intern(Type::Tuple(vec![boolean, boolean]));
+        let declarations = HashMap::new();
+        let names = HashMap::new();
+        let budget = super::TypeSubstitutionBudget::new(2, 2, None);
+        let mut target = TypeInterner::new();
+        let mut engine = TypeSubstitutionEngine::relocating_materialized(
+            super::TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &names,
+            },
+        )
+        .with_budget(&budget);
+        assert!(engine.substitute(tuple).is_ok());
+        let mut target = TypeInterner::new();
+        let mut another = TypeSubstitutionEngine::relocating_materialized(
+            super::TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &names,
+            },
+        )
+        .with_budget(&budget);
+        assert_eq!(
+            another.substitute(boolean),
+            Err(TypeSubstitutionError::WorkLimit {
+                resource: "nodes",
+                limit: 2
+            })
+        );
+        let edge_budget = super::TypeSubstitutionBudget::new(10, 1, None);
+        let mut target = TypeInterner::new();
+        let mut limited = TypeSubstitutionEngine::relocating_materialized(
+            super::TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &names,
+            },
+        )
+        .with_budget(&edge_budget);
+        assert_eq!(
+            limited.substitute(tuple),
+            Err(TypeSubstitutionError::WorkLimit {
+                resource: "edges",
+                limit: 1
+            })
+        );
+    }
+
+    #[test]
+    fn relocation_propagates_cancellation_without_returning_a_type() {
+        struct Cancel;
+        impl etas_utils::PipelineExecutionControl for Cancel {
+            fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+                Err(etas_utils::PipelineInterruption {
+                    kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                    reason: "cancel type relocation".into(),
+                })
+            }
+        }
+        let mut source = TypeStore::new();
+        let boolean = source.intern(Type::Primitive(PrimitiveType::Bool));
+        let declarations = HashMap::new();
+        let names = HashMap::new();
+        let budget = super::TypeSubstitutionBudget::new(10, 10, Some(&Cancel));
+        let mut target = TypeInterner::new();
+        let mut engine = TypeSubstitutionEngine::relocating_materialized(
+            super::TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &names,
+            },
+        )
+        .with_budget(&budget);
+        assert!(matches!(
+            engine.substitute(boolean),
+            Err(TypeSubstitutionError::Interrupted(_))
+        ));
+    }
+
+    #[test]
+    fn substitution_observes_cancellation_within_a_single_type_and_effect_row() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+
         struct StopAfter(AtomicUsize);
         impl etas_utils::PipelineExecutionControl for StopAfter {
             fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
@@ -1243,6 +1736,7 @@ mod tests {
                 Ok(())
             }
         }
+
         let mut interner = TypeInterner::new();
         let boolean = interner.primitive(PrimitiveType::Bool);
         let tuple = interner.intern(Type::Tuple(vec![boolean, boolean]));

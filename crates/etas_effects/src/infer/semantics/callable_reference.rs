@@ -48,6 +48,12 @@ impl EffectSemantics<'_> {
                 .ok_or_else(|| invalid("standard reference has no checked intrinsic summary"))?
                 .summary
                 .clone(),
+            LatentSource::ExternalFrozen { reflection } => {
+                self.external_frozen_summary(reflection, span)?
+            }
+            LatentSource::ExternalReference { value, .. } => {
+                self.external_reference_summary(value, span)?
+            }
             _ => {
                 return Err(invalid(
                     "summary target is not a checked callable reference",
@@ -65,7 +71,10 @@ impl EffectSemantics<'_> {
         target: CallableReferenceTarget,
         value: HirExprId,
     ) -> Option<CallableReturnReference> {
-        let signature = *self.types.facts.expr_types.get(&value)?;
+        let mut signature = *self.types.facts.expr_types.get(&value)?;
+        if self.types.facts.reflections.contains_key(&value) {
+            signature = self.descriptor_contract_type(signature)?;
+        }
         if !matches!(self.types.store.get(signature), Some(Type::Function(_))) {
             return None;
         }
@@ -93,6 +102,53 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn collect_callable_references(&mut self) {
+        for expr in self.types.facts.expr_types.keys() {
+            if !matches!(self.hir.exprs.get(*expr), Some(HirExpr::Path(_))) {
+                continue;
+            }
+            let Some(callable) = self
+                .external_reference_metadata(*expr)
+                .and_then(|metadata| metadata.callable_contract.as_ref())
+                .map(|contract| contract.header.id.clone())
+            else {
+                continue;
+            };
+            for frozen in [false, true] {
+                if let Some(key) = self.callable_reference_key(
+                    CallableReferenceTarget::External {
+                        callable: callable.clone(),
+                        frozen,
+                        reflection: false,
+                    },
+                    *expr,
+                ) {
+                    self.callable_references.insert(
+                        key,
+                        LatentSource::ExternalReference {
+                            value: *expr,
+                            frozen,
+                        },
+                    );
+                }
+            }
+        }
+        for (expr, fact) in &self.types.facts.reflections {
+            if let etas_types::CheckedReflectionTarget::ExternalCallable { callable, .. } =
+                &fact.target
+                && self.external_reflection_metadata(*expr).is_some()
+                && let Some(key) = self.callable_reference_key(
+                    CallableReferenceTarget::External {
+                        callable: callable.clone(),
+                        frozen: true,
+                        reflection: true,
+                    },
+                    *expr,
+                )
+            {
+                self.callable_references
+                    .insert(key, LatentSource::ExternalFrozen { reflection: *expr });
+            }
+        }
         for (expr, fact) in &self.inputs.std_callable_values {
             if let Some(key) = self.callable_reference_key(
                 CallableReferenceTarget::StdIntrinsic(fact.intrinsic),
@@ -108,11 +164,19 @@ impl EffectSemantics<'_> {
             }
         }
         for expr in self.types.facts.generic_instantiations.keys() {
-            let Some(HirExpr::Path(path)) = self.hir.exprs.get(*expr) else {
-                continue;
-            };
-            let ResolveResult::Resolved(symbol) = path.resolution else {
-                continue;
+            let symbol = match self.hir.exprs.get(*expr) {
+                Some(HirExpr::Path(path)) => match path.resolution {
+                    ResolveResult::Resolved(symbol) => symbol,
+                    _ => continue,
+                },
+                Some(HirExpr::Reflect(_)) => match self.types.facts.reflections.get(expr) {
+                    Some(etas_types::CheckedReflectionFact {
+                        target: etas_types::CheckedReflectionTarget::Callable { declaration },
+                        ..
+                    }) => *declaration,
+                    _ => continue,
+                },
+                _ => continue,
             };
             let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
                 continue;

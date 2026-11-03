@@ -43,6 +43,9 @@ impl Relocation<'_> {
             {
                 for source in sources {
                     match source {
+                        CallableReturnSource::FrozenContract { environment, .. } => {
+                            pending.extend(environment)
+                        }
                         CallableReturnSource::Captured { environment, .. } => {
                             pending.push(*environment)
                         }
@@ -87,6 +90,46 @@ impl Relocation<'_> {
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
                     let origin = match *origin {
+                        CallableValueOrigin::ExternalReference { .. } => {
+                            return Err(invalid(
+                                "captured external callable reference lacks checked relocation facts",
+                            ));
+                        }
+                        CallableValueOrigin::ExternalFrozen { reflection } => {
+                            let target = self.captured_expr(reflection)?;
+                            let original = self
+                                .original
+                                .types
+                                .reflections
+                                .get(&reflection)
+                                .ok_or_else(|| {
+                                    invalid(
+                                        "captured external reflection has no checked source target",
+                                    )
+                                })?;
+                            let relocated =
+                                self.target.types.reflections.get(&target).ok_or_else(|| {
+                                    invalid("captured external reflection has no checked target")
+                                })?;
+                            if original.target != relocated.target {
+                                return Err(invalid("captured external reflection target changed"));
+                            }
+                            CallableValueOrigin::ExternalFrozen { reflection: target }
+                        }
+                        CallableValueOrigin::FrozenContract {
+                            unit,
+                            reference,
+                            environment,
+                        } => {
+                            pending.extend(environment);
+                            CallableValueOrigin::FrozenContract {
+                                unit: self.captured_unit(unit)?,
+                                reference: reference
+                                    .map(|value| self.captured_expr(value))
+                                    .transpose()?,
+                                environment,
+                            }
+                        }
                         CallableValueOrigin::MetadataSpecMethod {
                             invocation,
                             environment,
@@ -205,6 +248,10 @@ impl Relocation<'_> {
                 let value = match value {
                     V::Type(ty) => V::Type(self.ty(scope, *ty)?),
                     V::EffectRow(row) => V::EffectRow(self.row(row, scope)?),
+                    V::EffectRowFromCall { row, source } => V::EffectRowFromCall {
+                        row: self.row(row, scope)?,
+                        source: self.captured_expr(*source)?,
+                    },
                 };
                 generics.insert(parameter, value);
             }

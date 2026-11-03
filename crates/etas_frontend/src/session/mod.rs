@@ -49,6 +49,7 @@ pub enum FrontendSessionError {
     MissingSource(SourceId),
     DuplicateSource(SourceId),
     DuplicateSourcePath(PathBuf),
+    InvalidOverlaySourceIdentity(SourceId),
     EmptyDependencyOverlay {
         package: ExternalPackageId,
         import_root: String,
@@ -174,6 +175,17 @@ where
             .check_with_memory_probe(request, probe)
     }
 
+    pub fn check_controlled(
+        &mut self,
+        project: ProjectSessionId,
+        request: CheckRequest,
+        control: Arc<dyn etas_utils::PipelineExecutionControl>,
+    ) -> Result<CheckResponse, FrontendSessionError> {
+        let probe = self.memory_probe;
+        self.project_mut(project)?
+            .check_controlled_with_memory_probe(request, probe, control)
+    }
+
     pub fn set_memory_probe(&mut self, probe: Option<FrontendMemoryProbe>) {
         self.memory_probe = probe;
     }
@@ -212,7 +224,7 @@ where
     pub fn analyze_body_overlay_with_dependencies(
         &mut self,
         overlay: crate::code::draft::DefaultBodyOverlay,
-        dependency_sources: Vec<crate::SourceInput>,
+        dependency_sources: Vec<crate::code::service::CandidateDependencySource>,
         descriptor_limits: etas_code::descriptor::DescriptorLimits,
         control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
     ) -> Result<

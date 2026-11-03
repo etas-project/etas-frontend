@@ -63,6 +63,7 @@ flow main() -> i32 { return handle { hidden() } with { Echo.value(_) => { resume
                 arm,
                 etas_types::DeferredHandlerInstantiation {
                     body,
+                    overload: None,
                     span,
                     parameters: vec![etas_types::HandlerTypeBinding {
                         parameter: "T".into(),

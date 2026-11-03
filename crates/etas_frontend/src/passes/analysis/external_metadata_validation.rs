@@ -14,23 +14,32 @@ use crate::{
 };
 
 use crate::passes::artifacts::{
-    RESOLVED_IMPORTS, VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
+    MODULE_CATALOG, MODULE_INDEX, RESOLVED_IMPORTS, SOURCE_SET, VALIDATED_EXTERNAL_ENVIRONMENT,
+    global_with_diagnostics,
 };
 
 #[cfg(test)]
 mod scope_tests;
+#[cfg(test)]
+mod source_origin_tests;
 
 mod dependencies;
 mod origins;
 mod requests;
 mod specs;
+mod trace_aliases;
 
 pub struct ValidateExternalEnvironmentPass;
 
 impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("ValidateExternalEnvironmentPass", PassKind::Analysis)
-            .requires(ArtifactSet::one(RESOLVED_IMPORTS))
+            .requires(ArtifactSet::from([
+                RESOLVED_IMPORTS,
+                SOURCE_SET,
+                MODULE_INDEX,
+                MODULE_CATALOG,
+            ]))
             .produces(global_with_diagnostics([VALIDATED_EXTERNAL_ENVIRONMENT]))
     }
 
@@ -41,7 +50,41 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let environment = context.input.environment.clone();
-        if let Err(error) = validate_external_environment(&environment) {
+        let Some(sources) = context.sources.as_ref() else {
+            return PassResult::failed("source package validation requires the source set");
+        };
+        let Some(modules) = context.modules.as_ref() else {
+            return PassResult::failed("source package validation requires the module index");
+        };
+        let validation = validate_source_package_bindings(
+            &environment,
+            sources.files.iter().map(|source| (source.id, &source.kind)),
+        )
+        .and_then(|()| validate_module_package_bindings(&environment, sources, modules));
+        if let Err(error) = validation {
+            let Some(source) = sources
+                .files
+                .iter()
+                .find(|source| source.id == error.source)
+            else {
+                return PassResult::failed(format!(
+                    "source package binding has no source: {}",
+                    error.source.0
+                ));
+            };
+            let span = etas_core::Span::new(
+                source.id,
+                etas_core::TextRange::new(etas_core::TextSize(0), etas_core::TextSize(0)),
+            );
+            context.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                error.reason,
+            ));
+            context.validated_external_environment = None;
+            return PassResult::stop();
+        }
+        if let Err(error) = validate_external_environment(&environment, &context.std_registry) {
             let Some(package) = error.package else {
                 return PassResult::failed(format!(
                     "invalid external environment has no package identity: {}",
@@ -72,6 +115,119 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
     }
 }
 
+fn validate_module_package_bindings(
+    environment: &ProjectEnvironmentInput,
+    sources: &crate::SourceSet,
+    modules: &crate::ModuleIndex,
+) -> Result<(), SourcePackageBindingError> {
+    let sources_by_id: HashMap<_, _> = sources
+        .files
+        .iter()
+        .map(|source| (source.id, source))
+        .collect();
+    for (_, module) in modules.modules.iter() {
+        let mut owner = None;
+        let mut missing = None;
+        for part in &module.parts {
+            let Some(part) = modules.parts.get(*part) else {
+                return Err(SourcePackageBindingError {
+                    source: module.span.source,
+                    reason: "module has a missing source part",
+                });
+            };
+            let Some(source) = sources_by_id.get(&part.source) else {
+                return Err(SourcePackageBindingError {
+                    source: part.source,
+                    reason: "module part has no source",
+                });
+            };
+            match environment.source_package_for(source.id, &source.kind) {
+                Ok(package) if owner.is_some_and(|previous| previous != package) => {
+                    return Err(SourcePackageBindingError {
+                        source: source.id,
+                        reason: "module source parts have conflicting package identities",
+                    });
+                }
+                Ok(package) => owner = Some(package),
+                Err(crate::SourcePackageOriginError::Ambiguous) => {
+                    return Err(SourcePackageBindingError {
+                        source: source.id,
+                        reason: "module source part has an ambiguous package identity",
+                    });
+                }
+                Err(crate::SourcePackageOriginError::Conflict) => {
+                    return Err(SourcePackageBindingError {
+                        source: source.id,
+                        reason: "dependency source identity conflicts with its package metadata",
+                    });
+                }
+                Err(
+                    crate::SourcePackageOriginError::Missing
+                    | crate::SourcePackageOriginError::UnsupportedSource,
+                ) => {
+                    missing.get_or_insert(source.id);
+                }
+            }
+        }
+        if owner.is_some()
+            && let Some(source) = missing
+        {
+            return Err(SourcePackageBindingError {
+                source,
+                reason: "module source part has no package identity",
+            });
+        }
+    }
+    Ok(())
+}
+
+struct SourcePackageBindingError {
+    source: etas_core::SourceId,
+    reason: &'static str,
+}
+
+fn validate_source_package_bindings<'a>(
+    environment: &ProjectEnvironmentInput,
+    source_entries: impl IntoIterator<Item = (etas_core::SourceId, &'a crate::SourceKind)>,
+) -> Result<(), SourcePackageBindingError> {
+    let mut sources = HashMap::new();
+    for (id, kind) in source_entries {
+        if sources.insert(id, kind).is_some() {
+            return Err(SourcePackageBindingError {
+                source: id,
+                reason: "source identity is duplicated",
+            });
+        }
+    }
+    let mut seen = HashSet::new();
+    for binding in &environment.standalone_source_packages {
+        let fail = |reason| SourcePackageBindingError {
+            source: binding.source,
+            reason,
+        };
+        if !seen.insert(binding.source) {
+            return Err(fail("source package identity is duplicated"));
+        }
+        let source = sources
+            .get(&binding.source)
+            .ok_or_else(|| fail("source package identity refers to a missing source"))?;
+        if environment.local_source_package.is_some() {
+            return Err(fail(
+                "source package identity conflicts with the local project package",
+            ));
+        }
+        if !matches!(
+            source,
+            crate::SourceKind::SourceProjectFile | crate::SourceKind::SingleFileInput
+        ) {
+            return Err(fail(
+                "source package identity is attached to a non-local source",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct ExternalEnvironmentValidationError {
     package: Option<ExternalPackageId>,
@@ -96,6 +252,7 @@ impl ExternalEnvironmentValidationError {
 
 fn validate_external_environment(
     environment: &ProjectEnvironmentInput,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), ExternalEnvironmentValidationError> {
     let mut packages = BTreeMap::<ExternalPackageId, &crate::ProjectExternalPackageInput>::new();
     let mut import_roots = BTreeMap::<String, ExternalPackageId>::new();
@@ -123,6 +280,41 @@ fn validate_external_environment(
                     "external import root `{}` is shared by packages {} and {}",
                     package.import_root, existing.0, package.id.0
                 ),
+            ));
+        }
+    }
+
+    let mut source_packages = BTreeSet::new();
+    for binding in &environment.dependency_source_packages {
+        let package = packages.get(&binding.package).ok_or_else(|| {
+            ExternalEnvironmentValidationError::package(
+                binding.package,
+                "dependency source origin has no package binding",
+            )
+        })?;
+        if !source_packages.insert(binding.package) {
+            return Err(ExternalEnvironmentValidationError::package(
+                binding.package,
+                "dependency source origin is duplicated",
+            ));
+        }
+        if package.import_root != binding.import_root {
+            return Err(ExternalEnvironmentValidationError::package(
+                binding.package,
+                "dependency source origin has a mismatched import root",
+            ));
+        }
+        if environment
+            .external_definition_origins
+            .iter()
+            .any(|origin| {
+                origin.package == binding.package
+                    && origin.origins.package != binding.definition_package
+            })
+        {
+            return Err(ExternalEnvironmentValidationError::package(
+                binding.package,
+                "dependency source origin conflicts with external definition metadata",
             ));
         }
     }
@@ -231,7 +423,7 @@ fn validate_external_environment(
                 "external package has duplicate public metadata records",
             ));
         }
-        validate_external_metadata(metadata).map_err(|reason| {
+        validate_external_metadata(metadata, std_registry).map_err(|reason| {
             ExternalEnvironmentValidationError::package(metadata.package, reason)
         })?;
         let declarations = declared_export_paths(metadata);
@@ -255,6 +447,8 @@ fn validate_external_environment(
             }
         }
     }
+
+    validate_trace_selector_declarations(environment, std_registry)?;
 
     for (package, exports) in &exported_paths {
         let declarations = declared_paths.get(package).cloned().unwrap_or_default();
@@ -297,10 +491,123 @@ fn validate_external_environment(
         }
     }
 
-    origins::validate(environment, &packages, &module_paths, &exported_paths)?;
+    origins::validate(
+        environment,
+        &packages,
+        &module_paths,
+        &exported_paths,
+        std_registry,
+    )?;
+    validate_trace_spec_identities(environment, &packages)?;
     specs::validate(environment)?;
     validate_dependency_effect_metadata(environment, &packages, &effect_paths, &action_paths)?;
     validate_tool_bindings(environment, &packages, &tool_paths)?;
+    if let Some(metadata) = environment
+        .external_public_metadata
+        .iter()
+        .find(|metadata| {
+            metadata.trace_spec_summaries.iter().any(|summary| {
+                summary
+                    .alternatives
+                    .iter()
+                    .flatten()
+                    .any(|clause| !clause.selector_bounds.is_empty())
+            })
+        })
+    {
+        return Err(ExternalEnvironmentValidationError::package(
+            metadata.package,
+            "trace selector bounds require checked replay support",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_trace_spec_identities(
+    environment: &ProjectEnvironmentInput,
+    packages: &BTreeMap<ExternalPackageId, &crate::ProjectExternalPackageInput>,
+) -> Result<(), ExternalEnvironmentValidationError> {
+    let mut summaries = BTreeMap::new();
+    let mut comparator = trace_aliases::TraceAliasComparator::new(environment);
+    let origins = environment
+        .external_definition_origins
+        .iter()
+        .map(|origin| (origin.package, origin))
+        .collect::<BTreeMap<_, _>>();
+    for metadata in &environment.external_public_metadata {
+        if metadata.trace_spec_summaries.is_empty() {
+            continue;
+        }
+        let fail =
+            |reason: String| ExternalEnvironmentValidationError::package(metadata.package, reason);
+        let package = packages
+            .get(&metadata.package)
+            .ok_or_else(|| fail("trace spec package is missing".into()))?;
+        let key = etas_code::PackageKey::from_name_and_version(&package.name, &package.version)
+            .map_err(|error| fail(error.to_string()))?;
+        let origin = origins.get(&metadata.package).ok_or_else(|| {
+            fail("trace spec summary has no checked package definition origins".into())
+        })?;
+        if origin.origins.package != key {
+            return Err(fail(
+                "trace spec package origin does not match its name and version".into(),
+            ));
+        }
+        let modules = origin
+            .origins
+            .modules
+            .iter()
+            .map(|module| (module.path.as_slice(), module.canonical_path.as_slice()))
+            .collect::<BTreeMap<_, _>>();
+        for summary in &metadata.trace_spec_summaries {
+            let Some((name, module)) = summary.trace_spec.split_last() else {
+                return Err(fail("trace spec summary has an empty path".into()));
+            };
+            let canonical_module = modules.get(module).ok_or_else(|| {
+                fail(format!(
+                    "trace spec `{}` has no canonical module origin",
+                    summary.trace_spec.join(".")
+                ))
+            })?;
+            if summary.definition.kind() != etas_code::DefinitionKind::Spec
+                || summary.definition.package() != key
+                || summary.definition.module() != *canonical_module
+                || summary.definition.declaration() != std::slice::from_ref(name)
+            {
+                return Err(fail(format!(
+                    "trace spec `{}` has an inconsistent definition identity",
+                    summary.trace_spec.join(".")
+                )));
+            }
+            if let Some(previous) = summaries.insert(&summary.definition, &summary.alternatives) {
+                if !comparator
+                    .alternatives(previous, &summary.alternatives)
+                    .map_err(&fail)?
+                {
+                    return Err(fail(
+                        "conflicting metadata for trace spec definition identity".into(),
+                    ));
+                }
+            }
+        }
+    }
+    for metadata in &environment.external_public_metadata {
+        for conformance in &metadata.trace_spec_conformances {
+            if let crate::ProjectExternalTraceSpecConformanceTargetInput::Named {
+                definition, ..
+            } = &conformance.target
+            {
+                if definition.kind() != etas_code::DefinitionKind::Spec
+                    || !summaries.contains_key(definition)
+                {
+                    return Err(ExternalEnvironmentValidationError::package(
+                        metadata.package,
+                        "trace spec conformance has no checked target definition",
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -523,8 +830,12 @@ fn external_package_import_span(
     package: ExternalPackageId,
 ) -> Option<etas_core::Span> {
     let resolved = context.resolved_imports.as_ref()?;
-    crate::project::ExternalImportAnchorIndex::build(resolved, &context.input.environment)
-        .package_span(package)
+    crate::project::ExternalImportAnchorIndex::build(
+        resolved,
+        &context.input.environment,
+        context.module_catalog.as_ref()?,
+    )
+    .package_span(package)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -536,6 +847,7 @@ struct GenericScope {
 
 pub(super) fn validate_external_metadata(
     metadata: &ProjectExternalPublicMetadataInput,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), String> {
     let mut callable_scopes = HashMap::<Vec<String>, GenericScope>::new();
     let mut declaration_paths = HashSet::new();
@@ -681,7 +993,7 @@ pub(super) fn validate_external_metadata(
         callable_scopes.entry(value.path.clone()).or_default();
     }
     validate_spec_facts(metadata)?;
-    validate_effect_summaries(metadata, &callable_scopes)?;
+    validate_effect_summaries(metadata, &callable_scopes, std_registry)?;
     for summary in &metadata.action_summaries {
         validate_path(&summary.action, "action summary path")?;
         if !metadata
@@ -701,7 +1013,20 @@ pub(super) fn validate_external_metadata(
             ));
         }
     }
+    let mut trace_selector_nodes = 0usize;
     for summary in &metadata.trace_spec_summaries {
+        trace_selector_nodes = trace_selector_nodes
+            .checked_add(1)
+            .and_then(|nodes| nodes.checked_add(summary.alternatives.len()))
+            .ok_or("trace spec graph node count overflow")?;
+        for alternative in &summary.alternatives {
+            trace_selector_nodes = trace_selector_nodes
+                .checked_add(alternative.len())
+                .ok_or("trace spec graph node count overflow")?;
+        }
+        if trace_selector_nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err("trace spec graph exceeds maximum node count".into());
+        }
         validate_path(&summary.trace_spec, "trace spec summary path")?;
         if !metadata
             .trace_specs
@@ -730,7 +1055,14 @@ pub(super) fn validate_external_metadata(
                 effects: HashSet::new(),
             })
             .unwrap_or_default();
-        for clause in &summary.clauses {
+        if summary.alternatives.is_empty() || summary.alternatives.iter().any(Vec::is_empty) {
+            return Err(format!(
+                "trace spec summary `{}` has an empty alternative set or clause group",
+                summary.trace_spec.join(".")
+            ));
+        }
+        for clause in summary.alternatives.iter().flatten() {
+            validate_trace_selector_bounds(clause, &scope, &mut trace_selector_nodes)?;
             for row in [
                 clause.pattern.as_ref(),
                 clause.guard.as_ref(),
@@ -751,6 +1083,278 @@ pub(super) fn validate_external_metadata(
     Ok(())
 }
 
+fn validate_trace_selector_bounds(
+    clause: &crate::ProjectExternalTraceSpecClauseInput,
+    scope: &GenericScope,
+    nodes: &mut usize,
+) -> Result<(), String> {
+    if clause.selector_bounds.len() > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+        return Err("external trace selector bounds exceed maximum node count".into());
+    }
+    for bound in &clause.selector_bounds {
+        *nodes = nodes
+            .checked_add(1)
+            .ok_or("trace selector graph node count overflow")?;
+        if *nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err("trace selector graph exceeds maximum node count".into());
+        }
+        if bound.spec_args.len() > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err("trace selector spec arguments exceed maximum node count".into());
+        }
+        validate_name(&bound.binding, "trace selector binding")?;
+        if bound.binding == "_" {
+            return Err("trace selector binding must not be a wildcard".into());
+        }
+        validate_path(&bound.effect_path, "trace selector action path")?;
+        validate_path(&bound.spec_path, "trace selector spec path")?;
+        use crate::{
+            ProjectExternalTraceSelectorOperandInput as O,
+            ProjectExternalTraceSpecClauseKindInput as K,
+        };
+        let row = match (clause.kind, bound.operand) {
+            (K::Allow | K::Deny, O::Pattern) => &clause.pattern,
+            (K::RequireBefore, O::Guard) => &clause.guard,
+            (K::RequireBefore | K::RequireAfter, O::Target) => &clause.target,
+            (K::RequireAfter, O::Obligation) => &clause.obligation,
+            _ => return Err("trace selector bound has an invalid clause operand".into()),
+        };
+        let mut effects = row
+            .as_ref()
+            .into_iter()
+            .flat_map(|row| &row.effects)
+            .filter(|effect| effect.path == bound.effect_path);
+        let effect = effects
+            .next()
+            .ok_or("trace selector bound references a missing action")?;
+        if effects.next().is_some() {
+            return Err("trace selector bound references an ambiguous action".into());
+        }
+        let selector = usize::try_from(bound.argument)
+            .ok()
+            .and_then(|index| effect.args.get(index));
+        if !matches!(selector, Some(ProjectExternalEffectArgInput::Wildcard)) {
+            return Err("trace selector bound requires a wildcard at its selector position".into());
+        }
+        let mut bound_scope = scope.clone();
+        bound_scope.types.insert(bound.binding.clone());
+        for ty in &bound.spec_args {
+            validate_type_resource_bounds_with_budget(ty, nodes)?;
+        }
+        validate_types(&bound.spec_args, &bound_scope, false)?;
+    }
+    Ok(())
+}
+
+fn validate_trace_selector_declarations(
+    environment: &ProjectEnvironmentInput,
+    std_registry: &etas_std::StdRegistry,
+) -> Result<(), ExternalEnvironmentValidationError> {
+    let bounds = || {
+        environment
+            .external_public_metadata
+            .iter()
+            .flat_map(|metadata| {
+                metadata
+                    .trace_spec_summaries
+                    .iter()
+                    .flat_map(move |summary| {
+                        summary
+                            .alternatives
+                            .iter()
+                            .flatten()
+                            .flat_map(move |clause| {
+                                clause
+                                    .selector_bounds
+                                    .iter()
+                                    .map(move |bound| (metadata.package, bound))
+                            })
+                    })
+            })
+    };
+    if bounds().next().is_none() {
+        return Ok(());
+    }
+    let standard = etas_effects::EffectRegistry::with_standard_effects_from(std_registry);
+    let mut count = 0usize;
+    let mut specs = BTreeMap::new();
+    let mut actions = BTreeMap::new();
+    let mut dependencies = BTreeSet::new();
+    for edge in &environment.external_package_dependencies {
+        count = count.checked_add(1).ok_or_else(|| {
+            ExternalEnvironmentValidationError::package(
+                edge.package,
+                "trace selector dependency count overflow",
+            )
+        })?;
+        if count > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err(ExternalEnvironmentValidationError::package(
+                edge.package,
+                "trace selector dependencies exceed maximum node count",
+            ));
+        }
+        dependencies.insert((edge.package, edge.dependency));
+    }
+    for metadata in &environment.external_public_metadata {
+        for spec in &metadata.spec_signatures {
+            count = count.checked_add(1).ok_or_else(|| {
+                ExternalEnvironmentValidationError::package(
+                    metadata.package,
+                    "trace selector declaration count overflow",
+                )
+            })?;
+            if count > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+                return Err(ExternalEnvironmentValidationError::package(
+                    metadata.package,
+                    "trace selector declarations exceed maximum node count",
+                ));
+            }
+            specs
+                .entry(spec.path.as_slice())
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some((metadata.package, spec)));
+        }
+        for action in &metadata.actions {
+            count = count.checked_add(1).ok_or_else(|| {
+                ExternalEnvironmentValidationError::package(
+                    metadata.package,
+                    "trace selector declaration count overflow",
+                )
+            })?;
+            if count > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+                return Err(ExternalEnvironmentValidationError::package(
+                    metadata.package,
+                    "trace selector declarations exceed maximum node count",
+                ));
+            }
+            actions
+                .entry(action.path.as_slice())
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some((metadata.package, action)));
+        }
+    }
+    for (package, bound) in bounds() {
+        count = count.checked_add(1).ok_or_else(|| {
+            ExternalEnvironmentValidationError::package(
+                package,
+                "trace selector bound count overflow",
+            )
+        })?;
+        if count > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+            return Err(ExternalEnvironmentValidationError::package(
+                package,
+                "trace selector bounds exceed maximum node count",
+            ));
+        }
+        let external_spec = specs.get(bound.spec_path.as_slice());
+        let std_spec = std_registry
+            .lookup_qualified(&bound.spec_path)
+            .or_else(|| {
+                (bound.spec_path.len() == 1)
+                    .then(|| std_registry.lookup_prelude(&bound.spec_path[0]))
+                    .flatten()
+            })
+            .and_then(|symbol| match &symbol.decl {
+                etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec => {
+                    Some(decl.params.len())
+                }
+                _ => None,
+            });
+        let spec_arity = match (external_spec, std_spec) {
+            (Some(Some((owner, spec))), None)
+                if spec.kind == crate::ProjectExternalSpecKindInput::Type =>
+            {
+                validate_trace_selector_owner(
+                    &dependencies,
+                    package,
+                    *owner,
+                    &spec.visibility,
+                    "spec",
+                )?;
+                spec.param_names.len()
+            }
+            (None, Some(arity)) => arity,
+            _ => {
+                return Err(ExternalEnvironmentValidationError::package(
+                    package,
+                    format!(
+                        "trace selector spec `{}` is missing, ambiguous, or not a type spec",
+                        bound.spec_path.join(".")
+                    ),
+                ));
+            }
+        };
+        if spec_arity != bound.spec_args.len() {
+            return Err(ExternalEnvironmentValidationError::package(
+                package,
+                format!(
+                    "trace selector spec `{}` expects {spec_arity} argument(s), got {}",
+                    bound.spec_path.join("."),
+                    bound.spec_args.len()
+                ),
+            ));
+        }
+        let external_action = actions.get(bound.effect_path.as_slice());
+        let standard_action = standard.standard_action_by_name(&bound.effect_path.join("."));
+        let index = usize::try_from(bound.argument).map_err(|_| {
+            ExternalEnvironmentValidationError::package(
+                package,
+                "trace selector argument index is invalid",
+            )
+        })?;
+        let is_type_selector = match (external_action, standard_action) {
+            (Some(Some((owner, action))), None) => {
+                validate_trace_selector_owner(
+                    &dependencies,
+                    package,
+                    *owner,
+                    &action.visibility,
+                    "action",
+                )?;
+                matches!(
+                    action.effect_args.get(index),
+                    Some(crate::ProjectExternalActionArgKindInput::Type)
+                )
+            }
+            (None, Some(action)) => standard.action_signature(&action).is_some_and(|signature| {
+                matches!(
+                    signature.effect_args.get(index),
+                    Some(etas_effects::EffectActionArgKind::Type)
+                )
+            }),
+            _ => false,
+        };
+        if !is_type_selector {
+            return Err(ExternalEnvironmentValidationError::package(
+                package,
+                format!(
+                    "trace selector `{}` must reference a unique checked type selector",
+                    bound.effect_path.join(".")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_trace_selector_owner(
+    dependencies: &BTreeSet<(ExternalPackageId, ExternalPackageId)>,
+    package: ExternalPackageId,
+    owner: ExternalPackageId,
+    visibility: &str,
+    kind: &str,
+) -> Result<(), ExternalEnvironmentValidationError> {
+    if owner == package {
+        return Ok(());
+    }
+    if visibility == "public" && dependencies.contains(&(package, owner)) {
+        return Ok(());
+    }
+    Err(ExternalEnvironmentValidationError::package(
+        package,
+        format!("trace selector {kind} must belong to the package or a declared public dependency"),
+    ))
+}
+
 fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<(), String> {
     let mut paths = HashSet::new();
     for signature in &metadata.spec_signatures {
@@ -762,18 +1366,22 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
                 signature.path.join(".")
             ));
         }
-        let mut names = HashSet::new();
-        for name in &signature.param_names {
-            validate_name(name, "spec parameter name")?;
-            if !names.insert(name.clone()) {
-                return Err("spec has duplicate generic parameter names".into());
+        if signature.param_names.len() != signature.generic_params.len()
+            || signature
+                .param_names
+                .iter()
+                .zip(&signature.generic_params)
+                .any(|(name, param)| name != &param.name)
+        {
+            return Err("spec generic parameter facts are incomplete or inconsistent".into());
+        }
+        let scope = generic_scope(&signature.path, &signature.generic_params)?;
+        for param in &signature.generic_params {
+            for bound in &param.bounds {
+                validate_path(&bound.spec, "spec generic bound path")?;
+                validate_types(&bound.args, &scope, false)?;
             }
         }
-        let scope = GenericScope {
-            parameter_kinds: vec![etas_package_metadata::GenericParamKind::Type; names.len()],
-            types: names,
-            effects: HashSet::new(),
-        };
         for bound in &signature.super_specs {
             validate_path(&bound.spec, "super spec path")?;
             validate_types(&bound.args, &scope, false)?;
@@ -859,7 +1467,7 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
     }
     for conformance in &metadata.trace_spec_conformances {
         validate_contract_target(&conformance.item, &methods)?;
-        if let crate::ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args } =
+        if let crate::ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args, .. } =
             &conformance.target
         {
             validate_path(spec, "trace conformance spec path")?;
@@ -958,12 +1566,69 @@ fn dependency_selector_default_matches_kind(
     }
 }
 
+fn callable_definition_argument<'a>(
+    ty: &'a ProjectExternalTypeInput,
+    std_registry: &etas_std::StdRegistry,
+) -> Option<&'a ProjectExternalTypeInput> {
+    let mut ty = ty;
+    while let ProjectExternalTypeInput::Alias { target, .. } = ty {
+        ty = target;
+    }
+    let ProjectExternalTypeInput::Applied { path, args } = ty else {
+        return None;
+    };
+    let symbol = std_registry.lookup_qualified(path)?;
+    if !matches!(&symbol.decl, etas_std::StdDecl::Type(decl)
+        if decl.code_role == Some(etas_std::CodeTypeRole::CallableDefinition))
+    {
+        return None;
+    }
+    let [argument] = args.as_slice() else {
+        return None;
+    };
+    Some(argument)
+}
+
+fn trace_callable_parameter(
+    ty: &ProjectExternalTypeInput,
+    parameters: &[ProjectExternalTypeInput],
+    scope: &GenericScope,
+    std_registry: &etas_std::StdRegistry,
+) -> bool {
+    let mut ty = ty;
+    while let ProjectExternalTypeInput::Alias { target, .. } = ty {
+        ty = target;
+    }
+    match ty {
+        ProjectExternalTypeInput::Function { .. } => true,
+        ProjectExternalTypeInput::Var(name) if scope.types.contains(name) => parameters.iter().any(|parameter| {
+            matches!(callable_definition_argument(parameter, std_registry), Some(ProjectExternalTypeInput::Var(other)) if name == other)
+        }),
+        _ => match callable_definition_argument(ty, std_registry) {
+            Some(ProjectExternalTypeInput::Function { .. }) => true,
+            Some(ProjectExternalTypeInput::Var(name)) => scope.types.contains(name),
+            _ => false,
+        },
+    }
+}
+
 fn validate_effect_summaries(
     metadata: &ProjectExternalPublicMetadataInput,
     callable_scopes: &HashMap<Vec<String>, GenericScope>,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), String> {
     let mut seen = HashSet::new();
     for summary in &metadata.effect_summaries {
+        if !summary.residual_checks.is_empty()
+            || summary
+                .latent_flows
+                .iter()
+                .any(|latent| !latent.residual_checks.is_empty())
+        {
+            return Err(
+                "external effect residual references require validated residual plans".into(),
+            );
+        }
         validate_path(&summary.item, "effect summary item path")?;
         if !seen.insert(summary.item.clone()) {
             return Err(format!(
@@ -996,32 +1661,82 @@ fn validate_effect_summaries(
             validate_effect_row(&latent.declared_bound, scope)?;
             validate_effect_row(&latent.inferred_effects, scope)?;
         }
-        let (parameter_names, parameter_count) = metadata
+        let (parameter_names, parameter_types) = metadata
             .flows
             .iter()
             .find(|callable| callable.path == summary.item)
-            .map(|callable| (callable.param_names.as_slice(), callable.params.len()))
+            .map(|callable| (callable.param_names.as_slice(), callable.params.as_slice()))
             .or_else(|| {
                 metadata
                     .agents
                     .iter()
                     .find(|callable| callable.path == summary.item)
-                    .map(|callable| (callable.param_names.as_slice(), callable.input.len()))
+                    .map(|callable| (callable.param_names.as_slice(), callable.input.as_slice()))
             })
             .or_else(|| {
                 metadata
                     .tools
                     .iter()
                     .find(|callable| callable.path == summary.item)
-                    .map(|callable| (callable.param_names.as_slice(), callable.input.len()))
+                    .map(|callable| (callable.param_names.as_slice(), callable.input.as_slice()))
             })
             .unwrap_or_default();
-        validate_action_trace(&summary.action_trace, scope, parameter_names)?;
+        let callable_parameters = parameter_names
+            .iter()
+            .zip(parameter_types)
+            .filter_map(|(name, ty)| {
+                trace_callable_parameter(ty, parameter_types, scope, std_registry)
+                    .then_some(name.clone())
+            })
+            .collect::<Vec<_>>();
+        validate_action_trace(
+            &summary.action_trace,
+            scope,
+            &callable_parameters,
+            parameter_names.len(),
+        )?;
+        if let Some(behavior) = &summary.behavior {
+            if behavior
+                .independent_determinism
+                .is_some_and(|value| value > behavior.determinism)
+            {
+                return Err("external independent determinism exceeds its summary".into());
+            }
+            let mut traces = vec![&summary.action_trace];
+            let mut parameter_calls = false;
+            while let Some(trace) = traces.pop() {
+                match trace {
+                    ProjectExternalActionTraceInput::ParameterCall { .. } => parameter_calls = true,
+                    ProjectExternalActionTraceInput::Seq(parts)
+                    | ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
+                    ProjectExternalActionTraceInput::Repeat(part) => traces.push(part),
+                    ProjectExternalActionTraceInput::Widened {
+                        parameter_calls: calls,
+                        ..
+                    } => {
+                        parameter_calls |= !calls.is_empty();
+                    }
+                    _ => {}
+                }
+            }
+            if parameter_calls && behavior.independent_determinism.is_none() {
+                return Err("external parameter trace is missing independent determinism".into());
+            }
+        }
         if let Some(requests) = &summary.handler_requests {
             requests::validate(requests, scope, parameter_names)?;
         }
         if let Some(graph) = &summary.returned_callables {
-            if parameter_names.len() != parameter_count {
+            if graph
+                .values
+                .iter()
+                .any(|node| !node.residual_checks.is_empty())
+            {
+                return Err(
+                    "external callable residual references require validated residual plans".into(),
+                );
+            }
+            if parameter_names.len() != parameter_types.len() {
                 return Err(
                     "returned callable evidence requires an unambiguous named parameter interface"
                         .into(),
@@ -1061,7 +1776,7 @@ fn validate_effect_summaries(
                 })
                 .collect::<Vec<_>>();
             graph
-                .validate_references(Some((parameter_count, &generic_params)))
+                .validate_references(Some((parameter_types.len(), &generic_params)))
                 .map_err(|error| error.to_string())?;
         }
     }
@@ -1100,31 +1815,51 @@ fn validate_action_trace(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
+    root_parameter_count: usize,
 ) -> Result<(), String> {
     validate_action_trace_resource_bounds(trace)?;
-    validate_action_trace_semantics(trace, scope, parameter_names)
+    validate_action_trace_semantics(trace, scope, parameter_names, root_parameter_count)
 }
 
 fn validate_action_trace_semantics(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
+    root_parameter_count: usize,
 ) -> Result<(), String> {
     match trace {
         ProjectExternalActionTraceInput::Empty => Ok(()),
         ProjectExternalActionTraceInput::Event { action, .. } => validate_effect_ref(action, scope),
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
-            requests::validate_target(parameter, scope, parameter_names)
+            requests::validate_target(parameter, scope, parameter_names, root_parameter_count)
         }
-        ProjectExternalActionTraceInput::Seq(children)
-        | ProjectExternalActionTraceInput::Choice(children) => {
+        ProjectExternalActionTraceInput::Seq(children) => {
             for child in children {
-                validate_action_trace_semantics(child, scope, parameter_names)?;
+                validate_action_trace_semantics(
+                    child,
+                    scope,
+                    parameter_names,
+                    root_parameter_count,
+                )?;
+            }
+            Ok(())
+        }
+        ProjectExternalActionTraceInput::Choice(children) => {
+            if children.is_empty() {
+                return Err("external action trace choice requires an alternative".into());
+            }
+            for child in children {
+                validate_action_trace_semantics(
+                    child,
+                    scope,
+                    parameter_names,
+                    root_parameter_count,
+                )?;
             }
             Ok(())
         }
         ProjectExternalActionTraceInput::Repeat(child) => {
-            validate_action_trace_semantics(child, scope, parameter_names)
+            validate_action_trace_semantics(child, scope, parameter_names, root_parameter_count)
         }
         ProjectExternalActionTraceInput::UnknownOrder(actions) => {
             for action in actions {
@@ -1140,7 +1875,7 @@ fn validate_action_trace_semantics(
                 validate_effect_ref(action, scope)?;
             }
             for parameter in parameter_calls {
-                requests::validate_target(parameter, scope, parameter_names)?;
+                requests::validate_target(parameter, scope, parameter_names, root_parameter_count)?;
             }
             Ok(())
         }
@@ -1243,7 +1978,13 @@ fn validate_type_semantics(
     allow_unbound_vars: bool,
 ) -> Result<(), String> {
     match ty {
-        ProjectExternalTypeInput::Primitive(name) => validate_name(name, "primitive name"),
+        ProjectExternalTypeInput::Primitive(name) => {
+            validate_name(name, "primitive name")?;
+            if !etas_types::lower::external::is_valid_external_primitive(name) {
+                return Err(format!("unknown primitive type `{name}`"));
+            }
+            Ok(())
+        }
         ProjectExternalTypeInput::Var(name) => {
             validate_name(name, "type variable")?;
             if !allow_unbound_vars && !scope.types.contains(name) {
@@ -1438,16 +2179,42 @@ enum TypeGraphNode<'a> {
 }
 
 fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), String> {
-    let mut stack = vec![(TypeGraphNode::Type(root), 0usize)];
     let mut nodes = 0usize;
+    validate_type_resource_bounds_with_budget(root, &mut nodes)
+}
+
+fn push_type_graph_node<'a>(
+    stack: &mut Vec<(TypeGraphNode<'a>, usize)>,
+    node: TypeGraphNode<'a>,
+    depth: usize,
+    visited: usize,
+) -> Result<(), String> {
+    if stack
+        .len()
+        .checked_add(visited)
+        .and_then(|size| size.checked_add(1))
+        .is_none_or(|size| size > MAX_EXTERNAL_METADATA_GRAPH_NODES)
+    {
+        return Err("external metadata type graph exceeds maximum node count".into());
+    }
+    stack.push((node, depth));
+    Ok(())
+}
+
+fn validate_type_resource_bounds_with_budget(
+    root: &ProjectExternalTypeInput,
+    nodes: &mut usize,
+) -> Result<(), String> {
+    let mut stack = Vec::new();
+    push_type_graph_node(&mut stack, TypeGraphNode::Type(root), 0, *nodes)?;
     while let Some((node, depth)) = stack.pop() {
         if depth > MAX_EXTERNAL_METADATA_GRAPH_DEPTH {
             return Err("external metadata type graph exceeds maximum depth".to_owned());
         }
-        nodes = nodes
+        *nodes = nodes
             .checked_add(1)
             .ok_or_else(|| "external metadata type graph node count overflow".to_owned())?;
-        if nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+        if *nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
             return Err("external metadata type graph exceeds maximum node count".to_owned());
         }
         let next = depth + 1;
@@ -1456,7 +2223,9 @@ fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), 
                 ProjectExternalTypeInput::Applied { args, .. }
                 | ProjectExternalTypeInput::Tuple(args)
                 | ProjectExternalTypeInput::ResourceHandle { args, .. } => {
-                    stack.extend(args.iter().map(|ty| (TypeGraphNode::Type(ty), next)));
+                    for ty in args {
+                        push_type_graph_node(&mut stack, TypeGraphNode::Type(ty), next, *nodes)?;
+                    }
                 }
                 ProjectExternalTypeInput::Alias { target, .. }
                 | ProjectExternalTypeInput::Array(target)
@@ -1468,11 +2237,16 @@ fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), 
                 | ProjectExternalTypeInput::Message(target)
                 | ProjectExternalTypeInput::MemorySelection(target)
                 | ProjectExternalTypeInput::MemoryRegion(target) => {
-                    stack.push((TypeGraphNode::Type(target), next));
+                    push_type_graph_node(&mut stack, TypeGraphNode::Type(target), next, *nodes)?;
                 }
                 ProjectExternalTypeInput::Nominal { representation, .. } => {
                     if let Some(representation) = representation {
-                        stack.push((TypeGraphNode::Type(representation), next));
+                        push_type_graph_node(
+                            &mut stack,
+                            TypeGraphNode::Type(representation),
+                            next,
+                            *nodes,
+                        )?;
                     }
                 }
                 ProjectExternalTypeInput::Map { key, value }
@@ -1481,28 +2255,38 @@ fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), 
                     ok: key,
                     err: value,
                 } => {
-                    stack.push((TypeGraphNode::Type(key), next));
-                    stack.push((TypeGraphNode::Type(value), next));
+                    push_type_graph_node(&mut stack, TypeGraphNode::Type(key), next, *nodes)?;
+                    push_type_graph_node(&mut stack, TypeGraphNode::Type(value), next, *nodes)?;
                 }
                 ProjectExternalTypeInput::Record { fields }
                 | ProjectExternalTypeInput::Enum {
                     variants: fields, ..
                 } => {
-                    stack.extend(
-                        fields
-                            .iter()
-                            .map(|field| (TypeGraphNode::Type(&field.ty), next)),
-                    );
+                    for field in fields {
+                        push_type_graph_node(
+                            &mut stack,
+                            TypeGraphNode::Type(&field.ty),
+                            next,
+                            *nodes,
+                        )?;
+                    }
                 }
                 ProjectExternalTypeInput::Function {
                     input,
                     output,
                     effects,
                 } => {
-                    stack.extend(input.iter().map(|ty| (TypeGraphNode::Type(ty), next)));
-                    stack.push((TypeGraphNode::Type(output), next));
+                    for ty in input {
+                        push_type_graph_node(&mut stack, TypeGraphNode::Type(ty), next, *nodes)?;
+                    }
+                    push_type_graph_node(&mut stack, TypeGraphNode::Type(output), next, *nodes)?;
                     if let Some(effects) = effects {
-                        stack.push((TypeGraphNode::EffectRow(effects), next));
+                        push_type_graph_node(
+                            &mut stack,
+                            TypeGraphNode::EffectRow(effects),
+                            next,
+                            *nodes,
+                        )?;
                     }
                 }
                 ProjectExternalTypeInput::Handler {
@@ -1510,16 +2294,31 @@ fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), 
                     produced,
                     result,
                 } => {
-                    stack.push((TypeGraphNode::EffectRow(handled), next));
+                    push_type_graph_node(
+                        &mut stack,
+                        TypeGraphNode::EffectRow(handled),
+                        next,
+                        *nodes,
+                    )?;
                     if let Some(produced) = produced {
-                        stack.push((TypeGraphNode::EffectRow(produced), next));
+                        push_type_graph_node(
+                            &mut stack,
+                            TypeGraphNode::EffectRow(produced),
+                            next,
+                            *nodes,
+                        )?;
                     }
                     if let Some(result) = result {
-                        stack.push((TypeGraphNode::Type(result), next));
+                        push_type_graph_node(
+                            &mut stack,
+                            TypeGraphNode::Type(result),
+                            next,
+                            *nodes,
+                        )?;
                     }
                 }
                 ProjectExternalTypeInput::Trust { inner, .. } => {
-                    stack.push((TypeGraphNode::Type(inner), next));
+                    push_type_graph_node(&mut stack, TypeGraphNode::Type(inner), next, *nodes)?;
                 }
                 ProjectExternalTypeInput::Primitive(_)
                 | ProjectExternalTypeInput::Var(_)
@@ -1528,22 +2327,22 @@ fn validate_type_resource_bounds(root: &ProjectExternalTypeInput) -> Result<(), 
                 | ProjectExternalTypeInput::PromptPart => {}
             },
             TypeGraphNode::EffectRow(row) => {
-                stack.extend(
-                    row.effects
-                        .iter()
-                        .map(|effect| (TypeGraphNode::EffectRef(effect), next)),
-                );
+                for effect in &row.effects {
+                    push_type_graph_node(
+                        &mut stack,
+                        TypeGraphNode::EffectRef(effect),
+                        next,
+                        *nodes,
+                    )?;
+                }
             }
             TypeGraphNode::EffectRef(effect) => {
-                stack.extend(
-                    effect
-                        .args
-                        .iter()
-                        .map(|arg| (TypeGraphNode::EffectArg(arg), next)),
-                );
+                for arg in &effect.args {
+                    push_type_graph_node(&mut stack, TypeGraphNode::EffectArg(arg), next, *nodes)?;
+                }
             }
             TypeGraphNode::EffectArg(ProjectExternalEffectArgInput::Type(ty)) => {
-                stack.push((TypeGraphNode::Type(ty), next));
+                push_type_graph_node(&mut stack, TypeGraphNode::Type(ty), next, *nodes)?;
             }
             TypeGraphNode::EffectArg(_) => {}
         }

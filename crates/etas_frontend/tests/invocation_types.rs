@@ -1,6 +1,93 @@
 use etas_frontend::{Frontend, ProjectInput, SourceInput};
 
 #[test]
+fn deferred_row_equations_preserve_instantiated_nominal_type_arguments() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+type DomainError = i32;
+flow both<T, effect E>(f: () -> unit ![Error<T>, E], g: () -> unit ![E]) -> unit ![Error<T>, E] { f(); g(); }
+flow fail() -> unit ![Error<DomainError>] { perform Error<DomainError>.raise(DomainError(1)); }
+flow main() -> unit ![Error<DomainError>] {
+    both<DomainError>(fail, () => { perform Error<DomainError>.raise(DomainError(2)); });
+}
+"#,
+    )));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let fact = checked
+        .types
+        .generic_instantiations
+        .values()
+        .find(|fact| fact.effect_row_bindings.iter().any(|(name, _)| name == "E"))
+        .expect("checked row instantiation");
+    assert!(fact.deferred_effect_row_obligations.is_empty());
+    let row = &fact
+        .effect_row_bindings
+        .iter()
+        .find(|(name, _)| name == "E")
+        .unwrap()
+        .1;
+    let [effect] = row.effects.as_slice() else {
+        panic!("expected one error effect: {row:?}");
+    };
+    assert_eq!(effect.name, "Error");
+    let [etas_types::EffectArgRef::Type(argument)] = effect.args.as_slice() else {
+        panic!("missing checked error type");
+    };
+    assert!(matches!(
+        checked.type_store.get(*argument),
+        Some(etas_types::Type::Nominal(_))
+    ));
+}
+
+#[test]
+fn checked_project_finalizes_row_equations_across_concrete_and_latent_callbacks() {
+    for (effect, expected) in [
+        ("Console.stdout_write(\"second\")", true),
+        ("Error<i32>.raise(1)", false),
+    ] {
+        let source = format!(
+            r#"
+flow both<effect E>(f: () -> unit ![Console.stdout_write, E], g: () -> unit ![E]) -> unit ![Console.stdout_write, E] {{ f(); g(); }}
+flow write() -> unit ![Console.stdout_write] {{ perform Console.stdout_write("first"); }}
+flow main() -> unit ![Console.stdout_write, Error<i32>] {{ both(write, () => {{ perform {effect}; }}); }}
+"#
+        );
+        let output =
+            Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(source)));
+        assert_eq!(
+            output.checked.is_some(),
+            expected,
+            "{:?}",
+            output.diagnostics
+        );
+        if let Some(checked) = output.checked {
+            let fact = checked
+                .types
+                .generic_instantiations
+                .values()
+                .find(|fact| fact.effect_row_bindings.iter().any(|(name, _)| name == "E"))
+                .expect("checked binding");
+            assert!(fact.deferred_effect_row_obligations.is_empty());
+            let row = &fact
+                .effect_row_bindings
+                .iter()
+                .find(|(name, _)| name == "E")
+                .unwrap()
+                .1;
+            assert_eq!(row.tail, None);
+            assert_eq!(
+                row.effects
+                    .iter()
+                    .map(|effect| effect.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Console.stdout_write"]
+            );
+        }
+    }
+}
+
+#[test]
 fn solved_implicit_rows_are_present_in_published_checked_generic_facts() {
     let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(r#"
 flow twice<effect E>(f: () -> unit ![E]) -> unit ![E] { f(); f(); }

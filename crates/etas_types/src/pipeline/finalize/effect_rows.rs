@@ -183,6 +183,11 @@ mod tests {
                     deferred_effect_row_obligations: vec![DeferredEffectRowObligation {
                         param: "E".into(),
                         source: HirExprId(4),
+                        fixed: crate::EffectRowRef {
+                            effects: vec![],
+                            tail: None,
+                        },
+                        concrete: vec![],
                     }],
                 },
             );

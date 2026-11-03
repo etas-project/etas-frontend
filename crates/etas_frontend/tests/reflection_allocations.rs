@@ -15,7 +15,7 @@ fn repeated_reflection_reuses_the_frozen_environment_without_reprojecting_it() {
             .collect::<Vec<_>>();
         let after = allocation_probe::sample();
         let allocated = after.allocated_bytes - before.allocated_bytes;
-        let handles = (count * size_of::<etas_code::definition::AgentDefinitionRef>()) as u64;
+        let handles = (count * size_of::<etas_code::definition::DefinitionRef>()) as u64;
         // Allow small harness bookkeeping, not a new environment per lookup.
         assert!(
             allocated <= handles + 4096,

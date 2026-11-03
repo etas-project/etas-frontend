@@ -10,6 +10,7 @@ fn recursive(offset: usize, value: PrimitiveType) -> (TypeStore, TypeId) {
         }));
     }
     let node = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "app.Node".into(),
         params: vec![],
         representation: Some(TypeId(offset as u32 + 3)),
@@ -94,6 +95,7 @@ fn applied_constructors_use_identity_not_arena_numbers() {
     let applied = |offset, name: &str| {
         let (mut types, _) = recursive(offset, PrimitiveType::I32);
         let constructor = types.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: name.into(),
             params: vec!["T".into()],
             representation: None,
@@ -107,6 +109,51 @@ fn applied_constructors_use_identity_not_arena_numbers() {
     };
     assert_eq!(applied(0, "app.Box"), applied(8, "app.Box"));
     assert_ne!(applied(0, "app.Box"), applied(0, "app.Other"));
+}
+
+#[test]
+fn canonical_type_and_binder_identities_participate_in_fingerprints() {
+    use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+    let key = |package: &str| {
+        DefinitionKey::new(
+            PackageKey::from_name_and_version(package, "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["Token".into()],
+            DefinitionKind::Type,
+        )
+        .unwrap()
+    };
+    let make = |package: &str| {
+        let mut types = etas_types::TypeInterner::new();
+        let nominal = types
+            .intern_canonical_nominal(
+                key(package),
+                Type::Nominal(NominalTypeRef {
+                    name: "Token".into(),
+                    params: vec![],
+                    representation: None,
+                    read_only_erased_view: false,
+                }),
+            )
+            .unwrap();
+        let binder = types
+            .intern_canonical_parameter(
+                etas_types::ty::CanonicalTypeParameterIdentity::new(key(package), 0).unwrap(),
+                "T".into(),
+            )
+            .unwrap();
+        (types.into_store(), nominal, binder)
+    };
+    let (first, nominal_a, binder_a) = make("first");
+    let (second, nominal_b, binder_b) = make("second");
+    assert_ne!(
+        type_part(nominal_a, &first).unwrap(),
+        type_part(nominal_b, &second).unwrap()
+    );
+    assert_ne!(
+        type_part(binder_a, &first).unwrap(),
+        type_part(binder_b, &second).unwrap()
+    );
 }
 
 #[test]

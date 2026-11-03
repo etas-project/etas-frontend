@@ -15,7 +15,14 @@ mod index_tests;
 mod iterable;
 mod method;
 mod numeric_literal;
+pub use numeric_literal::{CheckedIntegerLiteral, checked_integer_literal};
+mod overload;
 mod reflection;
+pub use reflection::{
+    ExternalDescriptorIdentities, ExternalDescriptorMatcher, ExternalMethodSelection,
+    checked_descriptor_type_matches, checked_descriptor_type_matches_with_bindings,
+    select_external_methods,
+};
 pub mod report;
 mod return_type;
 pub mod spec_solver;
@@ -81,6 +88,66 @@ impl TypeSolver {
         for constraint in input.constraints {
             checkpoint()?;
             match constraint {
+                TypeConstraint::HandlerOverloadInstantiation {
+                    candidates,
+                    requests,
+                    params,
+                    output,
+                    deferred,
+                    origin,
+                } => {
+                    if let Some((arm, body)) = deferred {
+                        report.deferred_handler_instantiations.insert(
+                            *arm,
+                            crate::DeferredHandlerInstantiation {
+                                body: *body,
+                                parameters: Vec::new(),
+                                overload: Some(crate::DeferredHandlerOverload {
+                                    candidates: candidates
+                                        .iter()
+                                        .map(|candidate| crate::ActionRequestSignature {
+                                            params: candidate.signature.params.clone(),
+                                            output: candidate.signature.output,
+                                        })
+                                        .collect(),
+                                    params: params.clone(),
+                                    output: *output,
+                                }),
+                                span: origin.span,
+                            },
+                        );
+                        if requests.is_empty() {
+                            continue;
+                        }
+                    }
+                    if let Some(selected) = handler::select_request_signature(
+                        input.store,
+                        &mut report,
+                        candidates,
+                        requests,
+                        *origin,
+                    ) {
+                        let candidate = &candidates[selected];
+                        handler::bind_signature(
+                            input.store,
+                            &mut report,
+                            &candidate.signature,
+                            params,
+                            *output,
+                            *origin,
+                        );
+                        if deferred.is_none() {
+                            handler::instantiate(
+                                input.store,
+                                &mut report,
+                                &candidate.parameters,
+                                requests,
+                                *origin,
+                                &mut handler_parameters,
+                            );
+                        }
+                    }
+                }
                 TypeConstraint::DiscardValue {
                     value,
                     output,
@@ -105,6 +172,7 @@ impl TypeSolver {
                             *arm,
                             crate::DeferredHandlerInstantiation {
                                 body: *body,
+                                overload: None,
                                 parameters: parameters
                                     .iter()
                                     .map(|(parameter, candidate, rigid)| {
@@ -138,13 +206,44 @@ impl TypeSolver {
                         report.push(failure);
                     }
                 }
-                TypeConstraint::ReturnType { .. } => returns.push(constraint),
+                TypeConstraint::ReturnType { .. } | TypeConstraint::ControlResult { .. } => {
+                    returns.push(constraint)
+                }
                 TypeConstraint::AgentInference { .. } => inferences.push(constraint),
                 TypeConstraint::CallableReference { .. } => callable_references.push(constraint),
+                TypeConstraint::OverloadedCall {
+                    expr,
+                    callee,
+                    candidates,
+                    probes,
+                    generic_args,
+                    arg_exprs,
+                    args,
+                    output,
+                    origin,
+                } => {
+                    overload::solve(
+                        &input,
+                        overload::Invocation {
+                            expr: *expr,
+                            callee: *callee,
+                            candidates,
+                            probes,
+                            generic_args,
+                            arg_exprs,
+                            args,
+                            output: *output,
+                            origin: *origin,
+                        },
+                        &mut report,
+                        checkpoint,
+                    )?;
+                }
                 TypeConstraint::Reflection {
                     expr,
                     access_module,
                     binding,
+                    callable_descriptor,
                     members,
                     output,
                     origin,
@@ -153,6 +252,7 @@ impl TypeSolver {
                         store: input.store,
                         facts: input.declaration_facts,
                         binding,
+                        callable_descriptor: *callable_descriptor,
                         members,
                         origin: *origin,
                         solved: &report,
@@ -531,6 +631,12 @@ impl TypeSolver {
                 );
             }
         }
+        callable_reference::validate_bindings(
+            input.store,
+            &mut report,
+            &callable_references,
+            checkpoint,
+        )?;
         checkpoint()?;
         Ok(report)
     }
@@ -661,16 +767,38 @@ fn solve_callable_constraint(
         let Some(Type::Function(flow)) = store.get(input.callee) else {
             return report;
         };
-        for (index, (actual, expected)) in input.args.iter().zip(&flow.input).enumerate() {
-            let inference = effect_row::infer_bindings_from_types(
-                store,
-                *expected,
-                *actual,
-                &report.named_substitutions,
-                &report.substitutions,
-                &effect_param_names,
-                &mut effect_row_bindings,
-            );
+        let pairs = input
+            .args
+            .iter()
+            .zip(&flow.input)
+            .map(|(actual, expected)| (*expected, *actual))
+            .collect::<Vec<_>>();
+        let explicit_rows = effect_row_bindings
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let inferences = effect_row::infer_bindings_from_type_pairs(
+            store,
+            &pairs,
+            &report.named_substitutions,
+            &report.substitutions,
+            &effect_param_names,
+            &mut effect_row_bindings,
+        );
+        let deferred_names = inferences
+            .iter()
+            .flat_map(|inference| inference.deferred.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let concrete = inferences
+            .iter()
+            .flat_map(|inference| inference.concrete.iter().cloned())
+            .collect::<Vec<_>>();
+        for name in &deferred_names {
+            if !explicit_rows.contains(name) {
+                effect_row_bindings.remove(name);
+            }
+        }
+        for (index, inference) in inferences.into_iter().enumerate() {
             if !inference.matches {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -680,10 +808,7 @@ fn solve_callable_constraint(
                 });
                 break;
             }
-            for name in inference.deferred {
-                if effect_row_bindings.contains_key(&name) {
-                    continue;
-                }
+            for (name, fixed) in inference.deferred_fixed {
                 let Some(expr) = input.arg_exprs.get(index).copied().flatten() else {
                     report.push(SolverFailure {
                         code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
@@ -696,12 +821,29 @@ fn solve_callable_constraint(
                 };
                 if !deferred_effect_row_obligations.iter().any(
                     |obligation: &crate::DeferredEffectRowObligation| {
-                        obligation.param == name && obligation.source == expr
+                        obligation.param == name
+                            && obligation.source == expr
+                            && obligation.fixed == fixed
                     },
                 ) {
+                    let first = !deferred_effect_row_obligations
+                        .iter()
+                        .any(|obligation| obligation.param == name);
+                    let concrete = if first {
+                        concrete
+                            .iter()
+                            .filter_map(|(param, equation)| {
+                                (param == &name).then_some(equation.clone())
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     deferred_effect_row_obligations.push(crate::DeferredEffectRowObligation {
                         param: name,
                         source: expr,
+                        fixed,
+                        concrete,
                     });
                 }
             }
@@ -1279,9 +1421,7 @@ fn nominal_representation(store: &TypeStore, ty: crate::TypeId) -> Option<crate:
         if !visited.insert(current) {
             return None;
         }
-        let (representation, substitutions) = crate::nominal_representation_parts(store, current)?;
-        current =
-            crate::substitute_named_params_in_store(store, representation, &substitutions).ok()?;
+        current = crate::ty::applied_representation_in_store(store, current).ok()??;
         if crate::nominal_representation_parts(store, current).is_none() {
             return Some(current);
         }
@@ -1483,6 +1623,9 @@ fn resolve_known_substitutions(store: &TypeStore, report: &SolverReport, ty: Typ
     let mut current = resolve_substitution(store, &report.substitutions, ty);
     let mut seen = 0usize;
     while let Some(Type::Named(name)) = store.get(current) {
+        if store.parameter_identity(current).is_some() {
+            break;
+        }
         let Some(next) = report.named_substitutions.get(&name.name).copied() else {
             break;
         };

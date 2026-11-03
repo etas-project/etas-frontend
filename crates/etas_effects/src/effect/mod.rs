@@ -15,9 +15,9 @@ pub use registry::{
     COMMAND_TAG, CONSOLE_STDERR_WRITE_ACTION, CONSOLE_STDIN_READ_ALL_ACTION,
     CONSOLE_STDIN_READ_LINE_ACTION, CONSOLE_STDOUT_WRITE_ACTION, CONSOLE_TAG,
     DependencyEffectAction, DependencyEffectExtension, DependencyEffectMetadata,
-    DependencyEffectTag, ERROR_TAG, EffectRegistry, FILE_IO_TAG, HUMAN_TAG, MEMORY_READ_ACTION,
-    MEMORY_TAG, MEMORY_WRITE_ACTION, MemoryPlaceDecl, NETWORK_TAG, SECRET_TAG, TIME_TAG,
-    ToolProviderBindingMetadata, UnresolvedDependencyEffectExtension,
+    DependencyEffectTag, DependencySourceEffectBinding, ERROR_TAG, EffectRegistry, FILE_IO_TAG,
+    HUMAN_TAG, MEMORY_READ_ACTION, MEMORY_TAG, MEMORY_WRITE_ACTION, MemoryPlaceDecl, NETWORK_TAG,
+    SECRET_TAG, TIME_TAG, ToolProviderBindingMetadata, UnresolvedDependencyEffectExtension,
 };
 pub use row::{Effect, EffectRow, EffectSet, effect_var_id_from_name};
 pub use tag::{CoreEffect, EffectTag};

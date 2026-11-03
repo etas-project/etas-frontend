@@ -76,6 +76,9 @@ impl CandidateBodyAnalysis {
             .ok_or(Error::IncompleteAnalysis(
                 "emitted candidate has no checked program",
             ))?;
+        analysis
+            .validate_residual_for(checked)
+            .map_err(|error| Error::InvalidContract(error.to_string()))?;
         let catalog = self
             .descriptors
             .as_ref()
@@ -178,14 +181,13 @@ pub(crate) fn analyze_controlled_body(
 
 pub(crate) fn analyze_body_with_dependencies(
     overlay: DefaultBodyOverlay,
-    dependency_sources: Vec<crate::SourceInput>,
+    dependency_sources: Vec<super::CandidateDependencySource>,
     descriptor_limits: etas_code::descriptor::DescriptorLimits,
     memory_probe: Option<FrontendMemoryProbe>,
     control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
 ) -> Result<CandidateBodyAnalysis, CandidateAnalysisError> {
     let mut baseline_requirements = None;
-    let baseline = if !dependency_sources.is_empty() && super::baseline::needs_completion(&overlay)
-    {
+    let baseline = if super::baseline::needs_completion(&overlay) {
         let original = super::baseline::original_overlay(&overlay)?;
         let analysis = analyze_body_inputs(
             original.clone(),
@@ -210,13 +212,29 @@ pub(crate) fn analyze_body_with_dependencies(
                         reason: "checked original baseline has no descriptor artifact".into(),
                         missing_artifact: Some(super::passes::CANDIDATE_DESCRIPTORS),
                     })?,
+                analysis
+                    .descriptors
+                    .as_ref()
+                    .and_then(|descriptors| descriptors.applied_contract.clone()),
             )?),
-            None => return Err(CandidateAnalysisError::Pipeline {
-                reason:
-                    "original frozen body could not be checked with the locked dependency inputs"
-                        .into(),
-                missing_artifact: None,
-            }),
+            None => {
+                return Err(CandidateAnalysisError::Pipeline {
+                    reason: format!(
+                        "original frozen body could not be checked with the locked dependency inputs: {}",
+                        analysis
+                            .output
+                            .diagnostics
+                            .iter()
+                            .map(|diagnostic| format!(
+                                "{:?}: {}",
+                                diagnostic.code, diagnostic.message
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                    missing_artifact: None,
+                });
+            }
         }
     } else {
         None
@@ -259,7 +277,7 @@ pub(crate) fn analyze_body_with_dependencies(
 
 fn analyze_body_inputs(
     overlay: DefaultBodyOverlay,
-    dependency_sources: Vec<crate::SourceInput>,
+    dependency_sources: Vec<super::CandidateDependencySource>,
     baseline: Option<super::baseline::CompletedBaseline>,
     descriptor_limits: etas_code::descriptor::DescriptorLimits,
     memory_probe: Option<FrontendMemoryProbe>,

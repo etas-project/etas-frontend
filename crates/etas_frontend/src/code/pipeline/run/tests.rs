@@ -10,9 +10,25 @@ use etas_code::{PackageKey, syntax::CodeSyntaxOperations};
 use std::collections::BTreeMap;
 
 fn analyzed(body: &str) -> CandidateBodyAnalysis {
+    analyzed_with_source_key(body, None)
+}
+
+fn analyzed_with_source_key(
+    body: &str,
+    key: Option<etas_code::StableSourceKey>,
+) -> CandidateBodyAnalysis {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(
         "module app; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let d = ^Worker; return; }",
     ));
+    if let Some(key) = key {
+        input
+            .environment
+            .stable_source_keys
+            .push(crate::ProjectStableSourceKeyInput {
+                source: input.sources[0].id,
+                key,
+            });
+    }
     input.options.entry_policy = EntryPolicy::Optional;
     let checked = Frontend.check_project(input).checked.unwrap();
     let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
@@ -35,6 +51,78 @@ fn analyzed(body: &str) -> CandidateBodyAnalysis {
     FrontendSession::new()
         .analyze_body_overlay(overlay)
         .unwrap()
+}
+
+#[test]
+fn candidate_generated_body_keeps_preanalysis_source_identity() {
+    use etas_code::{SourceRevisionKey, StableSourceKey, StableSourceOrigin};
+    let parent = StableSourceKey::new(
+        StableSourceOrigin::Project(CodeFingerprint::from_bytes([74; 32])),
+        &["src".into(), "main.es".into()],
+    )
+    .unwrap();
+    let first = analyzed_with_source_key("return 2;", Some(parent));
+    let second = analyzed_with_source_key("return 3;", Some(parent));
+    let generated = |analysis: &CandidateBodyAnalysis| {
+        let checked = analysis.output.checked.as_ref().unwrap();
+        let key = checked.sources.stable_source_key(analysis.source).unwrap();
+        let source = checked
+            .sources
+            .sources
+            .iter()
+            .find(|source| source.id == analysis.source)
+            .unwrap();
+        (key, SourceRevisionKey::new(key, source.text.as_bytes()))
+    };
+    let first = generated(&first);
+    let second = generated(&second);
+    assert_eq!(first.0, second.0);
+    assert_ne!(first.1, second.1);
+    assert_ne!(first.0, parent);
+}
+
+#[test]
+fn candidate_dependency_fingerprint_uses_stable_source_not_checkout_path() {
+    use etas_code::{StableSourceKey, StableSourceOrigin};
+    let analysis = analyzed("return 2;");
+    let syntax = NativeCodeSyntaxOperations::default();
+    let overlay = DefaultBodyOverlay::prepare(
+        analysis.frozen.clone(),
+        syntax.parse_body("return 2;").unwrap(),
+        &syntax,
+    )
+    .unwrap();
+    let key = StableSourceKey::new(
+        StableSourceOrigin::Package(PackageKey::from_name_and_version("dependency", "1").unwrap()),
+        &["src".into(), "dep.es".into()],
+    )
+    .unwrap();
+    let source = |path: &str, text: &str| super::super::CandidateDependencySource {
+        source: SourceInput {
+            id: etas_core::SourceId(10),
+            path: Some(path.into()),
+            text: text.into(),
+            kind: crate::SourceKind::DependencySourceOverlay {
+                package: crate::ExternalPackageId(7),
+                import_root: "dep".into(),
+            },
+        },
+        stable_key: key,
+    };
+    let fingerprint = |source| {
+        let mut context = CandidatePipelineContext::new(overlay.clone());
+        context.set_dependency_sources(vec![source]).unwrap();
+        context.snapshot
+    };
+    let first = fingerprint(source("/checkout/a/src/dep.es", "module dep;"));
+    assert_eq!(
+        first,
+        fingerprint(source("/checkout/b/src/dep.es", "module dep;"))
+    );
+    assert_ne!(
+        first,
+        fingerprint(source("/checkout/b/src/dep.es", "module dep; // changed"))
+    );
 }
 
 #[test]

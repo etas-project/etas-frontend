@@ -8,6 +8,36 @@ use crate::{
     TypeId, pipeline::context::BodyCollectContext,
 };
 
+pub(super) fn overload_signatures<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    symbol: etas_hir::SymbolId,
+) -> Option<(etas_std::StdSymbolId, Vec<(usize, EffectActionSignature)>)> {
+    let super::handler_request::ActionIdentity::Standard(target) =
+        super::handler_request::action_identity(ctx, symbol)
+    else {
+        return None;
+    };
+    let registry = ctx.ctx.std_registry.clone();
+    if registry.action_declarations(target).count() < 2 {
+        return None;
+    }
+    Some((
+        target,
+        registry
+            .action_declarations(target)
+            .enumerate()
+            .map(|(index, action)| {
+                (
+                    index,
+                    crate::lower::std::lower_std_effect_action_signature(
+                        ctx.ctx, &registry, action,
+                    ),
+                )
+            })
+            .collect(),
+    ))
+}
+
 pub fn validate_action_selector_arity_and_kinds<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     signature: &EffectActionSignature,
@@ -393,6 +423,9 @@ fn type_arg_from_path<E>(
     let symbol = resolved_static_type_selector_symbol(path, |symbol| {
         ctx.ctx.symbols.canonical_symbol(ctx.ctx.hir, symbol)
     })?;
+    if let Some(bound) = ctx.ctx.bound_type_parameter(symbol) {
+        return Some(bound);
+    }
     if let Some(symbol_data) = ctx.ctx.hir.symbols.get(symbol)
         && let SymbolDef::TypeParam { .. } = symbol_data.def
     {

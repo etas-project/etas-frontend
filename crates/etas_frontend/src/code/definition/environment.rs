@@ -3,19 +3,28 @@ use etas_code::{CodeFingerprint, DefinitionKey};
 use etas_hir::{HirItemId, HirModuleId, ScopeId};
 use std::sync::Arc;
 
+pub(super) struct FrozenCallableBindings {
+    pub slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
+    pub owners: std::collections::BTreeMap<etas_code::CallableId, HirItemId>,
+    pub proof_catalog: Option<Arc<super::DefinitionCatalog>>,
+}
+
 /// The target's native immutable compilation environment. It contains no
 /// caller frames, Host context, credentials, or filesystem-backed resolver.
 #[derive(etas_core::RetainedSize)]
 pub struct FrozenDefinitionEnvironment {
     checked: CheckedProgram,
     origins: Arc<crate::code::identity::DefinitionOrigins>,
-    contract: Arc<super::FrozenAgentContract>,
-    agent: HirItemId,
+    proof_catalog: Option<Arc<super::DefinitionCatalog>>,
+    contract: Arc<super::FrozenDefinitionContract>,
+    declaration: HirItemId,
     default_body: Option<HirItemId>,
     module: HirModuleId,
     declaration_scope: Option<ScopeId>,
     callable_slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
+    callable_owners: std::collections::BTreeMap<etas_code::CallableId, HirItemId>,
     fingerprint: CodeFingerprint,
+    generic_environment_context: Option<CodeFingerprint>,
     dependency_modules:
         std::collections::BTreeMap<Vec<String>, crate::code::identity::SourceModuleOrigin>,
 }
@@ -23,25 +32,41 @@ pub struct FrozenDefinitionEnvironment {
 impl FrozenDefinitionEnvironment {
     pub(super) fn new(
         checked: CheckedProgram,
-        contract: Arc<super::FrozenAgentContract>,
-        agent: HirItemId,
+        contract: Arc<super::FrozenDefinitionContract>,
+        declaration: HirItemId,
         default_body: Option<HirItemId>,
         origins: Arc<crate::code::identity::DefinitionOrigins>,
         body_revisions: CodeFingerprint,
-        callable_slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
+        callables: FrozenCallableBindings,
     ) -> Result<Arc<Self>, ProjectionError> {
-        let decl = checked.items.get(agent).ok_or_else(|| {
-            ProjectionError::Invalid("frozen agent declaration is missing".into())
+        if callables
+            .proof_catalog
+            .as_ref()
+            .is_some_and(|catalog| !Arc::ptr_eq(catalog.checked_program(), &checked))
+        {
+            return Err(ProjectionError::Invalid(
+                "frozen proof catalog belongs to another checked program".into(),
+            ));
+        }
+        let decl = checked.items.get(declaration).ok_or_else(|| {
+            ProjectionError::Invalid("frozen definition declaration is missing".into())
         })?;
         let symbol = decl
             .symbol()
             .and_then(|symbol| checked.symbols.get(symbol))
             .ok_or_else(|| {
-                ProjectionError::Invalid("frozen agent has no declaration symbol".into())
+                ProjectionError::Invalid("frozen definition has no declaration symbol".into())
             })?;
-        if !matches!(decl, etas_hir::HirItem::Agent(_)) {
+        let valid_kind = matches!(
+            (contract.identity().kind(), decl),
+            (
+                etas_code::DefinitionKind::Agent,
+                etas_hir::HirItem::Agent(_)
+            ) | (etas_code::DefinitionKind::Flow, etas_hir::HirItem::Flow(_))
+        );
+        if !valid_kind {
             return Err(ProjectionError::Invalid(
-                "only a nominal agent can establish a frozen agent environment".into(),
+                "frozen definition identity disagrees with its declaration kind".into(),
             ));
         }
         if checked.definition_environment.fingerprint() != checked.project_environment_fingerprint {
@@ -96,7 +121,7 @@ impl FrozenDefinitionEnvironment {
             })
             .collect::<Result<Vec<_>, ProjectionError>>()?;
         source_fingerprints.sort_unstable();
-        let identity_fingerprint = contract.header().identity.fingerprint();
+        let identity_fingerprint = contract.identity().fingerprint();
         let contract_fingerprint = contract.fingerprint();
         let options = checked.compile_options.canonical_options_fingerprint();
         let standard = origins.standard_package.fingerprint();
@@ -112,15 +137,43 @@ impl FrozenDefinitionEnvironment {
             options.as_bytes(),
             body_revisions.as_bytes().as_slice(),
             origin_bindings.as_bytes().as_slice(),
-            contract_fingerprint.as_bytes().as_slice(),
         ];
         parts.extend(
             source_fingerprints
                 .iter()
                 .map(|fingerprint| fingerprint.as_bytes().as_slice()),
         );
-        let fingerprint =
-            CodeFingerprint::of_parts("etas.code.frozen-definition-environment.v2", parts);
+        let generic_flow = match decl {
+            etas_hir::HirItem::Flow(_) => match checked.types.item_signatures.get(&declaration) {
+                Some(etas_types::ItemSignature::Flow(signature)) => {
+                    !signature.generic_params.is_empty()
+                }
+                _ => {
+                    return Err(ProjectionError::Invalid(
+                        "frozen flow has no checked signature".into(),
+                    ));
+                }
+            },
+            _ => false,
+        };
+        let (fingerprint, generic_environment_context) = if generic_flow {
+            let context =
+                CodeFingerprint::of_parts("etas.code.generic-definition-context.v1", parts);
+            (
+                etas_code::descriptor::DefinitionSnapshotInfo::generic_environment_fingerprint(
+                    context,
+                    contract_fingerprint,
+                ),
+                Some(context),
+            )
+        } else {
+            // Preserve the existing ordering for non-generic definitions.
+            parts.insert(9, contract_fingerprint.as_bytes().as_slice());
+            (
+                CodeFingerprint::of_parts("etas.code.frozen-definition-environment.v2", parts),
+                None,
+            )
+        };
         let mut dependency_modules = std::collections::BTreeMap::new();
         for input in checked.external_definition_origins() {
             for module in &input.origins.modules {
@@ -141,13 +194,16 @@ impl FrozenDefinitionEnvironment {
         Ok(Arc::new(Self {
             checked,
             origins,
+            proof_catalog: callables.proof_catalog,
             contract,
-            agent,
+            declaration,
             default_body,
             module,
             declaration_scope,
-            callable_slots,
+            callable_slots: callables.slots,
+            callable_owners: callables.owners,
             fingerprint,
+            generic_environment_context,
             dependency_modules,
         }))
     }
@@ -155,17 +211,25 @@ impl FrozenDefinitionEnvironment {
     pub fn fingerprint(&self) -> CodeFingerprint {
         self.fingerprint
     }
-    pub fn identity(&self) -> &DefinitionKey {
-        &self.contract.header().identity
+    pub fn generic_environment_context(&self) -> Option<CodeFingerprint> {
+        self.generic_environment_context
     }
-    pub fn contract(&self) -> &super::FrozenAgentContract {
+    pub fn identity(&self) -> &DefinitionKey {
+        self.contract.identity()
+    }
+    pub fn contract(&self) -> &super::FrozenDefinitionContract {
         &self.contract
     }
-    pub(crate) fn contract_arc(&self) -> Arc<super::FrozenAgentContract> {
+    pub fn callable_application(&self) -> Option<&crate::CheckedCallableApplication> {
+        self.contract
+            .applied_behavior()
+            .map(|behavior| behavior.application())
+    }
+    pub(crate) fn contract_arc(&self) -> Arc<super::FrozenDefinitionContract> {
         self.contract.clone()
     }
-    pub fn agent(&self) -> HirItemId {
-        self.agent
+    pub fn declaration(&self) -> HirItemId {
+        self.declaration
     }
     pub fn default_body(&self) -> Option<HirItemId> {
         self.default_body
@@ -181,8 +245,15 @@ impl FrozenDefinitionEnvironment {
     ) -> &std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef> {
         &self.callable_slots
     }
+    pub(crate) fn callable_owner(&self, callable: &etas_code::CallableId) -> Option<HirItemId> {
+        self.callable_owners.get(callable).copied()
+    }
     pub fn checked(&self) -> &CheckedProgram {
         &self.checked
+    }
+
+    pub(crate) fn proof_catalog(&self) -> Option<&Arc<super::DefinitionCatalog>> {
+        self.proof_catalog.as_ref()
     }
     pub(crate) fn compilation_fingerprint(&self) -> CodeFingerprint {
         let options = self.checked.compile_options.canonical_options_fingerprint();

@@ -44,7 +44,7 @@ fn validate_type_param_bounds(ctx: &mut TypePipelineContext<'_>, state: &Signatu
                 ));
                 continue;
             };
-            let expected_args = signature.params.len();
+            let expected_args = signature.param_names.len();
             let spec_name = signature.name.clone();
             let spec_kind = signature.kind;
             let is_type_spec = matches!(spec_kind, SpecKind::TypeSpec);

@@ -87,6 +87,25 @@ fn collect_call_inner<E>(
         }
     }
     let checked_generic_args = lower_callable_generic_args(ctx, generic_args);
+    if let Some(candidates) = super::std_member::std_overload_candidates(ctx, callee) {
+        let arg_tys = collect_call_args(ctx, args, None)?;
+        let output = select_call_output(ctx, None, expected, span);
+        let callee_type = ctx.fresh_type_var();
+        ctx.record_expr_type(callee, callee_type);
+        let probes = candidates.iter().map(|_| ctx.fresh_type_var()).collect();
+        ctx.emit(TypeConstraint::OverloadedCall {
+            expr: call,
+            callee: callee_type,
+            candidates,
+            probes,
+            generic_args: checked_generic_args,
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+        return Ok(output);
+    }
     let callable_signature = callee_callable_signature(ctx, callee);
     validate_generic_args(
         ctx,
@@ -149,7 +168,7 @@ fn collect_call_inner<E>(
     let callable_candidate = collect_callable_callee(ctx, callee, callable_signature.is_some())?;
     let generic_params = callable_candidate
         .as_ref()
-        .map(|candidate| candidate.generic_params.clone())
+        .map(|candidate| candidate.signature.generic_params.clone())
         .unwrap_or_default();
     let constructor = collect_type_constructor_callee(ctx, callee, &type_generic_args, span);
     let checked_generic_args = if constructor.is_some() {
@@ -234,7 +253,7 @@ fn collect_std_qualified_call<E>(
     };
     let candidate = std_qualified_path_callable_candidate(ctx, path, true);
     let (callee_ty, generic_params) = if let Some(candidate) = candidate {
-        (candidate.ty, candidate.generic_params)
+        (candidate.ty, candidate.signature.generic_params)
     } else {
         let ty = if type_generic_args.is_empty() {
             std_qualified_path_value_type(ctx, path)

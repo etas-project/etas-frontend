@@ -38,6 +38,7 @@ pub(super) fn collect<E>(
             ctx.record_expr_type(callee, candidate.ty);
         }
         let substitutions = candidate
+            .signature
             .generic_params
             .iter()
             .zip(generic_args)

@@ -1,8 +1,10 @@
 mod analysis;
 mod effects;
+mod handler_scopes;
 mod input;
 mod outcomes;
 mod project;
+mod residual;
 mod specs;
 mod standard;
 mod types;
@@ -13,6 +15,11 @@ use etas_types::TypeId;
 pub(crate) use input::DescriptorInput;
 pub use project::{
     DefinitionDescriptorProjector, NativeDescriptorProjection, NativeTypeOrigin, ProjectedSignature,
+};
+pub use residual::{
+    SymbolicTraceTemplateProjection, TracePlanProjectionError, TraceSourceLinkError,
+    TraceSourceLinkLimits, TraceTemplateClause, TraceTemplateProjection,
+    TraceTemplateProjectionError, TraceTemplateSource,
 };
 pub(crate) use specs::AttachedSpecIndex;
 

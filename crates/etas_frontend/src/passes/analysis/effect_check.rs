@@ -1,6 +1,7 @@
 mod anchors;
 mod body_artifacts;
 mod external_metadata;
+mod residual_identity;
 
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -15,10 +16,166 @@ use self::external_metadata::{
 };
 use crate::incremental::CheckScope;
 use crate::passes::artifacts::{
-    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, PROJECT_ENTRY,
-    RESOLVED_IMPORTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
+    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_CATALOG, MODULE_INDEX,
+    PARSED_SOURCE_SET, PREPARED_EFFECT_REGISTRY, PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS,
+    SOURCE_SET, TYPE_ENVIRONMENT, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
+    VERIFIED_RESIDUAL_PLANS, global_with_diagnostics,
 };
 use crate::{ProjectContext, UnitKind, UnitTarget};
+
+pub struct PrepareEffectRegistryPass;
+
+impl Pass<ProjectContext> for PrepareEffectRegistryPass {
+    fn descriptor(&self) -> PassDescriptor {
+        PassDescriptor::new("PrepareEffectRegistryPass", PassKind::Analysis)
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                MODULE_INDEX,
+                MODULE_CATALOG,
+                SIGNATURE_FACTS,
+                TYPE_ENVIRONMENT,
+                RESOLVED_IMPORTS,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
+            ]))
+            .produces(global_with_diagnostics([PREPARED_EFFECT_REGISTRY]))
+    }
+
+    fn run(
+        &mut self,
+        context: &mut ProjectContext,
+        _pass_context: &PassContext<ProjectContext>,
+        manager: &mut PassManager<ProjectContext>,
+    ) -> PassResult {
+        let (
+            Some(hir),
+            Some(modules),
+            Some(signatures),
+            Some(type_environment),
+            Some(imports),
+            Some(environment),
+        ) = (
+            context.hir.as_ref(),
+            context.modules.as_ref(),
+            context.signature_types.as_ref(),
+            context.type_environment.as_ref(),
+            context.resolved_imports.as_ref(),
+            context.validated_external_environment.as_ref(),
+        )
+        else {
+            return PassResult::failed(
+                "effect registry preparation requires checked signature and import artifacts",
+            );
+        };
+        let environment = environment.environment();
+        let Some(catalog) = context.module_catalog.as_ref() else {
+            return PassResult::failed("effect preparation requires the module catalog");
+        };
+        let anchors = ExternalImportAnchorIndex::build(imports, environment, catalog);
+        let mut diagnostics = Vec::new();
+        let mut metadata =
+            match external_effect_metadata(environment, signatures, &anchors, &mut diagnostics) {
+                Ok(metadata) => metadata,
+                Err(error) => return PassResult::failed(error),
+            };
+        if let Err(error) = bind_overlay_effects(&hir.hir, modules, environment, &mut metadata) {
+            return PassResult::failed(error);
+        }
+        let prepared = match etas_effects::PreparedEffectRegistry::build(
+            &hir.hir,
+            signatures,
+            type_environment,
+            context.std_registry.clone(),
+            std::sync::Arc::new(metadata),
+            manager.execution_control(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => return pipeline_failure(error),
+        };
+        context.diagnostics.extend(diagnostics);
+        context.prepared_effect_registry = Some(prepared);
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::one(PREPARED_EFFECT_REGISTRY),
+        )
+    }
+}
+
+fn bind_overlay_effects(
+    hir: &etas_hir::HirProgram,
+    modules: &crate::ModuleIndex,
+    environment: &crate::ProjectEnvironmentInput,
+    metadata: &mut etas_effects::DependencyEffectMetadata,
+) -> Result<(), String> {
+    if !metadata.source_bindings.is_empty() {
+        return Err("external metadata must not supply session-local effect bindings".into());
+    }
+    for (_, item) in hir.items.iter() {
+        let etas_hir::HirItem::Effect(effect) = item else {
+            continue;
+        };
+        let Some(module) = modules
+            .by_source
+            .get(&effect.span.source)
+            .and_then(|id| modules.modules.get(*id))
+        else {
+            continue;
+        };
+        let crate::ModuleOrigin::DependencySourceOverlay { package, .. } = &module.origin else {
+            continue;
+        };
+        let name = &hir
+            .symbols
+            .get(effect.symbol)
+            .ok_or("overlay effect is missing its symbol")?
+            .name;
+        let mut path = module.path.segments.clone();
+        path.push(name.clone());
+        if !metadata.tags.iter().any(|tag| tag.path == path) {
+            continue;
+        }
+        let origins = environment
+            .external_definition_origins
+            .iter()
+            .find(|input| input.package == *package)
+            .ok_or_else(|| {
+                format!(
+                    "overlay effect `{}` has no checked package origins",
+                    path.join(".")
+                )
+            })?;
+        let canonical_module = origins
+            .origins
+            .modules
+            .iter()
+            .find(|candidate| candidate.path == module.path.segments)
+            .ok_or_else(|| {
+                format!(
+                    "overlay effect `{}` has no checked module origin",
+                    path.join(".")
+                )
+            })?;
+        let matching = origins.origins.declarations.iter().any(|binding| {
+            binding.path() == path
+                && binding.definition.kind() == etas_code::DefinitionKind::Effect
+                && binding.definition.package() == origins.origins.package
+                && binding.definition.module() == canonical_module.canonical_path
+                && binding.definition.declaration() == binding.declaration
+        });
+        if !matching {
+            return Err(format!(
+                "overlay effect `{}` does not match its checked definition origin",
+                path.join(".")
+            ));
+        }
+        metadata
+            .source_bindings
+            .push(etas_effects::DependencySourceEffectBinding {
+                symbol: effect.symbol,
+                path,
+            });
+    }
+    Ok(())
+}
 
 pub struct RunEffectPipelinePass;
 
@@ -28,13 +185,20 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             .requires(ArtifactSet::from([
                 HIR_OUTPUT,
                 MODULE_INDEX,
+                MODULE_CATALOG,
                 TYPE_OUTPUT,
+                PREPARED_EFFECT_REGISTRY,
                 RESOLVED_IMPORTS,
                 VALIDATED_EXTERNAL_ENVIRONMENT,
                 PROJECT_ENTRY,
                 ANALYSIS_REACHABILITY_FACTS,
+                SOURCE_SET,
+                PARSED_SOURCE_SET,
             ]))
-            .produces(global_with_diagnostics([EFFECT_OUTPUT]))
+            .produces(global_with_diagnostics([
+                EFFECT_OUTPUT,
+                VERIFIED_RESIDUAL_PLANS,
+            ]))
     }
 
     fn run(
@@ -43,6 +207,9 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        context.residual_plans = None;
+        context.residual_support = None;
+        context.residual_identities = None;
         if let Err(error) = record_reused_effect_body_artifacts(context) {
             return PassResult::failed(error);
         }
@@ -57,36 +224,40 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 "effect checking requires resolved imports for external metadata anchors",
             );
         };
-        let Some(environment) = context
-            .validated_external_environment
-            .as_ref()
-            .map(|validated| validated.environment())
-        else {
+        let Some(validated_environment) = context.validated_external_environment.as_ref() else {
             return PassResult::failed("effect checking requires validated external metadata");
         };
-        let external_anchors = ExternalImportAnchorIndex::build(resolved_imports, environment);
+        let environment = validated_environment.environment();
+        let Some(catalog) = context.module_catalog.as_ref() else {
+            return PassResult::failed("effect checking requires the module catalog");
+        };
+        let external_anchors =
+            ExternalImportAnchorIndex::build(resolved_imports, environment, catalog);
         let mut external_metadata_diagnostics = Vec::new();
-        let external_effect_metadata = match external_effect_metadata(
+        let Some(prepared) = context.prepared_effect_registry.take() else {
+            return PassResult::failed("effect checking requires the prepared effect registry");
+        };
+        let external_effect_metadata = prepared.dependencies().clone();
+        let external_summaries = match external_effect_summaries(
             environment,
             types,
+            &context.std_registry,
             &external_anchors,
             &mut external_metadata_diagnostics,
         ) {
-            Ok(metadata) => metadata,
+            Ok(summaries) => summaries,
             Err(error) => return PassResult::failed(error),
         };
-        let external_summaries = external_effect_summaries(
+        let external_implementations = match external_metadata::external_implementations(
             environment,
             types,
+            &context.std_registry,
             &external_anchors,
             &mut external_metadata_diagnostics,
-        );
-        let external_implementations = external_metadata::external_implementations(
-            environment,
-            types,
-            &external_anchors,
-            &mut external_metadata_diagnostics,
-        );
+        ) {
+            Ok(implementations) => implementations,
+            Err(error) => return PassResult::failed(error),
+        };
         let external_trace_specs = external_trace_spec_summaries(
             environment,
             types,
@@ -104,6 +275,11 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 let Some(modules) = context.modules.as_ref() else {
                     return PassResult::failed("frozen callable binding requires the module index");
                 };
+                let Some(reachable_items) = reachable_items else {
+                    return PassResult::failed(
+                        "frozen callable binding requires checked candidate reachability",
+                    );
+                };
                 Some(crate::code::definition::FrozenCalls {
                     overlay: &candidate.overlay,
                     hir: &hir.hir,
@@ -112,11 +288,70 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                     modules,
                     std_registry: context.std_registry.as_ref(),
                     limits: candidate.descriptor_limits,
+                    reachable_items,
+                    foreign_type_bindings: candidate
+                        .bound_application
+                        .as_ref()
+                        .map(|application| application.foreign_type_bindings.as_ref()),
                 })
             }
             None => None,
         };
+        let Some(source_set) = context.sources.as_ref() else {
+            return PassResult::failed("effect checking requires source snapshots");
+        };
+        let Some(modules) = context.modules.as_ref() else {
+            return PassResult::failed("residual identity projection requires the module index");
+        };
+        let residual_identity = residual_identity::CheckedResidualIdentities::new(
+            residual_identity::CheckedResidualIdentityInput {
+                hir: &hir.hir,
+                types,
+                std_registry: context.std_registry.as_ref(),
+                imports: resolved_imports,
+                modules,
+                sources: source_set,
+                parsed: &context.parsed_sources,
+                environment: validated_environment,
+                overlay: context
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| &candidate.overlay),
+                control: manager.execution_control(),
+                foreign_type_bindings: context
+                    .candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.bound_application.as_ref())
+                    .map(|application| application.foreign_type_bindings.as_ref()),
+                limits: context
+                    .candidate
+                    .as_ref()
+                    .map_or_else(Default::default, |candidate| candidate.descriptor_limits),
+            },
+        );
+        let mut source_snapshots = Vec::new();
+        for source in &source_set.files {
+            match crate::output::resolve_stable_source_key(
+                &source_set.stable_source_keys,
+                source.id,
+            ) {
+                Ok(key) => source_snapshots.push(etas_effects::EffectSourceSnapshot {
+                    source: source.id,
+                    key,
+                    text: &source.text,
+                }),
+                Err(crate::SourcePackageOriginError::Missing) => {}
+                Err(error) => {
+                    return PassResult::failed(format!(
+                        "invalid stable effect source identity: {error:?}"
+                    ));
+                }
+            }
+        }
         let input = etas_effects::EffectPipelineInput {
+            source_snapshots: &source_snapshots,
+            residual_identity: Some(&residual_identity),
+            trace_monitor_projector: Some(&residual_identity),
             external_implementations: &external_implementations,
             frozen_calls: frozen_calls
                 .as_ref()
@@ -124,22 +359,33 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             hir: &hir.hir,
             types,
             std_registry: context.std_registry.as_ref(),
-            dependency_metadata: Some(&external_effect_metadata),
+            dependency_metadata: Some(external_effect_metadata.as_ref()),
             tool_bindings: &tool_bindings,
             external_summaries: &external_summaries,
             external_trace_specs: &external_trace_specs,
             external_artifact_anchors: &external_artifact_anchors,
             reachable_items,
         };
-        let result = match manager.execution_control_handle() {
-            Some(control) => etas_effects::RunEffectPipeline::run_controlled(input, control),
-            None => etas_effects::RunEffectPipeline::run(input),
-        };
+        let result = etas_effects::RunEffectPipeline::run_prepared(
+            input,
+            prepared,
+            manager.execution_control_handle(),
+        );
         let pipeline_output = match result {
             Ok(output) => output,
             Err(error) => return pipeline_failure(error),
         };
         let mut output = pipeline_output.effects;
+        let residual_plans = pipeline_output.trace_specs.into_residual_plans();
+        if !residual_plans.is_empty() {
+            // Concrete actions are later projected with exactly the identities
+            // that projected these plans' patterns.
+            let Some(index) = residual_identity.into_identity_index() else {
+                return PassResult::failed("verified residual plans have no identity index");
+            };
+            context.residual_identities = Some(std::sync::Arc::new(index));
+        }
+        context.residual_plans = Some(std::sync::Arc::new(residual_plans));
         let Some(entry) = context.entry.as_ref() else {
             return PassResult::failed(
                 "effect checking requires the resolved project entry artifact",
@@ -198,7 +444,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             .diagnostics
             .extend(output.diagnostics.iter().cloned());
         context.effects = Some(output.into());
-        PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(EFFECT_OUTPUT))
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::from([EFFECT_OUTPUT, VERIFIED_RESIDUAL_PLANS]),
+        )
     }
 }
 

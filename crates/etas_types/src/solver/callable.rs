@@ -187,6 +187,7 @@ fn unify_schematic_type(
     unifier: &mut TypeUnifier<'_>,
 ) -> bool {
     if let Some(Type::Named(name)) = store.get(schematic)
+        && store.parameter_identity(schematic).is_none()
         && is_type_variable_name(&name.name)
     {
         return match named_substitutions.get(&name.name) {
@@ -347,7 +348,9 @@ fn collect_unresolved_schematic_names(
     out: &mut Vec<String>,
 ) {
     match store.get(ty) {
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
+        Some(Type::Named(name))
+            if store.parameter_identity(ty).is_none() && is_type_variable_name(&name.name) =>
+        {
             if !substitutions.contains_key(&name.name) && !out.contains(&name.name) {
                 out.push(name.name.clone());
             }
@@ -395,7 +398,11 @@ fn collect_unresolved_schematic_names(
 
 fn contains_schematic_name(store: &TypeStore, ty: TypeId, needle: &str) -> bool {
     match store.get(ty) {
-        Some(Type::Named(name)) if name.name == needle => true,
+        Some(Type::Named(name))
+            if store.parameter_identity(ty).is_none() && name.name == needle =>
+        {
+            true
+        }
         Some(Type::Array(inner))
         | Some(Type::List(inner))
         | Some(Type::Set(inner))
@@ -643,7 +650,9 @@ fn apply_explicit_generic_args(
 
 fn collect_schematic_type_vars(store: &TypeStore, ty: TypeId, out: &mut Vec<String>) {
     match store.get(ty) {
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
+        Some(Type::Named(name))
+            if store.parameter_identity(ty).is_none() && is_type_variable_name(&name.name) =>
+        {
             if !out.contains(&name.name) {
                 out.push(name.name.clone());
             }
@@ -716,7 +725,10 @@ fn infer_type_substitution(
     substitutions: &mut HashMap<String, TypeId>,
 ) {
     match store.get(expected) {
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
+        Some(Type::Named(name))
+            if store.parameter_identity(expected).is_none()
+                && is_type_variable_name(&name.name) =>
+        {
             if expected == actual {
                 return;
             }
@@ -884,7 +896,10 @@ fn is_assignable_to_schematic(
     }
     match store.get(expected) {
         Some(Type::Var(_)) => true,
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => {
+        Some(Type::Named(name))
+            if store.parameter_identity(expected).is_none()
+                && is_type_variable_name(&name.name) =>
+        {
             if expected == actual {
                 return true;
             }
@@ -1118,10 +1133,14 @@ fn is_schematic_assignable_to(
         Some(Type::Var(var)) => solver_substitutions
             .get(*var)
             .is_some_and(|resolved| resolved != from && is_assignable(store, resolved, to)),
-        Some(Type::Named(name)) if is_type_variable_name(&name.name) => substitutions
-            .get(&name.name)
-            .copied()
-            .is_some_and(|from| is_assignable(store, from, to)),
+        Some(Type::Named(name))
+            if store.parameter_identity(from).is_none() && is_type_variable_name(&name.name) =>
+        {
+            substitutions
+                .get(&name.name)
+                .copied()
+                .is_some_and(|from| is_assignable(store, from, to))
+        }
         Some(Type::Array(from)) => match store.get(to) {
             Some(Type::Array(to)) => {
                 is_schematic_assignable_to(store, *from, *to, substitutions, solver_substitutions)
@@ -1393,4 +1412,39 @@ fn constructors_match(
 fn is_type_variable_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(ch) if ch.is_ascii_uppercase()) && chars.next().is_none()
+}
+
+#[cfg(test)]
+mod canonical_parameter_tests {
+    use super::*;
+
+    #[test]
+    fn unrelated_named_substitution_cannot_capture_checked_binder() {
+        let owner = etas_code::DefinitionKey::new(
+            etas_code::PackageKey::from_name_and_version("caller", "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["Tree".into()],
+            etas_code::DefinitionKind::Type,
+        )
+        .unwrap();
+        let mut types = crate::TypeInterner::new();
+        let parameter = types
+            .intern_canonical_parameter(
+                crate::ty::CanonicalTypeParameterIdentity::new(owner, 0).unwrap(),
+                "T".into(),
+            )
+            .unwrap();
+        let boolean = types.primitive(crate::PrimitiveType::Bool);
+        let mut names = HashMap::new();
+        infer_type_substitution(types.store(), parameter, boolean, &mut names);
+        assert!(names.is_empty());
+        let mut unifier = TypeUnifier::new(types.store());
+        assert!(!unify_schematic_type(
+            types.store(),
+            parameter,
+            boolean,
+            &HashMap::from([("T".into(), boolean)]),
+            &mut unifier,
+        ));
+    }
 }

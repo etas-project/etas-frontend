@@ -1,5 +1,7 @@
 mod projection;
+mod reference_bindings;
 mod relocate;
+pub(crate) use reference_bindings::{ReferenceBindings, relocate_reference_bindings};
 
 use crate::code::{
     descriptor::{DescriptorInput, ProjectionError},
@@ -19,6 +21,8 @@ pub(crate) struct FrozenCalls<'a> {
     pub modules: &'a crate::ModuleIndex,
     pub std_registry: &'a etas_std::StdRegistry,
     pub limits: etas_code::descriptor::DescriptorLimits,
+    pub reachable_items: &'a std::collections::BTreeSet<HirItemId>,
+    pub foreign_type_bindings: Option<&'a crate::code::definition::ForeignTypeBindings>,
 }
 
 impl etas_effects::FrozenCallableSummaryProvider for FrozenCalls<'_> {
@@ -39,6 +43,55 @@ impl etas_effects::FrozenCallableSummaryProvider for FrozenCalls<'_> {
 }
 
 impl FrozenCalls<'_> {
+    fn references_pinned_callable(&self, target: HirItemId) -> bool {
+        let index = self.hir.index();
+        self.hir.exprs.iter().any(|(expr, data)| {
+            if !index
+                .expr_item
+                .get(&expr)
+                .is_some_and(|owner| self.reachable_items.contains(owner))
+            {
+                return false;
+            }
+            if self
+                .types
+                .facts
+                .agent_method_calls
+                .get(&expr)
+                .and_then(|symbol| self.types.facts.agent_methods.get(symbol))
+                .is_some_and(|method| method.body == target)
+            {
+                return true;
+            }
+            let etas_hir::HirExpr::Path(path) = data else {
+                return false;
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                return false;
+            };
+            let Some(symbol) = self.hir.canonical_source_symbol(symbol) else {
+                return false;
+            };
+            let Some(etas_hir::SymbolDef::Item { item }) =
+                self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
+            else {
+                return false;
+            };
+            if *item == target {
+                return true;
+            }
+            match self.types.facts.item_signatures.get(item) {
+                Some(etas_types::ItemSignature::Agent(signature)) => signature
+                    .default_entry
+                    .as_ref()
+                    .and_then(|entry| entry.method)
+                    .and_then(|symbol| self.types.facts.agent_methods.get(&symbol))
+                    .is_some_and(|method| method.body == target),
+                _ => false,
+            }
+        })
+    }
+
     fn project_inner(
         &self,
         registry: &EffectRegistry,
@@ -49,6 +102,7 @@ impl FrozenCalls<'_> {
         let origins: DefinitionOrigins = frozen.origins_for_hir(self.hir)?;
         let input = DescriptorInput {
             hir: self.hir,
+            sources: None,
             types: &self.types.facts,
             type_store: &self.types.store,
             std_registry: self.std_registry,
@@ -56,6 +110,7 @@ impl FrozenCalls<'_> {
             module_index: self.modules,
             effect_registry: registry,
             effects: None,
+            foreign_type_bindings: self.foreign_type_bindings,
         };
         let from =
             projection::Projection::build(original.as_ref().into(), &source_origins, self.limits)?;
@@ -67,6 +122,17 @@ impl FrozenCalls<'_> {
             let target = to.callables.get(id).copied().ok_or_else(|| {
                 invalid("frozen callable is absent from the candidate declaration world")
             })?;
+            if !self.reachable_items.contains(&target) {
+                continue;
+            }
+            let replaced =
+                frozen.default_body() == Some(*source) && !self.overlay.native_revision().unchanged;
+            if replaced && !self.references_pinned_callable(target) {
+                output
+                    .callables
+                    .insert(target, FrozenCallableSummary::AnalyzePinnedSource);
+                continue;
+            }
             let scope = projection::owner(id)?;
             let summary = match original.effects.item_effects.get(source) {
                 Some(summary) => {
@@ -158,12 +224,17 @@ impl FrozenCalls<'_> {
                             ));
                         }
                     }
-                    FrozenCallableSummary::Solved(std::sync::Arc::new(relocation.summary(
+                    let pinned = std::sync::Arc::new(relocation.summary(
                         summary,
                         &scope,
                         *source,
                         returned.as_ref(),
-                    )?))
+                    )?);
+                    if replaced {
+                        FrozenCallableSummary::Replaced { pinned }
+                    } else {
+                        FrozenCallableSummary::Solved(pinned)
+                    }
                 }
                 None if !original.reachability.analysis_items.contains(source)
                     && original.definition_sources.body(*source).is_some() =>

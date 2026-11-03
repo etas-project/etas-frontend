@@ -1,11 +1,13 @@
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
-use etas_hir::{HirExprId, HirProgram};
+use etas_hir::{HirExprId, HirProgram, HirStmt, HirStmtId, SymbolId};
 
 use crate::{EffectPipelineError, EffectUnit};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DiagnosticAnchor {
     Expr(HirExprId),
+    Stmt(HirStmtId),
+    Symbol(SymbolId),
     Unit(EffectUnit),
     Project,
 }
@@ -27,6 +29,27 @@ pub(crate) fn materialize_effect_diagnostic(
 pub(crate) fn resolve_anchor(hir: &HirProgram, anchor: &DiagnosticAnchor) -> Option<Span> {
     match anchor {
         DiagnosticAnchor::Expr(expr) => hir.exprs.get(*expr).map(|expr| expr.span(&hir.blocks)),
+        DiagnosticAnchor::Stmt(stmt) => match hir.stmts.get(*stmt)? {
+            HirStmt::If(expr) | HirStmt::Match(expr) => {
+                hir.exprs.get(*expr).map(|expr| expr.span(&hir.blocks))
+            }
+            HirStmt::Let { span, .. }
+            | HirStmt::Var { span, .. }
+            | HirStmt::Assign { span, .. }
+            | HirStmt::For { span, .. }
+            | HirStmt::While { span, .. }
+            | HirStmt::Retry { span, .. }
+            | HirStmt::Resume { span, .. }
+            | HirStmt::Finish { span, .. }
+            | HirStmt::Return { span, .. }
+            | HirStmt::Break { span }
+            | HirStmt::Continue { span }
+            | HirStmt::Expr { span, .. }
+            | HirStmt::Error { span } => Some(*span),
+        },
+        DiagnosticAnchor::Symbol(symbol) => {
+            hir.symbols.get(*symbol).map(|data| data.definition_span)
+        }
         DiagnosticAnchor::Unit(unit) => unit_span(hir, *unit),
         DiagnosticAnchor::Project => project_span(hir),
     }

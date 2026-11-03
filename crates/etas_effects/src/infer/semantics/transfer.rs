@@ -16,6 +16,76 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         self.incomplete_at_anchor(anchor, "effect analysis is missing checked facts", state)
     }
 
+    fn loop_fixpoint_incomplete(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        match self.hir.blocks.get(body) {
+            Some(block) => {
+                self.incomplete_at(block.span, "effect loop analysis did not converge", state)
+            }
+            None => self.incomplete_facts(state),
+        }
+    }
+
+    fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
+        let HirStmt::For { iter, limits, .. } = self.hir.stmts.get(stmt)? else {
+            return None;
+        };
+        let [limit] = limits.as_slice() else {
+            return None;
+        };
+        let ty = self.types.facts.expr_types.get(iter)?;
+        if !matches!(
+            self.types.store.get(*ty),
+            Some(Type::Array(_) | Type::List(_) | Type::Slice(_) | Type::Set(_) | Type::Map { .. })
+        ) || !self.proven_non_callable_iteration_type(*ty)
+            || self.checked_intrinsic_completion(*limit)
+                != Some(etas_std::IntrinsicCompletionSemantics::Returns)
+        {
+            return None;
+        }
+        let requirement = self.limit_requirement_from_expr(*limit)?;
+        let (LimitKind::Iterations, Some(LimitValue::Count(count))) =
+            (requirement.kind, requirement.value)
+        else {
+            return None;
+        };
+        let count = usize::try_from(u32::try_from(count).ok()?.max(1)).ok()?;
+        (count <= etas_utils::IterationLimit::default().max_iterations()).then_some(count)
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, mut state: Self::Domain) -> Self::Domain {
+        if !state.exits.exits.is_empty()
+            || state.summary.action_trace.has_unordered_approximation()
+            || state
+                .exits
+                .exits
+                .iter()
+                .any(|exit| exit.trace.has_unordered_approximation())
+            || state
+                .exits
+                .parameter_exits
+                .iter()
+                .any(|exit| exit.prefix.has_unordered_approximation())
+        {
+            state
+                .exits
+                .gaps
+                .insert(crate::OutcomeAnalysisGap::Loop(stmt));
+        }
+        state
+    }
+
+    fn bounded_for_break(&mut self, stmt: HirStmtId, mut state: Self::Domain) -> Self::Domain {
+        state
+            .exits
+            .gaps
+            .insert(crate::OutcomeAnalysisGap::Loop(stmt));
+        state
+    }
+
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         if let Some(unit) = state.unit {
             self.call_completion_exits.remove(&(unit, expr));
@@ -30,25 +100,24 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         pattern: HirPatId,
         mut state: Self::Domain,
     ) -> Self::Domain {
-        if self.expr_type_contains_flow(scrutinee) {
-            match self.latent_sources_for_expr(&state, scrutinee) {
-                Some(sources) => {
-                    if let Err(reason) =
-                        self.record_latent_sources_for_pat(&mut state, pattern, sources)
-                    {
-                        let span = self.hir.exprs[expr].span(&self.hir.blocks);
-                        return self.incomplete_at(span, reason, state);
-                    }
-                }
-                None => {
+        match self.latent_sources_for_expr(&state, scrutinee) {
+            Some(sources) => {
+                if let Err(reason) =
+                    self.record_latent_sources_for_pat(&mut state, pattern, sources)
+                {
                     let span = self.hir.exprs[expr].span(&self.hir.blocks);
-                    return self.incomplete_at(
-                        span,
-                        "match payload requires checked latent callable origins",
-                        state,
-                    );
+                    return self.incomplete_at(span, reason, state);
                 }
             }
+            None if self.expr_type_contains_flow(scrutinee) => {
+                let span = self.hir.exprs[expr].span(&self.hir.blocks);
+                return self.incomplete_at(
+                    span,
+                    "match payload requires checked latent callable origins",
+                    state,
+                );
+            }
+            None => {}
         }
         state
     }
@@ -189,7 +258,10 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 target,
                 value,
                 span,
-            } if self.is_typed_flow_expr(target) => {
+            } if self.is_typed_flow_expr(target)
+                || self.expr_type_contains_flow(target)
+                || self.symbolic_contract_expr(&state, value) =>
+            {
                 if let Err(message) = self.record_callable_assignment(&mut state, target, value) {
                     state = self.incomplete_at(span, message, state);
                 }
@@ -218,7 +290,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     }
                 }
             }
-            HirStmt::Resume { span, .. } => {
+            HirStmt::Resume { value, span } => {
                 if state.handler_depth == 0 {
                     self.diagnostics.push(Diagnostic::effect_check(
                         EffectDiagnosticCode::ResumeOutsideHandler,
@@ -227,13 +299,18 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     ));
                     state.summary.support =
                         InterpreterSupport::Rejected(FrontendRejectionReason::UnsupportedHandler);
+                } else {
+                    state.resume_count += 1;
+                    self.record_resume_value(value, &mut state);
                 }
             }
-            HirStmt::Finish { span, .. } => {
+            HirStmt::Finish { value, span } => {
                 if state.handler_depth == 0 {
                     let _ = span;
                     state.summary.support =
                         InterpreterSupport::Rejected(FrontendRejectionReason::UnsupportedHandler);
+                } else {
+                    self.record_finish_value(value, &mut state);
                 }
             }
             HirStmt::While { limits, span, .. } | HirStmt::Retry { limits, span, .. } => {
@@ -316,10 +393,14 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 source @ LatentSource::Metadata(_),
             )) => match self.latent_source_summary(source, span) {
                 Ok(summary) => {
-                    state
-                        .exits
-                        .gaps
-                        .insert(crate::OutcomeAnalysisGap::ExternalCall(expr));
+                    if let LatentSource::Metadata(source) = source {
+                        self.inputs
+                            .metadata_call_targets
+                            .entry(expr)
+                            .or_default()
+                            .insert(source);
+                    }
+                    self.note_call_outcomes(expr, None, &summary, &mut state);
                     state.summary.seq_assign(&summary);
                     AnalysisStep::handled(state)
                 }
@@ -540,7 +621,8 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     }
 
     fn begin_handle_body(&mut self, _expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
-        state.summary.handler_requests = crate::RequestInstantiationSummary::default();
+        state.summary = EffectSummary::local();
+        state.exits = crate::CallableExitSummary::default();
         state
     }
 
@@ -604,5 +686,103 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             ));
         };
         AnalysisStep::handled(self.materialize_handler_value(expr, span, handlers, state))
+    }
+}
+
+impl EffectSemantics<'_> {
+    fn proven_non_callable_iteration_type(&self, root: TypeId) -> bool {
+        let mut pending = vec![root];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(ty) = pending.pop() {
+            if !visited.insert(ty) {
+                continue;
+            }
+            if self.descriptor_contract_type(ty).is_some() {
+                return false;
+            }
+            match self.types.store.get(ty) {
+                Some(Type::Primitive(_) | Type::IntegerLiteral { .. }) => {}
+                Some(
+                    Type::Array(inner)
+                    | Type::List(inner)
+                    | Type::Set(inner)
+                    | Type::Slice(inner)
+                    | Type::Option(inner)
+                    | Type::Schema(inner)
+                    | Type::Message(inner)
+                    | Type::MemorySelection(inner)
+                    | Type::MemoryRegion(inner)
+                    | Type::Refined { base: inner, .. }
+                    | Type::Trust { inner, .. }
+                    | Type::Range { index: inner },
+                ) => pending.push(*inner),
+                Some(
+                    Type::Map { key, value }
+                    | Type::Store { key, value }
+                    | Type::Result {
+                        ok: key,
+                        err: value,
+                    },
+                ) => pending.extend([*key, *value]),
+                Some(Type::Record(record)) => {
+                    pending.extend(record.fields.iter().map(|field| field.ty))
+                }
+                Some(Type::Tuple(fields)) => pending.extend(fields),
+                Some(Type::Nominal(nominal)) => match nominal.representation {
+                    Some(representation) => pending.push(representation),
+                    None => return false,
+                },
+                Some(Type::Enum(_)) => match self.types.facts.enum_layouts.get(&ty) {
+                    Some(layout) => pending.extend(
+                        layout
+                            .variants
+                            .iter()
+                            .flat_map(|variant| variant.fields.iter())
+                            .copied(),
+                    ),
+                    None => return false,
+                },
+                Some(
+                    Type::Var(_)
+                    | Type::Function(_)
+                    | Type::Handler(_)
+                    | Type::Named(_)
+                    | Type::Applied { .. }
+                    | Type::Prompt
+                    | Type::PromptPart
+                    | Type::MemoryPlace(_)
+                    | Type::ResourceHandle(_),
+                )
+                | None => return false,
+            }
+        }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonconverged_loop_reports_its_real_body_span() {
+        let source = etas_core::SourceFile::anonymous("flow f() -> unit { return; }");
+        let parsed = etas_syntax::parse_program(source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = etas_hir::HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
+        let (body, block) = hir.blocks.iter().next().unwrap();
+        let span = block.span;
+        let types = etas_types::TypeOutput::default();
+        let std = etas_std::standard_registry();
+        let registry = crate::EffectRegistry::with_standard_effects_from(&std);
+        let mut semantics = EffectSemantics::new(&hir, &types, &std, &registry, &[], &[]);
+
+        let state = semantics.loop_fixpoint_incomplete(body, EffectState::default());
+        assert!(state.incomplete);
+        let [diagnostic] = semantics.diagnostics.as_slice() else {
+            panic!("expected exactly one diagnostic");
+        };
+        assert_eq!(diagnostic.primary.span, span);
+        assert!(diagnostic.message.contains("did not converge"));
     }
 }

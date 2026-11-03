@@ -21,7 +21,9 @@ impl ContractValidator<'_, '_> {
                     .signatures
                     .get(identity)
                     .map(|spec| (&spec.param_names, &spec.methods)),
-                etas_types::CheckedSpecRef::Std(_) => None,
+                etas_types::CheckedSpecRef::Std(_) | etas_types::CheckedSpecRef::Canonical(_) => {
+                    None
+                }
             }
             .ok_or_else(|| invalid("external method has no checked spec declaration"))?;
             let method = declaration

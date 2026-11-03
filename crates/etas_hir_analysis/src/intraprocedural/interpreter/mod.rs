@@ -60,6 +60,7 @@ where
         Traversal {
             semantics: &mut self.semantics,
             checkpoint,
+            loop_iterations_remaining: etas_utils::IterationLimit::default().max_iterations(),
         }
         .block_control(block, state)
     }
@@ -82,6 +83,7 @@ where
         Traversal {
             semantics: &mut self.semantics,
             checkpoint,
+            loop_iterations_remaining: etas_utils::IterationLimit::default().max_iterations(),
         }
         .stmt_control(stmt, state)
     }
@@ -104,6 +106,7 @@ where
         Traversal {
             semantics: &mut self.semantics,
             checkpoint,
+            loop_iterations_remaining: etas_utils::IterationLimit::default().max_iterations(),
         }
         .expr_control(expr, state)
     }
@@ -112,6 +115,7 @@ where
 struct Traversal<'a, S, F> {
     semantics: &'a mut S,
     checkpoint: &'a F,
+    loop_iterations_remaining: usize,
 }
 
 impl<S, F, E> Traversal<'_, S, F>

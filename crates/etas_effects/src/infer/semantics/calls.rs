@@ -26,7 +26,8 @@ impl EffectSemantics<'_> {
         {
             for source in sources {
                 match source {
-                    super::state::LatentSource::Unit(unit)
+                    super::state::LatentSource::FrozenContract { unit, .. }
+                    | super::state::LatentSource::Unit(unit)
                     | super::state::LatentSource::Reference { unit, .. }
                     | super::state::LatentSource::Captured { unit, .. } => {
                         self.inputs
@@ -40,10 +41,9 @@ impl EffectSemantics<'_> {
             }
         }
         if let CallTarget::Direct(EffectUnit::Item(item)) = target
-            && self
-                .frozen_calls
-                .get(&item)
-                .is_some_and(crate::FrozenCallableSummary::uses_snapshot)
+            && self.frozen_calls.get(&item).is_some_and(|callable| {
+                callable.uses_snapshot() || callable.pinned_summary().is_some()
+            })
         {
             self.frozen_call_targets.insert(call, item);
             return CallTarget::External;

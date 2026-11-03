@@ -68,7 +68,7 @@ pub(super) enum Work {
 pub struct DefinitionDescriptorProjector<'a> {
     pub(super) checked: super::DescriptorInput<'a>,
     pub(super) identities: &'a DefinitionIdentityIndex,
-    limits: DescriptorLimits,
+    pub(super) limits: DescriptorLimits,
     pub(super) scopes: Vec<Scope>,
     pub(super) types: Vec<Option<TypeInfo>>,
     pub(super) rows: Vec<Option<EffectRowInfo>>,
@@ -173,6 +173,117 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         self.ensure_edges(types.len())?;
         let scope = self.scope(owner, &[])?;
         types.iter().map(|ty| self.type_ref(*ty, scope)).collect()
+    }
+
+    pub fn project_closed_rows(
+        &mut self,
+        owner: GenericOwner,
+        rows: &[EffectRowRef],
+    ) -> Result<Vec<EffectRowInfoRef>, ProjectionError> {
+        self.ensure_edges(rows.len())?;
+        let scope = self.scope(owner, &[])?;
+        rows.iter()
+            .map(|row| {
+                if let Some(tail) = &row.tail {
+                    return Err(ProjectionError::UnresolvedBinder(tail.clone()));
+                }
+                self.row_ref(row.clone(), scope)
+            })
+            .collect()
+    }
+
+    pub(crate) fn project_closed_analysis_row(
+        &mut self,
+        owner: GenericOwner,
+        row: &etas_effects::EffectRow,
+    ) -> Result<EffectRowInfoRef, ProjectionError> {
+        if row.open.is_some()
+            || row
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, etas_effects::Effect::Var(_)))
+        {
+            return Err(ProjectionError::Invalid("effect row is not closed".into()));
+        }
+        let scope = self.scope(owner, &[])?;
+        self.analysis_row(row, scope)
+    }
+
+    /// The contract's closed action row is a set, not a descriptor traversal.
+    /// Keep local action allocation order out of the bound revision identity.
+    pub(crate) fn finish_analysis_row_contract_fingerprint(
+        mut self,
+        owner: GenericOwner,
+        row: &etas_effects::EffectRow,
+    ) -> Result<etas_code::CodeFingerprint, ProjectionError> {
+        let mut references = Vec::new();
+        if row.effects.is_empty() {
+            references.push(self.project_closed_analysis_row(owner, row)?);
+        } else {
+            for effect in row.effects.iter() {
+                let singleton = etas_effects::EffectRow {
+                    effects: etas_effects::EffectSet::one(effect.clone()),
+                    open: row.open,
+                };
+                references.push(self.project_closed_analysis_row(owner.clone(), &singleton)?);
+            }
+        }
+        let mut budget =
+            etas_code::descriptor::DescriptorFingerprintBudget::new(self.limits.max_edges);
+        let graph = self.finish()?;
+        let ordered = references
+            .into_iter()
+            .map(|reference| graph.row_fingerprint_with_budget(reference, &mut budget))
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        Ok(etas_code::CodeFingerprint::of_parts(
+            "etas.frontend.analysis-row-contract-set.v1",
+            ordered
+                .iter()
+                .map(|fingerprint| fingerprint.as_bytes().as_slice()),
+        ))
+    }
+
+    /// Canonical identity of one fully concrete checked action instance. This
+    /// is the same effect projection used for residual trace patterns; it is
+    /// an event label for the shared monitor, not dispatch authority.
+    pub(crate) fn concrete_action_instance(
+        mut self,
+        owner: GenericOwner,
+        effect: &etas_effects::Effect,
+    ) -> Result<etas_code::contract::CanonicalEffect, ProjectionError> {
+        let arguments = match effect {
+            etas_effects::Effect::Action(_) => &[][..],
+            etas_effects::Effect::AppliedAction(instance) => instance.args.as_slice(),
+            _ => {
+                return Err(ProjectionError::Invalid(
+                    "concrete action instance is not an action".into(),
+                ));
+            }
+        };
+        let empty = std::collections::HashMap::new();
+        let types =
+            etas_types::ty::TypeSubstitutionEngine::existing(self.checked.type_store, &empty);
+        for argument in arguments {
+            match argument {
+                etas_types::EffectArgRef::Type(ty) => {
+                    types.validate_closed_argument(*ty).map_err(|error| {
+                        ProjectionError::Invalid(format!(
+                            "concrete action selector is not closed: {error:?}"
+                        ))
+                    })?;
+                }
+                etas_types::EffectArgRef::Wildcard => {
+                    return Err(ProjectionError::Invalid(
+                        "concrete action instance has a wildcard selector".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let scope = self.scope(owner, &[])?;
+        let info = self.analysis_effect(effect, scope)?;
+        let graph = self.finish()?;
+        Ok(etas_code::contract::canonical_effect(&graph, &info)?)
     }
 
     pub(crate) fn project_scoped_types(
@@ -407,6 +518,53 @@ impl<'a> DefinitionDescriptorProjector<'a> {
     }
 
     pub fn finish_native(mut self) -> Result<NativeDescriptorProjection, ProjectionError> {
+        self.materialize_pending()?;
+        let mut type_origins = self
+            .memo
+            .iter()
+            .map(|((local, scope), descriptor)| {
+                let scope = self.scopes.get(*scope).ok_or_else(|| {
+                    ProjectionError::Invalid("native type origin has no generic scope".into())
+                })?;
+                Ok(NativeTypeOrigin {
+                    local: *local,
+                    scope: scope.owner.clone(),
+                    descriptor: *descriptor,
+                })
+            })
+            .collect::<Result<Vec<_>, ProjectionError>>()?;
+        type_origins.sort_by(|a, b| (&a.scope, a.local).cmp(&(&b.scope, b.local)));
+        let input = DescriptorGraphInput {
+            types: self
+                .types
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("descriptor type was not materialized".into())
+                })?,
+            rows: self
+                .rows
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("descriptor row was not materialized".into())
+                })?,
+            binders: self.binders,
+            traces: self
+                .traces
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("descriptor trace was not materialized".into())
+                })?,
+        };
+        Ok(NativeDescriptorProjection {
+            graph: DescriptorGraph::new_with_merged_binders(input, self.limits)?,
+            type_origins,
+        })
+    }
+
+    pub(super) fn materialize_pending(&mut self) -> Result<(), ProjectionError> {
         while let Some(work) = self.work.pop() {
             match work {
                 Work::Type {
@@ -451,49 +609,7 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 }
             }
         }
-        let mut type_origins = self
-            .memo
-            .iter()
-            .map(|((local, scope), descriptor)| {
-                let scope = self.scopes.get(*scope).ok_or_else(|| {
-                    ProjectionError::Invalid("native type origin has no generic scope".into())
-                })?;
-                Ok(NativeTypeOrigin {
-                    local: *local,
-                    scope: scope.owner.clone(),
-                    descriptor: *descriptor,
-                })
-            })
-            .collect::<Result<Vec<_>, ProjectionError>>()?;
-        type_origins.sort_by(|a, b| (&a.scope, a.local).cmp(&(&b.scope, b.local)));
-        let input = DescriptorGraphInput {
-            types: self
-                .types
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("descriptor type was not materialized".into())
-                })?,
-            rows: self
-                .rows
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("descriptor row was not materialized".into())
-                })?,
-            binders: self.binders,
-            traces: self
-                .traces
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("descriptor trace was not materialized".into())
-                })?,
-        };
-        Ok(NativeDescriptorProjection {
-            graph: DescriptorGraph::new(input, self.limits)?,
-            type_origins,
-        })
+        Ok(())
     }
 
     pub(super) fn reserve_type(&mut self) -> Result<TypeInfoRef, ProjectionError> {

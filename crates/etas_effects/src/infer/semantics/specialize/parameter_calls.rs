@@ -50,7 +50,7 @@ impl EffectSemantics<'_> {
                 .symbols
                 .get(symbol)
                 .is_some_and(|data| matches!(data.def, SymbolDef::Param { owner, .. } if state.owner == Some(owner)))
-            && self.checked_function_parameter(symbol).is_some()
+            && self.checked_callable_contract_parameter(symbol).is_some()
         {
             return Ok(None);
         }
@@ -177,6 +177,12 @@ impl EffectSemantics<'_> {
                 let mut source_summary =
                     self.trace_argument_summary(binding, state, parameter, *span)?;
                 source_summary.handler_requests = crate::RequestInstantiationSummary::default();
+                self.remove_intercepted_callback_defaults(
+                    target,
+                    *parameter_target,
+                    *span,
+                    &mut source_summary,
+                )?;
                 if inferred_parameters.contains(parameter_target) {
                     source_summary.action_trace = ActionTraceDomain::Empty;
                     target.seq_assign(&source_summary);
@@ -216,6 +222,12 @@ impl EffectSemantics<'_> {
                     let mut source_summary =
                         self.trace_argument_summary(binding, state, &call.parameter, call.span)?;
                     source_summary.handler_requests = crate::RequestInstantiationSummary::default();
+                    self.remove_intercepted_callback_defaults(
+                        target,
+                        call.target,
+                        call.span,
+                        &mut source_summary,
+                    )?;
                     if inferred_parameters.contains(&call.target) {
                         source_summary.action_trace = ActionTraceDomain::Empty;
                         target.seq_assign(&source_summary);

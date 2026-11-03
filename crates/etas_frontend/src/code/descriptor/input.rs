@@ -5,6 +5,7 @@ use crate::{CheckedProgramData, ResolvedImports};
 #[derive(Clone, Copy, etas_core::RetainedSize)]
 pub(crate) struct DescriptorInput<'a> {
     pub hir: &'a etas_hir::HirRevision,
+    pub sources: Option<&'a crate::SourceBundle>,
     pub types: &'a etas_types::TypeFacts,
     pub type_store: &'a etas_types::TypeStore,
     pub std_registry: &'a etas_std::StdRegistry,
@@ -12,12 +13,14 @@ pub(crate) struct DescriptorInput<'a> {
     pub module_index: &'a crate::ModuleIndex,
     pub effect_registry: &'a etas_effects::EffectRegistry,
     pub effects: Option<&'a etas_effects::EffectFacts>,
+    pub foreign_type_bindings: Option<&'a crate::code::definition::ForeignTypeBindings>,
 }
 
 impl<'a> From<&'a CheckedProgramData> for DescriptorInput<'a> {
     fn from(checked: &'a CheckedProgramData) -> Self {
         Self {
             hir: &checked.hir,
+            sources: Some(&checked.sources),
             types: &checked.types,
             type_store: &checked.type_store,
             std_registry: &checked.std_registry,
@@ -25,6 +28,7 @@ impl<'a> From<&'a CheckedProgramData> for DescriptorInput<'a> {
             module_index: &checked.module_index,
             effect_registry: &checked.effect_registry,
             effects: Some(&checked.effects),
+            foreign_type_bindings: Some(&checked.foreign_type_bindings),
         }
     }
 }

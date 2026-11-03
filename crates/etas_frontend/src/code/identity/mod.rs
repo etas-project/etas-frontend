@@ -135,17 +135,143 @@ impl SourceModuleOrigin {
 }
 
 impl DefinitionOrigins {
+    /// Derives source module identities from the validated owner bindings and
+    /// immutable parsed sources, never from import aliases or filesystem paths.
+    pub fn checked_source_modules(
+        checked: &CheckedProgramData,
+    ) -> Result<HashMap<HirModuleId, SourceModuleOrigin>, ProjectionError> {
+        Self::source_modules_from_inputs(
+            &checked.hir,
+            &checked.module_index,
+            checked.definition_sources.source_set(),
+            checked.definition_sources.parsed_sources(),
+            &checked.definition_environment,
+        )
+    }
+
+    pub(crate) fn source_modules_from_inputs(
+        hir: &etas_hir::HirProgram,
+        index: &crate::ModuleIndex,
+        sources: &crate::SourceSet,
+        parsed: &[crate::ParsedSource],
+        validated: &crate::ValidatedExternalEnvironment,
+    ) -> Result<HashMap<HirModuleId, SourceModuleOrigin>, ProjectionError> {
+        let environment = validated.environment();
+        let files: HashMap<_, _> = sources
+            .files
+            .iter()
+            .map(|source| (source.id, source))
+            .collect();
+        let parsed_by_source: HashMap<_, _> = parsed
+            .iter()
+            .map(|source| (source.source, source))
+            .collect();
+        if files.len() != sources.files.len() || parsed_by_source.len() != parsed.len() {
+            return Err(ProjectionError::Invalid(
+                "source identity is duplicated".into(),
+            ));
+        }
+        let mut modules = HashMap::new();
+        for module in &hir.modules {
+            let data = hir
+                .modules_arena
+                .get(*module)
+                .ok_or(ProjectionError::MissingModule(*module))?;
+            let info = index
+                .by_source
+                .get(&data.span.source)
+                .and_then(|id| index.modules.get(*id))
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("checked source module has no project origin".into())
+                })?;
+            let mut owner = None;
+            let mut declared = None;
+            for part in &info.parts {
+                let part = index.parts.get(*part).ok_or_else(|| {
+                    ProjectionError::Invalid("checked module part is missing".into())
+                })?;
+                let source = files.get(&part.source).ok_or_else(|| {
+                    ProjectionError::Invalid("module part has no source file".into())
+                })?;
+                let parsed = parsed_by_source.get(&part.source).ok_or_else(|| {
+                    ProjectionError::Invalid("module part has no parsed source".into())
+                })?;
+                if parsed.source_file.id != source.id
+                    || parsed.source_file.path != source.path
+                    || parsed.source_file.text != source.text
+                {
+                    return Err(ProjectionError::Invalid(
+                        "parsed module source differs from the checked source file".into(),
+                    ));
+                }
+                let ast_module = parsed
+                    .parse
+                    .value
+                    .module
+                    .as_ref()
+                    .map(|module| crate::ModulePath::from_ast(&module.path));
+                if parsed.declared_module != ast_module {
+                    return Err(ProjectionError::Invalid(
+                        "cached module declaration differs from the parsed source".into(),
+                    ));
+                }
+                let package = environment
+                    .source_package_for(part.source, &source.kind)
+                    .map_err(|error| {
+                        ProjectionError::Invalid(format!(
+                            "module source has no consistent checked package origin: {error:?}"
+                        ))
+                    })?;
+                if owner.is_some_and(|previous| previous != package) {
+                    return Err(ProjectionError::Invalid(
+                        "source module parts have different package origins".into(),
+                    ));
+                }
+                owner = Some(package);
+                let path = match &parsed.declared_module {
+                    Some(path) => path.segments.clone(),
+                    None if matches!(
+                        source.kind,
+                        crate::SourceKind::DependencySourceOverlay { .. }
+                    ) =>
+                    {
+                        return Err(ProjectionError::Invalid(
+                            "dependency overlay has no canonical module declaration".into(),
+                        ));
+                    }
+                    None => module_path_in(hir, *module)?,
+                };
+                if declared.as_ref().is_some_and(|previous| previous != &path) {
+                    return Err(ProjectionError::Invalid(
+                        "source module parts have different canonical declarations".into(),
+                    ));
+                }
+                declared = Some(path);
+            }
+            let owner = owner.ok_or_else(|| {
+                ProjectionError::Invalid("source module has no source parts".into())
+            })?;
+            let path = declared.ok_or_else(|| {
+                ProjectionError::Invalid("source module has no canonical declaration".into())
+            })?;
+            modules.insert(*module, SourceModuleOrigin::new(owner, path)?);
+        }
+        Ok(modules)
+    }
+
     /// Only the immutable environment that passed the frontend validation gate
     /// may seed portable definition identities.
     pub fn checked_external_definitions(
         checked: &CheckedProgramData,
     ) -> Result<BTreeMap<Vec<String>, DefinitionKey>, ProjectionError> {
+        Self::external_definitions_from_environment(&checked.definition_environment)
+    }
+
+    pub(crate) fn external_definitions_from_environment(
+        environment: &crate::ValidatedExternalEnvironment,
+    ) -> Result<BTreeMap<Vec<String>, DefinitionKey>, ProjectionError> {
         let mut definitions = BTreeMap::new();
-        for input in &checked
-            .definition_environment
-            .environment()
-            .external_definition_origins
-        {
+        for input in &environment.environment().external_definition_origins {
             for binding in &input.origins.declarations {
                 if let Some(previous) =
                     definitions.insert(binding.path(), binding.definition.clone())
@@ -817,6 +943,7 @@ impl DefinitionIdentityIndex {
             }
         }
         index.bind_external_types(checked, checked_standard_package)?;
+        index.bind_foreign_types(checked)?;
         let declarations = index
             .type_names
             .values()
@@ -1055,5 +1182,48 @@ impl DefinitionIdentityIndex {
     }
     pub fn path(&self, path: &[String]) -> Option<&DefinitionKey> {
         self.paths.get(path)
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+
+    #[test]
+    fn pre_effect_source_identity_rejects_stale_or_duplicate_inputs() {
+        let mut input = crate::ProjectInput::single_source(crate::SourceInput::anonymous(
+            "module app.main; flow main() -> unit { return; }",
+        ));
+        input.environment.local_source_package = Some(PackageKey::from_canonical_fingerprint(
+            etas_code::CodeFingerprint::from_bytes([7; 32]),
+        ));
+        let checked = crate::Frontend.check_project(input).checked.unwrap();
+        let sources = checked.definition_sources.source_set();
+        let parsed = checked.definition_sources.parsed_sources();
+        let derive = |sources: &crate::SourceSet, parsed: &[crate::ParsedSource]| {
+            DefinitionOrigins::source_modules_from_inputs(
+                &checked.hir,
+                &checked.module_index,
+                sources,
+                parsed,
+                &checked.definition_environment,
+            )
+        };
+        assert!(derive(sources, parsed).is_ok());
+        let mut stale = sources.as_ref().clone();
+        stale.files[0].text = std::sync::Arc::from("different source");
+        assert!(
+            matches!(derive(&stale, parsed), Err(ProjectionError::Invalid(reason)) if reason.contains("differs"))
+        );
+        let mut duplicates = parsed.to_vec();
+        duplicates.push(duplicates[0].clone());
+        assert!(
+            matches!(derive(sources, &duplicates), Err(ProjectionError::Invalid(reason)) if reason.contains("duplicated"))
+        );
+        let mut stale_module = parsed.to_vec();
+        stale_module[0].declared_module = None;
+        assert!(
+            matches!(derive(sources, &stale_module), Err(ProjectionError::Invalid(reason)) if reason.contains("module declaration differs"))
+        );
     }
 }

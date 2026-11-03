@@ -13,6 +13,8 @@ use crate::{
 mod artifacts;
 mod context;
 mod passes;
+mod prepared_registry;
+pub use prepared_registry::PreparedEffectRegistry;
 
 use context::{EffectPipelineContext, effect_pipeline};
 
@@ -27,6 +29,11 @@ use context::{EffectPipelineContext, effect_pipeline};
     etas_core::RetainedSize,
 )]
 pub struct ExternalEffectSummaryMetadata {
+    /// Validated portable analysis for this exact declaration, when published.
+    #[serde(default)]
+    pub callable_contract: Option<ExternalCallableContract>,
+    #[serde(default)]
+    pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
     pub handler_requests: Option<ExternalRequestInstantiationMetadata>,
     pub callable_graph_key: Option<etas_code::CodeFingerprint>,
     pub returned_callables: Option<etas_package_metadata::CallableValueGraph>,
@@ -59,6 +66,17 @@ pub struct ExternalEffectSummaryMetadata {
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
+pub struct ExternalCallableContract {
+    pub descriptor_fingerprint: etas_code::CodeFingerprint,
+    pub header: std::sync::Arc<etas_code::descriptor::CallableHeaderInfo>,
+    pub graph: std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
+    pub definition_paths:
+        std::sync::Arc<std::collections::BTreeMap<etas_code::DefinitionKey, Vec<Vec<String>>>>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ExternalCallableValueMetadata {
     pub handler_requests: Option<ExternalRequestInstantiationMetadata>,
     pub params: Vec<etas_types::TypeId>,
@@ -78,6 +96,7 @@ pub struct ExternalSpecImplementationMetadata {
     pub graph_key: etas_code::CodeFingerprint,
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub values: Vec<ExternalCallableValueMetadata>,
+    pub callable_contract: Option<ExternalCallableContract>,
 }
 
 pub(crate) struct ExternalCallableEffectView<'a> {
@@ -89,6 +108,7 @@ pub(crate) struct ExternalCallableEffectView<'a> {
     pub handled_requested_actions: &'a ExternalEffectRowMetadata,
     pub default_handler_effects: Option<&'a ExternalDefaultHandlerEffectsMetadata>,
     pub action_trace: &'a ExternalActionTraceMetadata,
+    pub symbolic_parameter_bounds: &'a [crate::EffectRow],
 }
 
 #[derive(
@@ -105,6 +125,7 @@ pub struct ExternalRequestInstantiationMetadata {
 pub struct ExternalActionRequestMetadata {
     pub action: ExternalEffectMetadata,
     pub type_bindings: Option<Vec<(String, etas_types::TypeId)>>,
+    pub signature: Option<etas_types::ActionRequestSignature>,
 }
 
 #[derive(
@@ -286,19 +307,12 @@ pub struct ExternalEffectMetadata {
 }
 
 #[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct ExternalTraceSpecSummaryMetadata {
     pub trace_spec: Vec<String>,
-    #[serde(default)]
-    pub clauses: Vec<ExternalTraceSpecClauseMetadata>,
+    pub definition: etas_code::DefinitionKey,
+    pub alternatives: Vec<Vec<ExternalTraceSpecClauseMetadata>>,
 }
 
 #[derive(
@@ -375,6 +389,11 @@ pub struct ExternalTraceSpecEffectMetadata {
 
 #[derive(Clone, Copy, etas_core::RetainedSize)]
 pub struct EffectPipelineInput<'a> {
+    pub source_snapshots: &'a [EffectSourceSnapshot<'a>],
+    pub residual_identity: Option<&'a dyn crate::ResidualIdentityProvider>,
+    /// Checked canonical projection used to lower residual monitor plans.
+    /// Without it no plan is produced and unproven conformances stay rejected.
+    pub trace_monitor_projector: Option<&'a dyn crate::TraceMonitorProjector>,
     pub external_implementations:
         &'a [AnchoredExternalMetadata<ExternalSpecImplementationMetadata>],
     pub frozen_calls: Option<&'a dyn crate::FrozenCallableSummaryProvider>,
@@ -387,6 +406,50 @@ pub struct EffectPipelineInput<'a> {
     pub external_trace_specs: &'a [AnchoredExternalMetadata<ExternalTraceSpecSummaryMetadata>],
     pub external_artifact_anchors: &'a [ExternalArtifactAnchor],
     pub reachable_items: Option<&'a BTreeSet<HirItemId>>,
+}
+
+/// Source snapshots supplied by the project owner; these are identity inputs,
+/// not proof of residual plan coverage or runtime installation.
+#[derive(Clone, Copy)]
+pub struct EffectSourceSnapshot<'a> {
+    pub source: etas_core::SourceId,
+    pub key: etas_code::StableSourceKey,
+    pub text: &'a str,
+}
+
+pub(crate) fn validate_source_snapshot_identities(
+    snapshots: &[EffectSourceSnapshot<'_>],
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+) -> Result<(), EffectPipelineError> {
+    let limit = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
+    if snapshots.len() > limit {
+        return Err(EffectPipelineError::AnalysisLimitExceeded {
+            resource: "effect source snapshots",
+            limit,
+        });
+    }
+    let mut source_ids = BTreeSet::new();
+    let mut source_keys = BTreeSet::new();
+    for snapshot in snapshots {
+        if let Some(control) = control {
+            control
+                .checkpoint()
+                .map_err(EffectPipelineError::Interrupted)?;
+        }
+        if !source_ids.insert(snapshot.source.0) {
+            return Err(EffectPipelineError::InvalidSourceIdentity {
+                source: snapshot.source,
+                reason: "duplicate source snapshot".into(),
+            });
+        }
+        if !source_keys.insert(snapshot.key) {
+            return Err(EffectPipelineError::InvalidSourceIdentity {
+                source: snapshot.source,
+                reason: "stable source key belongs to multiple snapshots".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
@@ -417,10 +480,63 @@ pub struct EffectPipelinePassTiming {
     pub duration_ns: u64,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+/// A session-local handoff. Persist facts/artifacts through their own codecs;
+/// source-analysis relationships must not become portable proof by deserialization.
+#[derive(Debug)]
 pub struct EffectPipelineOutput {
     pub artifacts: EffectPipelineArtifacts,
     pub effects: EffectOutput,
+    pub trace_specs: TraceSpecPipelineAnalysis,
+}
+
+/// Original session-local analysis and classification from this pipeline run.
+/// These are inputs to plan lowering, not executable plans or installation proof.
+pub struct TraceSpecPipelineAnalysis {
+    pub(super) analysis: crate::trace_spec::TraceSpecAnalysisOutput,
+    pub(super) dispositions: crate::trace_spec::TraceStaticDispositions,
+    pub(super) residual_plans: crate::residual::VerifiedResidualPlans,
+}
+
+impl std::fmt::Debug for TraceSpecPipelineAnalysis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraceSpecPipelineAnalysis")
+            .field(
+                "source_conformances",
+                &self.analysis.source_conformances.len(),
+            )
+            .field("residual_plans", &self.residual_plans)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TraceSpecPipelineAnalysis {
+    pub fn analysis(&self) -> &crate::trace_spec::TraceSpecAnalysisOutput {
+        &self.analysis
+    }
+
+    pub fn dispositions(&self) -> &crate::trace_spec::TraceStaticDispositions {
+        &self.dispositions
+    }
+
+    /// Plans verified against this run's analysis. Backend support, final
+    /// binding and installation are separate gates.
+    pub fn residual_plans(&self) -> &crate::residual::VerifiedResidualPlans {
+        &self.residual_plans
+    }
+
+    /// Releases the verified plans; the analysis inputs are dropped.
+    pub fn into_residual_plans(self) -> crate::residual::VerifiedResidualPlans {
+        self.residual_plans
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::trace_spec::TraceSpecAnalysisOutput,
+        crate::trace_spec::TraceStaticDispositions,
+    ) {
+        (self.analysis, self.dispositions)
+    }
 }
 
 pub struct RunEffectPipeline;
@@ -445,21 +561,55 @@ impl RunEffectPipeline {
     pub fn run(
         input: EffectPipelineInput<'_>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        Self::run_with_control(input, None)
+        Self::run_with_control(input, None, context::RegistrySource::CheckedTypes)
     }
 
     pub fn run_controlled(
         input: EffectPipelineInput<'_>,
         control: std::sync::Arc<dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        Self::run_with_control(input, Some(control))
+        Self::run_with_control(input, Some(control), context::RegistrySource::CheckedTypes)
+    }
+
+    pub fn run_prepared(
+        input: EffectPipelineInput<'_>,
+        prepared: PreparedEffectRegistry,
+        control: Option<std::sync::Arc<dyn etas_utils::PipelineExecutionControl>>,
+    ) -> Result<EffectPipelineOutput, EffectPipelineError> {
+        Self::run_with_control(
+            input,
+            control,
+            context::RegistrySource::Prepared(Box::new(prepared)),
+        )
     }
 
     fn run_with_control(
         input: EffectPipelineInput<'_>,
         control: Option<std::sync::Arc<dyn etas_utils::PipelineExecutionControl>>,
+        registry_source: context::RegistrySource,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
+        validate_source_snapshot_identities(input.source_snapshots, control.as_deref())?;
+        for entry in input.external_summaries {
+            if entry.returned_callables.as_ref().is_some_and(|graph| {
+                graph
+                    .values
+                    .iter()
+                    .any(|value| !value.residual_checks.is_empty())
+            }) {
+                return Err(EffectPipelineError::InvalidExternalMetadata {
+                    package: entry
+                        .metadata
+                        .package
+                        .clone()
+                        .unwrap_or_else(|| entry.package.to_string()),
+                    reason:
+                        "external callable residual references require validated residual plans"
+                            .into(),
+                });
+            }
+        }
         let mut context = EffectPipelineContext::new(input);
+        context.registry_source = registry_source;
         let mut pipeline = effect_pipeline();
         let mut manager = PassManager::with_config(PipelineConfig::default().with_timing(true));
         if let Some(control) = control {
@@ -526,11 +676,13 @@ mod tests {
     use etas_utils::{ArtifactKey, PassControl, PassManager, Pipeline};
 
     use super::*;
-    use crate::pipeline::artifacts::{EFFECT_REGISTRY, FROZEN_CALL_SUMMARIES, MEMORY_PROVENANCE};
+    use crate::pipeline::artifacts::{
+        EFFECT_REGISTRY, FROZEN_CALL_SUMMARIES, MEMORY_PROVENANCE, TRACE_SPEC_ANALYSIS,
+    };
     use crate::pipeline::context::EffectPipelineContext;
     use crate::pipeline::passes::{
-        AnalyzeMemoryProvenancePass, BindFrozenCallsPass, BuildRegistryPass, CollectUnitsPass,
-        SolveSummariesPass,
+        AnalyzeMemoryProvenancePass, BindFrozenCallsPass, BuildRegistryPass, ClassifyTraceSpecPass,
+        CollectUnitsPass, SolveSummariesPass,
     };
 
     #[test]
@@ -541,6 +693,185 @@ mod tests {
         let result = etas_hir::HirRevision::try_new(hir);
         assert!(result.is_err());
         assert_eq!(etas_hir::HirTreeIndex::thread_build_count() - before, 1);
+    }
+
+    #[test]
+    fn source_snapshot_identity_validation_obeys_limits_and_cancellation() {
+        struct Stop;
+        impl etas_utils::PipelineExecutionControl for Stop {
+            fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+                Err(etas_utils::PipelineInterruption {
+                    kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                    reason: "cancelled source identity validation".into(),
+                })
+            }
+        }
+        let key = etas_code::StableSourceKey::new(
+            etas_code::StableSourceOrigin::Project(etas_code::CodeFingerprint::from_bytes([1; 32])),
+            &["main.es".into()],
+        )
+        .unwrap();
+        let snapshot = EffectSourceSnapshot {
+            source: etas_core::SourceId(1),
+            key,
+            text: "",
+        };
+        assert!(matches!(
+            super::validate_source_snapshot_identities(&[snapshot], Some(&Stop)),
+            Err(EffectPipelineError::Interrupted(_))
+        ));
+        let too_many = vec![snapshot; etas_package_metadata::MAX_METADATA_GRAPH_NODES + 1];
+        assert!(matches!(
+            super::validate_source_snapshot_identities(&too_many, None),
+            Err(EffectPipelineError::AnalysisLimitExceeded {
+                resource: "effect source snapshots",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn duplicate_source_snapshot_identities_are_rejected_before_analysis() {
+        use etas_code::{CodeFingerprint, StableSourceKey, StableSourceOrigin};
+        let key = |byte| {
+            StableSourceKey::new(
+                StableSourceOrigin::Project(CodeFingerprint::from_bytes([byte; 32])),
+                &["main.es".into()],
+            )
+            .unwrap()
+        };
+        let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
+        let types = TypeOutput::default();
+        let registry = etas_std::standard_registry();
+        for snapshots in [
+            vec![
+                EffectSourceSnapshot {
+                    source: etas_core::SourceId(1),
+                    key: key(1),
+                    text: "a",
+                },
+                EffectSourceSnapshot {
+                    source: etas_core::SourceId(1),
+                    key: key(2),
+                    text: "b",
+                },
+            ],
+            vec![
+                EffectSourceSnapshot {
+                    source: etas_core::SourceId(1),
+                    key: key(1),
+                    text: "a",
+                },
+                EffectSourceSnapshot {
+                    source: etas_core::SourceId(2),
+                    key: key(1),
+                    text: "a",
+                },
+            ],
+        ] {
+            let input = EffectPipelineInput {
+                external_implementations: &[],
+                source_snapshots: &snapshots,
+                residual_identity: None,
+                trace_monitor_projector: None,
+                frozen_calls: None,
+                hir: &hir,
+                types: &types,
+                std_registry: &registry,
+                dependency_metadata: None,
+                tool_bindings: &[],
+                external_summaries: &[],
+                external_trace_specs: &[],
+                external_artifact_anchors: &[],
+                reachable_items: None,
+            };
+            assert!(matches!(
+                RunEffectPipeline::run(input),
+                Err(EffectPipelineError::InvalidSourceIdentity { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn direct_pipeline_rejects_external_residual_without_validated_plan() {
+        use etas_code::{
+            CodeFingerprint,
+            residual::identity::{ObligationId, ResidualObligationRef},
+        };
+        use etas_package_metadata::{
+            ActionTrace, CallableValueBehavior, CallableValueDeterminism, CallableValueGraph,
+            CallableValueNode, CallableValueScope, CallableValueSource, EffectRow, Type,
+        };
+        let reference = ResidualObligationRef::new(
+            ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([3; 32])),
+            Default::default(),
+        )
+        .unwrap();
+        let graph = CallableValueGraph {
+            sources: vec![CallableValueSource::Value(0)],
+            values: vec![CallableValueNode {
+                residual_checks: vec![reference],
+                handler_requests: Some(Default::default()),
+                behavior: CallableValueBehavior {
+                    determinism: CallableValueDeterminism::Deterministic,
+                    independent_determinism: Some(CallableValueDeterminism::Deterministic),
+                    host_requirements: vec![],
+                    interpreter_features: vec![],
+                },
+                parent_scope: CallableValueScope::Root,
+                generic_params: vec![],
+                generic_bindings: vec![],
+                param_names: vec![],
+                params: vec![],
+                output: Type {
+                    name: "unit".into(),
+                    ..Default::default()
+                },
+                public_effects: EffectRow::default(),
+                requested_actions: EffectRow::default(),
+                handled_requested_actions: EffectRow::default(),
+                default_handler_effects: Default::default(),
+                parameter_bindings: vec![],
+                action_trace: ActionTrace::Empty,
+                returned_sources: None,
+            }],
+        };
+        let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
+        let types = TypeOutput::default();
+        let registry = etas_std::standard_registry();
+        let summaries = [AnchoredExternalMetadata {
+            package: 17,
+            metadata: ExternalEffectSummaryMetadata {
+                package: Some("dependency".into()),
+                returned_callables: Some(graph),
+                ..Default::default()
+            },
+            span: etas_core::Span::new(
+                etas_core::SourceId(0),
+                etas_core::TextRange::new(etas_core::TextSize(0), etas_core::TextSize(1)),
+            ),
+        }];
+        let input = EffectPipelineInput {
+            external_implementations: &[],
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
+            frozen_calls: None,
+            hir: &hir,
+            types: &types,
+            std_registry: &registry,
+            dependency_metadata: None,
+            tool_bindings: &[],
+            external_summaries: &summaries,
+            external_trace_specs: &[],
+            external_artifact_anchors: &[],
+            reachable_items: None,
+        };
+        assert!(matches!(
+            RunEffectPipeline::run(input),
+            Err(EffectPipelineError::InvalidExternalMetadata { package, reason })
+                if package == "dependency" && reason.contains("validated residual plans")
+        ));
     }
 
     #[test]
@@ -563,6 +894,9 @@ mod tests {
             let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
             let types = TypeOutput::default();
             let input = EffectPipelineInput {
+                source_snapshots: &[],
+                residual_identity: None,
+                trace_monitor_projector: None,
                 external_implementations: &[],
                 frozen_calls: None,
                 hir: &hir,
@@ -599,6 +933,263 @@ mod tests {
         }
     }
 
+    #[test]
+    fn trace_disposition_pass_requires_actual_monitor_analysis() {
+        let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
+        let types = TypeOutput::default();
+        let registry = etas_std::standard_registry();
+        let input = EffectPipelineInput {
+            external_implementations: &[],
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
+            frozen_calls: None,
+            hir: &hir,
+            types: &types,
+            std_registry: &registry,
+            dependency_metadata: None,
+            tool_bindings: &[],
+            external_summaries: &[],
+            external_trace_specs: &[],
+            external_artifact_anchors: &[],
+            reachable_items: None,
+        };
+        let mut context = EffectPipelineContext::new(input);
+        let mut pipeline =
+            Pipeline::new("effects.missing_trace_analysis").pass(ClassifyTraceSpecPass);
+        let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
+        let PassControl::Failed(failure) = result.control else {
+            panic!("trace classification accepted missing analysis");
+        };
+        assert_eq!(failure.missing_artifact, Some(TRACE_SPEC_ANALYSIS));
+        assert!(context.trace_static_dispositions.is_none());
+    }
+
+    #[test]
+    fn residual_plan_stages_cannot_be_omitted_or_lost_before_validation_or_emit() {
+        use crate::pipeline::passes::{
+            AnalyzeTraceSpecMonitorsPass, EmitOutputPass, LowerResidualMonitorPlansPass,
+            MaterializeFactsPass, MaterializeTraceSpecModelsPass, ValidateContractsPass,
+            ValidateTraceSpecPass, VerifyResidualPlansPass,
+        };
+        use etas_utils::{ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassResult};
+
+        struct LoseVerifiedPlans;
+        impl<'a> Pass<EffectPipelineContext<'a>> for LoseVerifiedPlans {
+            fn descriptor(&self) -> PassDescriptor {
+                PassDescriptor::new("tests.lose_verified_plans", PassKind::Transform).requires(
+                    ArtifactSet::one(crate::pipeline::artifacts::VERIFIED_RESIDUAL_PLANS),
+                )
+            }
+            fn run(
+                &mut self,
+                context: &mut EffectPipelineContext<'a>,
+                _: &PassContext<EffectPipelineContext<'a>>,
+                _: &mut PassManager<EffectPipelineContext<'a>>,
+            ) -> PassResult {
+                context.verified_residual_plans = None;
+                PassResult::unchanged()
+            }
+        }
+
+        let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
+        let types = TypeOutput::default();
+        let registry = etas_std::standard_registry();
+        let input = EffectPipelineInput {
+            external_implementations: &[],
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
+            frozen_calls: None,
+            hir: &hir,
+            types: &types,
+            std_registry: &registry,
+            dependency_metadata: None,
+            tool_bindings: &[],
+            external_summaries: &[],
+            external_trace_specs: &[],
+            external_artifact_anchors: &[],
+            reachable_items: None,
+        };
+        let prefix = || {
+            Pipeline::new("effects.residual_stages")
+                .pass(BuildRegistryPass)
+                .pass(BindFrozenCallsPass)
+                .pass(CollectUnitsPass)
+                .pass(AnalyzeMemoryProvenancePass)
+                .pass(SolveSummariesPass)
+                .pass(MaterializeFactsPass)
+                .pass(ValidateContractsPass)
+                .pass(MaterializeTraceSpecModelsPass)
+                .pass(AnalyzeTraceSpecMonitorsPass)
+                .pass(ClassifyTraceSpecPass)
+        };
+
+        // Verification cannot run on a lowering result that was never produced.
+        let mut context = EffectPipelineContext::new(input);
+        let mut pipeline = prefix().pass(VerifyResidualPlansPass);
+        let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
+        let PassControl::Failed(failure) = result.control else {
+            panic!("verification accepted missing lowered plans");
+        };
+        assert_eq!(
+            failure.missing_artifact,
+            Some(crate::pipeline::artifacts::RESIDUAL_MONITOR_PLANS)
+        );
+        assert!(context.verified_residual_plans.is_none());
+
+        // Trace validation requires verified plans, not merely lowered ones.
+        let mut context = EffectPipelineContext::new(input);
+        let mut pipeline = prefix()
+            .pass(LowerResidualMonitorPlansPass)
+            .pass(ValidateTraceSpecPass);
+        let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
+        let PassControl::Failed(failure) = result.control else {
+            panic!("trace validation accepted unverified residual plans");
+        };
+        assert_eq!(
+            failure.missing_artifact,
+            Some(crate::pipeline::artifacts::VERIFIED_RESIDUAL_PLANS)
+        );
+
+        // Verification consumes the lowered value; a lost verified value is
+        // rejected by emission even though the artifact marker exists.
+        let mut context = EffectPipelineContext::new(input);
+        let mut pipeline = prefix()
+            .pass(LowerResidualMonitorPlansPass)
+            .pass(VerifyResidualPlansPass)
+            .pass(ValidateTraceSpecPass)
+            .pass(LoseVerifiedPlans)
+            .pass(EmitOutputPass);
+        let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
+        assert!(matches!(result.control, PassControl::Failed(_)));
+        assert!(context.residual_monitor_plans.is_none());
+        assert_eq!(
+            context.failure,
+            Some(EffectPipelineError::MissingStageArtifact {
+                stage: crate::EffectStage::Emit,
+                artifact: "verified residual plans",
+            })
+        );
+        assert!(context.artifacts.is_none());
+    }
+
+    #[test]
+    fn emit_rejects_lost_trace_analysis_even_when_artifact_markers_exist() {
+        use crate::pipeline::passes::{
+            AnalyzeTraceSpecMonitorsPass, EmitOutputPass, LowerResidualMonitorPlansPass,
+            MaterializeFactsPass, MaterializeTraceSpecModelsPass, ValidateContractsPass,
+            ValidateTraceSpecPass, VerifyResidualPlansPass,
+        };
+        use etas_utils::{ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassResult};
+
+        struct LoseTraceArtifact(bool);
+        impl<'a> Pass<EffectPipelineContext<'a>> for LoseTraceArtifact {
+            fn descriptor(&self) -> PassDescriptor {
+                PassDescriptor::new("tests.lose_trace_artifact", PassKind::Transform).requires(
+                    ArtifactSet::from([
+                        crate::pipeline::artifacts::TRACE_STATIC_DISPOSITIONS,
+                        crate::pipeline::artifacts::VALIDATED_TRACE_SPEC_FACTS,
+                    ]),
+                )
+            }
+            fn run(
+                &mut self,
+                context: &mut EffectPipelineContext<'a>,
+                _: &PassContext<EffectPipelineContext<'a>>,
+                _: &mut PassManager<EffectPipelineContext<'a>>,
+            ) -> PassResult {
+                if self.0 {
+                    context.trace_spec_analysis = None;
+                } else {
+                    context.trace_static_dispositions = None;
+                }
+                PassResult::unchanged()
+            }
+        }
+
+        for lose_analysis in [true, false] {
+            let hir = etas_hir::HirRevision::try_new(HirProgram::default()).unwrap();
+            let types = TypeOutput::default();
+            let registry = etas_std::standard_registry();
+            let input = EffectPipelineInput {
+                external_implementations: &[],
+                source_snapshots: &[],
+                residual_identity: None,
+                trace_monitor_projector: None,
+                frozen_calls: None,
+                hir: &hir,
+                types: &types,
+                std_registry: &registry,
+                dependency_metadata: None,
+                tool_bindings: &[],
+                external_summaries: &[],
+                external_trace_specs: &[],
+                external_artifact_anchors: &[],
+                reachable_items: None,
+            };
+            let mut context = EffectPipelineContext::new(input);
+            let mut incomplete = Pipeline::new("effects.reject_missing_trace_stage")
+                .pass(BuildRegistryPass)
+                .pass(BindFrozenCallsPass)
+                .pass(CollectUnitsPass)
+                .pass(AnalyzeMemoryProvenancePass)
+                .pass(SolveSummariesPass)
+                .pass(MaterializeFactsPass)
+                .pass(ValidateContractsPass)
+                .pass(MaterializeTraceSpecModelsPass);
+            if !lose_analysis {
+                incomplete = incomplete.pass(AnalyzeTraceSpecMonitorsPass);
+            }
+            incomplete = incomplete.pass(EmitOutputPass);
+            let result = PassManager::new().run_global_pipeline(&mut incomplete, &mut context);
+            let PassControl::Failed(failure) = result.control else {
+                panic!("emission accepted missing trace stage artifacts");
+            };
+            assert_eq!(
+                failure.missing_artifact,
+                Some(if lose_analysis {
+                    crate::pipeline::artifacts::TRACE_SPEC_ANALYSIS
+                } else {
+                    crate::pipeline::artifacts::TRACE_STATIC_DISPOSITIONS
+                })
+            );
+            assert!(context.artifacts.is_none());
+
+            let mut context = EffectPipelineContext::new(input);
+            let mut pipeline = Pipeline::new("effects.reject_lost_trace_artifact")
+                .pass(BuildRegistryPass)
+                .pass(BindFrozenCallsPass)
+                .pass(CollectUnitsPass)
+                .pass(AnalyzeMemoryProvenancePass)
+                .pass(SolveSummariesPass)
+                .pass(MaterializeFactsPass)
+                .pass(ValidateContractsPass)
+                .pass(MaterializeTraceSpecModelsPass)
+                .pass(AnalyzeTraceSpecMonitorsPass)
+                .pass(ClassifyTraceSpecPass)
+                .pass(LowerResidualMonitorPlansPass)
+                .pass(VerifyResidualPlansPass)
+                .pass(ValidateTraceSpecPass)
+                .pass(LoseTraceArtifact(lose_analysis))
+                .pass(EmitOutputPass);
+            let result = PassManager::new().run_global_pipeline(&mut pipeline, &mut context);
+            assert!(matches!(result.control, PassControl::Failed(_)));
+            assert_eq!(
+                context.failure,
+                Some(EffectPipelineError::MissingStageArtifact {
+                    stage: crate::EffectStage::Emit,
+                    artifact: if lose_analysis {
+                        "trace spec analysis"
+                    } else {
+                        "trace static dispositions"
+                    },
+                })
+            );
+            assert!(context.artifacts.is_none());
+        }
+    }
+
     struct CancelAnalysis;
 
     impl etas_utils::PipelineExecutionControl for CancelAnalysis {
@@ -618,6 +1209,9 @@ mod tests {
         let types = TypeOutput::default();
         let registry = etas_std::standard_registry();
         let input = EffectPipelineInput {
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
             external_implementations: &[],
             frozen_calls: None,
             hir: &hir,

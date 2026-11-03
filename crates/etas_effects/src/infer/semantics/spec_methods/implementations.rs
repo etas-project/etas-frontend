@@ -162,6 +162,7 @@ impl EffectSemantics<'_> {
             },
         )?;
         let source = crate::MetadataCallableSource {
+            analysis: crate::CallableAnalysisKind::CheckedRevision,
             graph: graph.graph_key,
             value: *value,
             environment: Some(environment),

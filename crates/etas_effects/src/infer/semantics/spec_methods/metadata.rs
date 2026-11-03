@@ -270,8 +270,13 @@ impl EffectSemantics<'_> {
                         })?;
                     origins.extend(values);
                 }
-                CallableValueSource::Value(value) => {
+                CallableValueSource::Value(value) | CallableValueSource::FrozenContract(value) => {
                     origins.insert(LatentSource::Metadata(crate::MetadataCallableSource {
+                        analysis: if matches!(source, CallableValueSource::FrozenContract(_)) {
+                            crate::CallableAnalysisKind::FrozenContract
+                        } else {
+                            crate::CallableAnalysisKind::CheckedRevision
+                        },
                         graph,
                         value: *value,
                         environment: Some(id),

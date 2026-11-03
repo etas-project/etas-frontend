@@ -17,5 +17,6 @@ serde.workspace = true
 blake3.workspace = true
 
 [dev-dependencies]
+bincode.workspace = true
 etas_syntax.workspace = true
 serde_json.workspace = true

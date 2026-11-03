@@ -384,6 +384,7 @@ impl Builder<'_, '_> {
             return Ok(None);
         };
         Ok(Some(CallableValueNode {
+            residual_checks: summary.residual_checks.iter().cloned().collect(),
             handler_requests: projected.handler_requests,
             behavior: projected.behavior,
             parent_scope: self
@@ -462,7 +463,7 @@ mod generics;
 mod references;
 mod sources;
 mod summary;
-use behavior::behavior;
+pub(super) use behavior::behavior;
 
 pub(super) fn invalid(reason: &str) -> PackageMetadataError {
     PackageMetadataError::InvalidMetadataType {

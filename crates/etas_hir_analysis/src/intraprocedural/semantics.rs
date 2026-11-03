@@ -1,6 +1,7 @@
 use etas_core::Span;
 use etas_hir::{
-    HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirPatId, HirStmtId, ResolvedActionRef,
+    HirArg, HirBlockId, HirExprId, HirGenericArg, HirHandlerArmId, HirPatId, HirStmtId,
+    ResolvedActionRef,
 };
 
 use crate::intraprocedural::{AbstractDomain, Control};
@@ -70,6 +71,24 @@ pub trait HirAnalysisSemantics {
     fn analysis_context(&self) -> &crate::HirAnalysisContext;
 
     fn incomplete_facts(&mut self, state: Self::Domain) -> Self::Domain;
+
+    fn loop_fixpoint_incomplete(&mut self, _body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        self.incomplete_facts(state)
+    }
+
+    /// Returns a checked upper bound for a `for` statement when this analysis
+    /// can model every iteration and its exits explicitly.
+    fn bounded_for_iterations(&self, _stmt: HirStmtId) -> Option<usize> {
+        None
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        self.after_stmt(stmt, state)
+    }
+
+    fn bounded_for_break(&mut self, _stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        state
+    }
 
     fn unhandled_semantics(
         &mut self,

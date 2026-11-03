@@ -5,6 +5,10 @@ use std::collections::HashMap;
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum FrozenCallableSummary {
     Solved(std::sync::Arc<EffectSummary>),
+    /// Analyze the replacement body, while references still call the pinned revision.
+    Replaced {
+        pinned: std::sync::Arc<EffectSummary>,
+    },
     /// The compiler owns the unchanged body in its pinned source archive, but
     /// the original entry-reachable check did not analyze this declaration.
     AnalyzePinnedSource,
@@ -13,7 +17,14 @@ pub enum FrozenCallableSummary {
 
 impl FrozenCallableSummary {
     pub(crate) fn uses_snapshot(&self) -> bool {
-        !matches!(self, Self::AnalyzePinnedSource)
+        matches!(self, Self::Solved(_) | Self::Unavailable)
+    }
+
+    pub(crate) fn pinned_summary(&self) -> Option<&std::sync::Arc<EffectSummary>> {
+        match self {
+            Self::Solved(summary) | Self::Replaced { pinned: summary } => Some(summary),
+            Self::AnalyzePinnedSource | Self::Unavailable => None,
+        }
     }
 }
 

@@ -2,6 +2,13 @@ use crate::{NumericLiteralKind, PrimitiveType, Type, TypeId, TypeStore};
 
 const ETAS_POINTER_BITS: u32 = 64;
 
+/// A validated integer value, independent of the source radix and separators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckedIntegerLiteral {
+    pub negative: bool,
+    pub magnitude: u128,
+}
+
 pub(super) fn validate(
     store: &TypeStore,
     kind: NumericLiteralKind,
@@ -12,12 +19,15 @@ pub(super) fn validate(
         return Err("the target is not a primitive numeric type".to_owned());
     };
     match kind {
-        NumericLiteralKind::Integer => validate_integer(text, *primitive),
+        NumericLiteralKind::Integer => checked_integer_literal(text, *primitive).map(|_| ()),
         NumericLiteralKind::Float => validate_float(text, *primitive),
     }
 }
 
-fn validate_integer(text: &str, primitive: PrimitiveType) -> Result<(), String> {
+pub fn checked_integer_literal(
+    text: &str,
+    primitive: PrimitiveType,
+) -> Result<CheckedIntegerLiteral, String> {
     let (negative, digits) = match text.strip_prefix('-') {
         Some(digits) => (true, digits),
         None => (false, text.strip_prefix('+').unwrap_or(text)),
@@ -43,6 +53,10 @@ fn validate_integer(text: &str, primitive: PrimitiveType) -> Result<(), String> 
     let digits = normalized_digits(digits, radix)?;
     let magnitude = u128::from_str_radix(&digits, radix)
         .map_err(|_| "the integer magnitude exceeds 128 bits".to_owned())?;
+    let value = CheckedIntegerLiteral {
+        negative: negative && magnitude != 0,
+        magnitude,
+    };
 
     let (signed, bits) = integer_layout(primitive)
         .ok_or_else(|| "an integer literal requires an integer target type".to_owned())?;
@@ -58,7 +72,7 @@ fn validate_integer(text: &str, primitive: PrimitiveType) -> Result<(), String> 
         } else {
             (1_u128 << bits) - 1
         };
-        return (magnitude <= maximum).then_some(()).ok_or_else(|| {
+        return (magnitude <= maximum).then_some(value).ok_or_else(|| {
             format!(
                 "the value is outside the range of {}",
                 primitive.source_name()
@@ -69,13 +83,18 @@ fn validate_integer(text: &str, primitive: PrimitiveType) -> Result<(), String> 
     let maximum = (1_u128 << (bits - 1)) - 1;
     let maximum_magnitude = if negative { maximum + 1 } else { maximum };
     (magnitude <= maximum_magnitude)
-        .then_some(())
+        .then_some(value)
         .ok_or_else(|| {
             format!(
                 "the value is outside the range of {}",
                 primitive.source_name()
             )
         })
+}
+
+#[cfg(test)]
+fn validate_integer(text: &str, primitive: PrimitiveType) -> Result<(), String> {
+    checked_integer_literal(text, primitive).map(|_| ())
 }
 
 fn validate_float(text: &str, primitive: PrimitiveType) -> Result<(), String> {
@@ -224,6 +243,30 @@ mod tests {
                 "{primitive:?}"
             );
         }
+    }
+
+    #[test]
+    fn checked_integer_literals_have_canonical_radix_independent_values() {
+        assert_eq!(
+            checked_integer_literal("0xff", PrimitiveType::U8),
+            checked_integer_literal("255", PrimitiveType::U8)
+        );
+        assert_eq!(
+            checked_integer_literal("-0", PrimitiveType::I8).unwrap(),
+            CheckedIntegerLiteral {
+                negative: false,
+                magnitude: 0
+            }
+        );
+        assert_eq!(
+            checked_integer_literal("-0x80", PrimitiveType::I8).unwrap(),
+            CheckedIntegerLiteral {
+                negative: true,
+                magnitude: 128
+            }
+        );
+        assert!(checked_integer_literal("-129", PrimitiveType::I8).is_err());
+        assert!(checked_integer_literal("256", PrimitiveType::U8).is_err());
     }
 
     #[test]

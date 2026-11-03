@@ -17,7 +17,7 @@ pub(super) fn project(
     effect_names: &BTreeSet<String>,
     labels: &BTreeMap<etas_effects::ParameterCallTarget, String>,
 ) -> Result<Option<ProjectedSummary>, PackageMetadataError> {
-    if !summary.residual_checks.checks.is_empty()
+    if !summary.residual_checks.is_empty()
         || summary.requirements.iter().next().is_some()
         || summary.trace_spec_obligations.iter().next().is_some()
     {

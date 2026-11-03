@@ -40,7 +40,7 @@ struct Graph<'a> {
 impl<'a> Graph<'a> {
     fn new(store: &'a TypeStore) -> Self {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"etas.frontend.signature-type-graph.v1");
+        hasher.update(b"etas.frontend.signature-type-graph.v2");
         Self {
             store,
             ids: HashMap::new(),
@@ -82,6 +82,9 @@ impl<'a> Graph<'a> {
             let data = self.store.get(source).cloned().ok_or_else(|| {
                 format!("signature fingerprint references missing type {}", source.0)
             })?;
+            let nominal = self.store.nominal_identity(source).cloned();
+            let parameter = self.store.parameter_identity(source).cloned();
+            self.encode(&(nominal, parameter))?;
             let data = self.ty(data)?;
             self.encode(&data)?;
             cursor += 1;

@@ -170,9 +170,22 @@ pub struct EffectRef {
 pub enum EffectArg {
     Type(TypeExpr),
     Path(Path),
-    Wildcard { span: Span },
-    String { value: String, span: Span },
-    Int { text: String, span: Span },
+    PatternBinding {
+        name: super::Name,
+        bounds: Vec<super::TypeParamBound>,
+        span: Span,
+    },
+    Wildcard {
+        span: Span,
+    },
+    String {
+        value: String,
+        span: Span,
+    },
+    Int {
+        text: String,
+        span: Span,
+    },
 }
 
 impl EffectArg {
@@ -180,7 +193,10 @@ impl EffectArg {
         match self {
             Self::Type(ty) => ty.span(),
             Self::Path(path) => path.span,
-            Self::Wildcard { span } | Self::String { span, .. } | Self::Int { span, .. } => *span,
+            Self::PatternBinding { span, .. }
+            | Self::Wildcard { span }
+            | Self::String { span, .. }
+            | Self::Int { span, .. } => *span,
         }
     }
 }

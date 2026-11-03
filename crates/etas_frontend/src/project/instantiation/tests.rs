@@ -148,6 +148,7 @@ fn a_single_instantiation_can_be_cancelled_during_type_substitution() {
             Ok(())
         }
     }
+
     let (hir, types, mut effects) = recursion(false);
     effects.native_call_targets.clear();
     let owner = hir
@@ -281,6 +282,11 @@ fn invocation_preparation_rejects_unmaterialized_deferred_rows() {
         .push(etas_types::DeferredEffectRowObligation {
             param: "E".into(),
             source: call,
+            fixed: etas_types::EffectRowRef {
+                effects: vec![],
+                tail: None,
+            },
+            concrete: vec![],
         });
     let result = prepare(
         PreparationInput {

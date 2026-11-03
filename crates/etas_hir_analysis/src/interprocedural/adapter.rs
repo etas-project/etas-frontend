@@ -1,5 +1,7 @@
 use etas_core::Span;
-use etas_hir::{HirArg, HirExprId, HirGenericArg, HirHandlerArmId, HirStmtId, ResolvedActionRef};
+use etas_hir::{
+    HirArg, HirBlockId, HirExprId, HirGenericArg, HirHandlerArmId, HirStmtId, ResolvedActionRef,
+};
 
 use crate::intraprocedural::{
     AnalysisStep, Control, HandleParts, HirAnalysisSemantics, UnhandledReason,
@@ -281,6 +283,22 @@ where
         <S as HirAnalysisSemantics>::incomplete_facts(self.semantics, state)
     }
 
+    fn loop_fixpoint_incomplete(&mut self, body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::loop_fixpoint_incomplete(self.semantics, body, state)
+    }
+
+    fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
+        <S as HirAnalysisSemantics>::bounded_for_iterations(self.semantics, stmt)
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::after_bounded_for(self.semantics, stmt, state)
+    }
+
+    fn bounded_for_break(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::bounded_for_break(self.semantics, stmt, state)
+    }
+
     fn unhandled_semantics(
         &mut self,
         reason: UnhandledReason,
@@ -558,6 +576,10 @@ where
 
     fn begin_try_operand(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         <S as HirAnalysisSemantics>::begin_try_operand(self.semantics, expr, state)
+    }
+
+    fn begin_handle_body(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        <S as HirAnalysisSemantics>::begin_handle_body(self.semantics, expr, state)
     }
 
     fn handle_expr(

@@ -110,10 +110,10 @@ impl DefinitionCatalog {
         Ok(actions.into_values().collect())
     }
 
-    pub fn native_spec_identity(
-        &self,
-        spec: &CheckedSpecRef,
-    ) -> Result<&DefinitionKey, ProjectionError> {
+    pub fn native_spec_identity<'a>(
+        &'a self,
+        spec: &'a CheckedSpecRef,
+    ) -> Result<&'a DefinitionKey, ProjectionError> {
         match spec {
             CheckedSpecRef::Source(symbol) => self
                 .identities
@@ -127,6 +127,14 @@ impl DefinitionCatalog {
                 .identities
                 .path(path)
                 .ok_or_else(|| ProjectionError::MissingIdentity(path.join("."))),
+            CheckedSpecRef::Canonical(identity)
+                if identity.kind() == etas_code::DefinitionKind::Spec =>
+            {
+                Ok(identity)
+            }
+            CheckedSpecRef::Canonical(_) => Err(ProjectionError::Invalid(
+                "canonical spec identity has the wrong kind".into(),
+            )),
         }
     }
 }

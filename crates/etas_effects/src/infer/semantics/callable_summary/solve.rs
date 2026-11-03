@@ -46,9 +46,12 @@ impl EffectSemantics<'_> {
             let plan = if let Some(summary) = self.callable_summaries.borrow().summaries.get(&key) {
                 CallableSummaryPlan::Leaf(summary.clone())
             } else {
-                self.prepare_callable_summary(key)?
+                self.prepare_callable_summary(key)
+                    .map_err(|error| context(error, "preparing checked callable summary"))?
             };
-            let outgoing = plan.dependencies(mode)?;
+            let outgoing = plan
+                .dependencies(mode)
+                .map_err(|error| context(error, "resolving checked callable dependencies"))?;
             edges = edges.saturating_add(outgoing.len());
             if edges > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
                 return Err(invalid(
@@ -83,7 +86,9 @@ impl EffectSemantics<'_> {
                     let plan = plans
                         .get(&key)
                         .ok_or_else(|| invalid("callable component has no checked plan"))?;
-                    let mut summary = self.apply_callable_summary(plan, &summaries, mode)?;
+                    let mut summary = self
+                        .apply_callable_summary(plan, &summaries, mode)
+                        .map_err(|error| context(error, "solving checked callable summary"))?;
                     summary.stabilize_for_fixpoint(None);
                     summaries.insert(key, summary);
                 }
@@ -221,6 +226,17 @@ impl EffectSemantics<'_> {
                 .transpose()
         })?;
         Ok(summary)
+    }
+}
+
+fn context(error: EffectSpecializationError, operation: &str) -> EffectSpecializationError {
+    match error {
+        EffectSpecializationError::InvalidCallableReturnSources => {
+            EffectSpecializationError::InvalidCallableEnvironment {
+                reason: format!("{operation} requires complete callable return-source facts"),
+            }
+        }
+        other => other,
     }
 }
 

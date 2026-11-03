@@ -297,6 +297,13 @@ impl TraceSpecMaterializer<'_> {
         kind: &EffectActionArgKind,
     ) -> Result<Option<EffectArgRef>, EffectPipelineError> {
         match arg {
+            HirEffectArg::PatternBinding { span, .. } => {
+                self.diagnostic(
+                    *span,
+                    "trace selector bounds require checked summary and metadata support",
+                );
+                Ok(None)
+            }
             HirEffectArg::Wildcard { .. } => Ok(Some(EffectArgRef::Wildcard)),
             HirEffectArg::String { value, .. } => Ok(Some(EffectArgRef::String(value.clone()))),
             HirEffectArg::Int { text, .. } => Ok(Some(EffectArgRef::Int(text.clone()))),

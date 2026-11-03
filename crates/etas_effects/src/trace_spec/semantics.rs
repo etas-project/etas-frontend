@@ -237,6 +237,22 @@ impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
         )
     }
 
+    fn loop_fixpoint_incomplete(
+        &mut self,
+        body: etas_hir::HirBlockId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        match self.hir.blocks.get(body) {
+            Some(block) => self.reject_trace_spec_state(
+                state.owner,
+                block.span,
+                "trace spec loop analysis did not converge",
+                state,
+            ),
+            None => self.incomplete_facts(state),
+        }
+    }
+
     fn after_expr_control(
         &mut self,
         expr: HirExprId,
@@ -366,18 +382,50 @@ impl HirAnalysisSemantics for TraceSpecSemantics<'_> {
 
     fn handle_expr_control(
         &mut self,
-        _expr: HirExprId,
-        _span: Span,
+        expr: HirExprId,
+        span: Span,
         _entry: Self::Domain,
         parts: HandleParts<Self::Domain>,
     ) -> Control<Self::Domain> {
         match parts.handler {
             HandlerParts::Expr { control, .. } => {
                 let mut handler_state = control.into_joined_domain();
-                handler_state.seq_assign(&parts.body.into_joined_domain());
+                let mut body = parts.body.into_joined_domain();
+                let trace = self
+                    .facts
+                    .handle_applications
+                    .get(&expr)
+                    .and_then(|fact| fact.action_trace.as_ref());
+                let Some(trace) = trace else {
+                    handler_state.seq_assign(&body);
+                    return Control::normal(self.reject_trace_spec_state(
+                        handler_state.owner,
+                        span,
+                        "trace spec analysis requires checked handler application trace facts",
+                        handler_state,
+                    ));
+                };
+                let Some(summary) = self.facts.expr_effects.get(&expr) else {
+                    return Control::normal(self.reject_trace_spec_state(
+                        handler_state.owner,
+                        span,
+                        "trace spec analysis requires checked handled-expression facts",
+                        handler_state,
+                    ));
+                };
+                body.action_trace = trace.clone();
+                body.requested_actions
+                    .union_assign(&summary.requested_actions);
+                handler_state.seq_assign(&body);
                 Control::normal(handler_state)
             }
         }
+    }
+
+    fn begin_handle_body(&mut self, _expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
+        state.action_trace = Default::default();
+        state.requested_actions = Default::default();
+        state
     }
 
     fn lambda_boundary(
@@ -572,16 +620,7 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
         summary: &Self::Summary,
         mut state: Self::Domain,
     ) -> Self::Domain {
-        if let Some(effect_summary) = self.facts.expr_effects.get(&site.call) {
-            self.apply_effect_summary(&mut state, effect_summary);
-            return state;
-        }
-        self.apply_trace_spec_summary(&mut state, summary);
-        if summary.incomplete
-            && state
-                .owner
-                .is_some_and(|owner| self.trace_spec_items.contains(&owner))
-        {
+        if summary.incomplete {
             return self.reject_trace_spec_state(
                 state.owner,
                 site.span,
@@ -589,6 +628,10 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
                 state,
             );
         }
+        if self.facts.expr_effects.contains_key(&site.call) {
+            return self.apply_expr_effects(site.call, site.span, state);
+        }
+        self.apply_trace_spec_summary(&mut state, summary);
         state
     }
 
@@ -625,5 +668,77 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
         state: Self::Domain,
     ) -> Self::Domain {
         self.reject_trace_spec_state(state.owner, site.span, self.call_error_message(site), state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etas_hir_analysis::interprocedural::{
+        AnalysisPhase, CallSite, InterproceduralSemantics, UnitContext,
+    };
+
+    #[test]
+    fn direct_call_does_not_hide_incomplete_action_facts() {
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            "module app; flow helper() -> unit { return; } flow main() -> unit { helper(); }",
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = etas_hir::HirRevision::try_new(etas_hir::lower_program(&parsed.value)).unwrap();
+        let (item, _) = hir.items.iter().find(|(_, item)| {
+            matches!(item, HirItem::Flow(flow) if hir.symbols.get(flow.symbol).is_some_and(|symbol| symbol.name == "main"))
+        }).unwrap();
+        let (call, _) = hir
+            .exprs
+            .iter()
+            .find(|(_, expr)| matches!(expr, HirExpr::Call { .. }))
+            .unwrap();
+        let span = etas_core::Span::empty(etas_core::SourceId(0), etas_core::TextSize(0));
+        let types = etas_types::TypeOutput::default();
+        let registry = crate::EffectRegistry::with_standard_effects();
+        let unit = crate::EffectUnit::Item(item);
+        for callee_incomplete in [false, true] {
+            let mut facts = crate::EffectFacts::default();
+            facts.expr_effects.insert(
+                call,
+                crate::EffectSummary {
+                    support: if callee_incomplete {
+                        crate::InterpreterSupport::LocalOnly
+                    } else {
+                        crate::InterpreterSupport::Rejected(
+                            crate::FrontendRejectionReason::MissingRequirement,
+                        )
+                    },
+                    ..Default::default()
+                },
+            );
+            let mut callee = TraceSpecSummary::for_unit(unit);
+            callee.incomplete = callee_incomplete;
+            let mut semantics = TraceSpecSemantics::new(
+                &hir,
+                &types,
+                &registry,
+                &facts,
+                [item].into_iter().collect(),
+            );
+            let result = InterproceduralSemantics::direct_call(
+                &mut semantics,
+                UnitContext::new(unit, AnalysisPhase::SolveSummaries),
+                CallSite::unresolved(call, call, span),
+                unit,
+                &callee,
+                TraceSpecState::for_unit(unit),
+            );
+            assert!(
+                result.incomplete,
+                "incomplete facts cannot become a complete summary"
+            );
+            let (diagnostics, rejected, errors) = semantics.into_parts();
+            assert!(errors.is_empty(), "{errors:?}");
+            assert!(!diagnostics.is_empty());
+            assert_eq!(rejected, vec![item]);
+        }
     }
 }

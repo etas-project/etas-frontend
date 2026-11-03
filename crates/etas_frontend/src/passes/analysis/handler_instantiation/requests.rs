@@ -1,6 +1,5 @@
 use etas_effects::{EffectCoverage, RequestInstantiationSummary};
 use etas_hir::{HirExprId, HirHandlerArmId};
-use etas_types::TypeId;
 
 #[derive(Debug)]
 pub(super) enum RequestError {
@@ -28,7 +27,7 @@ pub(super) fn collect(
     input: RequestInput<'_>,
     arm: HirHandlerArmId,
     body: HirExprId,
-) -> Result<Vec<Vec<(String, TypeId)>>, RequestError> {
+) -> Result<Vec<etas_types::HandlerRequestProof>, RequestError> {
     let missing = |reason: &str| RequestError::Missing(reason.into());
     let target = input
         .effects
@@ -64,9 +63,12 @@ pub(super) fn collect(
             control.checkpoint().map_err(RequestError::Interrupted)?;
         }
         if coverage.covers(target, &instance.action) || coverage.covers(&instance.action, target) {
-            requests.push(instance.type_bindings.clone().ok_or_else(|| {
-                missing("handled request has no checked generic action instantiation")
-            })?);
+            requests.push(etas_types::HandlerRequestProof {
+                type_bindings: instance.type_bindings.clone().ok_or_else(|| {
+                    missing("handled request has no checked generic action instantiation")
+                })?,
+                signature: instance.signature.clone(),
+            });
         }
     }
     Ok(requests)

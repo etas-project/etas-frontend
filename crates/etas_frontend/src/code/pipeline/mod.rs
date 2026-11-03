@@ -3,6 +3,7 @@ mod context;
 pub(crate) mod passes;
 mod run;
 
+pub use context::CandidateDependencySource;
 pub(crate) use context::CandidatePipelineContext;
 pub(crate) use run::analyze_body;
 pub(crate) use run::analyze_body_with_dependencies;

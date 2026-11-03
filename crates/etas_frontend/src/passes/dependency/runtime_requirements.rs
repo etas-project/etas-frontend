@@ -107,12 +107,12 @@ pub(super) fn compute_reachability(
     let Some(resolved_paths) = context.resolved_paths.as_ref() else {
         return Ok(facts);
     };
+    let modules = context
+        .modules
+        .as_ref()
+        .ok_or("runtime source planning requires a module index")?;
     let mut planner = RuntimeSourceRequirementPlanner {
-        namespaces: &context
-            .modules
-            .as_ref()
-            .ok_or("runtime source planning requires a module index")?
-            .dependency_namespaces,
+        namespaces: &modules.dependency_namespaces,
         packages: environment
             .external_packages
             .iter()
@@ -123,10 +123,32 @@ pub(super) fn compute_reachability(
             .iter()
             .map(|metadata| (metadata.package, metadata))
             .collect(),
+        module_paths: environment
+            .external_definition_origins
+            .iter()
+            .flat_map(|origin| {
+                origin.origins.modules.iter().map(|module| {
+                    (
+                        (origin.package, module.canonical_path.clone()),
+                        module.path.clone(),
+                    )
+                })
+            })
+            .collect(),
         tool_bindings: environment
             .tool_bindings
             .iter()
             .map(|binding| binding.tool.as_str())
+            .collect(),
+        loaded_overlays: modules
+            .modules
+            .iter()
+            .filter_map(|(_, module)| match module.origin {
+                crate::ModuleOrigin::DependencySourceOverlay { package, .. } => {
+                    Some((package, module.path.clone()))
+                }
+                _ => None,
+            })
             .collect(),
         requirements: RuntimeSourceRequirements::default(),
     };
@@ -168,6 +190,43 @@ pub(super) fn compute_reachability(
             _ => {}
         }
     }
+    if let Some(types) = types {
+        let hir = &context
+            .hir
+            .as_ref()
+            .ok_or("runtime spec planning requires HIR")?
+            .hir;
+        for expr in &linked.exprs {
+            let Some(HirExpr::SpecMethodCall {
+                spec_path, method, ..
+            }) = hir.exprs.get(*expr)
+            else {
+                continue;
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = spec_path.resolution else {
+                return Err("runtime spec method has no resolved spec".into());
+            };
+            let Some(spec) = types.external_specs.aliases.get(&symbol) else {
+                if context
+                    .hir_item_bindings
+                    .as_ref()
+                    .is_some_and(|bindings| bindings.external_import_members.contains_key(&symbol))
+                {
+                    return Err("external spec method has no checked spec identity".into());
+                }
+                continue;
+            };
+            let signature = types
+                .external_specs
+                .signatures
+                .get(spec)
+                .ok_or("external spec method has no checked signature")?;
+            if !signature.methods.iter().any(|item| item.name == *method) {
+                return Err("external spec method has no checked declaration".into());
+            }
+            planner.collect_external_spec_method(&spec.path, method)?;
+        }
+    }
     facts.runtime_source_requirements = planner.requirements;
     Ok(facts)
 }
@@ -176,11 +235,127 @@ struct RuntimeSourceRequirementPlanner<'a> {
     namespaces: &'a crate::project::DependencyModuleNamespaces,
     packages: BTreeMap<ExternalPackageId, &'a ProjectExternalPackageInput>,
     metadata: BTreeMap<ExternalPackageId, &'a ProjectExternalPublicMetadataInput>,
+    module_paths: BTreeMap<(ExternalPackageId, Vec<String>), Vec<String>>,
     tool_bindings: BTreeSet<&'a str>,
+    loaded_overlays: BTreeSet<(ExternalPackageId, ModulePath)>,
     requirements: RuntimeSourceRequirements,
 }
 
 impl RuntimeSourceRequirementPlanner<'_> {
+    fn collect_external_spec_method(
+        &mut self,
+        target: &[String],
+        method: &str,
+    ) -> Result<(), String> {
+        let limit = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
+        let mut work = 0usize;
+        let mut parents = BTreeMap::new();
+        for metadata in self.metadata.values() {
+            for signature in &metadata.spec_signatures {
+                work = work
+                    .checked_add(1 + signature.super_specs.len())
+                    .ok_or("external spec planning work overflow")?;
+                if work > limit {
+                    return Err("external spec planning exceeds graph limit".into());
+                }
+                if parents
+                    .insert(
+                        signature.path.clone(),
+                        signature
+                            .super_specs
+                            .iter()
+                            .map(|bound| bound.spec.clone())
+                            .collect::<Vec<_>>(),
+                    )
+                    .is_some()
+                {
+                    return Err("external spec planning has duplicate declaration identity".into());
+                }
+            }
+        }
+        let mut seeds = Vec::new();
+        for (owner, metadata) in &self.metadata {
+            for implementation in &metadata.spec_impls {
+                work = work
+                    .checked_add(1 + implementation.methods.len())
+                    .ok_or("external spec planning work overflow")?;
+                if work > limit {
+                    return Err("external spec planning exceeds graph limit".into());
+                }
+                let Some(implementation_method) = implementation
+                    .methods
+                    .iter()
+                    .find(|entry| entry.identity.name() == method)
+                else {
+                    continue;
+                };
+                let mut pending = vec![implementation.spec.clone()];
+                let mut seen = BTreeSet::new();
+                let mut entails = false;
+                while let Some(spec) = pending.pop() {
+                    work = work
+                        .checked_add(1)
+                        .ok_or("external spec planning work overflow")?;
+                    if work > limit {
+                        return Err("external spec planning exceeds graph limit".into());
+                    }
+                    if !seen.insert(spec.clone()) {
+                        continue;
+                    }
+                    if spec == target {
+                        entails = true;
+                        break;
+                    }
+                    if let Some(supers) = parents.get(&spec) {
+                        pending.extend(supers.iter().cloned());
+                    }
+                }
+                if entails {
+                    let package = self
+                        .packages
+                        .get(owner)
+                        .ok_or("spec implementation has no owning package")?;
+                    let module = self
+                        .module_paths
+                        .get(&(
+                            *owner,
+                            implementation_method
+                                .identity
+                                .implementation()
+                                .module()
+                                .to_vec(),
+                        ))
+                        .ok_or("spec implementation has no checked source module origin")?
+                        .clone();
+                    if self.loaded_overlays.contains(&(
+                        *owner,
+                        ModulePath {
+                            segments: module.clone(),
+                        },
+                    )) {
+                        continue;
+                    }
+                    let mut item_path = target.to_vec();
+                    item_path.push(method.to_owned());
+                    seeds.push((*owner, package.import_root.clone(), module, item_path));
+                }
+            }
+        }
+        for (owner, import_root, module, item_path) in seeds {
+            self.add_seed_module(
+                owner,
+                import_root,
+                module.clone(),
+                RuntimeSourceReason {
+                    item_path,
+                    module_path: ModulePath { segments: module },
+                    kind: RuntimeSourceReasonKind::ExternalSpecImplementation,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     fn collect_import_target(&mut self, target: &ImportTarget) -> Result<(), String> {
         let ImportTarget::ExternalItem {
             package,

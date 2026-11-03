@@ -141,8 +141,56 @@ fn graph_budget_is_shared_and_checked_before_building_identity_indexes() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &etas_std::standard_registry(),
     )
     .unwrap_err();
     assert_eq!(error.package, Some(ExternalPackageId(8)));
     assert!(error.reason.contains("node limit"), "{error:?}");
+}
+
+#[test]
+fn external_definition_origin_must_match_package_name_and_version() {
+    use etas_code::identity::PackageDefinitionOrigins;
+    let id = ExternalPackageId(7);
+    let package = crate::ProjectExternalPackageInput {
+        id,
+        name: "library".into(),
+        version: "1.2.3".into(),
+        edition: "2026".into(),
+        import_root: "dep".into(),
+    };
+    let mut environment = ProjectEnvironmentInput::default();
+    environment
+        .external_definition_origins
+        .push(crate::ProjectExternalDefinitionOriginsInput {
+            package: id,
+            descriptors: None,
+            origins: PackageDefinitionOrigins {
+                package: PackageKey::from_name_and_version("other", "1.2.3").unwrap(),
+                modules: vec![],
+                declarations: vec![],
+            },
+        });
+    let packages = BTreeMap::from([(id, &package)]);
+    let registry = etas_std::standard_registry();
+    let check = |environment: &ProjectEnvironmentInput| {
+        validate(
+            environment,
+            &packages,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &registry,
+        )
+        .unwrap_err()
+    };
+    let error = check(&environment);
+    assert_eq!(error.package, Some(id));
+    assert!(error.reason.contains("does not match its name and version"));
+    environment.external_definition_origins[0].origins.package =
+        PackageKey::from_name_and_version("library", "1.2.3").unwrap();
+    assert!(
+        check(&environment)
+            .reason
+            .contains("no public metadata record")
+    );
 }

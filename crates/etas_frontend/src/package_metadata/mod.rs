@@ -18,6 +18,7 @@ pub(crate) use projection::ProjectMetadataProjection;
 
 pub(crate) use callable_graph::{
     CallableGraphOrigin, CheckedCallableGraph, checked_callable_graph, checked_request_template,
+    graph_residual_facts,
 };
 
 pub use error::PackageMetadataError;

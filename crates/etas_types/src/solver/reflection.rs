@@ -6,6 +6,13 @@ use crate::{
 use super::{SolverFailure, SolverReport, resolve_known_substitutions};
 
 mod descriptor_types;
+mod external_descriptor;
+mod external_methods;
+pub use descriptor_types::{
+    checked_descriptor_type_matches, checked_descriptor_type_matches_with_bindings,
+};
+pub use external_descriptor::{ExternalDescriptorIdentities, ExternalDescriptorMatcher};
+pub use external_methods::{ExternalMethodSelection, select_external_methods};
 mod external;
 mod spec_method;
 
@@ -13,6 +20,7 @@ pub(super) struct ReflectionSolveInput<'a> {
     pub store: &'a TypeStore,
     pub facts: &'a TypeFacts,
     pub binding: &'a ReflectionBinding,
+    pub callable_descriptor: Option<crate::TypeId>,
     pub members: &'a [String],
     pub origin: ConstraintOrigin,
     pub solved: &'a SolverReport,
@@ -122,17 +130,53 @@ pub(super) fn solve(
                     "reflected flow is missing its checked declaration signature",
                 ));
             }
+            let target =
+                if let Some(identity) = input.facts.external_definition_bindings.get(symbol) {
+                    if identity.kind() != etas_code::DefinitionKind::Flow {
+                        return Err(missing(
+                            "reflected external flow has an inconsistent declaration identity",
+                        ));
+                    }
+                    CheckedReflectionTarget::ExternalCallable {
+                        callable: etas_code::CallableId::declaration(identity.clone()).map_err(
+                            |_| missing("reflected external flow has an invalid callable identity"),
+                        )?,
+                        selected_spec: None,
+                    }
+                } else {
+                    CheckedReflectionTarget::Callable {
+                        declaration: *symbol,
+                    }
+                };
             (
-                CheckedReflectionTarget::Callable {
-                    declaration: *symbol,
-                },
-                callable_type()?,
+                target,
+                input.callable_descriptor.ok_or_else(|| {
+                    missing("flow reflection is missing its typed CallableDef contract")
+                })?,
             )
         }
         ReflectionBinding::Value { binding, ty } => {
             let component = resolve_known_substitutions(input.store, input.solved, *ty);
+            if matches!(input.store.get(component), Some(crate::Type::Function(_))) {
+                if member.is_some() {
+                    return Err(invalid(
+                        "an ordinary flow value has no reflected method members",
+                    ));
+                }
+                return Ok(CheckedReflectionFact {
+                    target: CheckedReflectionTarget::CallableValue {
+                        binding: *binding,
+                        signature: component,
+                    },
+                    descriptor_type: input.callable_descriptor.ok_or_else(|| {
+                        missing("flow value reflection is missing its typed CallableDef contract")
+                    })?,
+                    selected_spec: None,
+                    access_module: input.access_module,
+                });
+            }
             let agent = input.facts.agent_signature(component).ok_or_else(|| {
-                invalid("only values of a checked nominal agent type can be reflected")
+                invalid("only checked ordinary flow or nominal agent values can be reflected")
             })?;
             let method = member
                 .map(|member| {

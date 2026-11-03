@@ -95,7 +95,11 @@ impl EffectSemantics<'_> {
             }
             return match definition.def {
                 SymbolDef::Param { owner, .. }
-                    if self.checked_function_parameter(symbol).is_some() =>
+                    if self.checked_callable_contract_parameter(symbol).is_some()
+                        || self.symbolic_callable_parameter(symbol)
+                        || self
+                            .symbol_value_type(symbol)
+                            .is_some_and(|ty| self.descriptor_contract_type(ty).is_some()) =>
                 {
                     Some(vec![LatentSource::Parameter { owner, symbol }])
                 }
@@ -119,7 +123,7 @@ impl EffectSemantics<'_> {
         }
     }
 
-    pub(crate) fn checked_function_parameter(
+    pub(crate) fn checked_callable_contract_parameter(
         &self,
         symbol: etas_hir::SymbolId,
     ) -> Option<&etas_types::FlowType> {
@@ -127,7 +131,11 @@ impl EffectSemantics<'_> {
         if !matches!(definition.def, SymbolDef::Param { .. }) {
             return None;
         }
-        let Type::Function(flow) = self.types.store.get(self.symbol_value_type(symbol)?)? else {
+        let parameter = self.symbol_value_type(symbol)?;
+        let contract = self
+            .descriptor_contract_type(parameter)
+            .unwrap_or(parameter);
+        let Type::Function(flow) = self.types.store.get(contract)? else {
             return None;
         };
         if flow.effects.is_none() && !self.parameter_effects.contains_key(&symbol) {
@@ -142,6 +150,9 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Result<EffectSummary, super::specialize::EffectSpecializationError> {
         match source {
+            LatentSource::FrozenContract { .. }
+            | LatentSource::ExternalFrozen { .. }
+            | LatentSource::ExternalReference { .. } => self.solve_callable_summary(source, span),
             LatentSource::Reference { .. } | LatentSource::StdReference { .. } => {
                 self.reference_summary(source, span)
             }
@@ -163,6 +174,9 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         match source {
+            LatentSource::FrozenContract { .. }
+            | LatentSource::ExternalFrozen { .. }
+            | LatentSource::ExternalReference { .. } => None,
             LatentSource::Captured { .. }
             | LatentSource::Metadata(_)
             | LatentSource::SpecMethod { .. }
@@ -176,7 +190,10 @@ impl EffectSemantics<'_> {
             }
             LatentSource::Unit(EffectUnit::Item(item)) if self.frozen_calls.contains_key(&item) => {
                 match self.frozen_calls.get(&item)? {
-                    crate::FrozenCallableSummary::Solved(summary) => Some((**summary).clone()),
+                    crate::FrozenCallableSummary::Solved(summary)
+                    | crate::FrozenCallableSummary::Replaced { pinned: summary } => {
+                        Some((**summary).clone())
+                    }
                     crate::FrozenCallableSummary::AnalyzePinnedSource => self
                         .inputs
                         .unit_effects
@@ -191,12 +208,15 @@ impl EffectSemantics<'_> {
                 if !matches!(data.def, SymbolDef::Param { owner: actual, .. } if actual == owner) {
                     return None;
                 }
-                let flow = self.checked_function_parameter(symbol)?;
+                let flow = self.checked_callable_contract_parameter(symbol)?;
                 let Some(row) = &flow.effects else {
                     return self.parameter_effects.get(&symbol).cloned();
                 };
                 let mut summary =
                     self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span);
+                // The row describes the callback's possible effects, not work
+                // performed independently by its caller.
+                summary.independent_determinism = Some(crate::Determinism::Deterministic);
                 // A declared escaping row never describes internal requested or
                 // handled actions. Keep the call symbolic until the argument is known.
                 summary.action_trace = ActionTraceDomain::ParameterCall {

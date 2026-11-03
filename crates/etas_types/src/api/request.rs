@@ -53,6 +53,8 @@ impl<'a> SignaturePipelineInput<'a> {
 pub struct ReflectionSignatureInput {
     pub declarations: Vec<(Vec<String>, etas_code::DefinitionKey)>,
     pub effect_targets: Vec<(String, etas_code::descriptor::EffectTargetInfo)>,
+    pub methods: Vec<(Vec<String>, etas_code::CallableId)>,
+    pub aliases: Vec<(Vec<String>, Vec<String>, ExternalTypeInput)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -85,6 +87,7 @@ pub struct ExternalSignatureInput {
     pub package_anchors: Vec<(ExternalPackageKey, etas_core::Span)>,
     pub metadata: Vec<ExternalPublicMetadataInput>,
     pub symbol_bindings: Vec<ExternalSymbolBindingInput>,
+    pub source_spec_bindings: Vec<ExternalSymbolBindingInput>,
     pub action_bindings: Vec<ExternalActionBindingInput>,
     pub definition_bindings: Vec<(SymbolId, etas_code::DefinitionKey)>,
     pub agent_reflections: Vec<(
@@ -195,6 +198,7 @@ pub struct ExternalSpecSignatureInput {
     pub path: Vec<String>,
     pub kind: ExternalSpecKindInput,
     pub param_names: Vec<String>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub callable: Option<ExternalFlowSignatureInput>,
     pub methods: Vec<ExternalSpecMethodInput>,
     pub super_specs: Vec<ExternalSpecBoundInput>,
@@ -263,6 +267,7 @@ pub enum ExternalTraceSpecConformanceTargetInput {
     Inline,
     Named {
         spec: Vec<String>,
+        definition: etas_code::DefinitionKey,
         args: Vec<ExternalTypeInput>,
     },
 }

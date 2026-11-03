@@ -15,8 +15,9 @@ use crate::{
 
 use super::artifacts::{
     EFFECT_FACTS, EFFECT_OUTPUT, EFFECT_REGISTRY, EFFECT_SUMMARIES, EFFECT_UNITS,
-    FROZEN_CALL_SUMMARIES, MEMORY_PROVENANCE, TRACE_SPEC_ANALYSIS, TRACE_SPEC_MODELS,
-    VALIDATED_EFFECT_FACTS, VALIDATED_TRACE_SPEC_FACTS,
+    FROZEN_CALL_SUMMARIES, MEMORY_PROVENANCE, RESIDUAL_MONITOR_PLANS, TRACE_SPEC_ANALYSIS,
+    TRACE_SPEC_MODELS, TRACE_STATIC_DISPOSITIONS, VALIDATED_EFFECT_FACTS,
+    VALIDATED_TRACE_SPEC_FACTS, VERIFIED_RESIDUAL_PLANS,
 };
 use super::context::EffectPipelineContext;
 use super::{EffectPipelineArtifacts, ExternalArtifactAnchor};
@@ -39,6 +40,12 @@ mod materialize_trace_spec_models;
 pub(super) use materialize_trace_spec_models::MaterializeTraceSpecModelsPass;
 mod analyze_trace_spec_monitors;
 pub(super) use analyze_trace_spec_monitors::AnalyzeTraceSpecMonitorsPass;
+mod classify_trace_spec;
+pub(super) use classify_trace_spec::ClassifyTraceSpecPass;
+mod lower_residual_monitor_plans;
+pub(super) use lower_residual_monitor_plans::LowerResidualMonitorPlansPass;
+mod verify_residual_plans;
+pub(super) use verify_residual_plans::VerifyResidualPlansPass;
 mod validate_trace_spec;
 pub(super) use validate_trace_spec::ValidateTraceSpecPass;
 mod emit_output;
@@ -55,12 +62,46 @@ pub(super) fn build_effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>>
         .pass(ValidateContractsPass)
         .pass(MaterializeTraceSpecModelsPass)
         .pass(AnalyzeTraceSpecMonitorsPass)
+        .pass(ClassifyTraceSpecPass)
+        .pass(LowerResidualMonitorPlansPass)
+        .pass(VerifyResidualPlansPass)
         .pass(ValidateTraceSpecPass)
         .pass(EmitOutputPass)
 }
 
 fn produced(key: etas_utils::ArtifactKey) -> PassResult {
     PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(key))
+}
+
+fn residual_plan_input<'c, 'a>(
+    context: &'c EffectPipelineContext<'a>,
+    stage: EffectStage,
+    control: Option<&'c dyn etas_utils::PipelineExecutionControl>,
+) -> Result<crate::residual::ResidualPlanInput<'c>, EffectPipelineError> {
+    Ok(crate::residual::ResidualPlanInput {
+        analysis: context
+            .trace_spec_analysis
+            .as_ref()
+            .ok_or_else(|| missing(stage, "trace spec analysis"))?,
+        dispositions: context
+            .trace_static_dispositions
+            .as_ref()
+            .ok_or_else(|| missing(stage, "trace static dispositions"))?,
+        hir: context.input.hir,
+        registry: context
+            .registry
+            .as_ref()
+            .ok_or_else(|| missing(stage, "effect registry"))?,
+        facts: &context
+            .effects
+            .as_ref()
+            .ok_or_else(|| missing(stage, "validated effect facts"))?
+            .facts,
+        snapshots: context.input.source_snapshots,
+        projector: context.input.trace_monitor_projector,
+        limits: crate::residual::ResidualPlanLimits::default(),
+        control,
+    })
 }
 
 fn missing(stage: EffectStage, artifact: &'static str) -> EffectPipelineError {

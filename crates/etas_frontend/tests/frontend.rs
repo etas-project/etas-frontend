@@ -50,6 +50,37 @@ const FRONTEND_CACHE_HOLDER_ROOT_ENV: &str = "ETAS_FRONTEND_CACHE_HOLDER_ROOT";
 const FRONTEND_CACHE_HOLDER_READY_ENV: &str = "ETAS_FRONTEND_CACHE_HOLDER_READY";
 const FRONTEND_CACHE_HOLDER_STOP_ENV: &str = "ETAS_FRONTEND_CACHE_HOLDER_STOP";
 
+fn test_external_spec_key(module: &str, name: &str) -> etas_code::DefinitionKey {
+    etas_code::DefinitionKey::new(
+        etas_code::PackageKey::from_name_and_version("dep", "1.0.0").unwrap(),
+        vec!["dep".into(), module.into()],
+        vec![name.into()],
+        etas_code::DefinitionKind::Spec,
+    )
+    .unwrap()
+}
+
+fn attach_trace_spec_origins(environment: &mut ProjectEnvironmentInput) {
+    environment.external_definition_origins.push(
+        etas_frontend::ProjectExternalDefinitionOriginsInput {
+            package: ExternalPackageId(0),
+            origins: etas_code::identity::PackageDefinitionOrigins {
+                package: etas_code::PackageKey::from_name_and_version("dep", "1.0.0").unwrap(),
+                modules: environment
+                    .external_modules
+                    .iter()
+                    .map(|module| etas_code::identity::DefinitionModuleOrigin {
+                        path: module.path.segments.clone(),
+                        canonical_path: module.path.segments.clone(),
+                    })
+                    .collect(),
+                declarations: Vec::new(),
+            },
+            descriptors: None,
+        },
+    );
+}
+
 #[test]
 #[ignore = "subprocess helper invoked by frontend disk-store tests"]
 fn frontend_disk_store_holder_helper() {
@@ -66,6 +97,270 @@ fn frontend_disk_store_holder_helper() {
     while !std::path::Path::new(&stop).exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+#[test]
+fn source_package_identity_is_explicit_and_never_guessed_from_paths() {
+    use etas_code::{CodeFingerprint, PackageKey};
+    use etas_frontend::{ProjectStandaloneSourcePackage, SourcePackageOriginError};
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([7; 32]));
+    let mut source = SourceInput::anonymous("module app.main;");
+    source.id = etas_core::SourceId(17);
+    source.path = Some("/project/src/main.es".into());
+    let mut env = ProjectEnvironmentInput::default();
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Missing)
+    );
+    let without = env.canonical_environment_fingerprint();
+    env.local_source_package = Some(package);
+    assert_eq!(env.source_package(&source), Ok(package));
+    assert_ne!(without, env.canonical_environment_fingerprint());
+    source.text.push_str(" flow changed() -> unit { return; }");
+    assert_eq!(env.source_package(&source), Ok(package));
+    env.local_source_package = None;
+    env.standalone_source_packages
+        .push(ProjectStandaloneSourcePackage {
+            source: source.id,
+            package,
+        });
+    assert_eq!(env.source_package(&source), Ok(package));
+    env.standalone_source_packages
+        .push(ProjectStandaloneSourcePackage {
+            source: source.id,
+            package,
+        });
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Ambiguous)
+    );
+    env.standalone_source_packages.pop();
+    let mut reordered = env.clone();
+    reordered
+        .standalone_source_packages
+        .push(ProjectStandaloneSourcePackage {
+            source: etas_core::SourceId(19),
+            package: PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([9; 32])),
+        });
+    let fingerprint = reordered.canonical_environment_fingerprint();
+    reordered.standalone_source_packages.reverse();
+    assert_eq!(fingerprint, reordered.canonical_environment_fingerprint());
+    reordered.standalone_source_packages[0].package = package;
+    assert_ne!(fingerprint, reordered.canonical_environment_fingerprint());
+    source.id = etas_core::SourceId(18);
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Missing)
+    );
+    source.kind = SourceKind::DependencySourceOverlay {
+        package: ExternalPackageId(2),
+        import_root: "dep".into(),
+    };
+    env.local_source_package = Some(package);
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Missing),
+        "dependency sources must not inherit the local package identity"
+    );
+    let dependency = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([8; 32]));
+    env.external_packages.push(ProjectExternalPackageInput {
+        id: ExternalPackageId(2),
+        name: "dependency".into(),
+        version: "1".into(),
+        edition: "2026".into(),
+        import_root: "dep".into(),
+    });
+    env.external_definition_origins
+        .push(etas_frontend::ProjectExternalDefinitionOriginsInput {
+            package: ExternalPackageId(2),
+            origins: etas_code::identity::PackageDefinitionOrigins {
+                package: dependency,
+                modules: vec![],
+                declarations: vec![],
+            },
+            descriptors: None,
+        });
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Missing)
+    );
+    env.dependency_source_packages
+        .push(etas_frontend::ProjectDependencySourcePackage {
+            package: ExternalPackageId(2),
+            import_root: "dep".into(),
+            definition_package: dependency,
+        });
+    assert_eq!(env.source_package(&source), Ok(dependency));
+    env.external_definition_origins[0].origins.package = package;
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Conflict)
+    );
+    env.external_definition_origins[0].origins.package = dependency;
+    let mut duplicate = env.external_packages[0].clone();
+    duplicate.import_root = "other".into();
+    env.external_packages.push(duplicate);
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::Ambiguous)
+    );
+    source.kind = SourceKind::VirtualGenerated;
+    assert_eq!(
+        env.source_package(&source),
+        Err(SourcePackageOriginError::UnsupportedSource)
+    );
+}
+
+#[test]
+fn duplicate_source_package_bindings_stop_environment_validation() {
+    use etas_code::{CodeFingerprint, PackageKey};
+    use etas_frontend::ProjectStandaloneSourcePackage;
+    let source = SourceInput::anonymous("module app.main; flow main() -> unit { return; }");
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([7; 32]));
+    let mut input = ProjectInput::single_source(source.clone());
+    input.environment.standalone_source_packages = vec![
+        ProjectStandaloneSourcePackage {
+            source: source.id,
+            package,
+        },
+        ProjectStandaloneSourcePackage {
+            source: source.id,
+            package,
+        },
+    ];
+    let output = Frontend.check_project(input);
+    assert!(output.checked.is_none());
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)
+                && diagnostic.primary.span.source == source.id
+                && diagnostic.message.contains("duplicated")
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn checked_source_module_identity_requires_owner_supplied_package() {
+    use etas_code::{CodeFingerprint, PackageKey};
+    use etas_frontend::code::identity::DefinitionOrigins;
+    let source = SourceInput::anonymous("module app.main; flow main() -> unit { return; }");
+    let mut input = ProjectInput::single_source(source);
+    let checked = Frontend.check_project(input.clone()).checked.unwrap();
+    assert!(DefinitionOrigins::checked_source_modules(&checked).is_err());
+    let owner = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([0x31; 32]));
+    input.environment.local_source_package = Some(owner);
+    let checked = Frontend.check_project(input).checked.unwrap();
+    let modules = DefinitionOrigins::checked_source_modules(&checked).unwrap();
+    assert_eq!(modules.len(), 1);
+    let module = modules.values().next().unwrap();
+    assert_eq!(module.package(), owner);
+    assert_eq!(module.module(), ["app", "main"]);
+}
+
+#[test]
+fn removing_a_source_removes_its_standalone_package_binding() {
+    use etas_code::{CodeFingerprint, PackageKey};
+    use etas_frontend::ProjectStandaloneSourcePackage;
+    let first = etas_core::SourceId(32001);
+    let second = etas_core::SourceId(32002);
+    let mut input = independent_module_project(first, Some(second));
+    input.environment.standalone_source_packages = vec![
+        ProjectStandaloneSourcePackage {
+            source: first,
+            package: PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([1; 32])),
+        },
+        ProjectStandaloneSourcePackage {
+            source: second,
+            package: PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([2; 32])),
+        },
+    ];
+    let mut expected = input.environment.clone();
+    expected
+        .standalone_source_packages
+        .retain(|entry| entry.source != second);
+    let mut session = FrontendSession::new();
+    let project = session.open_project(input);
+    assert!(
+        session
+            .check(project, CheckRequest::default())
+            .unwrap()
+            .output
+            .checked
+            .is_some()
+    );
+    session
+        .apply_changes(
+            project,
+            ProjectChangeSet {
+                revision: ProjectRevision(1),
+                source_changes: vec![SourceChange::Remove(second)],
+                dependency_overlay_changes: vec![],
+                environment_change: None,
+                option_changes: vec![],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        session.source_set(project).unwrap().environment_fingerprint,
+        expected.canonical_environment_fingerprint()
+    );
+    let response = session.check(project, CheckRequest::incremental()).unwrap();
+    let checked = response
+        .output
+        .checked
+        .expect("remaining source should check");
+    assert_eq!(
+        checked.project_environment_fingerprint,
+        expected.canonical_environment_fingerprint()
+    );
+}
+
+#[test]
+fn replacing_environment_updates_session_source_set_fingerprints() {
+    use etas_code::{CodeFingerprint, PackageKey};
+
+    let mut session = FrontendSession::new();
+    let input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app.main; flow main() -> unit { return; }",
+    ));
+    let mut environment = input.environment.clone();
+    environment.local_source_package = Some(PackageKey::from_canonical_fingerprint(
+        CodeFingerprint::from_bytes([9; 32]),
+    ));
+    environment.external_modules_fingerprint = Some("new-external-modules".into());
+    let project = session.open_project(input);
+    session
+        .apply_changes(
+            project,
+            ProjectChangeSet {
+                revision: ProjectRevision(1),
+                source_changes: vec![],
+                dependency_overlay_changes: vec![],
+                environment_change: Some(EnvironmentChange::Replace(Box::new(environment.clone()))),
+                option_changes: vec![],
+            },
+        )
+        .unwrap();
+    let sources = session.source_set(project).unwrap();
+    assert_eq!(
+        sources.environment_fingerprint,
+        environment.canonical_environment_fingerprint()
+    );
+    assert_eq!(
+        sources.external_modules_fingerprint,
+        environment.canonical_external_modules_fingerprint()
+    );
+    let source_fingerprint = sources.environment_fingerprint.clone();
+    let output = session
+        .check(project, CheckRequest::incremental())
+        .unwrap()
+        .output;
+    assert_eq!(
+        output.checked.unwrap().project_environment_fingerprint,
+        source_fingerprint
+    );
 }
 
 fn external_environment() -> ProjectEnvironmentInput {
@@ -135,6 +430,8 @@ fn external_environment() -> ProjectEnvironmentInput {
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                residual_checks: vec![],
+                behavior: None,
                 handler_requests: None,
                 returned_callables: None,
                 default_handler_effects: None,
@@ -151,6 +448,113 @@ fn external_environment() -> ProjectEnvironmentInput {
         }],
         ..ProjectEnvironmentInput::default()
     }
+}
+
+#[test]
+fn environment_fingerprint_changes_for_external_types_rows_and_traces() {
+    let baseline = external_environment();
+    let fingerprint = baseline.canonical_environment_fingerprint();
+    let mut changed = baseline.clone();
+    changed.external_public_metadata[0].types[0].ty =
+        Some(ProjectExternalTypeInput::Primitive("string".into()));
+    assert_ne!(fingerprint, changed.canonical_environment_fingerprint());
+    changed = baseline.clone();
+    changed.external_public_metadata[0].effect_summaries[0]
+        .requested_actions
+        .tail = Some("E".into());
+    assert_ne!(fingerprint, changed.canonical_environment_fingerprint());
+    changed = baseline.clone();
+    changed.external_public_metadata[0].effect_summaries[0].action_trace =
+        etas_frontend::ProjectExternalActionTraceInput::ParameterCall {
+            parameter: "f".into(),
+        };
+    assert_ne!(fingerprint, changed.canonical_environment_fingerprint());
+    changed = baseline.clone();
+    changed.external_public_metadata[0].effect_summaries[0].handler_requests =
+        Some(etas_frontend::ProjectExternalRequestInstantiationInput {
+            actions: vec![],
+            parameters: vec![],
+        });
+    assert_ne!(fingerprint, changed.canonical_environment_fingerprint());
+    changed = baseline.clone();
+    changed.external_public_metadata[0].effect_summaries[0].behavior =
+        Some(etas_package_metadata::CallableValueBehavior {
+            determinism: etas_package_metadata::CallableValueDeterminism::Deterministic,
+            independent_determinism: None,
+            host_requirements: vec![],
+            interpreter_features: vec![],
+        });
+    assert_ne!(fingerprint, changed.canonical_environment_fingerprint());
+    changed = baseline;
+    changed.external_public_metadata[0].effect_summaries[0].returned_callables =
+        Some(etas_package_metadata::CallableValueGraph::default());
+    let empty_graph = changed.canonical_environment_fingerprint();
+    assert_ne!(fingerprint, empty_graph);
+    changed.external_public_metadata[0].effect_summaries[0]
+        .returned_callables
+        .as_mut()
+        .unwrap()
+        .sources
+        .push(etas_package_metadata::CallableValueSource::Value(1));
+    assert_ne!(empty_graph, changed.canonical_environment_fingerprint());
+}
+
+#[test]
+fn dependency_and_module_fingerprints_use_structured_metadata() {
+    let baseline = external_environment();
+    let module = baseline.canonical_external_modules_fingerprint();
+    let dependency = baseline.canonical_dependency_metadata_fingerprints();
+    let mut reordered = baseline.clone();
+    reordered.external_modules[0].exports.reverse();
+    assert_eq!(module, reordered.canonical_external_modules_fingerprint());
+    assert_eq!(
+        dependency,
+        reordered.canonical_dependency_metadata_fingerprints()
+    );
+    let mut changed = baseline.clone();
+    changed.external_modules[0].path.segments = vec!["dep.math".into()];
+    assert_ne!(module, changed.canonical_external_modules_fingerprint());
+    assert_ne!(
+        dependency,
+        changed.canonical_dependency_metadata_fingerprints()
+    );
+    changed = baseline.clone();
+    changed.external_modules[0].exports[0].visibility = etas_hir::Visibility::Private;
+    assert_ne!(module, changed.canonical_external_modules_fingerprint());
+    changed = baseline.clone();
+    changed.external_public_metadata[0].types[0].ty =
+        Some(ProjectExternalTypeInput::Primitive("string".into()));
+    assert_ne!(
+        dependency,
+        changed.canonical_dependency_metadata_fingerprints()
+    );
+    changed = baseline;
+    changed.external_public_metadata[0].effect_summaries[0].action_trace =
+        etas_frontend::ProjectExternalActionTraceInput::ParameterCall {
+            parameter: "f".into(),
+        };
+    assert_ne!(
+        dependency,
+        changed.canonical_dependency_metadata_fingerprints()
+    );
+}
+
+#[test]
+fn environment_fingerprint_does_not_clone_deep_external_types() {
+    let mut environment = external_environment();
+    let mut ty = ProjectExternalTypeInput::Primitive("i32".into());
+    for _ in 0..10_000 {
+        ty = ProjectExternalTypeInput::Array(Box::new(ty));
+    }
+    environment.external_public_metadata[0].types[0].ty = Some(ty);
+    let first = environment.canonical_environment_fingerprint();
+    assert_eq!(first, environment.canonical_environment_fingerprint());
+    let dependency = environment.canonical_dependency_metadata_fingerprints();
+    assert_eq!(
+        dependency,
+        environment.canonical_dependency_metadata_fingerprints()
+    );
+    std::mem::forget(environment);
 }
 
 fn external_network_effect_row() -> ProjectExternalEffectRowInput {
@@ -621,6 +1025,65 @@ flow main() -> unit {
                 .contains(&effect_key.to_cache_key())
         );
     }
+}
+
+#[test]
+fn trace_spec_change_invalidates_incremental_effect_results() {
+    let source = |clause: &str| {
+        format!(
+            r#"
+module app.main;
+effect Gate {{ action ping() -> unit; }}
+spec Safe: trace = {clause}Gate.ping;
+flow main() -> unit ![Gate.ping] ~ Safe {{ perform Gate.ping(); return; }}
+"#
+        )
+    };
+    let mut session = FrontendSession::new();
+    let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(
+        source("+"),
+    )));
+    let first = session
+        .check(project, CheckRequest::default())
+        .expect("first check");
+    assert!(
+        first.output.checked.is_some(),
+        "{:?}",
+        first.diagnostics.diagnostics
+    );
+    session
+        .apply_changes(
+            project,
+            ProjectChangeSet {
+                revision: ProjectRevision(1),
+                source_changes: vec![SourceChange::Replace {
+                    source: etas_core::SourceId(0),
+                    version: SourceVersion(1),
+                    text: source("-"),
+                }],
+                dependency_overlay_changes: Vec::new(),
+                environment_change: None,
+                option_changes: Vec::new(),
+            },
+        )
+        .expect("apply trace change");
+    let next = session
+        .check(project, CheckRequest::incremental())
+        .expect("incremental check");
+    assert!(
+        next.output.checked.is_none(),
+        "changed trace must invalidate effect results"
+    );
+    assert!(
+        next.diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic
+                .message
+                .contains("trace spec deny clause rejects")),
+        "{:?}",
+        next.diagnostics.diagnostics
+    );
 }
 
 #[test]
@@ -3183,9 +3646,7 @@ flow main() -> i64 {
                 revision: ProjectRevision(1),
                 source_changes: Vec::new(),
                 dependency_overlay_changes: Vec::new(),
-                environment_change: Some(EnvironmentChange::Replace(
-                    ProjectEnvironmentInput::default(),
-                )),
+                environment_change: Some(EnvironmentChange::Replace(Box::default())),
                 option_changes: Vec::new(),
             },
         )
@@ -3222,6 +3683,7 @@ fn frontend_session_external_effect_metadata_change_invalidates_effect_artifacts
     let source = etas_core::SourceId(210);
     let mut environment = external_environment();
     environment.external_effect_metadata = DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![DependencyEffectTag {
             path: vec!["dep".into(), "payments".into(), "Payment".into()],
             runtime_requirement: Some(RuntimeRequirementReason::Network),
@@ -3277,6 +3739,7 @@ flow main(args: Array<string>) -> i32 {
         .fingerprint;
 
     environment.external_effect_metadata = DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![DependencyEffectTag {
             path: vec!["dep".into(), "audit".into(), "AuditTrail".into()],
             runtime_requirement: Some(RuntimeRequirementReason::FileIO),
@@ -3295,7 +3758,7 @@ flow main(args: Array<string>) -> i32 {
                 revision: ProjectRevision(1),
                 source_changes: Vec::new(),
                 dependency_overlay_changes: Vec::new(),
-                environment_change: Some(EnvironmentChange::Replace(environment.clone())),
+                environment_change: Some(EnvironmentChange::Replace(Box::new(environment.clone()))),
                 option_changes: Vec::new(),
             },
         )
@@ -3615,16 +4078,14 @@ fn frontend_session_project_wide_changes_invalidate_graph_and_affect_all_modules
             revision: ProjectRevision(1),
             source_changes: Vec::new(),
             dependency_overlay_changes: Vec::new(),
-            environment_change: Some(EnvironmentChange::Replace(external_environment())),
+            environment_change: Some(EnvironmentChange::Replace(Box::new(external_environment()))),
             option_changes: Vec::new(),
         },
         ProjectChangeSet {
             revision: ProjectRevision(1),
             source_changes: Vec::new(),
             dependency_overlay_changes: Vec::new(),
-            environment_change: Some(EnvironmentChange::Replace(
-                ProjectEnvironmentInput::default(),
-            )),
+            environment_change: Some(EnvironmentChange::Replace(Box::default())),
             option_changes: Vec::new(),
         },
         ProjectChangeSet {
@@ -4479,6 +4940,8 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                residual_checks: vec![],
+                behavior: None,
                 handler_requests: None,
                 returned_callables: None,
                 default_handler_effects: None,
@@ -5090,6 +5553,8 @@ fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
 
 fn empty_external_summary(path: &[&str]) -> ProjectExternalEffectSummaryInput {
     ProjectExternalEffectSummaryInput {
+        residual_checks: vec![],
+        behavior: None,
         handler_requests: None,
         returned_callables: None,
         default_handler_effects: None,
@@ -5189,6 +5654,7 @@ fn assert_runtime_requirements_empty(output: &ProjectOutput) {
 fn frontend_effect_pipeline_consumes_external_effect_metadata() {
     let mut environment = external_environment();
     environment.external_effect_metadata = DependencyEffectMetadata {
+        source_bindings: Vec::new(),
         tags: vec![DependencyEffectTag {
             path: vec!["dep".into(), "payments".into(), "Payment".into()],
             runtime_requirement: Some(RuntimeRequirementReason::Network),
@@ -7581,6 +8047,7 @@ fn frontend_check_project_uses_external_trace_spec_metadata_for_conformance() {
             visibility: "public".to_owned(),
             kind: ProjectExternalSpecKindInput::Trace,
             param_names: Vec::new(),
+            generic_params: Vec::new(),
             callable: None,
             methods: Vec::new(),
             super_specs: Vec::new(),
@@ -7588,7 +8055,9 @@ fn frontend_check_project_uses_external_trace_spec_metadata_for_conformance() {
     environment.external_public_metadata[0].trace_spec_summaries =
         vec![ProjectExternalTraceSpecSummaryInput {
             trace_spec: vec!["dep".to_owned(), "guard".to_owned(), "Safe".to_owned()],
-            clauses: vec![ProjectExternalTraceSpecClauseInput {
+            definition: test_external_spec_key("guard", "Safe"),
+            alternatives: vec![vec![ProjectExternalTraceSpecClauseInput {
+                selector_bounds: Vec::new(),
                 kind: ProjectExternalTraceSpecClauseKindInput::Allow,
                 pattern: Some(ProjectExternalEffectRowInput {
                     effects: vec![ProjectExternalEffectRefInput {
@@ -7600,14 +8069,15 @@ fn frontend_check_project_uses_external_trace_spec_metadata_for_conformance() {
                 guard: None,
                 target: None,
                 obligation: None,
-            }],
+            }]],
         }];
 
+    attach_trace_spec_origins(&mut environment);
     let output = Frontend.check_project(ProjectInput {
         project_root: std::path::PathBuf::from("/workspace/external-trace-spec"),
         source_root: None,
         options: Default::default(),
-        environment,
+        environment: environment.clone(),
         sources: vec![SourceInput::anonymous(
             r#"
 module app.main;
@@ -7634,11 +8104,198 @@ flow main() -> unit ~ Safe {
         "{:#?}",
         output.diagnostics
     );
+    let artifacts = output.effect_pipeline_artifacts.as_ref().unwrap();
+    let types = output.types.as_ref().unwrap();
+    let hir = &output.hir.as_ref().unwrap().hir;
+    let span = types.facts.trace_spec_conformances[0].span;
+    let valid = etas_effects::AnchoredExternalMetadata {
+        package: 0,
+        span,
+        metadata: artifacts.external_trace_specs[0].clone(),
+    };
+    let mut other_package = valid.clone();
+    other_package.package = 99;
+    other_package.metadata.alternatives[0][0].kind =
+        etas_effects::ExternalTraceSpecClauseKind::Deny;
+    let metadata = vec![other_package, valid.clone()];
+    let mut effects = etas_effects::EffectOutput::default();
+    let models = etas_effects::trace_spec::materialize_trace_spec_models(
+        hir,
+        types,
+        &artifacts.registry,
+        &metadata,
+        &[],
+        &mut effects,
+    )
+    .unwrap();
+    assert!(effects.diagnostics.is_empty(), "{:?}", effects.diagnostics);
+    assert!(matches!(
+        models
+            .referenced_by_item
+            .values()
+            .flatten()
+            .flatten()
+            .flatten()
+            .next(),
+        Some(etas_effects::trace_spec::TraceSpecClause::Allow { .. })
+    ));
+    assert!(
+        models
+            .validate_source_sites(hir, types, &artifacts.registry, &metadata, &[])
+            .is_ok()
+    );
+    assert!(
+        models
+            .validate_source_sites(hir, types, &artifacts.registry, &metadata[..1], &[])
+            .is_err()
+    );
+    assert!(
+        models
+            .validate_source_sites(
+                hir,
+                types,
+                &artifacts.registry,
+                &[valid.clone(), valid],
+                &[]
+            )
+            .is_err()
+    );
+    let mut forged_model = models.clone();
+    let clause = forged_model
+        .referenced_by_item
+        .values_mut()
+        .flatten()
+        .flatten()
+        .flatten()
+        .next()
+        .unwrap();
+    let etas_effects::trace_spec::TraceSpecClause::Allow { pattern, .. } = clause else {
+        panic!("expected external allow clause")
+    };
+    pattern.row.effects = etas_effects::EffectSet::default();
+    assert!(
+        forged_model
+            .validate_source_sites(hir, types, &artifacts.registry, &metadata, &[])
+            .is_err()
+    );
     let checked = output.checked.expect("project should check");
     assert_eq!(
         checked.types.trace_spec_conformances.len(),
         1,
         "external trace spec conformance should be recorded as a type fact"
+    );
+    environment.external_public_metadata[0]
+        .spec_signatures
+        .push(ProjectExternalSpecSignatureInput {
+            path: vec!["dep".into(), "guard".into(), "Within".into()],
+            visibility: "public".into(),
+            kind: ProjectExternalSpecKindInput::Type,
+            param_names: Vec::new(),
+            generic_params: Vec::new(),
+            callable: None,
+            methods: Vec::new(),
+            super_specs: Vec::new(),
+        });
+    environment.external_modules[0]
+        .exports
+        .push(ProjectExternalExportInput {
+            symbol: ExternalSymbolId(1),
+            name: "Within".into(),
+            visibility: etas_hir::Visibility::Public,
+        });
+    let clause =
+        &mut environment.external_public_metadata[0].trace_spec_summaries[0].alternatives[0][0];
+    let effect = &mut clause.pattern.as_mut().unwrap().effects[0];
+    effect.path = vec!["Fs".into(), "read".into()];
+    effect.args.push(ProjectExternalEffectArgInput::Wildcard);
+    let prior_fingerprint = environment.canonical_environment_fingerprint();
+    environment.external_public_metadata[0].trace_spec_summaries[0].alternatives[0][0]
+        .selector_bounds
+        .push(etas_frontend::ProjectExternalTraceSelectorBoundInput {
+            operand: etas_frontend::ProjectExternalTraceSelectorOperandInput::Pattern,
+            effect_path: vec!["Fs".into(), "read".into()],
+            argument: 0,
+            binding: "R".into(),
+            spec_path: vec!["dep".into(), "guard".into(), "Within".into()],
+            spec_args: Vec::new(),
+        });
+    assert_ne!(
+        prior_fingerprint,
+        environment.canonical_environment_fingerprint()
+    );
+    let check_invalid = |environment: ProjectEnvironmentInput, expected: &str| {
+        let output = Frontend.check_project(ProjectInput {
+            project_root: std::path::PathBuf::from("/workspace/external-trace-spec"),
+            source_root: None,
+            options: Default::default(),
+            environment,
+            sources: vec![SourceInput::anonymous(
+                "module app.main; import dep.guard.Safe; flow main() -> unit ~ Safe { return; }",
+            )],
+            entry: ProjectEntry {
+                module: Some(ModulePath {
+                    segments: vec!["app".into(), "main".into()],
+                }),
+                flow: "main".into(),
+            },
+        });
+        assert!(output.checked.is_none());
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains(expected)
+                    && diagnostic.primary.span.source == etas_core::SourceId(0)
+            }),
+            "expected {expected}: {:?}",
+            output.diagnostics
+        );
+    };
+    let mut invalid = environment.clone();
+    invalid.external_public_metadata[0].trace_spec_summaries[0].alternatives[0][0]
+        .selector_bounds[0]
+        .argument = 1;
+    check_invalid(invalid, "wildcard at its selector position");
+    let mut invalid = environment.clone();
+    invalid.external_public_metadata[0].trace_spec_summaries[0].alternatives[0][0]
+        .selector_bounds[0]
+        .spec_path = vec!["dep".into(), "guard".into(), "Missing".into()];
+    check_invalid(invalid, "missing, ambiguous, or not a type spec");
+    let mut invalid = environment.clone();
+    invalid.external_public_metadata[0].trace_spec_summaries[0].alternatives[0][0].selector_bounds
+        [0]
+    .spec_args
+    .push(ProjectExternalTypeInput::Primitive("i32".into()));
+    check_invalid(invalid, "expects 0 argument(s), got 1");
+    let mut invalid = environment.clone();
+    invalid.external_public_metadata[0].trace_spec_summaries[0].alternatives[0][0].selector_bounds
+        [0]
+    .spec_args
+    .push(ProjectExternalTypeInput::Var("Undeclared".into()));
+    check_invalid(invalid, "not declared");
+    let rejected = Frontend.check_project(ProjectInput {
+        project_root: std::path::PathBuf::from("/workspace/external-trace-spec"),
+        source_root: None,
+        options: Default::default(),
+        environment,
+        sources: vec![SourceInput::anonymous(
+            "module app.main; import dep.guard.Safe; flow main() -> unit ~ Safe { return; }",
+        )],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["app".into(), "main".into()],
+            }),
+            flow: "main".into(),
+        },
+    });
+    assert!(rejected.checked.is_none());
+    assert!(
+        rejected.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("selector bounds require checked replay support")
+                && diagnostic.primary.span.source == etas_core::SourceId(0)
+        }),
+        "{:?}",
+        rejected.diagnostics
     );
 }
 
@@ -7674,6 +8331,7 @@ fn frontend_check_project_applies_external_trace_spec_metadata_monitor() {
             visibility: "public".to_owned(),
             kind: ProjectExternalSpecKindInput::Trace,
             param_names: Vec::new(),
+            generic_params: Vec::new(),
             callable: None,
             methods: Vec::new(),
             super_specs: Vec::new(),
@@ -7681,7 +8339,9 @@ fn frontend_check_project_applies_external_trace_spec_metadata_monitor() {
     environment.external_public_metadata[0].trace_spec_summaries =
         vec![ProjectExternalTraceSpecSummaryInput {
             trace_spec: vec!["dep".to_owned(), "guard".to_owned(), "Safe".to_owned()],
-            clauses: vec![ProjectExternalTraceSpecClauseInput {
+            definition: test_external_spec_key("guard", "Safe"),
+            alternatives: vec![vec![ProjectExternalTraceSpecClauseInput {
+                selector_bounds: Vec::new(),
                 kind: ProjectExternalTraceSpecClauseKindInput::Deny,
                 pattern: Some(ProjectExternalEffectRowInput {
                     effects: vec![ProjectExternalEffectRefInput {
@@ -7693,9 +8353,10 @@ fn frontend_check_project_applies_external_trace_spec_metadata_monitor() {
                 guard: None,
                 target: None,
                 obligation: None,
-            }],
+            }]],
         }];
 
+    attach_trace_spec_origins(&mut environment);
     let output = Frontend.check_project(ProjectInput {
         project_root: std::path::PathBuf::from("/workspace/external-trace-spec-deny"),
         source_root: None,
@@ -7727,6 +8388,184 @@ flow main() -> unit ![Error<IOError>] ~ Safe {
         }),
         "external trace spec deny clause should reject println requested action: {:#?}",
         output.diagnostics
+    );
+}
+
+#[test]
+fn frontend_external_trace_after_spelling_requires_prior_evidence() {
+    let mut environment = ProjectEnvironmentInput {
+        external_packages: vec![runtime_dep_package()],
+        external_modules: vec![ProjectExternalModuleInput {
+            package: Some(ExternalPackageId(0)),
+            id: ExternalModuleId(1),
+            path: ModulePath {
+                segments: vec!["dep".to_owned(), "guard".to_owned()],
+            },
+            exports: vec![ProjectExternalExportInput {
+                symbol: ExternalSymbolId(0),
+                name: "Safe".to_owned(),
+                visibility: etas_hir::Visibility::Public,
+            }],
+        }],
+        external_public_metadata: vec![empty_external_public_metadata(ExternalPackageId(0))],
+        ..ProjectEnvironmentInput::default()
+    };
+    let path = vec!["dep".to_owned(), "guard".to_owned(), "Safe".to_owned()];
+    environment.external_public_metadata[0].trace_specs =
+        vec![ProjectExternalNamedSignatureInput {
+            generic_params: Vec::new(),
+            path: path.clone(),
+            visibility: "public".to_owned(),
+            ty: None,
+        }];
+    environment.external_public_metadata[0].spec_signatures =
+        vec![ProjectExternalSpecSignatureInput {
+            path: path.clone(),
+            visibility: "public".to_owned(),
+            kind: ProjectExternalSpecKindInput::Trace,
+            param_names: Vec::new(),
+            generic_params: Vec::new(),
+            callable: None,
+            methods: Vec::new(),
+            super_specs: Vec::new(),
+        }];
+    let action = |name: &str| ProjectExternalEffectRowInput {
+        effects: vec![ProjectExternalEffectRefInput {
+            path: vec!["Console".to_owned(), name.to_owned()],
+            args: Vec::new(),
+        }],
+        tail: None,
+    };
+    environment.external_public_metadata[0].trace_spec_summaries =
+        vec![ProjectExternalTraceSpecSummaryInput {
+            trace_spec: path,
+            definition: test_external_spec_key("guard", "Safe"),
+            alternatives: vec![vec![ProjectExternalTraceSpecClauseInput {
+                selector_bounds: Vec::new(),
+                kind: ProjectExternalTraceSpecClauseKindInput::RequireAfter,
+                pattern: None,
+                guard: None,
+                target: Some(action("stdin_read_line")),
+                obligation: Some(action("stdout_write")),
+            }]],
+        }];
+    attach_trace_spec_origins(&mut environment);
+    let check = |environment: &ProjectEnvironmentInput, body: &str| {
+        Frontend
+            .check_project(ProjectInput {
+                project_root: std::path::PathBuf::from("/workspace/external-trace-prior"),
+                source_root: None,
+                options: Default::default(),
+                environment: environment.clone(),
+                sources: vec![SourceInput::anonymous(format!(
+                    r#"module app.main;
+import dep.guard.Safe;
+flow main() -> unit ![Console.stdin_read_line, Console.stdout_write] ~ Safe {{ {body} }}
+"#
+                ))],
+                entry: ProjectEntry {
+                    module: Some(ModulePath {
+                        segments: vec!["app".to_owned(), "main".to_owned()],
+                    }),
+                    flow: "main".to_owned(),
+                },
+            })
+            .diagnostics
+    };
+    let prior_only = check(&environment, "perform Console.stdin_read_line();");
+    assert!(prior_only.is_empty(), "{prior_only:#?}");
+    let wrong_order = check(
+        &environment,
+        "perform Console.stdout_write(\"x\"); perform Console.stdin_read_line();",
+    );
+    assert!(
+        wrong_order.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecRequirementNotDominating)),
+        "{wrong_order:#?}"
+    );
+    let ordered = check(
+        &environment,
+        "perform Console.stdin_read_line(); perform Console.stdout_write(\"x\");",
+    );
+    assert!(
+        ordered.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)),
+        "{ordered:#?}"
+    );
+
+    let clause = |kind, name| ProjectExternalTraceSpecClauseInput {
+        selector_bounds: Vec::new(),
+        kind,
+        pattern: Some(action(name)),
+        guard: None,
+        target: None,
+        obligation: None,
+    };
+    let mut alternatives = environment.clone();
+    alternatives.external_public_metadata[0].trace_spec_summaries[0].alternatives = vec![
+        vec![
+            clause(
+                ProjectExternalTraceSpecClauseKindInput::Allow,
+                "stdout_write",
+            ),
+            clause(
+                ProjectExternalTraceSpecClauseKindInput::Deny,
+                "stdin_read_line",
+            ),
+        ],
+        vec![
+            clause(
+                ProjectExternalTraceSpecClauseKindInput::Allow,
+                "stdin_read_line",
+            ),
+            clause(
+                ProjectExternalTraceSpecClauseKindInput::Deny,
+                "stdout_write",
+            ),
+        ],
+    ];
+    for body in [
+        "perform Console.stdout_write(\"x\");",
+        "perform Console.stdin_read_line();",
+    ] {
+        let diagnostics = check(&alternatives, body);
+        assert!(
+            diagnostics.is_empty(),
+            "one complete alternative must accept: {diagnostics:#?}"
+        );
+    }
+    let both = check(
+        &alternatives,
+        "perform Console.stdin_read_line(); perform Console.stdout_write(\"x\");",
+    );
+    assert!(
+        both.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecAllowViolation)
+            || diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecDenied)),
+        "different branches must not pool permissions: {both:#?}"
+    );
+    let mut merged = alternatives.clone();
+    let clauses = merged.external_public_metadata[0].trace_spec_summaries[0]
+        .alternatives
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    merged.external_public_metadata[0].trace_spec_summaries[0].alternatives = vec![clauses];
+    assert_ne!(
+        alternatives.canonical_environment_fingerprint(),
+        merged.canonical_environment_fingerprint()
+    );
+    let mut malformed = alternatives.clone();
+    malformed.external_public_metadata[0].trace_spec_summaries[0]
+        .alternatives
+        .push(vec![]);
+    let diagnostics = check(&malformed, "return;");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error),
+        "empty alternative must be rejected: {diagnostics:#?}"
     );
 }
 
@@ -7776,6 +8615,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             visibility: "public".to_owned(),
             kind: ProjectExternalSpecKindInput::Callable,
             param_names: Vec::new(),
+            generic_params: Vec::new(),
             callable: Some(ProjectExternalFlowSignatureInput {
                 generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "api".to_owned(), "Pure".to_owned()],
@@ -7793,6 +8633,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             visibility: "public".to_owned(),
             kind: ProjectExternalSpecKindInput::Trace,
             param_names: Vec::new(),
+            generic_params: Vec::new(),
             callable: None,
             methods: Vec::new(),
             super_specs: Vec::new(),
@@ -7809,13 +8650,16 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                 spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
+                definition: test_external_spec_key("api", "Safe"),
                 args: Vec::new(),
             },
         }];
     environment.external_public_metadata[0].trace_spec_summaries =
         vec![ProjectExternalTraceSpecSummaryInput {
             trace_spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
-            clauses: vec![ProjectExternalTraceSpecClauseInput {
+            definition: test_external_spec_key("api", "Safe"),
+            alternatives: vec![vec![ProjectExternalTraceSpecClauseInput {
+                selector_bounds: Vec::new(),
                 kind: ProjectExternalTraceSpecClauseKindInput::Allow,
                 pattern: Some(ProjectExternalEffectRowInput {
                     effects: vec![ProjectExternalEffectRefInput {
@@ -7827,10 +8671,12 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
                 guard: None,
                 target: None,
                 obligation: None,
-            }],
+            }]],
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -7842,6 +8688,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             action_trace: Default::default(),
         }];
 
+    attach_trace_spec_origins(&mut environment);
     let output = Frontend.check_project(ProjectInput {
         project_root: std::path::PathBuf::from("/workspace/external-spec-conformance"),
         source_root: None,
@@ -7894,9 +8741,11 @@ flow main() -> unit {
             .iter()
             .any(|fact| match &fact.target {
                 etas_types::ExternalTraceSpecConformanceTarget::Named { spec, .. } => {
-                    fact.item
-                        .item_path()
-                        .is_some_and(|path| path_eq(path, &["dep", "api", "call"]))
+                    fact.package == 0
+                        && fact
+                            .item
+                            .item_path()
+                            .is_some_and(|path| path_eq(path, &["dep", "api", "call"]))
                         && path_eq(spec, &["dep", "api", "Safe"])
                 }
                 etas_types::ExternalTraceSpecConformanceTarget::Inline => false,
@@ -7947,6 +8796,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             visibility: "public".to_owned(),
             kind: ProjectExternalSpecKindInput::Trace,
             param_names: Vec::new(),
+            generic_params: Vec::new(),
             callable: None,
             methods: Vec::new(),
             super_specs: Vec::new(),
@@ -7954,7 +8804,9 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
     environment.external_public_metadata[0].trace_spec_summaries =
         vec![ProjectExternalTraceSpecSummaryInput {
             trace_spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
-            clauses: vec![ProjectExternalTraceSpecClauseInput {
+            definition: test_external_spec_key("api", "Safe"),
+            alternatives: vec![vec![ProjectExternalTraceSpecClauseInput {
+                selector_bounds: Vec::new(),
                 kind: ProjectExternalTraceSpecClauseKindInput::Deny,
                 pattern: Some(ProjectExternalEffectRowInput {
                     effects: vec![ProjectExternalEffectRefInput {
@@ -7966,18 +8818,21 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
                 guard: None,
                 target: None,
                 obligation: None,
-            }],
+            }]],
         }];
     environment.external_public_metadata[0].trace_spec_conformances =
         vec![ProjectExternalTraceSpecConformanceInput {
             item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                 spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
+                definition: test_external_spec_key("api", "Safe"),
                 args: Vec::new(),
             },
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -7989,9 +8844,49 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             )]),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
-            action_trace: Default::default(),
+            action_trace: ProjectExternalActionTraceInput::Event {
+                action: external_effect(&["Console", "stdout_write"], Vec::new()),
+                source: etas_frontend::ProjectExternalActionTraceEventSourceInput::ExternalMetadata,
+            },
         }];
 
+    attach_trace_spec_origins(&mut environment);
+    for corrupt_target in [false, true] {
+        let mut corrupted = environment.clone();
+        if corrupt_target {
+            let ProjectExternalTraceSpecConformanceTargetInput::Named { definition, .. } =
+                &mut corrupted.external_public_metadata[0].trace_spec_conformances[0].target
+            else {
+                panic!("expected named conformance")
+            };
+            *definition = test_external_spec_key("api", "Other");
+        } else {
+            corrupted.external_public_metadata[0].trace_spec_summaries[0].definition =
+                test_external_spec_key("api", "Other");
+        }
+        let output = Frontend.check_project(ProjectInput {
+            project_root: std::path::PathBuf::from("/workspace/forged-trace-definition"),
+            source_root: None,
+            options: Default::default(),
+            environment: corrupted,
+            sources: vec![SourceInput::anonymous(
+                "module app.main; import dep.api.call; flow main() -> unit { return; }",
+            )],
+            entry: ProjectEntry {
+                module: Some(ModulePath {
+                    segments: vec!["app".into(), "main".into()],
+                }),
+                flow: "main".into(),
+            },
+        });
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| diagnostic.code
+                == DiagnosticCode::Type(TypeDiagnosticCode::IncompleteTypeFacts)),
+            "{:#?}",
+            output.diagnostics
+        );
+        assert!(output.checked.is_none());
+    }
     for add_permissive_conformance in [false, true] {
         let mut environment = environment.clone();
         if add_permissive_conformance {
@@ -8008,7 +8903,8 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             metadata.spec_signatures.push(signature);
             let mut summary = metadata.trace_spec_summaries[0].clone();
             summary.trace_spec[2] = "Permitted".into();
-            summary.clauses[0].kind = ProjectExternalTraceSpecClauseKindInput::Allow;
+            summary.definition = test_external_spec_key("api", "Permitted");
+            summary.alternatives[0][0].kind = ProjectExternalTraceSpecClauseKindInput::Allow;
             metadata.trace_spec_summaries.push(summary);
             metadata
                 .trace_spec_conformances
@@ -8016,6 +8912,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
                     item: vec!["dep".into(), "api".into(), "call".into()].into(),
                     target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                         spec: vec!["dep".into(), "api".into(), "Permitted".into()],
+                        definition: test_external_spec_key("api", "Permitted"),
                         args: Vec::new(),
                     },
                 });
@@ -8253,6 +9150,8 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8416,6 +9315,8 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8550,6 +9451,8 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8750,6 +9653,8 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8882,6 +9787,8 @@ fn frontend_check_project_does_not_realize_an_unused_external_function_argument(
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -8998,6 +9905,8 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9115,6 +10024,8 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9123,6 +10034,7 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
             requested_actions: ProjectExternalEffectRowInput::default(),
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: vec![ProjectExternalLatentFlowSummaryInput {
+                residual_checks: vec![],
                 declared_bound: ProjectExternalEffectRowInput::default(),
                 inferred_effects: external_effect_row(vec![external_effect(
                     &["Network"],
@@ -9247,6 +10159,8 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9381,6 +10295,8 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9513,6 +10429,8 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            residual_checks: vec![],
+            behavior: None,
             handler_requests: None,
             returned_callables: None,
             default_handler_effects: None,
@@ -9567,6 +10485,148 @@ flow main() -> unit ![Error<HttpError>] {
         "{:?}",
         output.diagnostics
     );
+}
+
+#[test]
+fn package_metadata_rejects_unrepresentable_residual_obligations() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        "module storage.api; public flow make() -> () -> unit ![] { return () => { return; }; } public agent Worker() -> unit { return; } flow main() -> unit { return; }",
+    )));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let original = output.checked.unwrap();
+    let item = original
+        .hir
+        .items
+        .iter()
+        .find_map(|(id, item)| {
+            matches!(item, etas_hir::HirItem::Flow(flow)
+            if original.symbols.get(flow.symbol).is_some_and(|symbol| symbol.name == "make"))
+            .then_some(id)
+        })
+        .unwrap();
+    let agent = original
+        .hir
+        .items
+        .iter()
+        .find_map(|(id, item)| {
+            matches!(item, etas_hir::HirItem::Agent(agent)
+            if original.symbols.get(agent.symbol).is_some_and(|symbol| symbol.name == "Worker"))
+            .then_some(id)
+        })
+        .unwrap();
+    assert!(
+        original
+            .effects
+            .public_contracts
+            .iter()
+            .any(|contract| contract.item == agent)
+    );
+    let obligation = etas_code::residual::identity::ObligationId::from_canonical_fingerprint(
+        etas_code::CodeFingerprint::from_bytes([7; 32]),
+    );
+    let reference =
+        etas_code::residual::identity::ResidualObligationRef::new(obligation, Default::default())
+            .unwrap();
+    let build = |checked: &etas_frontend::CheckedProgram| {
+        build_package_metadata_artifact_from_checked(
+            PackageMetadataBuildInput {
+                definition_origin: None,
+                package_id: "storage".into(),
+                package_version: "0.1.0".into(),
+                package_edition: "2026".into(),
+                compiler_version: "test".into(),
+                source_payload_hash: "blake3:test-source".into(),
+                manifest_hash: "blake3:test-manifest".into(),
+                dependency_lock_hash: "blake3:test-lock".into(),
+                bins: Vec::new(),
+                dependencies: Vec::new(),
+                tool_bindings: Vec::new(),
+            },
+            checked,
+        )
+    };
+    assert!(build(&original).is_ok());
+    for case in 0..9 {
+        let mut checked = original.clone();
+        let effects = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects);
+        match case {
+            0 => {
+                effects
+                    .item_effects
+                    .get_mut(&item)
+                    .unwrap()
+                    .residual_checks
+                    .insert(reference.clone());
+            }
+            1 => {
+                effects
+                    .public_contracts
+                    .iter_mut()
+                    .find(|contract| contract.item == item)
+                    .unwrap()
+                    .residual_checks
+                    .insert(reference.clone());
+            }
+            2 => {
+                effects
+                    .latent_effects
+                    .values_mut()
+                    .next()
+                    .unwrap()
+                    .summary
+                    .residual_checks
+                    .insert(reference.clone());
+            }
+            3 => {
+                effects.item_effects.remove(&item);
+            }
+            4 => {
+                effects.item_effects.remove(&item);
+                effects
+                    .public_contracts
+                    .retain(|contract| contract.item != item);
+            }
+            5 => {
+                effects.item_effects.remove(&agent);
+                effects
+                    .public_contracts
+                    .retain(|contract| contract.item != agent);
+            }
+            6 => {
+                effects
+                    .public_contracts
+                    .retain(|contract| contract.item != item);
+            }
+            7 => {
+                effects
+                    .public_contracts
+                    .retain(|contract| contract.item != item);
+                effects
+                    .latent_effects
+                    .values_mut()
+                    .next()
+                    .unwrap()
+                    .summary
+                    .residual_checks
+                    .insert(reference.clone());
+            }
+            _ => {
+                effects
+                    .public_contracts
+                    .retain(|contract| contract.item != agent);
+            }
+        }
+        let error = match build(&checked) {
+            Ok(_) => panic!("case {case} published incomplete metadata"),
+            Err(error) => error,
+        };
+        let expected = match case {
+            0..=2 => "residual",
+            3..=5 => "missing checked effect",
+            _ => "missing checked public effect contract",
+        };
+        assert!(error.to_string().contains(expected), "case {case}: {error}");
+    }
 }
 
 #[test]
@@ -10178,7 +11238,8 @@ fn frontend_package_metadata_publishes_public_trace_spec() {
             path: Some(std::path::PathBuf::from("src/app/main.es")),
             text: r#"module app.main;
 
-public spec Safe: trace = +Console.stdout_write;
+public spec Safe: trace = (+Console.stdout_write & -Console.stdin_read_line) |
+    (+Console.stdin_read_line & -Console.stdout_write);
 
 public flow main() -> unit ~ Safe {
     return;
@@ -10207,7 +11268,9 @@ public flow main() -> unit ~ Safe {
 
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
-            definition_origin: None,
+            definition_origin: Some(etas_code::PackageKey::from_canonical_fingerprint(
+                etas_code::CodeFingerprint::from_bytes([9; 32]),
+            )),
             package_id: "trace-spec-package".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -10253,8 +11316,22 @@ public flow main() -> unit ~ Safe {
         .iter()
         .find(|summary| summary.trace_spec == ["app", "main", "Safe"])
         .expect("public trace spec should export structured trace clauses");
-    assert_eq!(summary.clauses.len(), 1, "{summary:?}");
-    assert!(summary.clauses[0].pattern.is_some(), "{summary:?}");
+    assert_eq!(summary.alternatives.len(), 2, "{summary:?}");
+    for alternative in &summary.alternatives {
+        assert_eq!(alternative.len(), 2, "{summary:?}");
+        assert!(
+            alternative.iter().all(|clause| clause.pattern.is_some()),
+            "{summary:?}"
+        );
+        assert_eq!(
+            alternative[0].kind,
+            etas_package_metadata::TraceSpecClauseKind::Allow
+        );
+        assert_eq!(
+            alternative[1].kind,
+            etas_package_metadata::TraceSpecClauseKind::Deny
+        );
+    }
     assert!(
         metadata
             .public_metadata
@@ -10266,12 +11343,12 @@ public flow main() -> unit ~ Safe {
                     .is_some_and(|path| path_eq(path, &["app", "main", "main"]))
                     && matches!(
                         &fact.target,
-                        etas_package_metadata::TraceSpecConformanceTarget::Named { spec, .. }
+                        etas_package_metadata::TraceSpecConformanceTarget::Named { spec, definition, .. }
                             if spec == &vec![
                                 "app".to_owned(),
                                 "main".to_owned(),
                                 "Safe".to_owned()
-                            ]
+                            ] && definition == &summary.definition
                     )
             }),
         "public flow trace conformance should be exported as metadata: {:?}",
@@ -10914,6 +11991,16 @@ fn frontend_check_project_validates_complete_external_environment_at_import_boun
     }
 
     let cases = [
+        {
+            let mut environment = external_environment();
+            attach_trace_spec_origins(&mut environment);
+            environment.external_definition_origins[0].origins.package =
+                etas_code::PackageKey::from_name_and_version("other", "1.0.0").unwrap();
+            (
+                environment,
+                "definition package origin does not match its name and version",
+            )
+        },
         {
             let mut environment = external_environment();
             environment.external_modules[0]

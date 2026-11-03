@@ -302,6 +302,34 @@ spec SafeEmail: trace =
 }
 
 #[test]
+fn parses_constrained_trace_selector_without_changing_effect_rows() {
+    let parsed = parse_program(source(
+        "spec Reports: trace = +Fs.read<R ~ Region + Within<ReportsRoot>>;",
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let Item::Spec(spec) = &parsed.value.items[0].item else {
+        panic!("expected trace spec");
+    };
+    let Some(etas_syntax::ast::SpecExpr::Allow { pattern, .. }) = &spec.trace else {
+        panic!("expected allow pattern");
+    };
+    let [etas_syntax::ast::EffectArg::PatternBinding { name, bounds, .. }] =
+        pattern.args.as_slice()
+    else {
+        panic!("expected constrained selector binding");
+    };
+    assert_eq!(name.text, "R");
+    assert_eq!(bounds.len(), 2);
+    assert_eq!(bounds[1].args.len(), 1);
+    let ordinary_row = parse_program(source(
+        "flow f() -> unit ![Fs.read<R ~ Region>] { return; }",
+    ));
+    assert!(!ordinary_row.diagnostics.is_empty());
+    let anonymous_bound = parse_program(source("spec Bad: trace = +Fs.read<_ ~ Region>;"));
+    assert!(!anonymous_bound.diagnostics.is_empty());
+}
+
+#[test]
 fn parses_effect_ref_argument_kinds_without_type_fallback() {
     let parsed = parse_program(source(
         r#"

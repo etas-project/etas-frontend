@@ -13,6 +13,7 @@ use crate::intraprocedural::{AnalysisStep, HirAbstractInterpreter, HirAnalysisSe
 struct EventDomain {
     events: BTreeSet<&'static str>,
     incomplete: bool,
+    growth: usize,
 }
 
 impl EventDomain {
@@ -33,7 +34,9 @@ impl EventDomain {
 
 impl PartialOrder for EventDomain {
     fn less_equal(&self, other: &Self) -> bool {
-        self.events.is_subset(&other.events) && (!self.incomplete || other.incomplete)
+        self.events.is_subset(&other.events)
+            && (!self.incomplete || other.incomplete)
+            && self.growth <= other.growth
     }
 }
 
@@ -45,9 +48,13 @@ impl JoinSemiLattice for EventDomain {
     fn join_assign(&mut self, other: &Self) -> bool {
         let old_len = self.events.len();
         let old_incomplete = self.incomplete;
+        let old_growth = self.growth;
         self.events.extend(other.events.iter().copied());
         self.incomplete |= other.incomplete;
-        self.events.len() != old_len || self.incomplete != old_incomplete
+        self.growth = self.growth.max(other.growth);
+        self.events.len() != old_len
+            || self.incomplete != old_incomplete
+            || self.growth != old_growth
     }
 }
 
@@ -60,14 +67,21 @@ struct TraceSemantics {
     incomplete_calls: BTreeSet<HirExprId>,
     handled_calls: BTreeMap<HirExprId, &'static str>,
     started_exprs: Vec<HirExprId>,
+    expr_entry_events: Vec<(HirExprId, BTreeSet<&'static str>)>,
     completed_exprs: Vec<HirExprId>,
     started_stmts: Vec<HirStmtId>,
     completed_stmts: Vec<HirStmtId>,
     cancel_after_expr: Option<(HirExprId, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     returned_values: Vec<(HirStmtId, Option<HirExprId>)>,
     terminal_exprs: BTreeSet<HirExprId>,
+    terminal_after_event: Option<(HirExprId, &'static str)>,
     match_entries: Vec<(HirExprId, HirExprId, HirPatId, usize)>,
     match_event: Option<&'static str>,
+    symbolic_match_entries: Vec<(HirExprId, HirPatId, bool)>,
+    growing_expr: Option<HirExprId>,
+    incomplete_loops: Vec<HirBlockId>,
+    bounded_for: Option<(HirStmtId, usize)>,
+    completed_bounded_for: Vec<HirStmtId>,
 }
 
 impl TraceSemantics {
@@ -81,14 +95,21 @@ impl TraceSemantics {
             incomplete_calls: BTreeSet::new(),
             handled_calls: BTreeMap::new(),
             started_exprs: Vec::new(),
+            expr_entry_events: Vec::new(),
             completed_exprs: Vec::new(),
             started_stmts: Vec::new(),
             completed_stmts: Vec::new(),
             cancel_after_expr: None,
             returned_values: Vec::new(),
             terminal_exprs: BTreeSet::new(),
+            terminal_after_event: None,
             match_entries: Vec::new(),
             match_event: None,
+            symbolic_match_entries: Vec::new(),
+            growing_expr: None,
+            incomplete_loops: Vec::new(),
+            bounded_for: None,
+            completed_bounded_for: Vec::new(),
         }
     }
 
@@ -129,6 +150,22 @@ impl HirAnalysisSemantics for TraceSemantics {
         state.with_incomplete()
     }
 
+    fn loop_fixpoint_incomplete(&mut self, body: HirBlockId, state: Self::Domain) -> Self::Domain {
+        self.incomplete_loops.push(body);
+        state.with_incomplete()
+    }
+
+    fn bounded_for_iterations(&self, stmt: HirStmtId) -> Option<usize> {
+        self.bounded_for
+            .filter(|(target, _)| *target == stmt)
+            .map(|(_, bound)| bound)
+    }
+
+    fn after_bounded_for(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
+        self.completed_bounded_for.push(stmt);
+        self.after_stmt(stmt, state)
+    }
+
     fn before_stmt(&mut self, stmt: HirStmtId, state: Self::Domain) -> Self::Domain {
         self.started_stmts.push(stmt);
         self.before_stmt_events
@@ -147,6 +184,11 @@ impl HirAnalysisSemantics for TraceSemantics {
 
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         self.started_exprs.push(expr);
+        self.expr_entry_events.push((expr, state.events.clone()));
+        let mut state = state;
+        if self.growing_expr == Some(expr) {
+            state.growth += 1;
+        }
         self.expr_events
             .get(&expr)
             .map(|event| state.clone().with_event(event))
@@ -176,6 +218,14 @@ impl HirAnalysisSemantics for TraceSemantics {
         assert!(self.completed_exprs.contains(&scrutinee));
         self.match_entries
             .push((expr, scrutinee, pattern, self.started_exprs.len()));
+        let has_scrutinee = state.events.contains("scrutinee");
+        self.symbolic_match_entries
+            .push((scrutinee, pattern, has_scrutinee));
+        let state = if has_scrutinee {
+            state.with_event("match-entry")
+        } else {
+            state
+        };
         match self.match_event {
             Some(event) => state.with_event(event),
             None => state,
@@ -190,6 +240,16 @@ impl HirAnalysisSemantics for TraceSemantics {
         let control = control.map_states(|state| self.after_expr(expr, state));
         if self.terminal_exprs.contains(&expr) {
             control.with_normal_processed(crate::intraprocedural::Control::error)
+        } else if let Some((target, event)) = self.terminal_after_event
+            && expr == target
+        {
+            control.with_normal_processed(|state| {
+                if state.events.contains(event) {
+                    crate::intraprocedural::Control::error(state)
+                } else {
+                    crate::intraprocedural::Control::normal(state)
+                }
+            })
         } else {
             control
         }
@@ -405,6 +465,52 @@ fn cancellation_checkpoint(
 }
 
 #[test]
+fn match_arm_binding_hook_receives_the_scrutinee_state_before_each_branch() {
+    let mut builder = HirBuilder::default();
+    let scrutinee = builder.literal();
+    let first = builder.literal();
+    let second = builder.literal();
+    let block = builder.block(Vec::new(), Some(second));
+    let patterns = [0, 1].map(|_| {
+        builder
+            .program
+            .pats
+            .alloc(etas_hir::HirPat::Wildcard { span: span() })
+    });
+    let matched = builder.expr(HirExpr::Match {
+        scrutinee,
+        arms: vec![
+            etas_hir::HirMatchArm {
+                pat: patterns[0],
+                body: etas_hir::HirMatchArmBody::Expr(first),
+                scope: ScopeId(0),
+                span: span(),
+            },
+            etas_hir::HirMatchArm {
+                pat: patterns[1],
+                body: etas_hir::HirMatchArmBody::Block(block),
+                scope: ScopeId(0),
+                span: span(),
+            },
+        ],
+        span: span(),
+    });
+    let root = builder.block(Vec::new(), Some(matched));
+    let semantics =
+        TraceSemantics::new(builder.finish_with_roots([root])).event(scrutinee, "scrutinee");
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let output = interpreter.expr(matched, EventDomain::initial());
+    assert!(output.events.contains("match-entry"));
+    assert_eq!(
+        interpreter.semantics().symbolic_match_entries,
+        [
+            (scrutinee, patterns[0], true),
+            (scrutinee, patterns[1], true)
+        ]
+    );
+}
+
+#[test]
 fn interruption_inside_one_block_stops_later_statements_and_completion_hooks() {
     let mut builder = HirBuilder::default();
     let expressions = (0..128).map(|_| builder.literal()).collect::<Vec<_>>();
@@ -562,6 +668,326 @@ fn visits_block_statements_and_final_expr_in_ordered_structure() {
     assert!(result.events.contains("stmt-expr"));
     assert!(result.events.contains("final-expr"));
     assert!(!result.incomplete);
+}
+
+#[test]
+fn loop_limits_are_visited_before_the_iterable_or_condition() {
+    for is_for in [true, false] {
+        let mut builder = HirBuilder::default();
+        let input = builder.literal();
+        let limit = builder.literal();
+        let body = builder.block(vec![], None);
+        let stmt = if is_for {
+            let pat = builder
+                .program
+                .pats
+                .alloc(etas_hir::HirPat::Wildcard { span: span() });
+            builder.stmt(HirStmt::For {
+                pat,
+                iter: input,
+                limits: vec![limit],
+                body,
+                span: span(),
+            })
+        } else {
+            builder.stmt(HirStmt::While {
+                cond: input,
+                limits: vec![limit],
+                body,
+                span: span(),
+            })
+        };
+        let root = builder.block(vec![stmt], None);
+        let semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+        let mut interpreter = HirAbstractInterpreter::new(semantics);
+        interpreter.block(root, EventDomain::initial());
+        let expressions = &interpreter.semantics().started_exprs;
+        assert_eq!(expressions.first(), Some(&limit));
+        assert!(expressions.len() >= 2);
+        assert!(expressions[1..].iter().all(|expr| *expr == input));
+    }
+}
+
+#[test]
+fn terminal_loop_limit_prevents_iterable_or_condition_evaluation() {
+    for is_for in [true, false] {
+        let mut builder = HirBuilder::default();
+        let input = builder.literal();
+        let limit = builder.literal();
+        let body = builder.block(vec![], None);
+        let stmt = if is_for {
+            let pat = builder
+                .program
+                .pats
+                .alloc(etas_hir::HirPat::Wildcard { span: span() });
+            builder.stmt(HirStmt::For {
+                pat,
+                iter: input,
+                limits: vec![limit],
+                body,
+                span: span(),
+            })
+        } else {
+            builder.stmt(HirStmt::While {
+                cond: input,
+                limits: vec![limit],
+                body,
+                span: span(),
+            })
+        };
+        let root = builder.block(vec![stmt], None);
+        let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+        semantics.terminal_exprs.insert(limit);
+        let mut interpreter = HirAbstractInterpreter::new(semantics);
+        let result = interpreter.block_control(root, EventDomain::initial());
+        assert!(result.normal_state().is_none());
+        assert!(result.error_state().is_some());
+        assert_eq!(interpreter.semantics().started_exprs, [limit]);
+    }
+}
+
+#[test]
+fn while_condition_is_revisited_after_the_body() {
+    let mut builder = HirBuilder::default();
+    let cond = builder.literal();
+    let limit = builder.literal();
+    let body_expr = builder.literal();
+    let body_stmt = builder.expr_stmt(body_expr);
+    let body = builder.block(vec![body_stmt], None);
+    let stmt = builder.stmt(HirStmt::While {
+        cond,
+        limits: vec![limit],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let semantics = TraceSemantics::new(builder.finish_with_roots([root])).event(body_expr, "body");
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    interpreter.block_control(root, EventDomain::initial());
+    let entries: Vec<_> = interpreter
+        .semantics()
+        .expr_entry_events
+        .iter()
+        .filter(|(expr, _)| *expr == cond)
+        .collect();
+    assert!(entries.len() >= 2, "{entries:?}");
+    assert!(!entries[0].1.contains("body"));
+    assert!(entries.iter().any(|(_, events)| events.contains("body")));
+}
+
+#[test]
+fn while_condition_preserves_initial_and_later_terminal_paths() {
+    let mut builder = HirBuilder::default();
+    let cond = builder.literal();
+    let body_expr = builder.literal();
+    let body_stmt = builder.expr_stmt(body_expr);
+    let body = builder.block(vec![body_stmt], None);
+    let stmt = builder.stmt(HirStmt::While {
+        cond,
+        limits: vec![],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let mut semantics =
+        TraceSemantics::new(builder.finish_with_roots([root])).event(body_expr, "body");
+    semantics.terminal_after_event = Some((cond, "body"));
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let result = interpreter.block_control(root, EventDomain::initial());
+    assert!(
+        result.normal_state().is_some(),
+        "zero iterations may complete"
+    );
+    assert!(
+        result.error_state().is_some(),
+        "a later condition may terminate"
+    );
+}
+
+#[test]
+fn terminal_initial_while_condition_does_not_visit_body() {
+    let mut builder = HirBuilder::default();
+    let cond = builder.literal();
+    let body_expr = builder.literal();
+    let body_stmt = builder.expr_stmt(body_expr);
+    let body = builder.block(vec![body_stmt], None);
+    let stmt = builder.stmt(HirStmt::While {
+        cond,
+        limits: vec![],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+    semantics.terminal_exprs.insert(cond);
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let result = interpreter.block_control(root, EventDomain::initial());
+    assert!(result.normal_state().is_none());
+    assert!(result.error_state().is_some());
+    assert!(!interpreter.semantics().started_exprs.contains(&body_expr));
+}
+
+#[test]
+fn nonconverging_while_condition_marks_analysis_incomplete() {
+    let mut builder = HirBuilder::default();
+    let cond = builder.literal();
+    let body = builder.block(vec![], None);
+    let stmt = builder.stmt(HirStmt::While {
+        cond,
+        limits: vec![],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+    semantics.growing_expr = Some(cond);
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let result = interpreter.block_control(root, EventDomain::initial());
+    assert!(result.normal_state().unwrap().incomplete);
+    assert_eq!(interpreter.semantics().incomplete_loops, [body]);
+}
+
+#[test]
+fn bounded_for_tracks_continue_and_each_iteration() {
+    let mut builder = HirBuilder::default();
+    let input = builder.literal();
+    let body_expr = builder.literal();
+    let expr_stmt = builder.expr_stmt(body_expr);
+    let continued = builder.stmt(HirStmt::Continue { span: span() });
+    let body = builder.block(vec![expr_stmt, continued], None);
+    let pat = builder
+        .program
+        .pats
+        .alloc(etas_hir::HirPat::Wildcard { span: span() });
+    let stmt = builder.stmt(HirStmt::For {
+        pat,
+        iter: input,
+        limits: vec![],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+    semantics.bounded_for = Some((stmt, 3));
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let result = interpreter.block_control(root, EventDomain::initial());
+    assert!(result.normal_state().is_some());
+    assert!(result.continue_state().is_none());
+    assert_eq!(
+        interpreter
+            .semantics()
+            .started_exprs
+            .iter()
+            .filter(|expr| **expr == body_expr)
+            .count(),
+        3
+    );
+    assert_eq!(interpreter.semantics().completed_bounded_for, [stmt]);
+}
+
+#[test]
+fn bounded_for_budget_exhaustion_does_not_claim_bounded_completion() {
+    let mut builder = HirBuilder::default();
+    let input = builder.literal();
+    let body_expr = builder.literal();
+    let body_stmt = builder.expr_stmt(body_expr);
+    let body = builder.block(vec![body_stmt], None);
+    let pat = builder
+        .program
+        .pats
+        .alloc(etas_hir::HirPat::Wildcard { span: span() });
+    let stmt = builder.stmt(HirStmt::For {
+        pat,
+        iter: input,
+        limits: vec![],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let mut semantics =
+        TraceSemantics::new(builder.finish_with_roots([root])).event(body_expr, "body");
+    semantics.bounded_for = Some((
+        stmt,
+        etas_utils::IterationLimit::default().max_iterations() + 1,
+    ));
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let result = interpreter.block_control(root, EventDomain::initial());
+    assert!(result.normal_state().unwrap().events.contains("body"));
+    assert!(interpreter.semantics().completed_bounded_for.is_empty());
+    assert!(interpreter.semantics().incomplete_loops.is_empty());
+}
+
+#[test]
+fn bounded_for_checks_cancellation_between_iterations() {
+    let mut builder = HirBuilder::default();
+    let input = builder.literal();
+    let body_expr = builder.literal();
+    let body_stmt = builder.expr_stmt(body_expr);
+    let body = builder.block(vec![body_stmt], None);
+    let pat = builder
+        .program
+        .pats
+        .alloc(etas_hir::HirPat::Wildcard { span: span() });
+    let stmt = builder.stmt(HirStmt::For {
+        pat,
+        iter: input,
+        limits: vec![],
+        body,
+        span: span(),
+    });
+    let root = builder.block(vec![stmt], None);
+    let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+    semantics.bounded_for = Some((stmt, 3));
+    semantics.cancel_after_expr = Some((body_expr, signal.clone()));
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let result = interpreter.try_block_control(root, EventDomain::initial(), &|| {
+        cancellation_checkpoint(&signal)
+    });
+    assert!(result.is_err());
+    assert!(interpreter.semantics().completed_bounded_for.is_empty());
+}
+
+#[test]
+fn bounded_for_propagates_return_and_consumes_break() {
+    for returning in [true, false] {
+        let mut builder = HirBuilder::default();
+        let input = builder.literal();
+        let body_stmt = if returning {
+            builder.return_stmt(None)
+        } else {
+            builder.stmt(HirStmt::Break { span: span() })
+        };
+        let body = builder.block(vec![body_stmt], None);
+        let pat = builder
+            .program
+            .pats
+            .alloc(etas_hir::HirPat::Wildcard { span: span() });
+        let stmt = builder.stmt(HirStmt::For {
+            pat,
+            iter: input,
+            limits: vec![],
+            body,
+            span: span(),
+        });
+        let root = builder.block(vec![stmt], None);
+        let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+        semantics.bounded_for = Some((stmt, 3));
+        let mut interpreter = HirAbstractInterpreter::new(semantics);
+        let result = interpreter.block_control(root, EventDomain::initial());
+        assert!(result.normal_state().is_some()); // The iterable may be empty.
+        assert_eq!(result.return_state().is_some(), returning);
+        assert!(result.break_state().is_none());
+        assert_eq!(
+            interpreter
+                .semantics()
+                .started_stmts
+                .iter()
+                .filter(|id| **id == body_stmt)
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]
@@ -761,6 +1187,39 @@ fn solves_loop_body_to_fixpoint() {
 
     assert!(result.events.contains("loop-body"));
     assert!(!result.incomplete);
+}
+
+#[test]
+fn loop_iteration_limit_marks_nonconverged_facts_incomplete() {
+    let mut builder = HirBuilder::default();
+    let tick = builder.literal();
+    let condition = builder.literal();
+    let returned = builder.return_stmt(None);
+    let then_block = builder.block(vec![returned], None);
+    let else_block = builder.block(Vec::new(), None);
+    let branch = builder.expr(HirExpr::If {
+        cond: condition,
+        then_block,
+        else_branch: Some(HirElseBranch::Block(else_block)),
+        span: span(),
+    });
+    let branch = builder.stmt(HirStmt::If(branch));
+    let tick = builder.expr_stmt(tick);
+    let loop_body = builder.block(vec![tick, branch], None);
+    let retry = builder.retry_stmt(loop_body);
+    let root = builder.block(vec![retry], None);
+    let mut semantics = TraceSemantics::new(builder.finish_with_roots([root]));
+    semantics.growing_expr = Some(condition);
+
+    let mut interpreter = HirAbstractInterpreter::new(semantics);
+    let control = interpreter.block_control(root, EventDomain::initial());
+
+    let normal = control.normal_state().expect("normal loop exit");
+    let returned = control.return_state().expect("return from loop");
+    assert!(normal.growth >= etas_utils::IterationLimit::DEFAULT.max_iterations());
+    assert!(normal.incomplete, "normal facts must be incomplete");
+    assert!(returned.incomplete, "return facts must be incomplete");
+    assert_eq!(interpreter.semantics().incomplete_loops, vec![loop_body]);
 }
 
 #[test]

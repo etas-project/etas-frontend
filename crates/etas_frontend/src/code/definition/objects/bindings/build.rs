@@ -52,6 +52,17 @@ pub(super) fn build(
                         })
                 })
                 .transpose()?;
+        if matches!(fact.target, CheckedReflectionTarget::CallableValue { .. }) {
+            bindings.insert(
+                *expr,
+                Binding {
+                    access,
+                    candidate_agent: None,
+                    target: SourceTarget::CallableValue,
+                },
+            );
+            continue;
+        }
         let candidate_agent = match fact.target {
             CheckedReflectionTarget::AgentValue { component, .. } => {
                 let symbol = candidate
@@ -95,6 +106,7 @@ pub(super) fn build(
                         || original.snapshot != external.snapshot
                         || original.callables != external.callables
                         || original.bodies != external.bodies
+                        || original.method_snapshots != external.method_snapshots
                     {
                         return Err(invalid(
                             "external reflected agent changed its frozen definition",
@@ -155,6 +167,7 @@ pub(super) fn build(
                     if original.canonical != external.canonical
                         || original.graph != external.graph
                         || original.body != external.body
+                        || original.snapshot != external.snapshot
                         || selected_header != external.header
                     {
                         return Err(invalid(
@@ -166,11 +179,12 @@ pub(super) fn build(
                         Binding {
                             access,
                             candidate_agent,
-                            target: SourceTarget::ExternalCallable {
-                                header: header.clone(),
-                                canonical: original.canonical.clone(),
-                                graph: original.graph.clone(),
-                            },
+                            target: SourceTarget::ExternalCallable(Box::new(
+                                super::super::super::external::ExternalCallable {
+                                    header: header.clone(),
+                                    ..original.clone()
+                                },
+                            )),
                         },
                     );
                     continue;
@@ -204,9 +218,23 @@ pub(super) fn build(
             },
         );
     }
+    let application_program = candidate.frozen_application_program();
+    let source_applications = if Arc::ptr_eq(application_program, source.catalog.checked_program())
+    {
+        source.clone()
+    } else {
+        let origins = candidate.frozen().origins_for(application_program)?;
+        let catalog = Arc::new(DefinitionCatalog::build(
+            application_program.clone(),
+            &origins,
+            candidate.descriptor_limits,
+        )?);
+        Arc::new(source.with_catalog(catalog))
+    };
     Ok(FrozenReflectionBindings {
         program: candidate.program().clone(),
         source,
+        source_applications,
         bindings,
     })
 }

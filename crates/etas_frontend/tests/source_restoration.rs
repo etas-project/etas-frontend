@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use etas_code::{
     CodeFingerprint, PackageKey,
     definition::{
-        AgentSourceBundle, AnalysisUnavailableReason, CodeDefinitionOperations, SourceBundleError,
-        SourceBundleLimits,
+        AnalysisUnavailableReason, CodeDefinitionOperations, DefinitionSourceBundle,
+        SourceBundleError, SourceBundleLimits,
     },
     syntax::CodeSyntaxOperations,
 };
@@ -101,7 +101,7 @@ fn source_bundle_restores_exact_revision_as_unchecked_data_in_a_fresh_backend() 
     let bytes = serde_json::to_vec(&saved).unwrap();
     drop((store, original, first, second, checked, candidate));
 
-    let saved: AgentSourceBundle = serde_json::from_slice(&bytes).unwrap();
+    let saved: DefinitionSourceBundle = serde_json::from_slice(&bytes).unwrap();
     let (store, expression) = prepare_with_id(SOURCE, true, Some(etas_core::SourceId(73)));
     let target = store.reflect_agent(expression).unwrap();
     let restored = store
@@ -282,6 +282,67 @@ fn restoration_preserves_block_expression_and_trailing_handler_source_forms() {
             .compile_body_overlay(fresh.body_overlay(&restored).unwrap())
             .unwrap();
     }
+}
+
+#[test]
+fn cancellation_during_restored_method_snapshots_preserves_the_prior_draft() {
+    struct Checkpoints {
+        count: std::sync::atomic::AtomicUsize,
+        cancel_at: Option<usize>,
+    }
+    impl etas_utils::PipelineExecutionControl for Checkpoints {
+        fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+            let index = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.cancel_at == Some(index) {
+                return Err(etas_utils::PipelineInterruption {
+                    kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                    reason: "cancel restored method snapshots".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+    let source = r#"
+module app;
+agent Worker() -> i32 { return 1; }
+impl agent Worker {
+    flow one() -> i32 { return 1; }
+    flow two() -> i32 { return 2; }
+    flow three() -> i32 { return 3; }
+}
+flow main() -> unit { let definition = ^Worker; return; }
+"#;
+    let (store, expression) = prepare(source, true);
+    let target = store.reflect_agent(expression).unwrap();
+    let saved = store.save_source(&target, Default::default()).unwrap();
+    let cached = store
+        .restore_source_draft(&target, &saved, Default::default())
+        .unwrap();
+    let counter = Checkpoints {
+        count: Default::default(),
+        cancel_at: None,
+    };
+    let measured = store
+        .restore_source_draft_controlled(&target, &saved, Default::default(), &counter)
+        .unwrap();
+    let total = counter.count.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(total >= 4);
+    drop(measured);
+    let retained = store.retained_bytes().unwrap();
+    let control = Checkpoints {
+        count: Default::default(),
+        cancel_at: Some(total - 2),
+    };
+    let result =
+        store.restore_source_draft_controlled(&target, &saved, Default::default(), &control);
+    assert!(matches!(
+        result,
+        Err(NativeDefinitionError::Projection(etas_frontend::code::descriptor::ProjectionError::Syntax(
+            etas_code::syntax::SyntaxOperationError::Interrupted(error)
+        ))) if error.kind == etas_utils::PipelineInterruptionKind::Cancelled
+    ));
+    assert_eq!(store.retained_bytes().unwrap(), retained);
+    assert!(store.resolve(&cached).is_ok());
 }
 
 #[test]

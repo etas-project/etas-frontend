@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -24,6 +24,7 @@ impl From<etas_types::TypeSubstitutionError> for InstantiationError {
                 Self::Interrupted(interruption)
             }
             etas_types::TypeSubstitutionError::ExpansionDepth(_)
+            | etas_types::TypeSubstitutionError::WorkLimit { .. }
             | etas_types::TypeSubstitutionError::RepresentationLimit(_) => {
                 Self::Interrupted(PipelineInterruption {
                     kind: PipelineInterruptionKind::ResourceLimit,
@@ -63,13 +64,41 @@ pub(crate) fn prepare(
     seeds: &[NativeInstantiation],
     interner: Option<TypeInterner>,
 ) -> Result<PreparedInstantiations, InstantiationError> {
-    let PreparationInput {
-        hir,
-        types,
-        effects,
-        limits,
-        control,
-    } = input;
+    let targets = input
+        .effects
+        .native_call_targets
+        .iter()
+        .filter_map(|(site, targets)| {
+            let items = targets
+                .iter()
+                .filter_map(|target| match target {
+                    etas_effects::EffectUnit::Item(item) => Some(*item),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            (!items.is_empty()).then_some((*site, items))
+        })
+        .collect();
+    prepare_from_targets(
+        input.hir,
+        input.types,
+        &targets,
+        input.limits,
+        input.control,
+        seeds,
+        interner,
+    )
+}
+
+pub(crate) fn prepare_from_targets(
+    hir: &HirRevision,
+    types: &TypeOutput,
+    targets: &HashMap<HirExprId, BTreeSet<HirItemId>>,
+    limits: etas_code::descriptor::DescriptorLimits,
+    control: Option<&dyn PipelineExecutionControl>,
+    seeds: &[NativeInstantiation],
+    interner: Option<TypeInterner>,
+) -> Result<PreparedInstantiations, InstantiationError> {
     if types.facts.generic_instantiations.is_empty() && seeds.is_empty() {
         return Ok(PreparedInstantiations {
             store: types.store.clone(),
@@ -79,15 +108,7 @@ pub(crate) fn prepare(
     let index = hir.index();
     let mut calls = BTreeMap::<HirItemId, Vec<HirExprId>>::new();
     for call in types.facts.generic_instantiations.keys() {
-        if !effects
-            .native_call_targets
-            .get(call)
-            .is_some_and(|targets| {
-                targets
-                    .iter()
-                    .any(|target| matches!(target, etas_effects::EffectUnit::Item(_)))
-            })
-        {
+        if targets.get(call).is_none_or(BTreeSet::is_empty) {
             continue;
         }
         let owner = index
@@ -113,12 +134,12 @@ pub(crate) fn prepare(
             .ok_or("checked expression type has no body owner".to_owned())?;
         roots.entry(*owner).or_default().push(*ty);
     }
-    for (expr, method) in &types.facts.std_method_calls {
+    for (expr, method) in &types.facts.std_intrinsic_calls {
         let owner = index
             .expr_item
             .get(expr)
             .ok_or("checked intrinsic has no body owner".to_owned())?;
-        roots.entry(*owner).or_default().push(method.signature);
+        roots.entry(*owner).or_default().push(method.callable_type);
     }
     for roots in roots.values_mut() {
         roots.sort();
@@ -172,14 +193,30 @@ pub(crate) fn prepare(
                     .with_effect_arguments(&row_bindings)
                     .with_expansion_depth(limits.max_expansion_depth)
                     .with_execution_control(control);
+            let mut callable_type = None;
             if let Some(signature) = template {
-                for ty in signature.params.iter().copied().chain([signature.output]) {
-                    materialized.push(
-                        substitution
-                            .substitute(ty)
-                            .map_err(InstantiationError::from)?,
-                    );
-                }
+                let params = signature
+                    .params
+                    .iter()
+                    .map(|ty| substitution.substitute(*ty))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(InstantiationError::from)?;
+                let output = substitution
+                    .substitute(signature.output)
+                    .map_err(InstantiationError::from)?;
+                let effects = signature
+                    .effects
+                    .clone()
+                    .map(|row| substitution.substitute_effect_row(row))
+                    .transpose()
+                    .map_err(InstantiationError::from)?;
+                materialized.extend(params.iter().copied());
+                materialized.push(output);
+                callable_type = Some(etas_types::FlowType {
+                    input: params,
+                    output,
+                    effects,
+                });
                 for row in signature.effects.iter().chain(&signature.requested_actions) {
                     let row = substitution
                         .substitute_effect_row(row.clone())
@@ -204,10 +241,7 @@ pub(crate) fn prepare(
             }
             for call in calls.get(&instance.owner).into_iter().flatten() {
                 let fact = &types.facts.generic_instantiations[call];
-                for target in effects.native_call_targets.get(call).into_iter().flatten() {
-                    let etas_effects::EffectUnit::Item(item) = target else {
-                        continue;
-                    };
+                for item in targets.get(call).into_iter().flatten() {
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
                     let method_fact = match hir.exprs.get(*call) {
@@ -268,9 +302,12 @@ pub(crate) fn prepare(
                 }
             }
             if !instance.arguments.is_empty() {
-                plan.instances.push(instance);
+                plan.push(instance);
             }
             drop(substitution);
+            if let Some(callable) = callable_type {
+                materialized.push(interner.intern(etas_types::Type::Function(callable)));
+            }
             let names = HashMap::new();
             let mut validation = TypeSubstitutionEngine::existing(interner.store(), &names)
                 .with_expansion_depth(limits.max_expansion_depth)

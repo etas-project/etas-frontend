@@ -105,7 +105,7 @@ pub fn collect_method_call<E>(
                 type_generic_args.is_empty(),
             );
             match candidate {
-                Some(candidate) => (Some(candidate.ty), candidate.generic_params),
+                Some(candidate) => (Some(candidate.ty), candidate.signature.generic_params),
                 None => (None, Vec::new()),
             }
         } else {
@@ -258,7 +258,7 @@ fn common_candidate_inputs<E>(
     }
     let params = expected?;
     let candidate = candidates.first()?;
-    let needs_instantiation = candidate.generic_params.iter().any(|param| {
+    let needs_instantiation = candidate.signature.generic_params.iter().any(|param| {
         param.kind == crate::CallableGenericParamKind::Type
             && matches!(
                 ctx.ctx.interner.store().get(param.subject),
@@ -274,7 +274,7 @@ fn common_candidate_inputs<E>(
     super::callable_instantiation::instantiate_signature(
         ctx,
         crate::CallableSignature {
-            generic_params: candidate.generic_params.clone(),
+            generic_params: candidate.signature.generic_params.clone(),
             params,
             output,
             effects: None,

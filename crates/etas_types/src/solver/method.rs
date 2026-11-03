@@ -109,7 +109,7 @@ pub(super) fn solve<E>(
                         rigid_type_parameters: input.rigid_type_parameters,
                         call: Some(*expr),
                         callee: callable,
-                        generic_params: &candidate.generic_params,
+                        generic_params: &candidate.signature.generic_params,
                         explicit_generic_args: generic_args,
                         arg_exprs: arguments,
                         args: &actual[1..],
@@ -174,7 +174,7 @@ pub(super) fn solve<E>(
                 rigid_type_parameters: input.rigid_type_parameters,
                 call: Some(*expr),
                 callee: candidate.ty,
-                generic_params: &candidate.generic_params,
+                generic_params: &candidate.signature.generic_params,
                 explicit_generic_args: generic_args,
                 arg_exprs,
                 args: &args,
@@ -187,15 +187,18 @@ pub(super) fn solve<E>(
             if let crate::CallableCandidateOperation::StdIntrinsic {
                 qualified_path,
                 intrinsic,
+                overload,
                 ..
             } = &candidate.operation
             {
-                candidate_report.std_method_calls.insert(
+                candidate_report.std_intrinsic_calls.insert(
                     *expr,
-                    crate::facts::CheckedStdMethodFact {
+                    crate::facts::CheckedStdCallFact {
                         qualified_path: qualified_path.clone(),
                         intrinsic: *intrinsic,
-                        signature: candidate.ty,
+                        overload: *overload,
+                        callable_type: candidate.ty,
+                        signature: candidate.signature.clone(),
                     },
                 );
             }

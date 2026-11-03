@@ -34,4 +34,5 @@ pub struct RuntimeSourceReason {
 pub enum RuntimeSourceReasonKind {
     ExternalRuntimeItem,
     ExternalRuntimeModule,
+    ExternalSpecImplementation,
 }

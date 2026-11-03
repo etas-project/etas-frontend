@@ -57,14 +57,14 @@ pub fn collect_spec_method_call<E>(
     let Some(spec_arg_tys) = lower_spec_args(ctx, spec_args, span) else {
         return Ok(expected.unwrap_or_else(|| ctx.primitive(crate::PrimitiveType::Never)));
     };
-    if spec_arg_tys.len() != signature.params.len() {
+    if spec_arg_tys.len() != signature.param_names.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: TypeDiagnosticCode::ArityMismatch,
             span,
             message: format!(
                 "spec `{}` expects {} type argument(s), got {}",
                 signature.name,
-                signature.params.len(),
+                signature.param_names.len(),
                 spec_arg_tys.len()
             ),
         });

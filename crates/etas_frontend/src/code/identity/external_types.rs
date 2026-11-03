@@ -5,6 +5,89 @@ use super::{BoundDeclaration, DefinitionIdentityIndex, GenericDeclaration, TypeD
 use crate::code::descriptor::{DescriptorInput, ProjectionError};
 
 impl DefinitionIdentityIndex {
+    pub(super) fn bind_foreign_types(
+        &mut self,
+        checked: DescriptorInput<'_>,
+    ) -> Result<(), ProjectionError> {
+        let Some(bindings) = checked.foreign_type_bindings else {
+            if !checked.types.canonical_specs.signatures.is_empty()
+                || !checked.types.canonical_specs.impls.is_empty()
+            {
+                return Err(ProjectionError::MissingIdentity(
+                    "canonical spec origin proof".into(),
+                ));
+            }
+            return Ok(());
+        };
+        for identity in checked.types.canonical_specs.signatures.keys() {
+            if !bindings.verifies_spec(identity) {
+                return Err(ProjectionError::MissingIdentity(
+                    "canonical spec origin proof".into(),
+                ));
+            }
+        }
+        for implementation in &checked.types.canonical_specs.impls {
+            if !checked
+                .types
+                .canonical_specs
+                .signatures
+                .contains_key(&implementation.spec)
+                || !bindings.verifies_spec(&implementation.spec)
+            {
+                return Err(ProjectionError::MissingIdentity(
+                    "canonical spec implementation proof".into(),
+                ));
+            }
+        }
+        for (ty, identity, source, catalog) in bindings.iter() {
+            if catalog.native_type_declaration(source) != Some(identity)
+                || checked.type_store.nominal_identity(ty) != Some(identity)
+            {
+                return Err(ProjectionError::MissingIdentity(format!(
+                    "foreign checked type {ty:?}"
+                )));
+            }
+            if let Some(existing) = self.types.get(&ty) {
+                if existing.identity != *identity {
+                    return Err(ProjectionError::Invalid(
+                        "foreign type conflicts with a checked declaration".into(),
+                    ));
+                }
+                continue;
+            }
+            if !matches!(
+                checked.type_store.get(ty),
+                Some(Type::Nominal(_) | Type::Enum(_))
+            ) {
+                return Err(ProjectionError::MissingType(ty));
+            }
+            let parameters = checked.types.type_generics.get(&ty).ok_or_else(|| {
+                ProjectionError::MissingIdentity(format!("foreign type parameters {identity:?}"))
+            })?;
+            let declaration = TypeDeclaration {
+                identity: identity.clone(),
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| GenericDeclaration {
+                        name: parameter.name.clone(),
+                        effect: parameter.kind == etas_types::CallableGenericParamKind::Effect,
+                        bounds: parameter
+                            .bounds
+                            .iter()
+                            .cloned()
+                            .map(BoundDeclaration::Checked)
+                            .collect(),
+                    })
+                    .collect(),
+                alias: None,
+                checked_type: Some(ty),
+                standard: None,
+            };
+            self.types.insert(ty, declaration);
+        }
+        Ok(())
+    }
+
     pub(super) fn bind_external_types(
         &mut self,
         checked: DescriptorInput<'_>,
