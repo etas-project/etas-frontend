@@ -195,7 +195,7 @@ fn analyzed_trace_projection_rejects_changed_imported_spec_snapshot() {
     assert_eq!(
         symbolic
             .template
-            .instantiate(&BTreeMap::new(), &BTreeMap::new(), template_limits, limits)
+            .instantiate(&BTreeMap::new(), &etas_code::residual::type_binding::TypeArgumentDescriptors::default(), template_limits, limits)
             .unwrap()
             .template_id(),
         concrete.monitor().template_id()

@@ -6,7 +6,7 @@ use etas_code::{
     descriptor::GenericParameterKind,
     residual::{
         identity::{GenericArgumentIdentity, GenericParameterId},
-        type_template::StaticTypeTemplate,
+        type_binding::TypeArgumentDescriptors,
     },
 };
 use etas_types::CallableGenericArg;
@@ -22,7 +22,7 @@ pub struct CheckedResidualApplication {
     pub type_bindings: Vec<(String, etas_types::TypeId)>,
     pub effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     pub bindings: BTreeMap<GenericParameterId, GenericArgumentIdentity>,
-    pub structures: BTreeMap<GenericParameterId, StaticTypeTemplate>,
+    pub type_descriptors: TypeArgumentDescriptors,
     pub actions: Vec<CanonicalEffect>,
 }
 
@@ -90,9 +90,9 @@ impl CheckedResidualPlans {
                 .finish()
                 .map_err(|error| fail(error.to_string()))?;
             let mut bindings = BTreeMap::new();
-            let mut structures = BTreeMap::new();
+            let mut type_roots = BTreeMap::new();
             let mut parts = Vec::new();
-            for (position, (argument, root)) in arguments.iter().zip(roots).enumerate() {
+            for (position, root) in roots.into_iter().enumerate() {
                 let (kind, identity) = match root {
                     etas_code::descriptor::DescriptorNode::Type(ty) => (
                         GenericParameterKind::Type,
@@ -122,19 +122,12 @@ impl CheckedResidualPlans {
                 parts.push(id.fingerprint().as_bytes().to_vec());
                 parts.push(fingerprint.as_bytes().to_vec());
                 bindings.insert(id, identity);
-                if let CallableGenericArg::Type(ty) = argument {
-                    if let Some(structure) = etas_types::ty::symbolic_structural_type_template(
-                        &program.type_store,
-                        *ty,
-                        &BTreeMap::new(),
-                        Default::default(),
-                    )
-                    .map_err(|error| fail(format!("type binding projection: {error:?}")))?
-                    {
-                        structures.insert(id, structure);
-                    }
+                if let etas_code::descriptor::DescriptorNode::Type(root) = root {
+                    type_roots.insert(id, root);
                 }
             }
+            let type_descriptors = TypeArgumentDescriptors::new(graph, type_roots, self.limits)
+                .map_err(|error| fail(error.to_string()))?;
             let behavior = application
                 .as_ref()
                 .map(|application| {
@@ -187,7 +180,7 @@ impl CheckedResidualPlans {
                 type_bindings,
                 effect_row_bindings,
                 bindings,
-                structures,
+                type_descriptors,
                 actions,
             });
         }

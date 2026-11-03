@@ -1700,7 +1700,7 @@ mod analyzed_method_tests {
                         parameter,
                         etas_code::residual::identity::GenericArgumentIdentity::Type(concrete),
                     )]),
-                    &BTreeMap::new(),
+                    &etas_code::residual::type_binding::TypeArgumentDescriptors::default(),
                     template_limits,
                 )
                 .unwrap();
@@ -1746,7 +1746,7 @@ mod analyzed_method_tests {
                 matches!(target.target(), etas_code::descriptor::EffectTargetInfo::Action { name, .. } if name == "b")
             );
             assert!(matches!(
-                symbolic_trace.template.instantiate(&BTreeMap::new(), &BTreeMap::new(), template_limits, limits),
+                symbolic_trace.template.instantiate(&BTreeMap::new(), &etas_code::residual::type_binding::TypeArgumentDescriptors::default(), template_limits, limits),
                 Err(etas_code::residual::monitor::SymbolicTraceError::Pattern {
                     error: etas_code::residual::pattern::ActionPatternTemplateError::MissingBinding(id), ..
                 }) if id == parameter
@@ -1821,7 +1821,7 @@ mod analyzed_method_tests {
                         parameter,
                         etas_code::residual::identity::GenericArgumentIdentity::Type(concrete),
                     )]),
-                    &BTreeMap::new(),
+                    &etas_code::residual::type_binding::TypeArgumentDescriptors::default(),
                     template_limits,
                     limits,
                 )
