@@ -36,6 +36,7 @@ pub fn collect_expr<E>(
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
         return Ok(ty);
     }
+    collect_method_receivers(ctx, expr)?;
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Reflect(reflection) => {
@@ -454,6 +455,34 @@ pub fn collect_expr<E>(
         }
     };
     Ok(ctx.record_expr_type(expr, ty))
+}
+
+fn collect_method_receivers<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    expr: etas_hir::HirExprId,
+) -> Result<(), E> {
+    let mut cursor = expr;
+    let mut receivers = Vec::new();
+    while let HirExpr::MethodCall { receiver, .. } | HirExpr::SpecMethodCall { receiver, .. } =
+        &ctx.ctx.hir.exprs[cursor]
+    {
+        ctx.checkpoint()?;
+        if ctx.state.provisional.expr_types.contains_key(receiver)
+            || !matches!(
+                ctx.ctx.hir.exprs[*receiver],
+                HirExpr::MethodCall { .. } | HirExpr::SpecMethodCall { .. }
+            )
+        {
+            break;
+        }
+        cursor = *receiver;
+        receivers.push(cursor);
+    }
+    // Inner results become provisional constraints, not recursive Rust frames.
+    for receiver in receivers.into_iter().rev() {
+        collect_expr(ctx, receiver, None)?;
+    }
+    Ok(())
 }
 
 pub fn collect_if_statement<E>(

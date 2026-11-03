@@ -98,3 +98,16 @@ fn spec_parameter_labels_survive_bound_and_implementation_selection() {
         assert_eq!(fact.argument_slots, [1]);
     }
 }
+
+#[test]
+fn long_source_method_chains_are_collected_without_native_recursion() {
+    let source = format!(
+        "module main; type Counter = {{ value: i32 }}; \
+         impl Counter {{ flow copy(self) -> Counter {{ return self; }} }} \
+         flow main() -> i32 {{ return Counter {{ value = 4 }}{}.value; }}",
+        ".copy()".repeat(256)
+    );
+    let output = check(&source);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 256);
+}
