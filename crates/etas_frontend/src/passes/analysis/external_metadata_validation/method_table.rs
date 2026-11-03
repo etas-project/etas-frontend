@@ -3,6 +3,17 @@ use super::*;
 pub(super) fn validate(
     environment: &ProjectEnvironmentInput,
 ) -> Result<(), ExternalEnvironmentValidationError> {
+    let mut subject_paths = std::collections::BTreeMap::<_, BTreeSet<Vec<String>>>::new();
+    for binding in environment
+        .external_definition_origins
+        .iter()
+        .flat_map(|origin| &origin.origins.declarations)
+    {
+        subject_paths
+            .entry(&binding.definition)
+            .or_default()
+            .insert(binding.path().to_vec());
+    }
     for metadata in &environment.external_public_metadata {
         if metadata.methods.is_empty() {
             continue;
@@ -34,13 +45,10 @@ pub(super) fn validate(
                     "published method has an invalid or duplicate canonical owner",
                 ));
             }
-            let subject = environment
-                .external_definition_origins
-                .iter()
-                .flat_map(|origin| &origin.origins.declarations)
-                .find(|binding| &binding.definition == owner.subject())
+            let paths = subject_paths
+                .get(owner.subject())
                 .ok_or_else(|| fail("published method subject has no declaration origin"))?;
-            if subject.path() != method.self_type.path {
+            if !paths.contains(&method.self_type.path) {
                 return Err(fail(
                     "published method receiver disagrees with its canonical subject",
                 ));
