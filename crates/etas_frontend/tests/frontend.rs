@@ -8645,13 +8645,13 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
     ];
     environment.external_public_metadata[0].callable_spec_satisfactions =
         vec![ProjectExternalCallableSpecSatisfactionInput {
-            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
+            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             spec: vec!["dep".to_owned(), "api".to_owned(), "Pure".to_owned()],
             args: Vec::new(),
         }];
     environment.external_public_metadata[0].trace_spec_conformances =
         vec![ProjectExternalTraceSpecConformanceInput {
-            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
+            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                 spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
                 definition: test_external_spec_key("api", "Safe"),
@@ -8730,7 +8730,10 @@ flow main() -> unit {
             .types
             .external_callable_spec_satisfactions
             .iter()
-            .any(|fact| path_eq(&fact.item, &["dep", "api", "call"])
+            .any(|fact| fact
+                .item
+                .item_path()
+                .is_some_and(|path| path_eq(path, &["dep", "api", "call"]))
                 && path_eq(&fact.spec, &["dep", "api", "Pure"])),
         "external callable conformance metadata should be replayed as a path fact: {:#?}",
         checked.types.external_callable_spec_satisfactions
@@ -8743,7 +8746,10 @@ flow main() -> unit {
             .any(|fact| match &fact.target {
                 etas_types::ExternalTraceSpecConformanceTarget::Named { spec, .. } => {
                     fact.package == 0
-                        && path_eq(&fact.item, &["dep", "api", "call"])
+                        && fact
+                            .item
+                            .item_path()
+                            .is_some_and(|path| path_eq(path, &["dep", "api", "call"]))
                         && path_eq(spec, &["dep", "api", "Safe"])
                 }
                 etas_types::ExternalTraceSpecConformanceTarget::Inline => false,
@@ -8820,7 +8826,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].trace_spec_conformances =
         vec![ProjectExternalTraceSpecConformanceInput {
-            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
+            item: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()].into(),
             target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                 spec: vec!["dep".to_owned(), "api".to_owned(), "Safe".to_owned()],
                 definition: test_external_spec_key("api", "Safe"),
@@ -8907,7 +8913,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
             metadata
                 .trace_spec_conformances
                 .push(ProjectExternalTraceSpecConformanceInput {
-                    item: vec!["dep".into(), "api".into(), "call".into()],
+                    item: vec!["dep".into(), "api".into(), "call".into()].into(),
                     target: ProjectExternalTraceSpecConformanceTargetInput::Named {
                         spec: vec!["dep".into(), "api".into(), "Permitted".into()],
                         definition: test_external_spec_key("api", "Permitted"),
@@ -9467,10 +9473,10 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
             latent_flows: Vec::new(),
             action_trace: ProjectExternalActionTraceInput::Seq(vec![
                 ProjectExternalActionTraceInput::ParameterCall {
-                    parameter: "callback".to_owned(),
+                    parameter: "callback".into(),
                 },
                 ProjectExternalActionTraceInput::ParameterCall {
-                    parameter: "callback".to_owned(),
+                    parameter: "callback".into(),
                 },
             ]),
         });
@@ -9918,7 +9924,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
             handled_requested_actions: ProjectExternalEffectRowInput::default(),
             latent_flows: Vec::new(),
             action_trace: ProjectExternalActionTraceInput::ParameterCall {
-                parameter: "callback".to_owned(),
+                parameter: "callback".into(),
             },
         });
 
@@ -10753,7 +10759,7 @@ flow main() -> unit {
             .iter()
             .filter(|node| matches!(
                 node,
-                etas_package_metadata::ActionTrace::ParameterCall { parameter }
+                etas_package_metadata::ActionTrace::ParameterCall { parameter: etas_package_metadata::CallableRequestTarget::Parameter(parameter) }
                     if parameter == "f"
             ))
             .count(),
@@ -11336,7 +11342,9 @@ public flow main() -> unit ~ Safe {
             .trace_spec_conformances
             .iter()
             .any(|fact| {
-                fact.item == ["app", "main", "main"]
+                fact.item
+                    .item_path()
+                    .is_some_and(|path| path_eq(path, &["app", "main", "main"]))
                     && matches!(
                         &fact.target,
                         etas_package_metadata::TraceSpecConformanceTarget::Named { spec, definition, .. }
@@ -11430,7 +11438,9 @@ public flow main() -> unit ~ Pure<unit, unit> {
             .callable_spec_satisfactions
             .iter()
             .any(|fact| {
-                fact.item == ["app", "main", "main"]
+                fact.item
+                    .item_path()
+                    .is_some_and(|path| path_eq(path, &["app", "main", "main"]))
                     && fact.spec == ["app", "main", "Pure"]
                     && fact.args.len() == 2
             }),
@@ -12255,7 +12265,6 @@ fn frontend_replays_std_spec_evidence_without_consumer_import_aliases() {
                         spec: spec.clone(),
                         args: args.clone(),
                         methods: vec![],
-                        implementation_module: vec![],
                     },
                 );
             }

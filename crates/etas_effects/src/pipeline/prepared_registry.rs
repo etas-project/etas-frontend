@@ -172,6 +172,7 @@ mod tests {
         dependencies: Option<&'a DependencyEffectMetadata>,
     ) -> EffectPipelineInput<'a> {
         EffectPipelineInput {
+            external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
             trace_monitor_projector: None,

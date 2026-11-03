@@ -566,6 +566,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     for (_, target) in facts.external_type_aliases.values_mut() {
         *target = remapper.ty(*target);
     }
+    for method in facts.type_impl_methods.values_mut() {
+        method.self_type = remapper.ty(method.self_type);
+    }
     facts.type_generics = std::mem::take(&mut facts.type_generics)
         .into_iter()
         .map(|(ty, mut parameters)| {
@@ -699,6 +702,14 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             }
         }
     }
+    facts.known_std_types.file_read_limit_error = facts
+        .known_std_types
+        .file_read_limit_error
+        .map(|ty| remapper.ty(ty));
+    facts.known_std_types.filesystem_io_error = facts
+        .known_std_types
+        .filesystem_io_error
+        .map(|ty| remapper.ty(ty));
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
     for ty in facts.known_std_types.runtime_types.values_mut() {
         *ty = remapper.ty(*ty);
@@ -836,6 +847,13 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             *ty = remapper.ty(*ty);
         }
     }
+    for method in &mut facts.external_specs.methods {
+        method.self_type = remapper.ty(method.self_type);
+        for ty in &mut method.args {
+            *ty = remapper.ty(*ty);
+        }
+        remapper.callable(&mut method.signature);
+    }
     for implementation in &mut facts.spec_impls {
         remapper.spec_impl(implementation);
     }
@@ -931,6 +949,7 @@ mod tests {
                 param_names: vec![],
                 generic_params: vec![],
                 methods: vec![SpecMethodFact {
+                    receiver_param: None,
                     identity: SpecMethodIdentity::External {
                         package: 1,
                         path: vec!["dep".into(), "Show".into(), "show".into()],

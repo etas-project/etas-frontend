@@ -63,7 +63,36 @@ pub(crate) fn lower_external_action_trace(
         }
     }
     let mut remaining = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
-    lower(trace, &index, span, &resolve, 0, &mut remaining)
+    lower(
+        trace,
+        span,
+        &resolve,
+        &|target| match target {
+            crate::ExternalCallableRequestTarget::Parameter(name) => {
+                index.get(name.as_str()).copied()
+            }
+            crate::ExternalCallableRequestTarget::SpecMethod(_) => None,
+        },
+        0,
+        &mut remaining,
+    )
+}
+
+pub(crate) fn lower_external_action_trace_with_targets(
+    trace: &ExternalActionTraceMetadata,
+    span: Span,
+    resolve: impl Fn(&ExternalEffectMetadata) -> Option<Effect>,
+    target: impl Fn(&crate::ExternalCallableRequestTarget) -> Option<ParameterCallTarget>,
+) -> Option<ActionTraceDomain> {
+    let mut remaining = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
+    lower(trace, span, &resolve, &target, 0, &mut remaining)
+}
+
+fn request_label(target: &crate::ExternalCallableRequestTarget) -> &str {
+    match target {
+        crate::ExternalCallableRequestTarget::Parameter(name) => name,
+        crate::ExternalCallableRequestTarget::SpecMethod(method) => &method.method,
+    }
 }
 
 fn charge(remaining: &mut usize, amount: usize) -> Option<()> {
@@ -73,9 +102,9 @@ fn charge(remaining: &mut usize, amount: usize) -> Option<()> {
 
 fn lower(
     trace: &ExternalActionTraceMetadata,
-    parameters: &BTreeMap<&str, ParameterCallTarget>,
     span: Span,
     resolve: &impl Fn(&ExternalEffectMetadata) -> Option<Effect>,
+    target: &impl Fn(&crate::ExternalCallableRequestTarget) -> Option<ParameterCallTarget>,
     depth: usize,
     remaining: &mut usize,
 ) -> Option<ActionTraceDomain> {
@@ -98,8 +127,8 @@ fn lower(
         }
         ExternalActionTraceMetadata::ParameterCall { parameter } => {
             ActionTraceDomain::ParameterCall {
-                target: *parameters.get(parameter.as_str())?,
-                parameter: parameter.clone(),
+                target: target(parameter)?,
+                parameter: request_label(parameter).to_owned(),
                 span,
             }
         }
@@ -113,7 +142,7 @@ fn lower(
             }
             let children = children
                 .iter()
-                .map(|child| lower(child, parameters, span, resolve, depth + 1, remaining))
+                .map(|child| lower(child, span, resolve, target, depth + 1, remaining))
                 .collect::<Option<Vec<_>>>()?;
             if matches!(trace, ExternalActionTraceMetadata::Seq(_)) {
                 ActionTraceDomain::Seq(children)
@@ -123,9 +152,9 @@ fn lower(
         }
         ExternalActionTraceMetadata::Repeat(child) => ActionTraceDomain::Repeat(Box::new(lower(
             child,
-            parameters,
             span,
             resolve,
+            target,
             depth + 1,
             remaining,
         )?)),
@@ -154,8 +183,8 @@ fn lower(
                     .iter()
                     .map(|parameter| {
                         Some(ParameterCallRef {
-                            target: *parameters.get(parameter.as_str())?,
-                            parameter: parameter.clone(),
+                            target: target(parameter)?,
+                            parameter: request_label(parameter).to_owned(),
                             span,
                         })
                     })

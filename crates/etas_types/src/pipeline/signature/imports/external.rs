@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 mod enums;
+mod implementation_methods;
 mod specs;
 #[cfg(test)]
 mod tests;
@@ -392,7 +393,18 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 .args
                 .iter()
                 .map(|arg| lower_external_type(ctx, span, arg))
-                .collect();
+                .collect::<Vec<_>>();
+            if !implementation_methods::apply(
+                ctx,
+                metadata.package,
+                package_span,
+                self_type,
+                &spec,
+                &args,
+                &implementation.methods,
+            ) {
+                continue;
+            }
             let spec_symbol = match spec {
                 crate::CheckedSpecRef::Source(symbol) => symbol,
                 crate::CheckedSpecRef::Std(path) => {
@@ -490,7 +502,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 });
         }
         for fact in &metadata.callable_spec_satisfactions {
-            let span = binding_span(input, metadata.package, &fact.item).unwrap_or(package_span);
+            let span = contract_span(input, metadata.package, &fact.item, package_span);
             let args = fact
                 .args
                 .iter()
@@ -502,11 +514,11 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                     item: fact.item.clone(),
                     spec: fact.spec.clone(),
                     args,
-                    span: binding_span(input, metadata.package, &fact.item).unwrap_or(package_span),
+                    span,
                 });
         }
         for fact in &metadata.trace_spec_conformances {
-            let span = binding_span(input, metadata.package, &fact.item).unwrap_or(package_span);
+            let span = contract_span(input, metadata.package, &fact.item, package_span);
             let target = match &fact.target {
                 crate::ExternalTraceSpecConformanceTargetInput::Inline => {
                     ExternalTraceSpecConformanceTarget::Inline
@@ -529,10 +541,24 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                     package: metadata.package.0,
                     item: fact.item.clone(),
                     target,
-                    span: binding_span(input, metadata.package, &fact.item).unwrap_or(package_span),
+                    span,
                 },
             );
         }
+    }
+}
+
+fn contract_span(
+    input: &ExternalSignatureInput,
+    package: ExternalPackageKey,
+    target: &etas_package_metadata::CallableContractTarget,
+    package_span: etas_core::Span,
+) -> etas_core::Span {
+    match target {
+        etas_package_metadata::CallableContractTarget::Item(path) => {
+            binding_span(input, package, path).unwrap_or(package_span)
+        }
+        etas_package_metadata::CallableContractTarget::Method(_) => package_span,
     }
 }
 
@@ -731,6 +757,7 @@ fn lower_external_spec_methods(
                 path: method.path.clone(),
             },
             name: method.name.clone(),
+            receiver_param: method.receiver_param,
             signature: callable,
         });
     }

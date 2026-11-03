@@ -670,6 +670,7 @@ pub struct ProjectExternalSpecMethodInput {
     pub name: String,
     pub path: Vec<String>,
     pub signature: Option<ProjectExternalFlowSignatureInput>,
+    pub receiver_param: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -683,8 +684,7 @@ pub struct ProjectExternalSpecImplInput {
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
-    pub methods: Vec<String>,
-    pub implementation_module: Vec<String>,
+    pub methods: Vec<etas_package_metadata::SpecImplMethod>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -696,14 +696,14 @@ pub struct ProjectExternalTypeSpecSatisfactionInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalCallableSpecSatisfactionInput {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTraceSpecConformanceInput {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub target: ProjectExternalTraceSpecConformanceTargetInput,
 }
 
@@ -923,7 +923,7 @@ pub struct ProjectExternalActionRequestSignatureInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalParameterRequestInput {
-    pub parameter: String,
+    pub parameter: etas_package_metadata::CallableRequestTarget,
     pub excluded: Vec<ProjectExternalEffectRefInput>,
 }
 
@@ -949,7 +949,7 @@ pub enum ProjectExternalActionTraceInput {
         source: ProjectExternalActionTraceEventSourceInput,
     },
     ParameterCall {
-        parameter: String,
+        parameter: etas_package_metadata::CallableRequestTarget,
     },
     Seq(Vec<ProjectExternalActionTraceInput>),
     Choice(Vec<ProjectExternalActionTraceInput>),
@@ -957,7 +957,7 @@ pub enum ProjectExternalActionTraceInput {
     UnknownOrder(Vec<ProjectExternalEffectRefInput>),
     Widened {
         actions: Vec<ProjectExternalEffectRefInput>,
-        parameter_calls: Vec<String>,
+        parameter_calls: Vec<etas_package_metadata::CallableRequestTarget>,
     },
 }
 

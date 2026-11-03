@@ -158,6 +158,7 @@ pub struct SpecMethodCallExpr {
     pub spec_path: Path,
     pub spec_args: Vec<TypeExpr>,
     pub method: Name,
+    pub generic_args: Vec<GenericArg>,
     pub args: Vec<Arg>,
     pub span: Span,
 }

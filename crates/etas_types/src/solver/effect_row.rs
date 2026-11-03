@@ -345,6 +345,18 @@ fn infer_row_binding(
     let Some(expected) = expected else {
         return;
     };
+    if actual.is_none()
+        && expected.effects.is_empty()
+        && let Some(tail) = expected
+            .tail
+            .as_ref()
+            .filter(|tail| inputs.params.contains(tail))
+    {
+        // An unannotated callable has an unsolved latent row, not a proven
+        // empty row. Its expression origin is solved by effect analysis.
+        state.results[state.current].deferred.insert(tail.clone());
+        return;
+    }
     let actual = actual.cloned().unwrap_or_else(empty_row);
     let Some(tail) = expected
         .tail

@@ -626,6 +626,7 @@ flow use_both() -> unit ![Gate.tick] { both(() => { perform Gate.tick(); return;
             limits: DescriptorLimits::default(),
         });
         let result = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+            external_implementations: &[],
             source_snapshots: &source_snapshots,
             residual_identity: Some(&pipeline_provider),
             trace_monitor_projector: None,

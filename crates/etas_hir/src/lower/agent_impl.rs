@@ -159,7 +159,7 @@ impl LowerCtx {
                         super::item::hir_visibility(flow.visibility),
                     );
                     let body = self.hir.items.alloc(HirItem::Error { span: flow.span });
-                    let callable = self.lower_flow_with_symbol(flow, body, scope, symbol);
+                    let callable = self.lower_flow_with_symbol(flow, body, scope, symbol, None);
                     *self.hir.items.get_mut(body).expect("reserved method item") =
                         HirItem::Flow(callable);
                     self.map_item(body, flow.span);

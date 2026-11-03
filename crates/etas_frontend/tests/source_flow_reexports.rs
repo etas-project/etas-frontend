@@ -228,6 +228,7 @@ fn source_import_effect_analysis_rejects_missing_cyclic_and_dangling_identity_fa
             source_snapshots: &[],
             residual_identity: None,
             trace_monitor_projector: None,
+            external_implementations: &[],
             frozen_calls: None,
             hir: &hir,
             types: &types,

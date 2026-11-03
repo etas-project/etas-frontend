@@ -47,6 +47,8 @@ pub struct EffectMaterializationInputs {
         etas_code::CodeFingerprint,
         std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
     >,
+    pub method_evidence:
+        BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
     pub frozen_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, crate::FrozenCallableGraphIdentity>,
@@ -84,6 +86,8 @@ pub struct EffectFacts {
         etas_code::CodeFingerprint,
         std::sync::Arc<etas_code::descriptor::DescriptorGraphInput>,
     >,
+    pub method_evidence:
+        BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
     pub frozen_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, crate::FrozenCallableGraphIdentity>,

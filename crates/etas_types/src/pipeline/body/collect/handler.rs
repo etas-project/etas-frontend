@@ -22,7 +22,7 @@ pub fn collect_handler<E>(
     span: etas_core::Span,
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
-    collect_handler_for_requests(ctx, handlers, span, expected, &[], None)
+    collect_handler_for_requests(ctx, handlers, span, expected, &[], None, None)
         .map(|collected| collected.ty)
 }
 
@@ -38,6 +38,7 @@ pub(super) fn collect_handler_for_requests<E>(
     expected: Option<TypeId>,
     requests: &[super::handler_request::ActionRequest],
     request_body: Option<etas_hir::HirExprId>,
+    answer_context: Option<TypeId>,
 ) -> Result<CollectedHandler, E> {
     ctx.checkpoint()?;
     let mut handled = Vec::new();
@@ -53,7 +54,10 @@ pub(super) fn collect_handler_for_requests<E>(
         Some(Type::Handler(handler)) => Some(handler.clone()),
         _ => None,
     });
-    let expected_result = expected_handler.as_ref().and_then(|handler| handler.result);
+    let expected_result = expected_handler
+        .as_ref()
+        .and_then(|handler| handler.result)
+        .or(answer_context);
     let expected_produced = expected_handler
         .as_ref()
         .map(|handler| handler.produced.clone())
@@ -162,7 +166,6 @@ pub(super) fn collect_handler_for_requests<E>(
                 collect_pattern(ctx, pat, ty)?;
             }
         }
-        validate_handler_arm_completion(ctx, arm.body)?;
         let resume_ty = action_signature
             .as_ref()
             .map(|signature| signature.output)
@@ -186,6 +189,7 @@ pub(super) fn collect_handler_for_requests<E>(
         ctx.state.handler_finish_stack.pop();
         ctx.state.handler_resume_stack.pop();
         collected?;
+        validate_handler_arm_completion(ctx, arm.body)?;
     }
     let result = expected_result.or_else(|| (!finishes.is_empty()).then(|| ctx.fresh_type_var()));
     if expected_result.is_none()
@@ -266,69 +270,112 @@ fn validate_handler_arm_completion<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     block: etas_hir::HirBlockId,
 ) -> Result<(), E> {
-    ctx.checkpoint()?;
-    let block_data = ctx.ctx.hir.blocks[block].clone();
-    if let Some(final_expr) = block_data.final_expr {
-        let span = ctx.ctx.hir.exprs[final_expr].span(&ctx.ctx.hir.blocks);
-        ctx.validate(crate::ValidationRequest::Diagnostic {
-            code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
-            span,
-            message: "handler arm must explicitly resume, finish, or terminate with never"
-                .to_owned(),
-        });
-        return Ok(());
+    enum Tail {
+        Block(etas_hir::HirBlockId),
+        Expr(etas_hir::HirExprId),
+        Stmt(etas_hir::HirStmtId),
     }
-    let Some(last_stmt) = block_data.stmts.last().copied() else {
-        ctx.validate(crate::ValidationRequest::Diagnostic {
-            code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
-            span: block_data.span,
-            message: "handler arm must explicitly resume, finish, or terminate with never"
-                .to_owned(),
-        });
-        return Ok(());
-    };
-    match ctx.ctx.hir.stmts[last_stmt].clone() {
-        HirStmt::Resume { .. } | HirStmt::Finish { .. } => {}
-        HirStmt::Return { span, .. } => {
-            ctx.validate(crate::ValidationRequest::Diagnostic {
-                code: etas_core::TypeDiagnosticCode::ReturnInsideHandlerArm,
-                span,
-                message: "return is not valid inside a handler arm; use finish to complete the handled expression".to_owned(),
-            });
-        }
-        HirStmt::Expr { expr, span } => {
-            if !is_obvious_never_expr(ctx, expr) {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
-                    span,
-                    message: "handler arm must explicitly resume, finish, or terminate with never"
-                        .to_owned(),
-                });
+    let mut pending = vec![Tail::Block(block)];
+    while let Some(tail) = pending.pop() {
+        ctx.checkpoint()?;
+        let missing_span = match tail {
+            Tail::Block(block) => {
+                let block = &ctx.ctx.hir.blocks[block];
+                if let Some(expr) = block.final_expr {
+                    pending.push(Tail::Expr(expr));
+                    continue;
+                }
+                if let Some(stmt) = block.stmts.last() {
+                    pending.push(Tail::Stmt(*stmt));
+                    continue;
+                }
+                Some(block.span)
             }
-        }
-        _ => {
+            Tail::Stmt(stmt) => match ctx.ctx.hir.stmts[stmt].clone() {
+                HirStmt::Resume { .. } | HirStmt::Finish { .. } => None,
+                HirStmt::Return { span, .. } => {
+                    ctx.validate(crate::ValidationRequest::Diagnostic {
+                        code: etas_core::TypeDiagnosticCode::ReturnInsideHandlerArm,
+                        span,
+                        message: "return is not valid inside a handler arm; use finish to complete the handled expression".to_owned(),
+                    });
+                    None
+                }
+                HirStmt::If(expr) | HirStmt::Match(expr) | HirStmt::Expr { expr, .. } => {
+                    pending.push(Tail::Expr(expr));
+                    None
+                }
+                HirStmt::Let { span, .. }
+                | HirStmt::Var { span, .. }
+                | HirStmt::Assign { span, .. }
+                | HirStmt::For { span, .. }
+                | HirStmt::While { span, .. }
+                | HirStmt::Retry { span, .. }
+                | HirStmt::Break { span }
+                | HirStmt::Continue { span }
+                | HirStmt::Error { span } => Some(span),
+            },
+            Tail::Expr(expr) => match ctx.ctx.hir.exprs[expr].clone() {
+                etas_hir::HirExpr::Block(block) => {
+                    pending.push(Tail::Block(block));
+                    None
+                }
+                etas_hir::HirExpr::If {
+                    then_block,
+                    else_branch,
+                    span,
+                    ..
+                } => {
+                    pending.push(Tail::Block(then_block));
+                    match else_branch {
+                        Some(etas_hir::HirElseBranch::If(expr)) => pending.push(Tail::Expr(expr)),
+                        Some(etas_hir::HirElseBranch::Block(block)) => {
+                            pending.push(Tail::Block(block))
+                        }
+                        None => {
+                            ctx.validate(crate::ValidationRequest::Diagnostic {
+                                code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
+                                span,
+                                message: "handler arm has a branch that does not resume, finish, or terminate with never".into(),
+                            });
+                        }
+                    }
+                    None
+                }
+                etas_hir::HirExpr::Match { arms, span, .. } => {
+                    let empty = arms.is_empty();
+                    for arm in arms {
+                        pending.push(match arm.body {
+                            etas_hir::HirMatchArmBody::Expr(expr) => Tail::Expr(expr),
+                            etas_hir::HirMatchArmBody::Block(block) => Tail::Block(block),
+                        });
+                    }
+                    empty.then_some(span)
+                }
+                _ => {
+                    let span = ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks);
+                    if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
+                        ctx.validate(crate::ValidationRequest::HandlerNeverCompletion { ty, span });
+                    } else {
+                        ctx.validate(crate::ValidationRequest::Diagnostic {
+                            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                            span,
+                            message: "handler completion requires a collected expression type"
+                                .into(),
+                        });
+                    }
+                    None
+                }
+            },
+        };
+        if let Some(span) = missing_span {
             ctx.validate(crate::ValidationRequest::Diagnostic {
                 code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
-                span: block_data.span,
+                span,
                 message: "handler arm must explicitly resume, finish, or terminate with never"
                     .to_owned(),
             });
         }
     }
     Ok(())
-}
-
-fn is_obvious_never_expr<E>(
-    ctx: &BodyCollectContext<'_, '_, E>,
-    expr: etas_hir::HirExprId,
-) -> bool {
-    let etas_hir::HirExpr::Call { callee, .. } = &ctx.ctx.hir.exprs[expr] else {
-        return false;
-    };
-    let etas_hir::HirExpr::Path(path) = &ctx.ctx.hir.exprs[*callee] else {
-        return false;
-    };
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.name == "abort")
 }

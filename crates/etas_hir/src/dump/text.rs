@@ -870,6 +870,7 @@ impl<'a> Dump<'a> {
                 spec_path,
                 spec_args,
                 method,
+                generic_args,
                 args,
                 ..
             } => {
@@ -884,6 +885,9 @@ impl<'a> Dump<'a> {
                 self.expr_id("Receiver", *receiver);
                 for arg in spec_args {
                     self.type_id("SpecTypeArg", *arg);
+                }
+                for arg in generic_args {
+                    self.generic_arg(arg);
                 }
                 for arg in args {
                     self.arg(arg);

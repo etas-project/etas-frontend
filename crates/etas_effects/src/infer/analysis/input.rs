@@ -48,6 +48,14 @@ impl<'a> EffectSourceSnapshots<'a> {
 
 #[derive(Clone)]
 pub struct EffectAnalysisInput<'a> {
+    pub external_implementations:
+        &'a [AnchoredExternalMetadata<crate::ExternalSpecImplementationMetadata>],
+    pub method_evidence: std::sync::Arc<
+        std::collections::BTreeMap<
+            etas_code::CodeFingerprint,
+            std::sync::Arc<crate::facts::MetadataSpecMethodDefinition>,
+        >,
+    >,
     pub frozen_graphs: std::sync::Arc<
         std::collections::BTreeMap<
             etas_code::CodeFingerprint,

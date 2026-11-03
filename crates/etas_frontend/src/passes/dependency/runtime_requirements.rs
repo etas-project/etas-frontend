@@ -269,9 +269,13 @@ impl RuntimeSourceRequirementPlanner<'_> {
                 if work > limit {
                     return Err("external spec planning exceeds graph limit".into());
                 }
-                if !implementation.methods.iter().any(|name| name == method) {
+                let Some(implementation_method) = implementation
+                    .methods
+                    .iter()
+                    .find(|entry| entry.identity.name() == method)
+                else {
                     continue;
-                }
+                };
                 let mut pending = vec![implementation.spec.clone()];
                 let mut seen = BTreeSet::new();
                 let mut entails = false;
@@ -298,7 +302,11 @@ impl RuntimeSourceRequirementPlanner<'_> {
                         .packages
                         .get(owner)
                         .ok_or("spec implementation has no owning package")?;
-                    let module = implementation.implementation_module.clone();
+                    let module = implementation_method
+                        .identity
+                        .implementation()
+                        .module()
+                        .to_vec();
                     if module.is_empty() {
                         return Err("spec implementation has no checked source module".into());
                     }

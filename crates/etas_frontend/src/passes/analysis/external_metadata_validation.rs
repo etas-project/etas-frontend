@@ -835,6 +835,7 @@ fn external_package_import_span(
 
 #[derive(Clone, Debug, Default)]
 struct GenericScope {
+    parameter_kinds: Vec<etas_package_metadata::GenericParamKind>,
     types: HashSet<String>,
     effects: HashSet<String>,
 }
@@ -1041,6 +1042,10 @@ pub(super) fn validate_external_metadata(
             .iter()
             .find(|signature| signature.path == summary.trace_spec)
             .map(|signature| GenericScope {
+                parameter_kinds: vec![
+                    etas_package_metadata::GenericParamKind::Type;
+                    signature.param_names.len()
+                ],
                 types: signature.param_names.iter().cloned().collect(),
                 effects: HashSet::new(),
             })
@@ -1391,6 +1396,23 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
             if method.name.is_empty() {
                 return Err("spec method name must not be empty".to_owned());
             }
+            if let Some(index) = method.receiver_param {
+                let callable = method
+                    .signature
+                    .as_ref()
+                    .ok_or("spec receiver requires a callable signature")?;
+                let parameter = callable
+                    .generic_params
+                    .get(index as usize)
+                    .ok_or("spec receiver parameter index is out of bounds")?;
+                if parameter.kind != crate::ProjectExternalCallableGenericParamKindInput::Type {
+                    return Err("spec receiver parameter must have type kind".into());
+                }
+                if !matches!(callable.params.first(), Some(crate::ProjectExternalTypeInput::Var(name)) if name == &parameter.name)
+                {
+                    return Err("spec receiver must bind the first callable input type".into());
+                }
+            }
             if let Some(callable) = &method.signature {
                 validate_callable_in_scope(
                     &callable.path,
@@ -1403,12 +1425,29 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
             }
         }
     }
+    let mut methods =
+        std::collections::BTreeMap::<_, &etas_package_metadata::SpecImplMethod>::new();
     for implementation in &metadata.spec_impls {
         validate_path(&implementation.spec, "spec implementation path")?;
         validate_type(&implementation.self_type, &GenericScope::default(), true)?;
         validate_types(&implementation.args, &GenericScope::default(), true)?;
-        if implementation.methods.iter().any(String::is_empty) {
-            return Err("spec implementation contains an empty method name".to_owned());
+        let mut identities = BTreeSet::new();
+        for method in &implementation.methods {
+            if !identities.insert(&method.identity) {
+                return Err("spec implementation contains duplicate method identities".into());
+            }
+            if let Some(previous) = methods.insert(&method.identity, method)
+                && previous.callable != method.callable
+            {
+                return Err("method identity has conflicting published behavior graphs".into());
+            }
+            method.root().map_err(|error| error.to_string())?;
+            etas_package_metadata::validate_callable_value_graph(&method.callable)
+                .map_err(|error| error.to_string())?;
+            method
+                .callable
+                .validate_references(Some((0, &[])))
+                .map_err(|error| error.to_string())?;
         }
     }
     for satisfaction in &metadata.type_spec_satisfactions {
@@ -1417,12 +1456,12 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
         validate_types(&satisfaction.args, &GenericScope::default(), true)?;
     }
     for satisfaction in &metadata.callable_spec_satisfactions {
-        validate_path(&satisfaction.item, "callable satisfaction item path")?;
+        validate_contract_target(&satisfaction.item, &methods)?;
         validate_path(&satisfaction.spec, "callable satisfaction spec path")?;
         validate_types(&satisfaction.args, &GenericScope::default(), true)?;
     }
     for conformance in &metadata.trace_spec_conformances {
-        validate_path(&conformance.item, "trace conformance item path")?;
+        validate_contract_target(&conformance.item, &methods)?;
         if let crate::ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args, .. } =
             &conformance.target
         {
@@ -1431,6 +1470,29 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
         }
     }
     Ok(())
+}
+
+fn validate_contract_target(
+    target: &etas_package_metadata::CallableContractTarget,
+    methods: &std::collections::BTreeMap<
+        &etas_code::MethodId,
+        &etas_package_metadata::SpecImplMethod,
+    >,
+) -> Result<(), String> {
+    match target {
+        etas_package_metadata::CallableContractTarget::Item(path) => {
+            validate_path(path, "callable conformance path")
+        }
+        etas_package_metadata::CallableContractTarget::Method(identity) => {
+            if !methods.contains_key(identity) {
+                return Err(
+                    "callable conformance method requires one published implementation owner"
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn register_declaration(paths: &mut HashSet<Vec<String>>, path: &[String]) -> Result<(), String> {
@@ -1757,13 +1819,7 @@ fn validate_action_trace_semantics(
         ProjectExternalActionTraceInput::Empty => Ok(()),
         ProjectExternalActionTraceInput::Event { action, .. } => validate_effect_ref(action, scope),
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
-            if parameter_names.iter().any(|name| name == parameter) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "action trace parameter `{parameter}` is not declared by the callable"
-                ))
-            }
+            requests::validate_target(parameter, scope, parameter_names)
         }
         ProjectExternalActionTraceInput::Seq(children) => {
             for child in children {
@@ -1797,11 +1853,7 @@ fn validate_action_trace_semantics(
                 validate_effect_ref(action, scope)?;
             }
             for parameter in parameter_calls {
-                if !parameter_names.iter().any(|name| name == parameter) {
-                    return Err(format!(
-                        "action trace parameter `{parameter}` is not declared by the callable"
-                    ));
-                }
+                requests::validate_target(parameter, scope, parameter_names)?;
             }
             Ok(())
         }
@@ -1873,9 +1925,15 @@ fn generic_scope(
         }
         match param.kind {
             ProjectExternalCallableGenericParamKindInput::Type => {
+                scope
+                    .parameter_kinds
+                    .push(etas_package_metadata::GenericParamKind::Type);
                 scope.types.insert(param.name.clone());
             }
             ProjectExternalCallableGenericParamKindInput::Effect => {
+                scope
+                    .parameter_kinds
+                    .push(etas_package_metadata::GenericParamKind::Effect);
                 scope.effects.insert(param.name.clone());
             }
         }

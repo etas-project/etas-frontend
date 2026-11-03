@@ -744,9 +744,12 @@ impl EffectSemantics<'_> {
         };
         let mut scan = HandlerControlScan::default();
         for stmt in &block.stmts {
+            if scan.normal.is_none() {
+                break;
+            }
             self.scan_handler_controls_in_stmt(*stmt, false, &mut scan);
         }
-        if let Some(expr) = block.final_expr {
+        if let Some(expr) = block.final_expr.filter(|_| scan.normal.is_some()) {
             self.scan_handler_controls_in_expr(expr, false, &mut scan);
         }
         scan
@@ -762,15 +765,23 @@ impl EffectSemantics<'_> {
             return;
         };
         match stmt {
-            HirStmt::Resume { .. } if in_lambda => scan.captured_by_lambda = true,
-            HirStmt::Resume { .. } => scan.resumes += 1,
+            HirStmt::Resume { value, .. } => {
+                if let Some(value) = value {
+                    self.scan_handler_controls_in_expr(*value, in_lambda, scan);
+                }
+                if in_lambda {
+                    scan.captured_by_lambda = true;
+                }
+                scan.complete(true);
+            }
             HirStmt::Finish { value, .. } if in_lambda => {
                 scan.finish_captured_by_lambda = true;
                 self.scan_handler_controls_in_expr(*value, in_lambda, scan);
+                scan.complete(false);
             }
             HirStmt::Finish { value, .. } => {
-                scan.finishes += 1;
                 self.scan_handler_controls_in_expr(*value, in_lambda, scan);
+                scan.complete(false);
             }
             HirStmt::Let { value, .. } | HirStmt::Var { value, .. } => {
                 self.scan_handler_controls_in_expr(*value, in_lambda, scan)
@@ -784,11 +795,17 @@ impl EffectSemantics<'_> {
             }
             HirStmt::For { iter, body, .. } => {
                 self.scan_handler_controls_in_expr(*iter, in_lambda, scan);
-                self.scan_handler_controls_in_block_with_context(*body, in_lambda, scan);
+                let mut iteration = HandlerControlScan::default();
+                self.scan_handler_controls_in_block_with_context(*body, in_lambda, &mut iteration);
+                iteration.join_alternative(HandlerControlScan::default());
+                scan.then(iteration);
             }
             HirStmt::While { cond, body, .. } => {
                 self.scan_handler_controls_in_expr(*cond, in_lambda, scan);
-                self.scan_handler_controls_in_block_with_context(*body, in_lambda, scan);
+                let mut iteration = HandlerControlScan::default();
+                self.scan_handler_controls_in_block_with_context(*body, in_lambda, &mut iteration);
+                iteration.join_alternative(HandlerControlScan::default());
+                scan.then(iteration);
             }
             HirStmt::Retry { body, .. } => {
                 self.scan_handler_controls_in_block_with_context(*body, in_lambda, scan);
@@ -797,8 +814,10 @@ impl EffectSemantics<'_> {
                 if let Some(value) = value {
                     self.scan_handler_controls_in_expr(*value, in_lambda, scan);
                 }
+                scan.normal = None;
             }
-            HirStmt::Break { .. } | HirStmt::Continue { .. } | HirStmt::Error { .. } => {}
+            HirStmt::Break { .. } | HirStmt::Continue { .. } => scan.normal = None,
+            HirStmt::Error { .. } => {}
         }
     }
 
@@ -812,9 +831,12 @@ impl EffectSemantics<'_> {
             return;
         };
         for stmt in &block.stmts {
+            if scan.normal.is_none() {
+                break;
+            }
             self.scan_handler_controls_in_stmt(*stmt, in_lambda, scan);
         }
-        if let Some(expr) = block.final_expr {
+        if let Some(expr) = block.final_expr.filter(|_| scan.normal.is_some()) {
             self.scan_handler_controls_in_expr(expr, in_lambda, scan);
         }
     }
@@ -825,18 +847,30 @@ impl EffectSemantics<'_> {
         in_lambda: bool,
         scan: &mut HandlerControlScan,
     ) {
+        if scan.normal.is_none() {
+            return;
+        }
         let Some(expr) = self.hir.exprs.get(expr) else {
             return;
         };
         match expr {
-            HirExpr::Lambda { body, .. } => match body {
-                etas_hir::HirLambdaBody::Expr(expr) => {
-                    self.scan_handler_controls_in_expr(*expr, true, scan);
+            HirExpr::Lambda { body, .. } => {
+                let mut captured = HandlerControlScan::default();
+                match body {
+                    etas_hir::HirLambdaBody::Expr(expr) => {
+                        self.scan_handler_controls_in_expr(*expr, true, &mut captured);
+                    }
+                    etas_hir::HirLambdaBody::Block(block) => {
+                        self.scan_handler_controls_in_block_with_context(
+                            *block,
+                            true,
+                            &mut captured,
+                        );
+                    }
                 }
-                etas_hir::HirLambdaBody::Block(block) => {
-                    self.scan_handler_controls_in_block_with_context(*block, true, scan);
-                }
-            },
+                scan.captured_by_lambda |= captured.captured_by_lambda;
+                scan.finish_captured_by_lambda |= captured.finish_captured_by_lambda;
+            }
             HirExpr::Block(block) => {
                 self.scan_handler_controls_in_block_with_context(*block, in_lambda, scan)
             }
@@ -847,33 +881,54 @@ impl EffectSemantics<'_> {
                 ..
             } => {
                 self.scan_handler_controls_in_expr(*cond, in_lambda, scan);
-                self.scan_handler_controls_in_block_with_context(*then_block, in_lambda, scan);
+                let mut branches = HandlerControlScan::default();
+                self.scan_handler_controls_in_block_with_context(
+                    *then_block,
+                    in_lambda,
+                    &mut branches,
+                );
+                let mut alternative = HandlerControlScan::default();
                 match else_branch {
                     Some(etas_hir::HirElseBranch::If(expr)) => {
-                        self.scan_handler_controls_in_expr(*expr, in_lambda, scan);
+                        self.scan_handler_controls_in_expr(*expr, in_lambda, &mut alternative);
                     }
                     Some(etas_hir::HirElseBranch::Block(block)) => {
-                        self.scan_handler_controls_in_block_with_context(*block, in_lambda, scan);
+                        self.scan_handler_controls_in_block_with_context(
+                            *block,
+                            in_lambda,
+                            &mut alternative,
+                        );
                     }
                     None => {}
                 }
+                branches.join_alternative(alternative);
+                scan.then(branches);
             }
             HirExpr::Match {
                 scrutinee, arms, ..
             } => {
                 self.scan_handler_controls_in_expr(*scrutinee, in_lambda, scan);
+                let mut branches = HandlerControlScan {
+                    normal: None,
+                    ..HandlerControlScan::default()
+                };
                 for arm in arms {
+                    let mut alternative = HandlerControlScan::default();
                     match arm.body {
                         etas_hir::HirMatchArmBody::Expr(expr) => {
-                            self.scan_handler_controls_in_expr(expr, in_lambda, scan);
+                            self.scan_handler_controls_in_expr(expr, in_lambda, &mut alternative);
                         }
                         etas_hir::HirMatchArmBody::Block(block) => {
                             self.scan_handler_controls_in_block_with_context(
-                                block, in_lambda, scan,
+                                block,
+                                in_lambda,
+                                &mut alternative,
                             );
                         }
                     }
+                    branches.join_alternative(alternative);
                 }
+                scan.then(branches);
             }
             HirExpr::Call { callee, args, .. } => {
                 self.scan_handler_controls_in_expr(*callee, in_lambda, scan);
@@ -898,7 +953,7 @@ impl EffectSemantics<'_> {
                     self.scan_handler_controls_in_arg(arg, in_lambda, scan);
                 }
             }
-            // Nested arms have their own resume/finish owner and validation.
+            // A nested handler owns a different resume/finish continuation.
             HirExpr::Handler { .. } => {}
             HirExpr::Handle { body, handler, .. } => {
                 self.scan_handler_controls_in_expr(*body, in_lambda, scan);
@@ -1009,12 +1064,57 @@ struct CheckedHandlerRows {
     result: Option<etas_types::TypeId>,
 }
 
-#[derive(Default)]
 struct HandlerControlScan {
     resumes: usize,
     finishes: usize,
     captured_by_lambda: bool,
     finish_captured_by_lambda: bool,
+    normal: Option<(usize, usize)>,
+}
+
+impl Default for HandlerControlScan {
+    fn default() -> Self {
+        Self {
+            resumes: 0,
+            finishes: 0,
+            captured_by_lambda: false,
+            finish_captured_by_lambda: false,
+            normal: Some((0, 0)),
+        }
+    }
+}
+
+impl HandlerControlScan {
+    fn join_alternative(&mut self, other: Self) {
+        self.resumes = self.resumes.max(other.resumes);
+        self.finishes = self.finishes.max(other.finishes);
+        self.normal = match (self.normal, other.normal) {
+            (Some((left_r, left_f)), Some((right_r, right_f))) => {
+                Some((left_r.max(right_r), left_f.max(right_f)))
+            }
+            (normal, None) | (None, normal) => normal,
+        };
+        self.captured_by_lambda |= other.captured_by_lambda;
+        self.finish_captured_by_lambda |= other.finish_captured_by_lambda;
+    }
+
+    fn then(&mut self, other: Self) {
+        let Some((resumes, finishes)) = self.normal else {
+            return;
+        };
+        self.resumes = self.resumes.max(resumes + other.resumes);
+        self.finishes = self.finishes.max(finishes + other.finishes);
+        self.normal = other.normal.map(|(r, f)| (resumes + r, finishes + f));
+        self.captured_by_lambda |= other.captured_by_lambda;
+        self.finish_captured_by_lambda |= other.finish_captured_by_lambda;
+    }
+
+    fn complete(&mut self, resume: bool) {
+        if let Some((resumes, finishes)) = self.normal.take() {
+            self.resumes = self.resumes.max(resumes + usize::from(resume));
+            self.finishes = self.finishes.max(finishes + usize::from(!resume));
+        }
+    }
 }
 
 #[cfg(test)]

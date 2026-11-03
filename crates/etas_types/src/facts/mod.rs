@@ -5,6 +5,7 @@ pub mod inference;
 pub mod method_specs;
 pub mod reflection;
 pub mod signatures;
+mod spec_method;
 pub mod specs;
 pub mod symbols;
 
@@ -18,10 +19,12 @@ pub use effects::{
     EffectActionSignature, HandlerTypeBinding,
 };
 pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
+mod impl_methods;
 pub use expressions::{
     CheckedIndexKind, CheckedSliceKind, CheckedStdCallFact, DeferredEffectRowObligation,
     EffectRowEquation, FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
 };
+pub use impl_methods::TypeImplMethodFact;
 pub use inference::CheckedAgentInferenceFact;
 pub use reflection::{CheckedReflectionFact, CheckedReflectionTarget};
 pub use signatures::{
@@ -31,7 +34,7 @@ pub use signatures::{
 pub use specs::{
     CallableSpecSatisfactionFact, CanonicalSpecFacts, CanonicalSpecImplFact,
     CanonicalSpecSignatureFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
-    ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
+    ExternalCallableSpecSatisfactionFact, ExternalSpecIdentity, ExternalTraceSpecConformanceFact,
     ExternalTraceSpecConformanceTarget, RelocatedSpecFacts, SpecFacts, SpecImplFact,
     SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
     SpecSuperBoundFact, TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
@@ -45,6 +48,7 @@ use crate::TypeId;
 pub struct TypeFacts {
     #[serde(default)]
     pub canonical_specs: CanonicalSpecFacts,
+    pub type_impl_methods: HashMap<SymbolId, TypeImplMethodFact>,
     pub external_specs: specs::ExternalSpecFacts,
     pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, TypeId)>,
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
@@ -142,6 +146,7 @@ impl From<&TypeFacts> for SpecFacts {
             canonical: facts.canonical_specs.clone(),
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
+            external_methods: facts.external_specs.methods.clone(),
             external_aliases: facts.external_specs.aliases.clone(),
             signatures: facts.spec_signatures.clone(),
             impls: facts.spec_impls.clone(),

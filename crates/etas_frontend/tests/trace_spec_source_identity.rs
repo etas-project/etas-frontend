@@ -186,6 +186,8 @@ fn materialized_clauses_retain_revalidatable_source_sites() {
         etas_effects::trace_spec::validate_trace_spec_facts(
             &mut effects,
             etas_effects::trace_spec::TraceSpecValidationInput {
+                external_summaries: &[],
+                external_implementations: &[],
                 hir,
                 types,
                 registry,
@@ -612,6 +614,8 @@ fn checked_clause_facts_are_bound_to_real_analysis_and_source_alternatives() {
                 etas_effects::trace_spec::validate_trace_spec_facts(
                     &mut effects,
                     etas_effects::trace_spec::TraceSpecValidationInput {
+                        external_summaries: &[],
+                        external_implementations: &[],
                         hir,
                         types,
                         registry,

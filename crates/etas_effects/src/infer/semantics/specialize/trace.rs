@@ -79,17 +79,22 @@ pub(crate) fn substitute_parameter_calls(
                     .checked_sub(count)
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
                 let parts = values.split_off(start);
-                values.push(if matches!(work, Work::Seq(_)) {
-                    ActionTraceDomain::Seq(parts)
-                } else {
-                    ActionTraceDomain::Choice(parts)
-                });
+                let mut parts = parts.into_iter();
+                let mut trace = parts.next().unwrap_or_default();
+                for part in parts {
+                    if matches!(work, Work::Seq(_)) {
+                        trace.seq_assign(part);
+                    } else {
+                        trace.choice_assign(part);
+                    }
+                }
+                values.push(trace);
             }
             Work::Repeat => {
                 let value = values
                     .pop()
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
-                values.push(ActionTraceDomain::Repeat(Box::new(value)));
+                values.push(value.repeat());
             }
         }
     }

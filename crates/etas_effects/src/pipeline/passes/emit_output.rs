@@ -46,6 +46,12 @@ impl<'a> Pass<EffectPipelineContext<'a>> for EmitOutputPass {
         };
         effects.facts.trace_specs.source_clause_sites = models.source_clause_sites;
         let artifacts = EffectPipelineArtifacts {
+            external_implementations: context
+                .input
+                .external_implementations
+                .iter()
+                .map(|method| method.metadata.clone())
+                .collect(),
             registry: std::sync::Arc::new(registry),
             dependency_metadata: context
                 .input

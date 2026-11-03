@@ -7,6 +7,7 @@ pub struct SpecFacts {
     pub external_signatures:
         std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub external_impls: Vec<ExternalSpecImplFact>,
+    pub external_methods: Vec<ExternalSpecImplMethodFact>,
     pub external_aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
     pub signatures: std::collections::HashMap<etas_hir::SymbolId, SpecSignature>,
     pub impls: Vec<SpecImplFact>,
@@ -228,10 +229,21 @@ pub struct ExternalSpecImplFact {
     pub args: Vec<TypeId>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct ExternalSpecImplMethodFact {
+    pub span: etas_core::Span,
+    pub identity: etas_code::MethodId,
+    pub self_type: TypeId,
+    pub spec: CheckedSpecRef,
+    pub args: Vec<TypeId>,
+    pub signature: CallableSignature,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecFacts {
     pub signatures: std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub impls: Vec<ExternalSpecImplFact>,
+    pub methods: Vec<ExternalSpecImplMethodFact>,
     pub aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
 }
 
@@ -324,7 +336,7 @@ pub struct TraceSpecConformanceFact {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalCallableSpecSatisfactionFact {
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<TypeId>,
     pub span: etas_core::Span,
@@ -333,7 +345,7 @@ pub struct ExternalCallableSpecSatisfactionFact {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalTraceSpecConformanceFact {
     pub package: u32,
-    pub item: Vec<String>,
+    pub item: etas_package_metadata::CallableContractTarget,
     pub target: ExternalTraceSpecConformanceTarget,
     pub span: etas_core::Span,
 }
@@ -361,6 +373,7 @@ pub enum TraceSpecConformanceTarget {
 pub struct SpecMethodFact {
     pub identity: SpecMethodIdentity,
     pub name: String,
+    pub receiver_param: Option<u32>,
     #[serde(default)]
     pub signature: Option<CallableSignature>,
 }

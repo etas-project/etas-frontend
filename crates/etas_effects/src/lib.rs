@@ -49,13 +49,16 @@ pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
     EffectPipelineOutput, EffectSourceSnapshot, ExternalActionRequestMetadata,
     ExternalActionTraceMetadata, ExternalArtifactAnchor, ExternalCallableContract,
-    ExternalCallableValueMetadata, ExternalDefaultHandlerContributionMetadata,
-    ExternalDefaultHandlerEffectsMetadata, ExternalEffectMetadata, ExternalEffectRowMetadata,
-    ExternalEffectSummaryMetadata, ExternalLatentFlowSummaryMetadata,
-    ExternalParameterRequestMetadata, ExternalRequestInstantiationMetadata,
-    ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
-    ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry,
-    RunEffectPipeline, TraceSpecPipelineAnalysis,
+    ExternalCallableRequestTarget, ExternalCallableValueMetadata,
+    ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
+    ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
+    ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,
+    ExternalRequestInstantiationMetadata, ExternalSpecImplementationMetadata,
+    ExternalSpecMethodCallableArgument, ExternalSpecMethodGenericArgument,
+    ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata,
+    ExternalTraceSpecEffectMetadata, ExternalTraceSpecEffectRowMetadata,
+    ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry, RunEffectPipeline,
+    TraceSpecPipelineAnalysis,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{

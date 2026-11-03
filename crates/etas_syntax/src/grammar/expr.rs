@@ -15,6 +15,14 @@ impl Parser<'_> {
         expr
     }
 
+    pub(crate) fn with_record_expressions<T>(&mut self, parse: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.record_expr_enabled;
+        self.record_expr_enabled = true;
+        let result = parse(self);
+        self.record_expr_enabled = previous;
+        result
+    }
+
     pub(crate) fn lambda_or_pipeline(&mut self) -> Expr {
         if self.cursor.at_ident_like()
             && self.cursor.nth(1).kind == TokenKind::Punct(Punct::FatArrow)
@@ -78,9 +86,6 @@ impl Parser<'_> {
 
     fn list_cons_expr_inner(&mut self) -> Expr {
         let head = self.stage_compose_expr();
-        if self.looks_like_spec_method_selection() {
-            return self.spec_method_call_expr(head);
-        }
         if self.cursor.eat_punct(Punct::ColonColon).is_none() {
             return head;
         }
@@ -111,7 +116,7 @@ impl Parser<'_> {
             }
             if self.cursor.at_punct(Punct::Dot)
                 && self.cursor.nth(1).kind.is_ident_like()
-                && self.cursor.nth(2).kind == TokenKind::Punct(Punct::LParen)
+                && self.call_follows_generic_arguments(2)
             {
                 break;
             }
@@ -125,6 +130,7 @@ impl Parser<'_> {
         let spec_path = Path { segments, span };
         self.expect_punct(Punct::Dot, "expected `.` before selected spec method");
         let method = self.name("expected spec method name");
+        let generic_args = self.generic_args();
         let args = self.arg_list();
         let span = receiver.span().cover(self.previous_span());
         Expr::SpecMethodCall(SpecMethodCallExpr {
@@ -132,6 +138,7 @@ impl Parser<'_> {
             spec_path,
             spec_args,
             method,
+            generic_args,
             args,
             span,
         })
@@ -246,7 +253,9 @@ impl Parser<'_> {
             } else {
                 Vec::new()
             };
-            if self.cursor.at_punct(Punct::LParen) && self.open_closed_slice_follows() {
+            if self.looks_like_spec_method_selection() {
+                expr = self.spec_method_call_expr(expr);
+            } else if self.cursor.at_punct(Punct::LParen) && self.open_closed_slice_follows() {
                 let _ = self.eat_open_punct(Punct::LParen);
                 let start = self.expr();
                 self.expect_punct(Punct::Comma, "expected `,` in slice");
@@ -309,9 +318,9 @@ impl Parser<'_> {
                     });
                 }
             } else if self.eat_open_punct(Punct::LBracket).is_some() {
-                let start = self.expr();
+                let start = self.with_record_expressions(Self::expr);
                 if self.cursor.eat_punct(Punct::Comma).is_some() {
-                    let end_expr = self.expr();
+                    let end_expr = self.with_record_expressions(Self::expr);
                     let end = self.expect_punct(Punct::RParen, "expected `)` after slice");
                     let span = expr.span().cover(end);
                     expr = Expr::Slice(SliceExpr {
@@ -420,9 +429,11 @@ impl Parser<'_> {
             TokenKind::Punct(Punct::LBrace) => Expr::Block(BlockExpr {
                 block: self.block(),
             }),
-            TokenKind::Punct(Punct::LBracket) => self.list_expr(),
-            TokenKind::Punct(Punct::LParen) => self.tuple_or_group_expr(),
-            TokenKind::Punct(Punct::Hash) => self.set_expr(),
+            TokenKind::Punct(Punct::LBracket) => self.with_record_expressions(Self::list_expr),
+            TokenKind::Punct(Punct::LParen) => {
+                self.with_record_expressions(Self::tuple_or_group_expr)
+            }
+            TokenKind::Punct(Punct::Hash) => self.with_record_expressions(Self::set_expr),
             _ if self.cursor.at_ident_like() => self.path_or_record_expr(),
             _ => {
                 let span = self.cursor.peek().span;
@@ -1070,14 +1081,33 @@ impl Parser<'_> {
             if !self.cursor.nth(idx + 1).kind.is_ident_like() {
                 return false;
             }
-            if self.cursor.nth(idx + 2).kind == TokenKind::Punct(Punct::LParen) {
+            if self.call_follows_generic_arguments(idx + 2) {
                 return true;
             }
             idx += 1;
-            if idx > 96 {
-                return false;
+        }
+    }
+
+    fn call_follows_generic_arguments(&self, mut index: usize) -> bool {
+        if self.cursor.nth(index).kind == TokenKind::Punct(Punct::Lt) {
+            let mut depth = 0usize;
+            loop {
+                match self.cursor.nth(index).kind {
+                    TokenKind::Punct(Punct::Lt) => depth += 1,
+                    TokenKind::Punct(Punct::Gt) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            index += 1;
+                            break;
+                        }
+                    }
+                    TokenKind::Eof => return false,
+                    _ => {}
+                }
+                index += 1;
             }
         }
+        self.cursor.nth(index).kind == TokenKind::Punct(Punct::LParen)
     }
 
     pub(crate) fn looks_like_lambda_param_list(&self) -> bool {

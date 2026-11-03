@@ -5,7 +5,10 @@ pub use callable_application::{
     CheckedCallableApplication,
 };
 mod checked_reachability;
-pub(crate) use callable_graph::{lower_callable_graph, lower_callable_graph_in_scope};
+pub(crate) use callable_graph::{
+    lower_callable_graph, lower_callable_graph_in_scope, lower_callable_request_target,
+    lower_callable_request_target_in_scope,
+};
 mod context;
 mod dependency_namespaces;
 mod external_anchors;

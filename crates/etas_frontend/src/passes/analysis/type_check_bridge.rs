@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use etas_core::{Diagnostic, TypeDiagnosticCode};
 
 mod behavior_types;
+mod impl_methods;
 pub(super) mod reflection;
 
 use crate::{
@@ -333,7 +334,7 @@ fn convert_external_metadata(
             .spec_impls
             .iter()
             .map(convert_external_spec_impl)
-            .collect(),
+            .collect::<Result<_, _>>()?,
         type_spec_satisfactions: metadata
             .type_spec_satisfactions
             .iter()
@@ -374,6 +375,7 @@ fn convert_external_spec_signature(
             .iter()
             .map(|method| etas_types::ExternalSpecMethodInput {
                 name: method.name.clone(),
+                receiver_param: method.receiver_param,
                 path: method.path.clone(),
                 signature: method
                     .signature
@@ -404,8 +406,8 @@ fn convert_external_spec_kind(
 
 fn convert_external_spec_impl(
     implementation: &crate::ProjectExternalSpecImplInput,
-) -> etas_types::ExternalSpecImplInput {
-    etas_types::ExternalSpecImplInput {
+) -> Result<etas_types::ExternalSpecImplInput, crate::code::descriptor::ProjectionError> {
+    Ok(etas_types::ExternalSpecImplInput {
         self_type: convert_external_type(&implementation.self_type),
         spec: implementation.spec.clone(),
         args: implementation
@@ -413,8 +415,12 @@ fn convert_external_spec_impl(
             .iter()
             .map(convert_external_type)
             .collect(),
-        methods: implementation.methods.clone(),
-    }
+        methods: implementation
+            .methods
+            .iter()
+            .map(impl_methods::signature)
+            .collect::<Result<_, _>>()?,
+    })
 }
 
 fn convert_external_type_spec_satisfaction(

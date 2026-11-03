@@ -48,14 +48,14 @@ mod type_projection;
 use callable_returns::invalid;
 use type_projection::{metadata_effect_arg, metadata_effect_row_ref, metadata_type};
 
-pub(super) struct ProjectMetadataProjection<'a> {
+pub(crate) struct ProjectMetadataProjection<'a> {
     pub(super) checked: &'a CheckedProject,
     canonical_type_paths: BTreeMap<String, Option<Vec<String>>>,
     effect_registry: &'a EffectRegistry,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
-    pub(super) fn new(checked: &'a CheckedProject) -> Self {
+    pub(crate) fn new(checked: &'a CheckedProject) -> Self {
         Self {
             checked,
             canonical_type_paths: build_canonical_type_paths(checked),
@@ -86,11 +86,12 @@ impl<'a> ProjectMetadataProjection<'a> {
             .transpose()?;
         let mut public_metadata = self.public_metadata(
             &external_modules,
-            identity_input.as_ref().map(|(_, identities)| identities),
+            identity_input.as_ref().map(|(_, index)| index),
         )?;
-        if let (Some(package), Some((origins, identities))) =
-            (input.definition_origin, identity_input)
-        {
+        if let Some((origins, identities)) = identity_input {
+            let package = input
+                .definition_origin
+                .ok_or_else(|| invalid("definition package origin is missing"))?;
             public_metadata.definition_origins =
                 Some(self.definition_origins(package, &origins, &identities)?);
             public_metadata.definition_descriptors =
@@ -261,9 +262,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
         metadata.actions = self.action_signatures()?;
         metadata.spec_signatures = self.spec_signatures()?;
-        metadata.spec_impls = self.spec_impls()?;
+        metadata.spec_impls = self.spec_impls(identities)?;
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
-        metadata.callable_spec_satisfactions = self.callable_spec_satisfactions()?;
+        metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
         metadata.trace_spec_conformances = self.trace_spec_conformances(identities)?;
         metadata.effect_summaries = self.effect_summaries()?;
         metadata.trace_spec_summaries = self.trace_spec_summaries(identities)?;
@@ -816,45 +817,24 @@ impl<'a> ProjectMetadataProjection<'a> {
         })
     }
 
-    fn spec_impls(&self) -> Result<Vec<MetadataSpecImpl>, PackageMetadataError> {
+    fn spec_impls(
+        &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<Vec<MetadataSpecImpl>, PackageMetadataError> {
         self.checked
             .types
             .spec_impls
             .iter()
+            .filter(|implementation| !implementation.methods.iter().any(|method| {
+                self.checked.types.agent_methods.get(&method.symbol)
+                    .is_some_and(|method| method.private_to.is_some())
+            }))
             .map(|implementation| {
                 let spec = self
                     .symbol_canonical_path(implementation.spec_symbol)
                     .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
                         reason: "spec impl target has no canonical metadata path".to_owned(),
                     })?;
-                let mut implementation_module = None;
-                for method in &implementation.methods {
-                    let symbol = self.checked.symbols.get(method.symbol).ok_or_else(|| {
-                        PackageMetadataError::InvalidMetadataType {
-                            reason: "spec implementation method has no checked symbol".into(),
-                        }
-                    })?;
-                    let module = self
-                        .checked
-                        .hir
-                        .modules_arena
-                        .get(symbol.defining_module)
-                        .and_then(|module| module.name.as_ref())
-                        .map(path_segments)
-                        .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
-                            reason: "spec implementation method has no source module".into(),
-                        })?;
-                    if implementation_module
-                        .as_ref()
-                        .is_some_and(|previous| previous != &module)
-                    {
-                        return Err(PackageMetadataError::InvalidMetadataType {
-                            reason: "spec implementation methods have different source modules"
-                                .into(),
-                        });
-                    }
-                    implementation_module = Some(module);
-                }
                 Ok(MetadataSpecImpl {
                     self_type: self.metadata_type(implementation.self_type)?,
                     spec,
@@ -866,9 +846,17 @@ impl<'a> ProjectMetadataProjection<'a> {
                     methods: implementation
                         .methods
                         .iter()
-                        .map(|method| method.name.clone())
-                        .collect(),
-                    implementation_module: implementation_module.unwrap_or_default(),
+                        .map(|method| {
+                            let identity = identities.and_then(|index| index.method(method.symbol)).cloned()
+                                .ok_or_else(|| invalid("spec implementation metadata requires a canonical method identity"))?;
+                            let body = self.checked.types.type_impl_methods.get(&method.symbol).map(|method| method.body)
+                                .or_else(|| self.checked.types.agent_methods.get(&method.symbol).map(|method| method.body))
+                                .ok_or_else(|| invalid("spec implementation method has no checked body ownership"))?;
+                            Ok(etas_package_metadata::SpecImplMethod {
+                                identity, callable: self.implementation_callable_graph(body)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, PackageMetadataError>>()?,
                 })
             })
             .collect()
@@ -903,6 +891,7 @@ impl<'a> ProjectMetadataProjection<'a> {
 
     fn callable_spec_satisfactions(
         &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Vec<MetadataCallableSpecSatisfaction>, PackageMetadataError> {
         self.checked
             .types
@@ -910,12 +899,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .iter()
             .filter(|fact| !self.is_named_agent_method_body(fact.item))
             .map(|fact| {
-                let item = self.item_path(fact.item).ok_or_else(|| {
-                    PackageMetadataError::InvalidMetadataType {
-                        reason: "callable spec satisfaction item has no canonical metadata path"
-                            .to_owned(),
-                    }
-                })?;
+                let item = self.callable_contract_target(fact.item, identities)?;
                 let spec = self
                     .symbol_canonical_path(fact.spec_symbol)
                     .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
@@ -945,12 +929,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             .iter()
             .filter(|fact| !self.is_named_agent_method_body(fact.item))
             .map(|fact| {
-                let item = self.item_path(fact.item).ok_or_else(|| {
-                    PackageMetadataError::InvalidMetadataType {
-                        reason: "trace spec conformance item has no canonical metadata path"
-                            .to_owned(),
-                    }
-                })?;
+                let item = self.callable_contract_target(fact.item, identities)?;
                 Ok(MetadataTraceSpecConformance {
                     item,
                     target: match &fact.target {
@@ -988,6 +967,43 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .agent_methods
                 .values()
                 .any(|method| method.body == item)
+    }
+
+    fn callable_contract_target(
+        &self,
+        item: HirItemId,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<etas_package_metadata::CallableContractTarget, PackageMetadataError> {
+        if let Some(method) = self
+            .checked
+            .types
+            .type_impl_methods
+            .values()
+            .find(|method| method.body == item)
+        {
+            if !self.checked.types.spec_impls.iter().any(|implementation| {
+                implementation
+                    .methods
+                    .iter()
+                    .any(|member| member.symbol == method.symbol)
+            }) {
+                return Err(invalid(
+                    "method conformance requires a published implementation owner",
+                ));
+            }
+            let identity = identities
+                .and_then(|index| index.method(method.symbol))
+                .cloned()
+                .ok_or_else(|| {
+                    invalid("method conformance requires its canonical method identity")
+                })?;
+            return Ok(etas_package_metadata::CallableContractTarget::Method(
+                identity,
+            ));
+        }
+        self.item_path(item)
+            .map(etas_package_metadata::CallableContractTarget::Item)
+            .ok_or_else(|| invalid("callable conformance item has no public declaration identity"))
     }
 
     fn spec_method_metadata(
@@ -1029,6 +1045,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             })?;
         Ok(MetadataSpecMethod {
             name: method.name.clone(),
+            receiver_param: method.receiver_param,
             path: path.clone(),
             signature: Some(self.metadata_callable_signature_from_callable(
                 path,
@@ -1664,6 +1681,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .as_ref()
                         .map(|row| {
                             self.effect_row_metadata(row, type_generic_names, effect_generic_names)
+                                .map_err(|error| PackageMetadataError::InvalidMetadataType {
+                                    reason: format!("latent declared bound for {item:?}: {error}"),
+                                })
                         })
                         .transpose()?
                         .unwrap_or_default();
@@ -1682,11 +1702,15 @@ impl<'a> ProjectMetadataProjection<'a> {
                             .cloned()
                             .collect(),
                         declared_bound,
-                        inferred_effects: self.effect_row_metadata(
-                            &latent.inferred,
-                            type_generic_names,
-                            effect_generic_names,
-                        )?,
+                        inferred_effects: self
+                            .effect_row_metadata(
+                                &latent.inferred,
+                                type_generic_names,
+                                effect_generic_names,
+                            )
+                            .map_err(|error| PackageMetadataError::InvalidMetadataType {
+                                reason: format!("latent inferred row for {item:?}: {error}"),
+                            })?,
                     })
                 })
             })
@@ -1719,9 +1743,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             }
             ActionTraceDomain::ParameterCall { target, .. } => MetadataActionTrace::ParameterCall {
-                parameter: parameters.get(target).cloned().ok_or_else(|| {
-                    invalid("trace call has no checked parameter binding in its exported interface")
-                })?,
+                parameter: self.callable_request_target(*target, parameters)?,
             },
             ActionTraceDomain::Seq(children) => MetadataActionTrace::Seq(
                 children
@@ -1755,12 +1777,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 parameter_calls: parameter_calls
                     .iter()
                     .map(|call| {
-                        parameters.get(&call.target).cloned().ok_or_else(|| {
-                            invalid("widened trace call has no checked exported parameter binding")
-                        })
+                        let target = self.callable_request_target(call.target, parameters)?;
+                        Ok((target.fingerprint()?, target))
                     })
-                    .collect::<Result<BTreeSet<_>, _>>()?
-                    .into_iter()
+                    .collect::<Result<BTreeMap<_, _>, PackageMetadataError>>()?
+                    .into_values()
                     .collect(),
             },
         })

@@ -19,8 +19,9 @@ pub use analysis::{
     ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
 pub use dependency::{
-    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
-    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
+    CompleteTypedRuntimeReachabilityPass, ComputeDefinitionAnalysisReachabilityPass,
+    ComputeEntryReachabilityPass,
 };
 pub use execution::{ValidateResidualBackendSupportPass, VerifyInterpreterSupportPass};
 pub use graph::{

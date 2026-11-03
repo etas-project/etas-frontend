@@ -69,6 +69,16 @@ pub fn lower_external_callable_generic_params(
     callable_path: &[String],
     params: &[crate::ExternalCallableGenericParamInput],
 ) -> Option<Vec<crate::CallableGenericParam>> {
+    lower_external_generic_params(ctx, span, package, &callable_path.join("."), params)
+}
+
+pub(crate) fn lower_external_generic_params(
+    ctx: &mut TypePipelineContext<'_>,
+    span: Span,
+    package: crate::ExternalPackageKey,
+    callable_label: &str,
+    params: &[crate::ExternalCallableGenericParamInput],
+) -> Option<Vec<crate::CallableGenericParam>> {
     let unique_names = params
         .iter()
         .map(|param| param.name.as_str())
@@ -79,7 +89,7 @@ pub fn lower_external_callable_generic_params(
             span,
             format!(
                 "invalid external package metadata: callable `{}` contains duplicate generic parameter names",
-                callable_path.join(".")
+                callable_label
             ),
         );
         return None;
@@ -96,7 +106,7 @@ pub fn lower_external_callable_generic_params(
                         span,
                         format!(
                             "invalid external package metadata: callable `{}` generic `{}` references spec `{}`: {reason}",
-                            callable_path.join("."),
+                            callable_label,
                             param.name,
                             bound.spec.join(".")
                         ),

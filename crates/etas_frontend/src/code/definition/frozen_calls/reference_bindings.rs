@@ -43,7 +43,13 @@ pub(crate) fn relocate_reference_bindings(
     target_input.effects = None;
     let from = projection::Projection::build(source_input, &frozen.origins_for(original)?, limits)?;
     let to = projection::Projection::build(target_input, &frozen.origins_for(candidate)?, limits)?;
-    let relocation = relocate::Relocation::new(original, target_input, &from, &to, overlay)?;
+    let target_output = etas_types::TypeOutput {
+        facts: candidate.types.clone(),
+        store: candidate.type_store.clone(),
+        diagnostics: Vec::new(),
+    };
+    let relocation =
+        relocate::Relocation::new(original, target_input, &target_output, &from, &to, overlay)?;
     let scope = projection::owner(owner)?;
     references
         .iter()

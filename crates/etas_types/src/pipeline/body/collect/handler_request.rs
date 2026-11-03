@@ -58,6 +58,18 @@ pub(super) fn collect_handle<E>(
         origin: ConstraintOrigin { span },
         reason: crate::AssignabilityReason::Branch,
     });
+    let answer_context = match expected {
+        Some(expected) => Some(expected),
+        // A non-returning body supplies no answer type on its own.
+        None if matches!(
+            ctx.ctx.interner.store().get(body_ty),
+            Some(Type::Primitive(crate::PrimitiveType::Never))
+        ) =>
+        {
+            None
+        }
+        None => Some(body_ty),
+    };
     let requests = ctx.state.action_requests.drain(start..).collect::<Vec<_>>();
     let expected_handler = ctx.ctx.interner.intern(Type::Handler(crate::HandlerType {
         handled: crate::EffectRowRef {
@@ -76,6 +88,7 @@ pub(super) fn collect_handle<E>(
             Some(expected_handler),
             &requests,
             Some(body),
+            answer_context,
         )?;
         if expected.is_none() {
             let mut candidates = collected

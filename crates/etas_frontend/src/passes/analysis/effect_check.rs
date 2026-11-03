@@ -239,6 +239,12 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             Ok(summaries) => summaries,
             Err(error) => return PassResult::failed(error),
         };
+        let external_implementations = external_metadata::external_implementations(
+            environment,
+            types,
+            &external_anchors,
+            &mut external_metadata_diagnostics,
+        );
         let external_trace_specs = external_trace_spec_summaries(
             environment,
             types,
@@ -333,6 +339,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             source_snapshots: &source_snapshots,
             residual_identity: Some(&residual_identity),
             trace_monitor_projector: Some(&residual_identity),
+            external_implementations: &external_implementations,
             frozen_calls: frozen_calls
                 .as_ref()
                 .map(|provider| provider as &dyn etas_effects::FrozenCallableSummaryProvider),

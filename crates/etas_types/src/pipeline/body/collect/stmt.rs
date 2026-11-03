@@ -74,7 +74,17 @@ pub fn collect_stmt<E>(
             }
             ctx.primitive(PrimitiveType::Never)
         }
-        HirStmt::Expr { expr, .. } => collect_expr(ctx, expr, None)?,
+        HirStmt::Expr { expr, span } => {
+            let value = collect_expr(ctx, expr, None)?;
+            let output = ctx.fresh_type_var();
+            ctx.emit(TypeConstraint::DiscardValue {
+                value,
+                output,
+                unit,
+                origin: ConstraintOrigin { span },
+            });
+            output
+        }
         HirStmt::If(expr) => {
             match ctx.ctx.hir.exprs[expr].clone() {
                 etas_hir::HirExpr::If {

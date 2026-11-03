@@ -5,6 +5,9 @@ pub fn materialize_signature_facts(
     mut state: SignaturePipelineState,
 ) {
     ctx.signature_facts
+        .type_impl_methods
+        .extend(state.type_impl_methods.drain());
+    ctx.signature_facts
         .agent_methods
         .extend(state.agent_methods.drain());
     ctx.signature_facts

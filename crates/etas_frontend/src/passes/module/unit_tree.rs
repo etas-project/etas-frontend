@@ -141,16 +141,14 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                                 "impl body unit requires its AST declaration",
                             );
                         };
-                        if matches!(decl.target, etas_syntax::ast::ImplTarget::Agent { .. }) {
-                            for (index, member) in decl.items.iter().enumerate() {
-                                if let etas_syntax::ast::ImplItem::Flow(flow) = member {
-                                    bodies.push(AstBodyRef {
-                                        source: item.source,
-                                        item: item.clone(),
-                                        impl_member: Some(index),
-                                        span: flow.span,
-                                    });
-                                }
+                        for (index, member) in decl.items.iter().enumerate() {
+                            if let etas_syntax::ast::ImplItem::Flow(flow) = member {
+                                bodies.push(AstBodyRef {
+                                    source: item.source,
+                                    item: item.clone(),
+                                    impl_member: Some(index),
+                                    span: flow.span,
+                                });
                             }
                         }
                     }

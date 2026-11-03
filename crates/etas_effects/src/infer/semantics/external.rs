@@ -2,6 +2,32 @@ use super::engine::EffectSemantics;
 use super::shared::*;
 use crate::{external_trace::parameter_target, pipeline::ExternalActionTraceMetadata};
 
+fn request_label(target: &crate::ExternalCallableRequestTarget) -> &str {
+    match target {
+        crate::ExternalCallableRequestTarget::Parameter(parameter) => parameter,
+        crate::ExternalCallableRequestTarget::SpecMethod(method) => &method.method,
+    }
+}
+
+impl EffectSemantics<'_> {
+    fn external_request_target(
+        &self,
+        target: &crate::ExternalCallableRequestTarget,
+        parameters: &[(String, crate::ParameterCallTarget)],
+        generics: &[(String, etas_types::CallableGenericParamKind)],
+        span: Span,
+    ) -> Option<crate::ParameterCallTarget> {
+        match target {
+            crate::ExternalCallableRequestTarget::Parameter(label) => {
+                parameter_target(parameters, label)
+            }
+            crate::ExternalCallableRequestTarget::SpecMethod(method) => self
+                .register_metadata_method(method, parameters, generics, span)
+                .ok(),
+        }
+    }
+}
+
 impl EffectSemantics<'_> {
     fn external_metadata_for_callable(
         &self,
@@ -146,11 +172,15 @@ impl EffectSemantics<'_> {
         };
         let mut proven = false;
         for request in &requests.parameters {
+            let crate::ExternalCallableRequestTarget::Parameter(parameter) = &request.parameter
+            else {
+                continue;
+            };
             let mut positions = metadata
                 .param_names
                 .iter()
                 .enumerate()
-                .filter_map(|(position, name)| (name == &request.parameter).then_some(position));
+                .filter_map(|(position, name)| (name == parameter).then_some(position));
             let Some(position) = positions.next() else {
                 return Err(Error::InvalidCallableParameterInterface);
             };
@@ -296,7 +326,7 @@ impl EffectSemantics<'_> {
         let parameter_targets = (0..metadata.param_names.len())
             .map(|position| crate::ParameterCallTarget::Interface(position as u32))
             .collect::<Vec<_>>();
-        let trace_bindings = self.call_trace_bindings(site, &parameter_targets)?;
+        let mut trace_bindings = self.call_trace_bindings(site, &parameter_targets)?;
         let signature = self
             .checked_callable_type_for_expr(site.callee_expr)
             .ok_or(
@@ -324,6 +354,14 @@ impl EffectSemantics<'_> {
                     .map_err(super::specialize::EffectSpecializationError::Interrupted)?;
             }
         }
+        self.bind_spec_method_arguments(
+            &summary,
+            &mut trace_bindings,
+            self.callable_environment_site(site.call)?,
+            state,
+            &type_bindings,
+            &effect_row_bindings,
+        )?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
             &summary,
@@ -398,6 +436,7 @@ impl EffectSemantics<'_> {
             .collect::<Vec<_>>();
         let mut summary = self.external_callable_summary(
             crate::pipeline::ExternalCallableEffectView {
+                generic_params: &metadata.generic_params,
                 handler_requests: metadata.handler_requests.as_ref(),
                 parameter_targets: &parameter_targets,
                 public_effects: &metadata.public_effects,
@@ -444,11 +483,13 @@ impl EffectSemantics<'_> {
                     .iter()
                     .map(|parameter| {
                         Some(crate::ParameterRequest {
-                            target: parameter_target(
-                                metadata.parameter_targets,
+                            target: self.external_request_target(
                                 &parameter.parameter,
+                                metadata.parameter_targets,
+                                metadata.generic_params,
+                                span,
                             )?,
-                            parameter: parameter.parameter.clone(),
+                            parameter: request_label(&parameter.parameter).to_owned(),
                             span,
                             excluded: parameter
                                 .excluded
@@ -586,6 +627,7 @@ impl EffectSemantics<'_> {
         summary.action_trace = self.external_action_trace_from_metadata(
             metadata.action_trace,
             metadata.parameter_targets,
+            metadata.generic_params,
             span,
         )?;
         let coverage = crate::EffectCoverage {
@@ -631,11 +673,15 @@ impl EffectSemantics<'_> {
         &self,
         trace: &ExternalActionTraceMetadata,
         parameters: &[(String, crate::ParameterCallTarget)],
+        generics: &[(String, etas_types::CallableGenericParamKind)],
         span: Span,
     ) -> Option<ActionTraceDomain> {
-        crate::external_trace::lower_external_action_trace(trace, parameters, span, |action| {
-            self.external_effect_from_metadata(action)
-        })
+        crate::external_trace::lower_external_action_trace_with_targets(
+            trace,
+            span,
+            |action| self.external_effect_from_metadata(action),
+            |parameter| self.external_request_target(parameter, parameters, generics, span),
+        )
     }
 
     pub(crate) fn external_effect_from_metadata(

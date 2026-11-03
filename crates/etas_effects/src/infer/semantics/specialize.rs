@@ -219,11 +219,15 @@ impl EffectSemantics<'_> {
         let Some(params) = self.unit_params(callee) else {
             return Ok(summary.clone());
         };
-        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
-            self.hir.exprs.get(site.call)
-        else {
+        if !matches!(
+            self.hir.exprs.get(site.call),
+            Some(
+                HirExpr::Call { .. } | HirExpr::MethodCall { .. } | HirExpr::SpecMethodCall { .. }
+            )
+        ) {
             return Ok(summary.clone());
-        };
+        }
+        let args = self.call_arguments(site, params.len())?;
         let mut bindings = Vec::new();
         let mut trace_bindings = environment
             .map(|id| self.native_environment_bindings(id))
@@ -233,9 +237,8 @@ impl EffectSemantics<'_> {
             return Err(EffectSpecializationError::InvalidCallableParameterInterface);
         }
         for (index, param) in params.iter().enumerate() {
-            let arg = args
+            let arg = *args
                 .get(index)
-                .and_then(arg_expr)
                 .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
             let symbol = self
                 .hir
@@ -259,6 +262,14 @@ impl EffectSemantics<'_> {
             type_bindings.extend(types);
             effect_row_bindings.extend(rows);
         }
+        self.bind_spec_method_arguments(
+            summary,
+            &mut trace_bindings,
+            self.callable_environment_site(site.call)?,
+            state,
+            &type_bindings,
+            &effect_row_bindings,
+        )?;
         self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
         if bindings.is_empty()

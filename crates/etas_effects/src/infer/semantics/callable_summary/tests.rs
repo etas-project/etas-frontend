@@ -30,6 +30,7 @@ flow base() -> unit ![Console.stdout_write] { perform Console.stdout_write("base
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
+        external_implementations: &[],
         frozen_calls: None,
         hir: &hir,
         types: &types,

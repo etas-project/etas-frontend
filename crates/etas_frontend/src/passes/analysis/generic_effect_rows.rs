@@ -28,6 +28,7 @@ impl Pass<ProjectContext> for MaterializeGenericEffectRowsPass {
             ]))
             .produces(ArtifactSet::from([
                 TYPE_OUTPUT,
+                EFFECT_OUTPUT,
                 GENERIC_EFFECT_BINDINGS,
                 DIAGNOSTICS,
             ]))
@@ -49,7 +50,7 @@ impl Pass<ProjectContext> for MaterializeGenericEffectRowsPass {
         let (Some(hir), Some(types), Some(effects), Some(artifacts), Some(reachability)) = (
             &context.hir,
             &mut context.types,
-            &context.effects,
+            &mut context.effects,
             &context.effect_pipeline_artifacts,
             &context.reachability,
         ) else {
@@ -122,6 +123,17 @@ impl Pass<ProjectContext> for MaterializeGenericEffectRowsPass {
         }
         if let Err(error) = materialize_effect_row_instantiations(types, &patches) {
             return reject(context, error.call, error.to_string());
+        }
+        if !patches.is_empty() {
+            let facts = std::sync::Arc::make_mut(&mut effects.facts);
+            for (value, latent) in &mut facts.latent_effects {
+                let Some(ty) = types.facts.expr_types.get(value) else {
+                    return PassResult::failed(
+                        "materialized latent row lost its checked expression type",
+                    );
+                };
+                latent.flow_type = *ty;
+            }
         }
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
     }

@@ -327,7 +327,7 @@ impl TypeStore {
 
     pub fn intern(&mut self, ty: Type) -> TypeId {
         let id = TypeId(self.len() as u32);
-        self.types.push(ty);
+        self.types.push(canonical_type(ty));
         id
     }
 
@@ -403,7 +403,7 @@ impl TypeStore {
         }
         Ok(Self {
             base: Some(base),
-            types,
+            types: types.into_iter().map(canonical_type).collect(),
             nominal_identities,
             parameter_identities,
         })
@@ -475,7 +475,7 @@ impl<'de> Deserialize<'de> for TypeStore {
         }
         Ok(Self {
             base: None,
-            types: flat.types,
+            types: flat.types.into_iter().map(canonical_type).collect(),
             nominal_identities: flat.nominal_identities,
             parameter_identities: flat.parameter_identities,
         })
@@ -546,10 +546,7 @@ impl TypeInterner {
     }
 
     pub fn intern(&mut self, ty: Type) -> TypeId {
-        let ty = match ty {
-            Type::Tuple(fields) if fields.is_empty() => Type::Primitive(PrimitiveType::Unit),
-            ty => ty,
-        };
+        let ty = canonical_type(ty);
         if let Some(id) = self
             .types
             .get(&ty)
@@ -824,5 +821,12 @@ mod tests {
             bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
         assert_eq!(restored.parameter_identity(first), Some(&first_key));
         assert!(TypeUnifier::new(&restored).unify(first, second).is_err());
+    }
+}
+
+fn canonical_type(ty: Type) -> Type {
+    match ty {
+        Type::Tuple(elements) if elements.is_empty() => Type::Primitive(PrimitiveType::Unit),
+        ty => ty,
     }
 }

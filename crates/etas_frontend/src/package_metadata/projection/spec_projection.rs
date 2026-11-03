@@ -723,6 +723,7 @@ mod tests {
         let mut behavioral_metadata = metadata.clone();
         behavioral_metadata[0].spec_signatures[1].methods.push(
             crate::ProjectExternalSpecMethodInput {
+                receiver_param: None,
                 name: "method".into(),
                 path: vec!["dep".into(), "Family".into(), "method".into()],
                 signature: None,
@@ -736,6 +737,7 @@ mod tests {
             .unwrap()
             .methods
             .push(etas_types::SpecMethodFact {
+                receiver_param: None,
                 identity: etas_types::SpecMethodIdentity::External {
                     package: 1,
                     path: vec!["dep".into(), "Family".into(), "method".into()],

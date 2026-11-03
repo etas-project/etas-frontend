@@ -403,15 +403,18 @@ pub fn collect_expr<E>(
             spec_path,
             spec_args,
             method,
+            generic_args,
             args,
             span,
         } => collect_spec_method_call(
             ctx,
             SpecMethodCallInput {
+                expr,
                 receiver,
                 spec_path: &spec_path,
                 spec_args: &spec_args,
                 method: &method,
+                generic_args: &generic_args,
                 args: &args,
                 span,
                 expected,

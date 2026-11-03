@@ -301,6 +301,7 @@ impl TraceSpecPattern {
             canonical: types.facts.canonical_specs.clone(),
             external_signatures: types.facts.external_specs.signatures.clone(),
             external_impls: types.facts.external_specs.impls.clone(),
+            external_methods: types.facts.external_specs.methods.clone(),
             external_aliases: types.facts.external_specs.aliases.clone(),
             signatures: types.facts.spec_signatures.clone(),
             impls: types.facts.spec_impls.clone(),
@@ -373,6 +374,7 @@ pub struct TraceSpecModelStore {
     /// error diagnostic emitted for that failure in this analysis session.
     pub(crate) rejected_fact_diagnostics: BTreeMap<usize, usize>,
     pub external_referenced_by_item: BTreeMap<ExternalTraceSpecItem, TraceSpecConformances>,
+    pub external_referenced_methods: BTreeMap<etas_code::MethodId, TraceSpecConformances>,
     pub trace_spec_names: BTreeMap<HirItemId, String>,
 }
 

@@ -104,11 +104,12 @@ pub(super) fn instantiate_signature<E>(
         .generic_params
         .iter()
         .filter(|param| param.kind == CallableGenericParamKind::Type)
-        .map(|param| (param.name.clone(), ctx.fresh_type_var()))
+        .map(|param| (param.subject, ctx.fresh_type_var()))
         .collect::<HashMap<_, _>>();
     let result = (|| -> Result<_, TypeSubstitutionError> {
-        let mut engine =
-            TypeSubstitutionEngine::materializing(&mut ctx.ctx.interner, &bindings, None);
+        let names = HashMap::new();
+        let mut engine = TypeSubstitutionEngine::materializing(&mut ctx.ctx.interner, &names, None)
+            .with_type_parameters(&bindings);
         for param in &mut signature.params {
             *param = engine.substitute(*param)?;
         }

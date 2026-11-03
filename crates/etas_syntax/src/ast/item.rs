@@ -570,8 +570,14 @@ pub struct ProtocolMsg {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct Param {
     pub name: Name,
-    pub ty: TypeExpr,
+    pub ty: ParamType,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
+pub enum ParamType {
+    Explicit(Box<TypeExpr>),
+    SelfReceiver { span: Span },
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

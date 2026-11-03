@@ -67,6 +67,21 @@ impl Encoder {
         self.number(value.len());
         self.0.update(value.as_bytes());
     }
+    fn request_target(&mut self, target: &etas_package_metadata::CallableRequestTarget) {
+        self.0.update(target.input_fingerprint().as_bytes());
+    }
+    fn contract_target(&mut self, target: &etas_package_metadata::CallableContractTarget) {
+        match target {
+            etas_package_metadata::CallableContractTarget::Item(path) => {
+                self.byte(0);
+                self.path(path);
+            }
+            etas_package_metadata::CallableContractTarget::Method(method) => {
+                self.byte(1);
+                self.0.update(method.fingerprint().as_bytes());
+            }
+        }
+    }
     fn path(&mut self, path: &[String]) {
         self.number(path.len());
         for segment in path {
@@ -176,7 +191,7 @@ impl Encoder {
                         }
                         Trace::ParameterCall { parameter } => {
                             self.byte(2);
-                            self.text(parameter);
+                            self.request_target(parameter);
                         }
                         Trace::Seq(children) => {
                             self.byte(3);
@@ -205,7 +220,7 @@ impl Encoder {
                             self.number(actions.len());
                             self.number(parameter_calls.len());
                             for parameter in parameter_calls {
-                                self.text(parameter);
+                                self.request_target(parameter);
                             }
                             tasks.extend(actions.iter().rev().map(Task::Effect));
                         }
@@ -354,7 +369,7 @@ impl Encoder {
                 }
                 Task::ParameterRequest(parameter) => {
                     self.byte(20);
-                    self.text(&parameter.parameter);
+                    self.request_target(&parameter.parameter);
                     self.number(parameter.excluded.len());
                     tasks.extend(parameter.excluded.iter().rev().map(Task::Effect));
                 }
@@ -700,8 +715,14 @@ pub(crate) fn external_spec_impl(value: &crate::ProjectExternalSpecImplInput) ->
     let mut encoder = Encoder::new();
     encoder.byte(26);
     encoder.path(&value.spec);
-    encoder.texts(&value.methods);
-    encoder.path(&value.implementation_module);
+    encoder.number(value.methods.len());
+    for method in &value.methods {
+        encoder.0.update(method.identity.fingerprint().as_bytes());
+        encoder.0.update(
+            etas_package_metadata::callable_value_graph_input_fingerprint(&method.callable)
+                .as_bytes(),
+        );
+    }
     encoder.number(value.args.len());
     encoder.encode(Task::Type(&value.self_type));
     for arg in &value.args {
@@ -729,7 +750,7 @@ pub(crate) fn external_callable_satisfaction(
 ) -> String {
     let mut encoder = Encoder::new();
     encoder.byte(28);
-    encoder.path(&value.item);
+    encoder.contract_target(&value.item);
     encoder.path(&value.spec);
     encoder.number(value.args.len());
     for arg in &value.args {
@@ -744,7 +765,7 @@ pub(crate) fn external_trace_conformance(
     use crate::ProjectExternalTraceSpecConformanceTargetInput as Target;
     let mut encoder = Encoder::new();
     encoder.byte(29);
-    encoder.path(&value.item);
+    encoder.contract_target(&value.item);
     match &value.target {
         Target::Inline => encoder.byte(0),
         Target::Named {
@@ -1145,23 +1166,10 @@ mod tests {
     #[test]
     fn spec_implementations_and_trace_alternatives_keep_full_structure() {
         use crate::{
-            ProjectExternalSpecImplInput, ProjectExternalTraceSpecClauseInput as Clause,
+            ProjectExternalTraceSpecClauseInput as Clause,
             ProjectExternalTraceSpecClauseKindInput as Kind,
             ProjectExternalTraceSpecSummaryInput as Summary,
         };
-        let mut implementation = ProjectExternalSpecImplInput {
-            self_type: Type::Named(vec!["app".into(), "T".into()]),
-            spec: vec!["app".into(), "S".into()],
-            args: vec![],
-            methods: vec!["one".into()],
-            implementation_module: vec!["dep".into(), "impls".into()],
-        };
-        let original = external_spec_impl(&implementation);
-        implementation.methods[0] = "two".into();
-        assert_ne!(original, external_spec_impl(&implementation));
-        implementation.methods[0] = "one".into();
-        implementation.implementation_module[1] = "other".into();
-        assert_ne!(original, external_spec_impl(&implementation));
         let clause = |kind| Clause {
             kind,
             pattern: Some(Row::default()),

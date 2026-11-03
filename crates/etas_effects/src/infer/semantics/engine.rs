@@ -20,6 +20,24 @@ use crate::infer::unit::EffectUnit;
 pub(crate) struct EffectSemantics<'a> {
     pub(super) argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
     pub(crate) analysis_units: std::sync::Arc<std::collections::BTreeSet<EffectUnit>>,
+    pub(crate) discovered_external_method_sources:
+        std::cell::RefCell<std::collections::BTreeSet<crate::MetadataCallableSource>>,
+    pub(crate) external_implementations:
+        &'a [crate::AnchoredExternalMetadata<crate::ExternalSpecImplementationMetadata>],
+    pub(crate) implementation_graphs:
+        std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
+    pub(crate) method_evidence: std::cell::RefCell<
+        std::sync::Arc<
+            std::collections::BTreeMap<
+                etas_code::CodeFingerprint,
+                std::sync::Arc<crate::facts::MetadataSpecMethodDefinition>,
+            >,
+        >,
+    >,
+    pub(crate) method_callback_graphs: std::collections::BTreeMap<
+        etas_code::CodeFingerprint,
+        Option<super::spec_methods::MethodCallbackGraph>,
+    >,
     pub(crate) frozen_graphs: std::sync::Arc<
         std::collections::BTreeMap<
             etas_code::CodeFingerprint,
@@ -28,6 +46,9 @@ pub(crate) struct EffectSemantics<'a> {
     >,
     pub(crate) generic_effect_rows:
         std::cell::RefCell<std::collections::HashMap<HirExprId, Vec<(String, EffectRow)>>>,
+    pub(crate) discovered_spec_targets: std::cell::RefCell<
+        std::collections::HashMap<HirExprId, std::collections::BTreeSet<EffectUnit>>,
+    >,
     pub(crate) symbol_lexical_scopes:
         std::collections::HashMap<etas_hir::SymbolId, Option<etas_hir::ScopeId>>,
     pub(crate) callable_summaries:
@@ -108,6 +129,8 @@ impl<'a> EffectSemantics<'a> {
             std::sync::Arc::new(super::argument_values::ArgumentWrites::build(hir, None).unwrap());
         let mut semantics = Self::from_input(
             crate::infer::analysis::EffectAnalysisInput {
+                external_implementations: &[],
+                method_evidence: Default::default(),
                 frozen_graphs: Default::default(),
                 callable_environments: Default::default(),
                 global_values: Default::default(),
@@ -137,6 +160,8 @@ impl<'a> EffectSemantics<'a> {
         argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
     ) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
+            external_implementations,
+            method_evidence,
             frozen_graphs,
             callable_environments,
             global_values,
@@ -160,8 +185,14 @@ impl<'a> EffectSemantics<'a> {
             residual_identity,
             source_snapshots,
             analysis_units: Default::default(),
+            discovered_external_method_sources: Default::default(),
+            external_implementations,
+            implementation_graphs: Default::default(),
+            method_evidence: std::cell::RefCell::new(method_evidence),
+            method_callback_graphs: Default::default(),
             frozen_graphs,
             generic_effect_rows: Default::default(),
+            discovered_spec_targets: Default::default(),
             symbol_lexical_scopes: {
                 let mut scopes = std::collections::HashMap::new();
                 for scope in hir.scopes.iter() {
@@ -222,6 +253,14 @@ impl<'a> EffectSemantics<'a> {
             external_summaries,
         };
         semantics.collect_std_callable_values();
+        for (index, method) in semantics.external_implementations.iter().enumerate() {
+            semantics
+                .implementation_graphs
+                .entry(method.graph_key)
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(index));
+        }
+        semantics.collect_method_callback_graphs();
         semantics.collect_callable_references();
         for (index, metadata) in semantics.external_summaries.iter().enumerate() {
             if let Some(key) = metadata.callable_graph_key {
@@ -243,6 +282,15 @@ impl<'a> EffectSemantics<'a> {
         Vec<crate::EffectPipelineError>,
     ) {
         self.inputs.generic_effect_rows = self.generic_effect_rows.into_inner();
+        self.inputs.method_evidence =
+            std::sync::Arc::unwrap_or_clone(self.method_evidence.into_inner());
+        for (call, targets) in self.discovered_spec_targets.into_inner() {
+            self.inputs
+                .native_call_targets
+                .entry(call)
+                .or_default()
+                .extend(targets);
+        }
         self.inputs.frozen_callable_graphs = self
             .frozen_graphs
             .iter()

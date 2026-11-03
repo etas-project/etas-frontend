@@ -1,6 +1,6 @@
 [package]
 name = "etas_effects"
-version = "0.1.0"
+version = "0.1.4"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,6 +16,7 @@ etas_std.workspace = true
 etas_types.workspace = true
 etas_utils.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 bincode.workspace = true

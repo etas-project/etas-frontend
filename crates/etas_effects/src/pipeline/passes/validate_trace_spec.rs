@@ -62,6 +62,8 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateTraceSpecPass {
                 analysis,
                 dispositions,
                 residual_plans,
+                external_summaries: context.input.external_summaries,
+                external_implementations: context.input.external_implementations,
                 reachable_items: context.input.reachable_items,
                 control: manager.execution_control(),
             },

@@ -61,12 +61,21 @@ fn resume_only_and_finish_only_handler_controls_remain_supported() {
 }
 
 #[test]
-fn malformed_handler_completion_remains_rejected() {
+fn resume_paths_are_single_use_even_with_alternatives_and_unreachable_statements() {
     for body in [
-        "if flag { finish 7; }",
+        "if flag { resume 7; } else { resume 11; }",
+        "if flag { resume 7; } resume 11;",
+        "match flag { true => { resume 7; }, false => { resume 11; } }",
+        // Resume is terminal, so the second statement is not another use.
         "resume 11; resume 12;",
-        "return 7;",
     ] {
+        assert_supported(&handler(body));
+    }
+}
+
+#[test]
+fn malformed_handler_completion_remains_rejected() {
+    for body in ["if flag { finish 7; }", "return 7;"] {
         let output = handler(body);
         assert!(output.checked.is_none(), "{body}: {:?}", output.effects);
         assert!(

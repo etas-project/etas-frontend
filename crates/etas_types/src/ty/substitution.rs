@@ -216,6 +216,7 @@ pub struct TypeSubstitutionEngine<'a> {
     parameters: Option<&'a HashMap<etas_hir::SymbolId, TypeId>>,
     canonical_parameters: Option<&'a HashMap<super::CanonicalTypeParameterIdentity, TypeId>>,
     variables: Option<&'a Substitution>,
+    type_parameters: Option<&'a HashMap<TypeId, TypeId>>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
@@ -233,6 +234,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         matches!(self.target, SubstitutionTarget::Existing(_))
             && self.named.is_none_or(HashMap::is_empty)
             && self.parameters.is_none_or(HashMap::is_empty)
+            && self.type_parameters.is_none_or(HashMap::is_empty)
             && self.canonical_parameters.is_none_or(HashMap::is_empty)
             && self
                 .variables
@@ -256,6 +258,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             parameters: None,
             canonical_parameters: None,
             variables,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -276,6 +279,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             parameters: None,
             canonical_parameters: None,
             variables: None,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -321,6 +325,13 @@ impl<'a> TypeSubstitutionEngine<'a> {
         self
     }
 
+    pub fn with_type_parameters(mut self, parameters: &'a HashMap<TypeId, TypeId>) -> Self {
+        self.type_parameters = Some(parameters);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
     pub fn with_execution_control(
         mut self,
         control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
@@ -362,6 +373,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             parameters: None,
             canonical_parameters: None,
             variables: None,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -382,6 +394,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             parameters: None,
             canonical_parameters: None,
             variables: None,
+            type_parameters: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -851,6 +864,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         // unique solver variables may be normalized inside them.
         let named = self.named.take();
         let parameters = self.parameters.take();
+        let type_parameters = self.type_parameters.take();
         let canonical_parameters = self.canonical_parameters.take();
         let rows = self.effect_rows.take();
         let memo = std::mem::take(&mut self.memo);
@@ -859,6 +873,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let result = self.substitute(ty);
         self.named = named;
         self.parameters = parameters;
+        self.type_parameters = type_parameters;
         self.canonical_parameters = canonical_parameters;
         self.effect_rows = rows;
         self.memo = memo;
@@ -868,6 +883,9 @@ impl<'a> TypeSubstitutionEngine<'a> {
     }
 
     fn replacement(&self, id: TypeId, ty: &Type) -> Option<TypeId> {
+        if let Some(replacement) = self.type_parameters.and_then(|params| params.get(&id)) {
+            return Some(*replacement);
+        }
         let store = match &self.target {
             SubstitutionTarget::Materialize(interner) => interner.store(),
             SubstitutionTarget::Existing(store) => store,
@@ -1753,5 +1771,30 @@ mod tests {
             Err(TypeSubstitutionError::Interrupted(_))
         ));
         assert_eq!(control.0.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn checked_parameter_substitution_preserves_identically_named_caller_binders() {
+        let mut interner = TypeInterner::new();
+        let callee = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(etas_hir::SymbolId(1)),
+            name: "T".into(),
+        }));
+        let caller = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: Some(etas_hir::SymbolId(2)),
+            name: "T".into(),
+        }));
+        let concrete = interner.primitive(PrimitiveType::I32);
+        let signature = interner.intern(Type::Tuple(vec![callee, caller]));
+        let parameters = HashMap::from([(callee, concrete)]);
+        let names = HashMap::new();
+        let result = TypeSubstitutionEngine::materializing(&mut interner, &names, None)
+            .with_type_parameters(&parameters)
+            .substitute(signature)
+            .unwrap();
+        assert_eq!(
+            interner.store().get(result),
+            Some(&Type::Tuple(vec![concrete, caller]))
+        );
     }
 }

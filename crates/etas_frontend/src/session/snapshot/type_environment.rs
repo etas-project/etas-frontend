@@ -167,6 +167,7 @@ mod tests {
                 param_names: vec![],
                 generic_params: vec![],
                 methods: vec![SpecMethodFact {
+                    receiver_param: None,
                     identity: SpecMethodIdentity::External {
                         package: 1,
                         path: vec!["dep".into(), "Show".into(), "show".into()],

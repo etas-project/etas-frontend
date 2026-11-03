@@ -4,6 +4,10 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    HandlerNeverCompletion {
+        ty: TypeId,
+        span: Span,
+    },
     WritablePlace {
         target: etas_hir::HirExprId,
         span: Span,

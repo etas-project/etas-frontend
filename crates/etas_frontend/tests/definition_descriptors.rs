@@ -370,6 +370,7 @@ fn check_trace_plan_source_links(
         diagnostics: vec![],
     };
     let pipeline = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        external_implementations: &[],
         source_snapshots: &snapshots,
         residual_identity: None,
         trace_monitor_projector: None,

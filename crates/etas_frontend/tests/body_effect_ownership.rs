@@ -309,6 +309,7 @@ fn all_effect_stages_share_the_finalized_hir_index() {
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
+        external_implementations: &[],
         frozen_calls: None,
         hir: &hir.hir,
         types: output.types.as_ref().unwrap(),

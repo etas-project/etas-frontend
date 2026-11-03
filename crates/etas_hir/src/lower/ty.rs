@@ -1,4 +1,4 @@
-use super::program::LowerCtx;
+use super::program::{LowerCtx, PreludeContext};
 use crate::*;
 use etas_syntax::ast::{self, *};
 
@@ -49,7 +49,7 @@ impl LowerCtx {
                 span: *span,
             },
             TypeExpr::Path { path, args, span } => HirType::Path {
-                path: self.resolve_path(path, scope, true),
+                path: self.resolve_path_in_context(path, scope, true, PreludeContext::Type),
                 args: args
                     .iter()
                     .map(|arg| self.lower_type(arg, scope, item_id))
@@ -167,7 +167,7 @@ impl LowerCtx {
         item_id: HirItemId,
     ) -> HirEffectRef {
         HirEffectRef {
-            path: self.resolve_path(&effect.path, scope, true),
+            path: self.resolve_path_in_context(&effect.path, scope, true, PreludeContext::Effect),
             args: effect
                 .args
                 .iter()

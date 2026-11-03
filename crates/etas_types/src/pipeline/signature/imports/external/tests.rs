@@ -98,6 +98,7 @@ fn imported_spec_alias_reuses_checked_external_method_signature() {
         generic_params: vec![],
         callable: None,
         methods: vec![crate::ExternalSpecMethodInput {
+            receiver_param: None,
             name: "render".into(),
             path: method_path.clone(),
             signature: Some(crate::ExternalFlowSignatureInput {
@@ -141,6 +142,7 @@ fn imported_spec_alias_rejects_missing_checked_method_facts() {
         generic_params: vec![],
         callable: None,
         methods: vec![crate::ExternalSpecMethodInput {
+            receiver_param: None,
             name: "render".into(),
             path: vec!["dep".into(), "Show".into(), "render".into()],
             signature: None,
@@ -185,6 +187,7 @@ fn external_spec_methods_are_checked_without_importing_the_spec_name() {
         generic_params: vec![],
         callable: None,
         methods: vec![crate::ExternalSpecMethodInput {
+            receiver_param: None,
             name: "render".into(),
             path: method_path.clone(),
             signature: Some(crate::ExternalFlowSignatureInput {

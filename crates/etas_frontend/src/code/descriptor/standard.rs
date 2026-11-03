@@ -19,7 +19,11 @@ impl DefinitionDescriptorProjector<'_> {
             self.checked
                 .std_registry
                 .lookup_qualified(&scoped)
-                .or_else(|| self.checked.std_registry.lookup_prelude(name))
+                .or_else(|| {
+                    self.checked
+                        .std_registry
+                        .lookup_prelude_in_namespace(name, etas_std::StdNamespace::Type)
+                })
         }
         .ok_or_else(|| ProjectionError::MissingIdentity(name.into()))?;
         self.identities

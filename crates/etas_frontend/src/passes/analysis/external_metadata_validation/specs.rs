@@ -1,29 +1,14 @@
 use super::*;
 use crate::ProjectExternalSpecKindInput;
 
+mod implementations;
+mod methods;
+
 pub(super) fn validate(
     environment: &ProjectEnvironmentInput,
 ) -> Result<(), ExternalEnvironmentValidationError> {
     let mut declarations = BTreeMap::new();
     for metadata in &environment.external_public_metadata {
-        for implementation in &metadata.spec_impls {
-            let module = &implementation.implementation_module;
-            if (!implementation.methods.is_empty() && module.is_empty())
-                || module
-                    .iter()
-                    .any(|segment| segment.is_empty() || segment.contains('\0'))
-                || (!module.is_empty()
-                    && !environment.external_modules.iter().any(|candidate| {
-                        candidate.package == Some(metadata.package)
-                            && candidate.path.segments == *module
-                    }))
-            {
-                return Err(ExternalEnvironmentValidationError::package(
-                    metadata.package,
-                    "external spec implementation has no valid owned source module",
-                ));
-            }
-        }
         for signature in &metadata.spec_signatures {
             if declarations
                 .insert(signature.path.clone(), (metadata.package, signature))
@@ -36,6 +21,8 @@ pub(super) fn validate(
             }
         }
     }
+    methods::validate(environment, &declarations)?;
+    implementations::validate(environment, &declarations)?;
     let mut edges = BTreeMap::new();
     let dependencies = environment
         .external_package_dependencies
@@ -134,39 +121,6 @@ mod tests {
         ProjectExternalPackageDependencyInput, ProjectExternalPublicMetadataInput,
         ProjectExternalSpecBoundInput, ProjectExternalSpecSignatureInput,
     };
-
-    #[test]
-    fn behavioral_implementation_requires_a_module_owned_by_its_package() {
-        let mut package = metadata(1, vec![]);
-        package
-            .spec_impls
-            .push(crate::ProjectExternalSpecImplInput {
-                self_type: crate::ProjectExternalTypeInput::Primitive("i32".into()),
-                spec: vec!["dep".into(), "Show".into()],
-                args: vec![],
-                methods: vec!["show".into()],
-                implementation_module: vec!["dep".into(), "implementations".into()],
-            });
-        let mut environment = ProjectEnvironmentInput {
-            external_public_metadata: vec![package],
-            external_modules: vec![crate::ProjectExternalModuleInput {
-                package: Some(ExternalPackageId(1)),
-                id: crate::ExternalModuleId(1),
-                path: crate::ModulePath {
-                    segments: vec!["dep".into(), "implementations".into()],
-                },
-                exports: vec![],
-            }],
-            ..Default::default()
-        };
-        assert!(validate(&environment).is_ok());
-        environment.external_modules[0].package = Some(ExternalPackageId(2));
-        assert!(validate(&environment).is_err());
-        environment.external_public_metadata[0].spec_impls[0]
-            .implementation_module
-            .clear();
-        assert!(validate(&environment).is_err());
-    }
 
     fn metadata(
         package: u32,

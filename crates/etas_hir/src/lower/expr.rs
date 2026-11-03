@@ -1,4 +1,4 @@
-use super::program::LowerCtx;
+use super::program::{LowerCtx, PreludeContext};
 use crate::*;
 use etas_syntax::ast::{self, *};
 
@@ -44,7 +44,12 @@ impl LowerCtx {
                     span: *span,
                 },
             }),
-            Expr::Path(path) => HirExpr::Path(self.resolve_path(path, scope, true)),
+            Expr::Path(path) => HirExpr::Path(self.resolve_path_in_context(
+                path,
+                scope,
+                true,
+                PreludeContext::Value,
+            )),
             Expr::Reflect(reflection) => {
                 HirExpr::Reflect(Box::new(self.lower_reflection(reflection, scope, item_id)))
             }
@@ -159,6 +164,11 @@ impl LowerCtx {
                     .map(|arg| self.lower_type(arg, scope, item_id))
                     .collect(),
                 method: call.method.text.clone(),
+                generic_args: call
+                    .generic_args
+                    .iter()
+                    .map(|arg| self.lower_generic_arg(arg, scope, item_id))
+                    .collect(),
                 args: call
                     .args
                     .iter()

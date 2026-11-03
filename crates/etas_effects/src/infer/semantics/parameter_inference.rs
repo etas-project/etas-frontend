@@ -11,12 +11,18 @@ impl EffectSemantics<'_> {
         let Some(params) = self.unit_params(callee) else {
             return state;
         };
-        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
-            self.hir.exprs.get(site.call)
-        else {
+        if !matches!(
+            self.hir.exprs.get(site.call),
+            Some(
+                HirExpr::Call { .. } | HirExpr::MethodCall { .. } | HirExpr::SpecMethodCall { .. }
+            )
+        ) {
             return state;
+        }
+        let args = match self.call_arguments(site, params.len()) {
+            Ok(args) => args,
+            Err(error) => return self.incomplete_at(site.span, error.to_string(), state),
         };
-        let args = args.clone();
         for (index, symbol) in params.into_iter().enumerate() {
             let Some(ty) = self.symbol_value_type(symbol) else {
                 continue;
@@ -27,7 +33,7 @@ impl EffectSemantics<'_> {
             }
             let summary = args
                 .get(index)
-                .and_then(arg_expr)
+                .copied()
                 .zip(self.hir.symbols.get(symbol))
                 .and_then(|(expr, parameter)| {
                     self.latent_summary_for_expr(&state, expr, &parameter.name)

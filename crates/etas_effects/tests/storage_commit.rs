@@ -38,6 +38,7 @@ flow main() -> unit {
         source_snapshots: &[],
         residual_identity: None,
         trace_monitor_projector: None,
+        external_implementations: &[],
         frozen_calls: None,
         hir: &hir,
         types: &types,

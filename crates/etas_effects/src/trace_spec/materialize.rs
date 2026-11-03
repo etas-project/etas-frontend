@@ -618,14 +618,25 @@ impl TraceSpecMaterializer<'_> {
                     else {
                         continue;
                     };
-                    store
-                        .external_referenced_by_item
-                        .entry(super::model::ExternalTraceSpecItem {
-                            package: conformance.package,
-                            path: conformance.item.clone(),
-                        })
-                        .or_default()
-                        .push(alternatives);
+                    match &conformance.item {
+                        etas_package_metadata::CallableContractTarget::Item(path) => {
+                            store
+                                .external_referenced_by_item
+                                .entry(super::model::ExternalTraceSpecItem {
+                                    package: conformance.package,
+                                    path: path.clone(),
+                                })
+                                .or_default()
+                                .push(alternatives);
+                        }
+                        etas_package_metadata::CallableContractTarget::Method(identity) => {
+                            store
+                                .external_referenced_methods
+                                .entry(identity.clone())
+                                .or_default()
+                                .push(alternatives);
+                        }
+                    }
                 }
                 etas_types::ExternalTraceSpecConformanceTarget::Inline => {
                     self.diagnostic(
@@ -641,6 +652,7 @@ impl TraceSpecMaterializer<'_> {
                 .referenced_by_item
                 .values()
                 .chain(store.external_referenced_by_item.values())
+                .chain(store.external_referenced_methods.values())
                 .flatten(),
         ) {
             used.extend(
@@ -1266,7 +1278,7 @@ mod tests {
             .external_trace_spec_conformances
             .push(etas_types::ExternalTraceSpecConformanceFact {
                 package: 1,
-                item: vec!["dep".into(), "f".into()],
+                item: vec!["dep".into(), "f".into()].into(),
                 target: etas_types::ExternalTraceSpecConformanceTarget::Named {
                     spec: path,
                     definition: key(1),

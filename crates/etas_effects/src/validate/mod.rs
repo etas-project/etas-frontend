@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 mod callable_specs;
+mod spec_methods;
 
 use etas_core::{Diagnostic, EffectDiagnosticCode};
 use etas_hir::{
@@ -37,6 +38,8 @@ impl EffectContractValidator {
         };
         validator.validate_items();
         validator.validate_callable_specs();
+        validator.validate_spec_method_effects()?;
+        validator.validate_external_spec_method_effects()?;
         validator.validate_latent_effect_bounds()?;
         validator.materialize_public_contracts();
         Ok(())

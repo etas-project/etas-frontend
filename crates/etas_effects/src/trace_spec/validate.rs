@@ -28,6 +28,9 @@ pub struct TraceSpecValidationInput<'a> {
     /// Plans verified against `analysis`. A conformance is discharged as a
     /// residual requirement only through one of these plans.
     pub residual_plans: &'a crate::residual::VerifiedResidualPlans,
+    pub external_summaries: &'a [crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
+    pub external_implementations:
+        &'a [crate::AnchoredExternalMetadata<crate::ExternalSpecImplementationMetadata>],
     pub reachable_items: Option<&'a BTreeSet<HirItemId>>,
     pub control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
 }
@@ -44,6 +47,8 @@ pub fn validate_trace_spec_facts(
         analysis,
         dispositions,
         residual_plans,
+        external_summaries: _,
+        external_implementations,
         reachable_items,
         control,
     } = input;
@@ -58,6 +63,16 @@ pub fn validate_trace_spec_facts(
         control,
     )?;
     reject_uncovered_residuals(hir, effects, residual_plans, reachable_items)?;
+    for (identity, alternatives) in &models.external_referenced_methods {
+        validate_external_method_contract(
+            types,
+            registry,
+            effects,
+            identity,
+            alternatives,
+            external_implementations,
+        )?;
+    }
     validate_external_item_policies(types, registry, effects, models, analysis)
 }
 
@@ -544,6 +559,66 @@ pub(super) fn validate_external_item_policies(
             effects.diagnostics.push(diagnostic);
         }
     }
+    Ok(())
+}
+
+fn validate_external_method_contract(
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    effects: &mut EffectOutput,
+    identity: &etas_code::MethodId,
+    alternatives: &super::model::TraceSpecConformances,
+    implementations: &[crate::AnchoredExternalMetadata<
+        crate::ExternalSpecImplementationMetadata,
+    >],
+) -> Result<(), EffectPipelineError> {
+    let invalid = |reason: &str| EffectPipelineError::InvalidExternalMetadata {
+        package: format!("{:?}", identity.implementation().package()),
+        reason: reason.into(),
+    };
+    let mut methods = implementations
+        .iter()
+        .filter(|method| &method.identity == identity);
+    let (Some(method), None) = (methods.next(), methods.next()) else {
+        return Err(invalid(
+            "method conformance requires one anchored implementation",
+        ));
+    };
+    let [etas_package_metadata::CallableValueSource::Value(value)] =
+        method.graph.sources.as_slice()
+    else {
+        return Err(invalid(
+            "method conformance requires an owned callable graph root",
+        ));
+    };
+    let source = crate::MetadataCallableSource {
+        analysis: crate::CallableAnalysisKind::CheckedRevision,
+        graph: method.graph_key,
+        value: *value,
+        environment: None,
+    };
+    let Some(crate::facts::MetadataCallableAnalysis::Solved { summary, .. }) =
+        effects.facts.metadata_callables.get(&source)
+    else {
+        return Err(invalid(
+            "method conformance requires complete checked callable analysis",
+        ));
+    };
+    let allowed = EffectCoverage {
+        registry,
+        types: &types.store,
+    }
+    .subtract_handled(&summary.requested_actions, &summary.default_actions);
+    let diagnostics = validate_conformances(
+        TraceSpecEnv { types, registry },
+        alternatives,
+        &summary.action_trace,
+        &summary.requested_actions,
+        &allowed,
+        method.span,
+        (None, None, None),
+    );
+    effects.diagnostics.extend(diagnostics);
     Ok(())
 }
 
@@ -1209,6 +1284,7 @@ mod tests {
         assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
         let std_registry = etas_std::standard_registry();
         let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+            external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
             trace_monitor_projector: None,
@@ -1263,6 +1339,8 @@ mod tests {
         super::validate_trace_spec_facts(
             &mut effects,
             super::TraceSpecValidationInput {
+                external_summaries: &[],
+                external_implementations: &[],
                 hir: &hir,
                 types: &types,
                 registry: &output.artifacts.registry,
@@ -1297,6 +1375,7 @@ mod tests {
         assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
         let std_registry = etas_std::standard_registry();
         let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+            external_implementations: &[],
             source_snapshots: &[],
             residual_identity: None,
             trace_monitor_projector: None,

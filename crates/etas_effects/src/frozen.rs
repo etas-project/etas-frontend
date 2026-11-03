@@ -19,6 +19,10 @@ impl FrozenCallableSummary {
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct FrozenCallableEnvironment {
+    pub method_evidence: std::collections::BTreeMap<
+        etas_code::CodeFingerprint,
+        std::sync::Arc<crate::facts::MetadataSpecMethodDefinition>,
+    >,
     pub graphs:
         std::collections::BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<FrozenCallableGraph>>,
     pub callable_environments: std::collections::BTreeMap<

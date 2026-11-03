@@ -21,6 +21,8 @@ pub enum ResourceHandleFact {
     etas_core::RetainedSize,
 )]
 pub struct KnownStdTypes {
+    pub file_read_limit_error: Option<TypeId>,
+    pub filesystem_io_error: Option<TypeId>,
     pub index_error: Option<TypeId>,
     pub runtime_types: std::collections::BTreeMap<etas_std::RuntimeTypeRole, TypeId>,
     pub runtime_values: std::collections::BTreeMap<etas_std::StdValueRole, TypeId>,
