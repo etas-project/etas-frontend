@@ -161,6 +161,66 @@ impl Second ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
 }
 
 #[test]
+fn binary_method_table_preserves_inherent_associated_and_spec_receiver_abi() {
+    let checked = checked(include_str!("fixtures/methods/exported.es"));
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(package()),
+            package_id: "library".into(),
+            package_version: "0.1.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: "blake3:source".into(),
+            manifest_hash: "blake3:manifest".into(),
+            dependency_lock_hash: "blake3:lock".into(),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked,
+    )
+    .unwrap();
+    let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("library.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    let methods = &metadata.public_metadata.methods;
+    assert_eq!(
+        methods.len(),
+        3,
+        "private methods are not exported: {methods:?}"
+    );
+    let constructor = methods
+        .iter()
+        .find(|method| method.identity.name() == "new")
+        .unwrap();
+    assert_eq!(
+        constructor.receiver,
+        etas_package_metadata::MethodReceiver::Associated
+    );
+    let convert = methods
+        .iter()
+        .find(|method| method.identity.name() == "convert")
+        .unwrap();
+    assert_eq!(
+        convert.receiver,
+        etas_package_metadata::MethodReceiver::Value { slot: 0 }
+    );
+    assert_eq!(convert.root().unwrap().param_names, ["self", "increment"]);
+    assert_ne!(convert.self_type.path, convert.root().unwrap().output.path);
+    assert_eq!(metadata.public_metadata.spec_impls[0].methods.len(), 1);
+    let encode = methods
+        .iter()
+        .find(|method| method.identity.name() == "encode")
+        .unwrap();
+    assert_eq!(
+        metadata.public_metadata.spec_impls[0].methods[0],
+        encode.identity
+    );
+}
+
+#[test]
 fn applied_alias_method_contracts_publish_with_canonical_method_identity() {
     let source = r#"
 module library.api;
@@ -215,7 +275,7 @@ impl StringBox ~ Encoder {
         assert_eq!(
             implementations
                 .iter()
-                .filter(|method| &method.identity == identity)
+                .filter(|method| *method == identity)
                 .count(),
             1
         );

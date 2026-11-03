@@ -6,8 +6,13 @@ impl ContractValidator<'_, '_> {
     pub(super) fn validate_external_spec_method_effects(
         &mut self,
     ) -> Result<(), EffectPipelineError> {
-        for implementation in &self.types.facts.external_specs.methods {
-            let declaration = match &implementation.spec {
+        for implementation in &self.types.facts.external_methods {
+            let etas_types::method::MethodEvidence::Implementation { spec, args, .. } =
+                &implementation.evidence
+            else {
+                continue;
+            };
+            let declaration = match spec {
                 etas_types::CheckedSpecRef::Source(symbol) => self
                     .types
                     .facts
@@ -41,7 +46,7 @@ impl ContractValidator<'_, '_> {
                 .0
                 .iter()
                 .cloned()
-                .zip(implementation.args.iter().copied())
+                .zip(args.iter().copied())
                 .collect::<HashMap<_, _>>();
             if let Some(position) = method.receiver_param {
                 let receiver = expected

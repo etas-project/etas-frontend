@@ -459,6 +459,12 @@ impl ProjectEnvironmentInput {
                     crate::artifact::external_spec_impl(implementation)
                 ));
             }
+            for method in &metadata.methods {
+                parts.push(format!(
+                    "method:{}",
+                    etas_package_metadata::published_method_input_fingerprint(method)
+                ));
+            }
             for fact in &metadata.type_spec_satisfactions {
                 parts.push(format!(
                     "type-spec-satisfaction:{}",
@@ -629,6 +635,7 @@ pub struct ProjectExternalPublicMetadataInput {
     pub trace_specs: Vec<ProjectExternalNamedSignatureInput>,
     pub spec_signatures: Vec<ProjectExternalSpecSignatureInput>,
     pub spec_impls: Vec<ProjectExternalSpecImplInput>,
+    pub methods: Vec<etas_package_metadata::PublishedMethod>,
     pub type_spec_satisfactions: Vec<ProjectExternalTypeSpecSatisfactionInput>,
     pub callable_spec_satisfactions: Vec<ProjectExternalCallableSpecSatisfactionInput>,
     pub trace_spec_conformances: Vec<ProjectExternalTraceSpecConformanceInput>,
@@ -684,7 +691,7 @@ pub struct ProjectExternalSpecImplInput {
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
-    pub methods: Vec<etas_package_metadata::SpecImplMethod>,
+    pub methods: Vec<etas_code::MethodId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]

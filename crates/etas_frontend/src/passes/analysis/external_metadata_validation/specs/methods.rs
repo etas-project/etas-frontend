@@ -10,10 +10,8 @@ pub(super) fn validate(
 ) -> Result<(), ExternalEnvironmentValidationError> {
     for metadata in &environment.external_public_metadata {
         let mut pending = Vec::new();
-        for implementation in &metadata.spec_impls {
-            for method in &implementation.methods {
-                graph_targets(&method.callable, &mut pending);
-            }
+        for method in &metadata.methods {
+            graph_targets(&method.callable, &mut pending);
         }
         for summary in &metadata.effect_summaries {
             let mut traces = vec![&summary.action_trace];

@@ -11,6 +11,7 @@ impl ProjectMetadataProjection<'_> {
         item: HirItemId,
     ) -> Result<CallableValueGraph, PackageMetadataError> {
         let mut builder = Builder::new(self, item);
+        builder.method_root = true;
         let roots = builder
             .sources(
                 &[CallableReturnSource::SourceItem(item)].into(),
@@ -72,6 +73,7 @@ impl<'a, 'b> Builder<'a, 'b> {
             )]
             .into(),
             parents: BTreeMap::new(),
+            method_root: false,
         }
     }
 
@@ -139,6 +141,7 @@ struct Builder<'a, 'b> {
     pending: Vec<Pending>,
     parameters: BTreeMap<CallableValueScope, BTreeMap<etas_hir::SymbolId, u32>>,
     parents: BTreeMap<u32, CallableValueScope>,
+    method_root: bool,
 }
 
 impl Builder<'_, '_> {
@@ -271,6 +274,11 @@ impl Builder<'_, '_> {
                     Some(ItemSignature::Flow(signature) | ItemSignature::Tool(signature)) => {
                         signature
                     }
+                    Some(ItemSignature::Agent(signature)) => {
+                        signature.callable().ok_or_else(|| {
+                            invalid("published agent method has no checked callable signature")
+                        })?
+                    }
                     _ => return Ok(None),
                 };
                 (
@@ -379,6 +387,7 @@ impl Builder<'_, '_> {
             &type_names,
             &effect_names,
             &trace_labels,
+            self.method_root && index == 0,
         )?
         else {
             return Ok(None);

@@ -128,6 +128,7 @@ pub struct ExternalPublicMetadataInput {
     pub trace_specs: Vec<ExternalNamedSignatureInput>,
     pub spec_signatures: Vec<ExternalSpecSignatureInput>,
     pub spec_impls: Vec<ExternalSpecImplInput>,
+    pub methods: Vec<ExternalMethodInput>,
     pub type_spec_satisfactions: Vec<ExternalTypeSpecSatisfactionInput>,
     pub callable_spec_satisfactions: Vec<ExternalCallableSpecSatisfactionInput>,
     pub trace_spec_conformances: Vec<ExternalTraceSpecConformanceInput>,
@@ -232,13 +233,17 @@ pub struct ExternalSpecImplInput {
     pub self_type: ExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
-    pub methods: Vec<ExternalSpecImplMethodInput>,
+    pub methods: Vec<etas_code::MethodId>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ExternalSpecImplMethodInput {
+pub struct ExternalMethodInput {
     pub identity: etas_code::MethodId,
+    pub self_type: ExternalTypeInput,
+    pub receiver: crate::method::MethodReceiver,
+    pub owner_params: Vec<ExternalCallableGenericParamInput>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
+    pub parameter_names: Vec<Option<String>>,
     pub params: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: ExternalEffectRowInput,

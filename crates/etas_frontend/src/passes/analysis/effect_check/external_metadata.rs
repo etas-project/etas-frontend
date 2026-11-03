@@ -6,6 +6,8 @@ use std::{
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
 use etas_types::{EffectArgRef, TypeOutput};
 
+mod method_requirements;
+
 use super::anchors::ExternalImportAnchorIndex;
 use crate::{
     ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
@@ -33,40 +35,59 @@ pub(super) fn external_implementations(
         let Some(span) = anchors.package_span(package.package) else {
             continue;
         };
-        for implementation in &package.spec_impls {
-            for method in &implementation.methods {
-                let checked = (|| -> Result<Option<etas_effects::ExternalSpecImplementationMetadata>, String> {
-                let mut signatures = types.facts.external_specs.methods.iter().filter(|fact| fact.identity == method.identity);
-                let Some(signature) = signatures.next() else {
-                    return Err("external implementation graph has no checked method signature".into());
-                };
-                if signatures.any(|other| other.signature != signature.signature) {
-                    return Err("external implementation graph has conflicting checked method signatures".into());
-                }
-                if let Some(existing) = result.iter().find(|existing| existing.identity == method.identity) {
-                    if existing.graph.as_ref() != &method.callable {
-                        return Err("external implementation method identity has conflicting behavior graphs".into());
+        for method in &package.methods {
+            let checked =
+                (|| -> Result<Option<etas_effects::ExternalSpecImplementationMetadata>, String> {
+                    let mut signatures = types
+                        .facts
+                        .external_methods
+                        .iter()
+                        .filter(|fact| fact.identity == method.identity);
+                    let Some(signature) = signatures.next() else {
+                        return Err(
+                            "external implementation graph has no checked method signature".into(),
+                        );
+                    };
+                    if signatures.any(|other| other.signature != signature.signature) {
+                        return Err("external implementation graph has conflicting checked method signatures".into());
                     }
-                    return Ok(None);
-                }
-                let graph_fingerprint = etas_package_metadata::callable_value_graph_fingerprint(&method.callable).map_err(|error| error.to_string())?;
-                let graph_key = etas_code::CodeFingerprint::of_parts("etas.effects.external-implementation.v1", [method.identity.fingerprint().as_bytes().as_slice(), graph_fingerprint.as_bytes().as_slice()]);
-                Ok(Some(etas_effects::ExternalSpecImplementationMetadata {
-                        identity: method.identity.clone(), graph_key,
+                    if let Some(existing) = result
+                        .iter()
+                        .find(|existing| existing.identity == method.identity)
+                    {
+                        if existing.graph.as_ref() != &method.callable {
+                            return Err("external implementation method identity has conflicting behavior graphs".into());
+                        }
+                        return Ok(None);
+                    }
+                    let graph_fingerprint =
+                        etas_package_metadata::published_method_input_fingerprint(method);
+                    let graph_key = etas_code::CodeFingerprint::of_parts(
+                        "etas.effects.external-implementation.v1",
+                        [
+                            method.identity.fingerprint().as_bytes().as_slice(),
+                            graph_fingerprint.as_bytes().as_slice(),
+                        ],
+                    );
+                    Ok(Some(etas_effects::ExternalSpecImplementationMetadata {
+                        identity: method.identity.clone(),
+                        graph_key,
                         graph: std::sync::Arc::new(method.callable.clone()),
                         values: crate::project::lower_callable_graph(&method.callable, types)?,
-                        callable_contract: contracts.get_callable(&etas_code::CallableId::method(method.identity.clone()))?,
+                        requirements: method_requirements::lower(&method.requirements, types)?,
+                        callable_contract: contracts.get_callable(
+                            &etas_code::CallableId::method(method.identity.clone()),
+                        )?,
                     }))
                 })();
-                match checked {
-                    Ok(Some(metadata)) => result.push(etas_effects::AnchoredExternalMetadata {
-                        package: package.package.0,
-                        span,
-                        metadata,
-                    }),
-                    Ok(None) => {}
-                    Err(reason) => push_external_metadata_diagnostic(diagnostics, span, reason),
-                }
+            match checked {
+                Ok(Some(metadata)) => result.push(etas_effects::AnchoredExternalMetadata {
+                    package: package.package.0,
+                    span,
+                    metadata,
+                }),
+                Ok(None) => {}
+                Err(reason) => push_external_metadata_diagnostic(diagnostics, span, reason),
             }
         }
     }

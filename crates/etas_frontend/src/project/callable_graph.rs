@@ -13,6 +13,13 @@ pub(crate) fn lower_callable_graph(
     lower_graph(graph, &resolver)
 }
 
+pub(crate) fn lower_package_effect_row(
+    value: &metadata::EffectRow,
+    types: &TypeOutput,
+) -> Result<etas_effects::ExternalEffectRowMetadata, String> {
+    row(value, &CheckedExternalTypeResolver::new(types))
+}
+
 pub(crate) fn lower_callable_request_target(
     target: &metadata::CallableRequestTarget,
     types: &TypeOutput,

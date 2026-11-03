@@ -97,6 +97,32 @@ pub struct ExternalSpecImplementationMetadata {
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub values: Vec<ExternalCallableValueMetadata>,
     pub callable_contract: Option<ExternalCallableContract>,
+    pub requirements: ExternalMethodRequirements,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub struct ExternalMethodRequirements {
+    pub limits: Vec<crate::LimitRequirement>,
+    pub trace_requirements: Vec<ExternalMethodTraceRequirement>,
+    pub trace_obligations: Vec<ExternalMethodTraceRequirement>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum ExternalMethodTraceRequirement {
+    Clause(ExternalTraceSpecClauseMetadata),
+    Reference(String),
+    Limit(usize),
 }
 
 pub(crate) struct ExternalCallableEffectView<'a> {

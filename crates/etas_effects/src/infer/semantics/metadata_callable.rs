@@ -236,22 +236,26 @@ impl EffectSemantics<'_> {
             .get(&source.graph)
             .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)]
-            && let Some(contract) = &method.callable_contract
         {
-            summary.exits = self.external_callback_outcomes(
-                contract,
-                &summary,
-                &etas_types::FlowType {
-                    input: checked.params.clone(),
-                    output: checked.output,
-                    effects: None,
-                },
-                span,
-                &types,
-                &self
-                    .metadata_evidence_generics(source)
-                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
-            )?;
+            let (requirements, obligations) = self.method_requirements(&method.requirements)?;
+            summary.requirements.union_assign(&requirements);
+            summary.trace_spec_obligations.union_assign(&obligations);
+            if let Some(contract) = &method.callable_contract {
+                summary.exits = self.external_callback_outcomes(
+                    contract,
+                    &summary,
+                    &etas_types::FlowType {
+                        input: checked.params.clone(),
+                        output: checked.output,
+                        effects: None,
+                    },
+                    span,
+                    &types,
+                    &self
+                        .metadata_evidence_generics(source)
+                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
+                )?;
+            }
         }
         summary = self
             .specialize_summary_with_bindings(&summary, &[], &types, &rows)

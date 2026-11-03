@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 mod enums;
 mod implementation_methods;
+mod methods;
 mod specs;
 #[cfg(test)]
 mod tests;
@@ -366,6 +367,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
         let Some(package_span) = package_binding_span(input, metadata.package) else {
             continue;
         };
+        methods::apply(ctx, metadata, package_span);
         for implementation in &metadata.spec_impls {
             let spec = match resolve_external_spec(
                 ctx,

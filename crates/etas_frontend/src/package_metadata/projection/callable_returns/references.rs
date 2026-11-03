@@ -165,6 +165,7 @@ impl Builder<'_, '_> {
             &projection.type_names,
             &projection.effect_names,
             &trace_labels,
+            false,
         )?
         else {
             return Ok(None);

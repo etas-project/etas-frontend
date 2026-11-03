@@ -2,12 +2,12 @@ use super::*;
 
 pub(super) fn apply(
     ctx: &mut TypePipelineContext<'_>,
-    package: ExternalPackageKey,
+    _package: ExternalPackageKey,
     span: etas_core::Span,
     self_type: TypeId,
     spec: &crate::CheckedSpecRef,
     args: &[TypeId],
-    methods: &[crate::ExternalSpecImplMethodInput],
+    methods: &[etas_code::MethodId],
 ) -> bool {
     let declaration = match spec {
         crate::CheckedSpecRef::Source(symbol) => ctx
@@ -48,8 +48,15 @@ pub(super) fn apply(
             );
         }
         let mut names = std::collections::BTreeSet::new();
-        for provided in methods {
-            let name = provided.identity.name();
+        for identity in methods {
+            let (index, provided) = ctx
+                .signature_facts
+                .external_methods
+                .iter()
+                .enumerate()
+                .find(|(_, method)| &method.identity == identity)
+                .ok_or("external implementation references an unavailable method")?;
+            let name = identity.name();
             if !names.insert(name) {
                 return Err("external implementation has duplicate method evidence".into());
             }
@@ -61,25 +68,7 @@ pub(super) fn apply(
                 .signature_in(&ctx.signature_facts)
                 .cloned()
                 .ok_or("external spec method signature is missing")?;
-            let generic_params = crate::lower::external::lower_external_generic_params(
-                ctx,
-                span,
-                package,
-                &format!("{:?}", provided.identity),
-                &provided.generic_params,
-            )
-            .ok_or("external implementation generic signature is inconsistent")?;
-            let actual = CallableSignature {
-                generic_params,
-                params: provided
-                    .params
-                    .iter()
-                    .map(|ty| lower_external_type(ctx, span, ty))
-                    .collect(),
-                output: lower_external_type(ctx, span, &provided.output),
-                effects: Some(lower_external_effect_row(ctx, span, &provided.effects)),
-                requested_actions: None,
-            };
+            let actual = provided.signature.clone();
             let expected = crate::lower::spec_method::specialize(
                 &mut ctx.interner,
                 &expected,
@@ -94,20 +83,21 @@ pub(super) fn apply(
             crate::pipeline::signature::validate::spec_methods::compare(
                 ctx, &evidence, &expected, &actual, span,
             )?;
-            pending.push(crate::facts::specs::ExternalSpecImplMethodFact {
-                span,
-                identity: provided.identity.clone(),
-                self_type,
-                spec: spec.clone(),
-                args: args.to_vec(),
-                signature: actual,
-            });
+            pending.push((index, method.identity.clone()));
         }
         Ok(())
     })();
     match result {
         Ok(()) => {
-            ctx.signature_facts.external_specs.methods.extend(pending);
+            for (index, member) in pending {
+                let method = &mut ctx.signature_facts.external_methods[index];
+                method.spec_member = Some(member);
+                method.evidence = crate::method::MethodEvidence::Implementation {
+                    spec: spec.clone(),
+                    subject: self_type,
+                    args: args.to_vec(),
+                };
+            }
             true
         }
         Err(reason) => {

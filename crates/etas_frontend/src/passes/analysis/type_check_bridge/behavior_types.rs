@@ -99,9 +99,30 @@ pub(super) fn collect(
             }
         }
     }
-    for implementation in &metadata.spec_impls {
-        for method in &implementation.methods {
-            collect_parts(&mut types, vec![Part::Graph(&method.callable)])?;
+    for method in &metadata.methods {
+        add(&mut types, &method.self_type)?;
+        collect_parts(&mut types, vec![Part::Graph(&method.callable)])?;
+        for requirement in method
+            .requirements
+            .trace_requirements
+            .iter()
+            .chain(&method.requirements.trace_obligations)
+        {
+            if let etas_package_metadata::MethodTraceRequirement::Clause(clause) = requirement {
+                collect_parts(
+                    &mut types,
+                    [
+                        &clause.pattern,
+                        &clause.guard,
+                        &clause.target,
+                        &clause.obligation,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(Part::Row)
+                    .collect(),
+                )?;
+            }
         }
     }
     Ok(types)

@@ -574,6 +574,7 @@ mod tests {
                 },
             ],
             spec_impls: vec![],
+            methods: Vec::new(),
             type_spec_satisfactions: vec![],
             callable_spec_satisfactions: vec![],
             trace_spec_conformances: vec![],

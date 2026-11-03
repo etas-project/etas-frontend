@@ -16,10 +16,12 @@ pub(super) fn project(
     type_names: &BTreeSet<String>,
     effect_names: &BTreeSet<String>,
     labels: &BTreeMap<etas_effects::ParameterCallTarget, String>,
+    requirements_published: bool,
 ) -> Result<Option<ProjectedSummary>, PackageMetadataError> {
     if !summary.residual_checks.is_empty()
-        || summary.requirements.iter().next().is_some()
-        || summary.trace_spec_obligations.iter().next().is_some()
+        || (!requirements_published
+            && (summary.requirements.iter().next().is_some()
+                || summary.trace_spec_obligations.iter().next().is_some()))
     {
         return Ok(None);
     }

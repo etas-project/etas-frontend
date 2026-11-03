@@ -717,11 +717,7 @@ pub(crate) fn external_spec_impl(value: &crate::ProjectExternalSpecImplInput) ->
     encoder.path(&value.spec);
     encoder.number(value.methods.len());
     for method in &value.methods {
-        encoder.0.update(method.identity.fingerprint().as_bytes());
-        encoder.0.update(
-            etas_package_metadata::callable_value_graph_input_fingerprint(&method.callable)
-                .as_bytes(),
-        );
+        encoder.0.update(method.fingerprint().as_bytes());
     }
     encoder.number(value.args.len());
     encoder.encode(Task::Type(&value.self_type));

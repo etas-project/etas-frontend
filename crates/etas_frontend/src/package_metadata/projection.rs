@@ -41,6 +41,7 @@ use crate::{AstItemKind, CheckedProject, ModuleOrigin};
 use super::{PackageMetadataBuildInput, PackageMetadataError, PackageMetadataHeader};
 
 mod callable_returns;
+mod methods;
 mod re_exports;
 mod request_templates;
 mod spec_projection;
@@ -262,7 +263,8 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
         metadata.actions = self.action_signatures()?;
         metadata.spec_signatures = self.spec_signatures()?;
-        metadata.spec_impls = self.spec_impls(identities)?;
+        metadata.methods = self.methods(identities)?;
+        metadata.spec_impls = self.spec_impls(identities, &metadata.methods)?;
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
         metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
         metadata.trace_spec_conformances = self.trace_spec_conformances(identities)?;
@@ -820,7 +822,12 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn spec_impls(
         &self,
         identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+        methods: &[etas_package_metadata::PublishedMethod],
     ) -> Result<Vec<MetadataSpecImpl>, PackageMetadataError> {
+        let published = methods
+            .iter()
+            .map(|method| &method.identity)
+            .collect::<BTreeSet<_>>();
         self.checked
             .types
             .spec_impls
@@ -829,6 +836,8 @@ impl<'a> ProjectMetadataProjection<'a> {
                 self.checked.types.agent_methods.get(&method.symbol)
                     .is_some_and(|method| method.private_to.is_some())
             }))
+            .filter(|implementation| implementation.methods.iter().all(|method| identities
+                .and_then(|index| index.method(method.symbol)).is_some_and(|identity| published.contains(identity))))
             .map(|implementation| {
                 let spec = self
                     .symbol_canonical_path(implementation.spec_symbol)
@@ -849,12 +858,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .map(|method| {
                             let identity = identities.and_then(|index| index.method(method.symbol)).cloned()
                                 .ok_or_else(|| invalid("spec implementation metadata requires a canonical method identity"))?;
-                            let body = self.checked.types.type_impl_methods.get(&method.symbol).map(|method| method.body)
-                                .or_else(|| self.checked.types.agent_methods.get(&method.symbol).map(|method| method.body))
-                                .ok_or_else(|| invalid("spec implementation method has no checked body ownership"))?;
-                            Ok(etas_package_metadata::SpecImplMethod {
-                                identity, callable: self.implementation_callable_graph(body)?,
-                            })
+                            Ok(identity)
                         })
                         .collect::<Result<Vec<_>, PackageMetadataError>>()?,
                 })

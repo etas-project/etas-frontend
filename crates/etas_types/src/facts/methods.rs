@@ -4,6 +4,19 @@ use crate::{
 };
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct ExternalMethodFact {
+    pub span: etas_core::Span,
+    pub identity: etas_code::MethodId,
+    pub self_type: TypeId,
+    pub receiver: MethodReceiver,
+    pub owner_params: Vec<crate::CallableGenericParam>,
+    pub signature: CallableSignature,
+    pub parameter_names: Vec<Option<String>>,
+    pub spec_member: Option<crate::SpecMethodIdentity>,
+    pub evidence: MethodEvidence,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct CheckedMethodCallFact {
     pub target: MethodTarget,
     pub receiver: MethodReceiver,

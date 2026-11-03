@@ -413,6 +413,11 @@ fn convert_external_metadata(
             .iter()
             .map(convert_external_spec_impl)
             .collect::<Result<_, _>>()?,
+        methods: metadata
+            .methods
+            .iter()
+            .map(impl_methods::signature)
+            .collect::<Result<_, _>>()?,
         type_spec_satisfactions: metadata
             .type_spec_satisfactions
             .iter()
@@ -493,11 +498,7 @@ fn convert_external_spec_impl(
             .iter()
             .map(convert_external_type)
             .collect(),
-        methods: implementation
-            .methods
-            .iter()
-            .map(impl_methods::signature)
-            .collect::<Result<_, _>>()?,
+        methods: implementation.methods.clone(),
     })
 }
 

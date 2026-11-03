@@ -70,6 +70,7 @@ fn with_binding(
             trace_specs: Vec::new(),
             spec_signatures: specs,
             spec_impls: Vec::new(),
+            methods: Vec::new(),
             type_spec_satisfactions: Vec::new(),
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),

@@ -66,8 +66,14 @@ pub(super) fn validate(
                     )
                 })?;
             let mut names = BTreeSet::new();
-            for method in &implementation.methods {
-                let identity = &method.identity;
+            for identity in &implementation.methods {
+                let method = metadata
+                    .methods
+                    .iter()
+                    .find(|method| &method.identity == identity)
+                    .ok_or_else(|| {
+                        fail("behavioral implementation references an unpublished method".into())
+                    })?;
                 let key = identity.implementation();
                 if !names.insert(identity.name())
                     || !spec

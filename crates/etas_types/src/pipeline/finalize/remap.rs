@@ -868,10 +868,23 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             *ty = remapper.ty(*ty);
         }
     }
-    for method in &mut facts.external_specs.methods {
+    for method in &mut facts.external_methods {
         method.self_type = remapper.ty(method.self_type);
-        for ty in &mut method.args {
-            *ty = remapper.ty(*ty);
+        if let crate::method::MethodEvidence::Implementation { subject, args, .. } =
+            &mut method.evidence
+        {
+            *subject = remapper.ty(*subject);
+            for ty in args {
+                *ty = remapper.ty(*ty);
+            }
+        }
+        for parameter in &mut method.owner_params {
+            parameter.subject = remapper.ty(parameter.subject);
+            for bound in &mut parameter.bounds {
+                for ty in &mut bound.args {
+                    *ty = remapper.ty(*ty);
+                }
+            }
         }
         remapper.callable(&mut method.signature);
     }
