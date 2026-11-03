@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::{Type, TypeId, TypeStore};
 
-use super::MethodSignatureFact;
+use super::{MethodEvidence, MethodSignatureFact, MethodTarget};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct MethodIndex {
@@ -12,6 +12,7 @@ pub struct MethodIndex {
     families: HashMap<u8, HashMap<String, Vec<u32>>>,
     witnesses: HashMap<TypeId, Vec<u32>>,
     implementations: HashMap<crate::CheckedSpecRef, Vec<u32>>,
+    targets: HashMap<TargetKey, Vec<u32>>,
 }
 
 impl MethodIndex {
@@ -23,6 +24,11 @@ impl MethodIndex {
             result
                 .members
                 .entry(entry.name.clone())
+                .or_default()
+                .push(index);
+            result
+                .targets
+                .entry(TargetKey::from(&entry.target))
                 .or_default()
                 .push(index);
             let bucket = match receiver_head(store, entry.receiver_type) {
@@ -53,6 +59,21 @@ impl MethodIndex {
 
     pub fn entries(&self) -> impl Iterator<Item = &MethodSignatureFact> {
         self.entries.iter()
+    }
+
+    pub fn declaration(
+        &self,
+        target: &MethodTarget,
+        evidence: &MethodEvidence,
+    ) -> Option<&MethodSignatureFact> {
+        let mut matches = self
+            .targets
+            .get(&TargetKey::from(target))?
+            .iter()
+            .map(|index| self.get(*index))
+            .filter(|entry| entry.target == *target && same_evidence(&entry.evidence, evidence));
+        let declaration = matches.next()?;
+        matches.next().is_none().then_some(declaration)
     }
 
     pub fn witness(
@@ -100,6 +121,49 @@ impl MethodIndex {
             result.extend(entries);
         }
         result
+    }
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+enum TargetKey {
+    Source(etas_hir::SymbolId),
+    Agent(etas_hir::SymbolId),
+    Standard(Vec<String>, usize),
+    External(etas_code::MethodId),
+    Bound(crate::CheckedSpecRef, crate::SpecMethodIdentity),
+}
+
+impl From<&MethodTarget> for TargetKey {
+    fn from(target: &MethodTarget) -> Self {
+        match target {
+            MethodTarget::Source { symbol, .. } => Self::Source(*symbol),
+            MethodTarget::Agent { symbol, .. } => Self::Agent(*symbol),
+            MethodTarget::Standard {
+                qualified_path,
+                overload,
+                ..
+            } => Self::Standard(qualified_path.clone(), *overload),
+            MethodTarget::External { identity } => Self::External(identity.clone()),
+            MethodTarget::BoundSpec { spec, member, .. } => {
+                Self::Bound(spec.clone(), member.clone())
+            }
+        }
+    }
+}
+
+fn same_evidence(left: &MethodEvidence, right: &MethodEvidence) -> bool {
+    match (left, right) {
+        (MethodEvidence::Inherent, MethodEvidence::Inherent) => true,
+        (
+            MethodEvidence::Implementation { spec: left, .. },
+            MethodEvidence::Implementation { spec: right, .. },
+        )
+        | (MethodEvidence::Bound { spec: left, .. }, MethodEvidence::Bound { spec: right, .. }) => {
+            left == right
+        }
+        _ => false,
     }
 }
 

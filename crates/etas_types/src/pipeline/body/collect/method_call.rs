@@ -190,11 +190,12 @@ pub(super) fn collect_selected<E>(
             .zip(&owner_params)
             .map(|(old, new)| (old.subject, new.subject))
             .collect();
-        let mut ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+        let flow = FlowType {
             input: signature.params.clone(),
             output: signature.output,
             effects: signature.effects.clone(),
-        }));
+        };
+        let mut ty = ctx.ctx.interner.intern(Type::Function(flow.clone()));
         if let Some(instantiated) = super::callable_instantiation::signature_hints(
             ctx,
             ty,
@@ -202,10 +203,12 @@ pub(super) fn collect_selected<E>(
             &checked_generic_args,
             span,
         ) {
-            signature.params = instantiated.input.clone();
-            signature.output = instantiated.output;
-            signature.effects = instantiated.effects.clone();
-            ty = ctx.ctx.interner.intern(Type::Function(instantiated));
+            // Callback rows stay schematic until their latent sources solve.
+            // An explicit result is still available to the next chain link.
+            ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+                output: instantiated.output,
+                ..flow
+            }));
         }
         candidates.push(CallableCandidate {
             ty,

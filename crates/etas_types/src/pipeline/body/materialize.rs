@@ -26,7 +26,14 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
-    methods::materialize(ctx, &mut state);
+    if let Err(error) = methods::materialize(ctx, &mut state) {
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            ctx.hir.items[state.item].span(),
+            format!("checked method ABI instantiation failed: {error}"),
+        ));
+        return;
+    }
     let definition_operations = match reflection::materialize(ctx, &state) {
         Ok(facts) => facts,
         Err(error) => {

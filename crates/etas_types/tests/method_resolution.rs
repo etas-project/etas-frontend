@@ -111,3 +111,33 @@ fn long_source_method_chains_are_collected_without_native_recursion() {
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert_eq!(output.facts.checked_method_calls.len(), 256);
 }
+
+#[test]
+fn checked_method_abi_substitutes_rows_simultaneously_without_capturing_caller_binders() {
+    let output = check(include_str!("fixtures/method_resolution/row_namespace.es"));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let [fact] = output
+        .facts
+        .checked_method_calls
+        .values()
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("expected one checked method");
+    };
+    for ty in [fact.signature.params[0], fact.signature.output] {
+        let Some(etas_types::Type::Function(flow)) = output.store.get(ty) else {
+            panic!("expected a callable type");
+        };
+        let row = flow.effects.as_ref().unwrap();
+        assert_eq!(row.tail.as_deref(), Some("F"));
+        assert!(row.effects.is_empty(), "{row:?}");
+    }
+    let Some(etas_types::Type::Function(console)) = output.store.get(fact.signature.params[1])
+    else {
+        panic!("expected the console callable parameter");
+    };
+    let row = console.effects.as_ref().unwrap();
+    assert!(row.tail.is_none());
+    assert_eq!(row.effects.len(), 1);
+    assert_eq!(row.effects[0].name, "Console.stdout_write");
+}

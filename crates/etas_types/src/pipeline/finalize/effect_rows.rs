@@ -125,27 +125,6 @@ pub fn materialize_effect_row_instantiations(
         }
         if let Some(method) = output.facts.checked_method_calls.get(&patch.call) {
             let mut method = method.clone();
-            let mut substitution =
-                crate::TypeSubstitutionEngine::materializing(&mut interner, &names, None)
-                    .with_effect_arguments(&rows);
-            let error = |_| EffectRowMaterializationError {
-                call: patch.call,
-                reason: "checked method ABI could not materialize its solved effect rows",
-            };
-            method
-                .try_map_types(|ty| substitution.substitute(ty))
-                .map_err(error)?;
-            for row in [
-                &mut method.signature.effects,
-                &mut method.signature.requested_actions,
-            ]
-            .into_iter()
-            .flatten()
-            {
-                *row = substitution
-                    .substitute_effect_row(row.clone())
-                    .map_err(error)?;
-            }
             for (name, row) in &patch.bindings {
                 if !method
                     .instantiation
@@ -160,11 +139,24 @@ pub fn materialize_effect_row_instantiations(
                 }
             }
             method.instantiation.deferred_effect_row_obligations.clear();
+            let declaration = output
+                .facts
+                .methods
+                .declaration(&method.target, &method.evidence)
+                .ok_or(EffectRowMaterializationError {
+                    call: patch.call,
+                    reason: "checked method has no unique declaration for its solved rows",
+                })?;
+            method.signature =
+                crate::method::instantiate::signature(&mut interner, declaration, &method)
+                    .map_err(|_| EffectRowMaterializationError {
+                        call: patch.call,
+                        reason: "checked method ABI could not materialize its solved effect rows",
+                    })?;
             source_types.insert(patch.call, method.signature.output);
             if let Some(fact) = output.facts.std_intrinsic_calls.get(&patch.call) {
                 let mut fact = fact.clone();
                 fact.signature = method.signature.clone();
-                drop(substitution);
                 fact.callable_type = interner.intern(crate::Type::Function(crate::FlowType {
                     input: fact.signature.params.clone(),
                     output: fact.signature.output,

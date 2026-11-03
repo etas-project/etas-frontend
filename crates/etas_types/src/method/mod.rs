@@ -1,5 +1,6 @@
 pub mod evidence;
 pub mod index;
+pub(crate) mod instantiate;
 pub mod model;
 mod origins;
 
