@@ -79,3 +79,22 @@ fn method_result_substitutes_effect_arguments_in_the_callers_namespace() {
         );
     }
 }
+
+#[test]
+fn spec_parameter_labels_survive_bound_and_implementation_selection() {
+    let output = check(include_str!("fixtures/method_resolution/named_bound.es"));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 3);
+    assert_eq!(
+        output
+            .facts
+            .checked_method_calls
+            .values()
+            .filter(|fact| matches!(fact.target, MethodTarget::BoundSpec { .. }))
+            .count(),
+        2
+    );
+    for fact in output.facts.checked_method_calls.values() {
+        assert_eq!(fact.argument_slots, [1]);
+    }
+}

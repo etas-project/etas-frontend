@@ -361,13 +361,14 @@ pub enum TraceSpecConformanceTarget {
 pub struct SpecMethodFact {
     pub identity: SpecMethodIdentity,
     pub name: String,
+    pub parameter_names: Vec<String>,
     pub receiver_param: Option<u32>,
     #[serde(default)]
     pub signature: Option<CallableSignature>,
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub enum SpecMethodIdentity {
     Source(etas_hir::SymbolId),

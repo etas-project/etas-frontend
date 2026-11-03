@@ -759,6 +759,11 @@ fn lower_external_spec_methods(
                 path: method.path.clone(),
             },
             name: method.name.clone(),
+            parameter_names: method
+                .signature
+                .as_ref()
+                .map(|signature| signature.param_names.clone())
+                .unwrap_or_default(),
             receiver_param: method.receiver_param,
             signature: callable,
         });

@@ -178,6 +178,7 @@ mod tests {
                         path: vec!["dep".into(), "Show".into(), "show".into()],
                     },
                     name: "show".into(),
+                    parameter_names: vec!["self".into()],
                     signature: Some(etas_types::CallableSignature {
                         generic_params: vec![],
                         params: vec![etas_types::TypeId(1)],
@@ -190,6 +191,15 @@ mod tests {
             },
         );
         let before = fingerprint(&facts).unwrap();
+        let mut renamed = facts.clone();
+        renamed
+            .external_specs
+            .signatures
+            .get_mut(&identity)
+            .unwrap()
+            .methods[0]
+            .parameter_names[0] = "receiver".into();
+        assert_ne!(before, fingerprint(&renamed).unwrap());
         facts
             .external_specs
             .signatures

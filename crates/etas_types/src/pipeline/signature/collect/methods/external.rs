@@ -4,6 +4,20 @@ use crate::{
 };
 
 pub(super) fn collect(ctx: &TypePipelineContext<'_>) -> Vec<MethodSignatureFact> {
+    let members = ctx
+        .signature_facts
+        .spec_signatures
+        .values()
+        .flat_map(|spec| &spec.methods)
+        .chain(
+            ctx.signature_facts
+                .external_specs
+                .signatures
+                .values()
+                .flat_map(|spec| &spec.methods),
+        )
+        .map(|member| (&member.identity, member))
+        .collect::<std::collections::HashMap<_, _>>();
     let mut methods = ctx
         .signature_facts
         .external_methods
@@ -32,6 +46,10 @@ pub(super) fn collect(ctx: &TypePipelineContext<'_>) -> Vec<MethodSignatureFact>
             result.push(fact);
         } else {
             for implementation in &method.implementations {
+                let member = members
+                    .get(&implementation.member)
+                    .expect("validated external method has a declared spec member");
+                fact.parameter_names = member.parameter_names.iter().cloned().map(Some).collect();
                 fact.owner = MethodOwner::Spec(implementation.spec.clone());
                 fact.spec_member = Some(implementation.member.clone());
                 fact.evidence = MethodEvidence::Implementation {
@@ -80,7 +98,7 @@ pub(super) fn collect(ctx: &TypePipelineContext<'_>) -> Vec<MethodSignatureFact>
                 receiver: crate::method::MethodReceiver::Value { slot: 0 },
                 receiver_type,
                 owner_params,
-                parameter_names: vec![None; signature.params.len()],
+                parameter_names: member.parameter_names.iter().cloned().map(Some).collect(),
                 signature,
                 target: MethodTarget::BoundSpec {
                     spec: spec_ref.clone(),

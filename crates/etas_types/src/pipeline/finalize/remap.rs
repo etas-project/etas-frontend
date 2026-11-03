@@ -986,6 +986,7 @@ mod tests {
                         path: vec!["dep".into(), "Show".into(), "show".into()],
                     },
                     name: "show".into(),
+                    parameter_names: vec!["self".into()],
                     signature: Some(CallableSignature {
                         generic_params: vec![],
                         params: vec![input],

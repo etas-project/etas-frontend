@@ -744,6 +744,7 @@ mod tests {
                     path: vec!["dep".into(), "Family".into(), "method".into()],
                 },
                 name: "method".into(),
+                parameter_names: vec![],
                 signature: None,
             });
         assert!(

@@ -560,6 +560,7 @@ fn convert_external_flow_signature(
     etas_types::ExternalFlowSignatureInput {
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
+        param_names: signature.param_names.clone(),
         params: signature.params.iter().map(convert_external_type).collect(),
         output: convert_external_type(&signature.output),
         effects: signature.effects.as_ref().map(convert_external_effect_row),

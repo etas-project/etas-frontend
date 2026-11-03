@@ -87,7 +87,7 @@ pub(super) fn collect(
                     .any(|member| member.symbol == method.symbol)
                 {
                     let spec = CheckedSpecRef::Source(implementation.spec_symbol);
-                    fact.spec_member = state
+                    let required = state
                         .spec_signatures
                         .get(&implementation.spec_symbol)
                         .or_else(|| {
@@ -99,8 +99,12 @@ pub(super) fn collect(
                             spec.methods
                                 .iter()
                                 .find(|required| required.name == method.name)
-                        })
-                        .map(|required| required.identity.clone());
+                        });
+                    if let Some(required) = required {
+                        fact.spec_member = Some(required.identity.clone());
+                        fact.parameter_names =
+                            required.parameter_names.iter().cloned().map(Some).collect();
+                    }
                     fact.owner = MethodOwner::Spec(spec.clone());
                     fact.evidence = MethodEvidence::Implementation {
                         spec,
@@ -204,29 +208,7 @@ pub(super) fn collect(
                 receiver: MethodReceiver::Value { slot: 0 },
                 receiver_type,
                 owner_params,
-                parameter_names: method
-                    .source_symbol()
-                    .and_then(|symbol| ctx.hir.symbols.get(symbol))
-                    .and_then(|symbol| symbol.defining_item)
-                    .and_then(|item| match &ctx.hir.items[item] {
-                        HirItem::Flow(flow) => Some(
-                            flow.params
-                                .iter()
-                                .map(|param| {
-                                    Some(
-                                        ctx.hir
-                                            .symbols
-                                            .get(*param)
-                                            .expect("method parameter symbol")
-                                            .name
-                                            .clone(),
-                                    )
-                                })
-                                .collect(),
-                        ),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| vec![None; signature.params.len()]),
+                parameter_names: method.parameter_names.iter().cloned().map(Some).collect(),
                 signature,
                 target: MethodTarget::BoundSpec {
                     spec: spec_ref.clone(),

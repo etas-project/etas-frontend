@@ -146,6 +146,7 @@ pub struct ExternalNamedSignatureInput {
 pub struct ExternalFlowSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
+    pub param_names: Vec<String>,
     pub params: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: Option<ExternalEffectRowInput>,

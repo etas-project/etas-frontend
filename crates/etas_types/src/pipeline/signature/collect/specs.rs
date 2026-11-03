@@ -68,6 +68,11 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 HirSpecItem::FlowSignature(signature) => Some(SpecMethodFact {
                                     identity: SpecMethodIdentity::Source(signature.symbol),
                                     name: symbol_name(ctx, signature.symbol),
+                                    parameter_names: signature
+                                        .params
+                                        .iter()
+                                        .map(|param| symbol_name(ctx, *param))
+                                        .collect(),
                                     receiver_param: signature.receiver_type_param.and_then(
                                         |receiver| {
                                             signature
