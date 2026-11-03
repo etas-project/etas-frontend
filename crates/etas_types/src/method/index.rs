@@ -11,6 +11,7 @@ pub struct MethodIndex {
     nominal: HashMap<TypeId, HashMap<String, Vec<u32>>>,
     families: HashMap<u8, HashMap<String, Vec<u32>>>,
     witnesses: HashMap<TypeId, Vec<u32>>,
+    implementations: HashMap<crate::CheckedSpecRef, Vec<u32>>,
 }
 
 impl MethodIndex {
@@ -29,10 +30,15 @@ impl MethodIndex {
                 ReceiverHead::Family(kind) => result.families.entry(kind).or_default(),
             };
             bucket.entry(entry.name.clone()).or_default().push(index);
-            if matches!(entry.evidence, super::MethodEvidence::Implementation { .. }) {
+            if let super::MethodEvidence::Implementation { spec, .. } = &entry.evidence {
                 result
                     .witnesses
                     .entry(entry.receiver_type)
+                    .or_default()
+                    .push(index);
+                result
+                    .implementations
+                    .entry(spec.clone())
                     .or_default()
                     .push(index);
             }
@@ -68,6 +74,17 @@ impl MethodIndex {
             .into_iter()
             .flatten()
             .map(|id| (*id, self.get(*id)))
+    }
+
+    pub fn implementations_for_spec(
+        &self,
+        spec: &crate::CheckedSpecRef,
+    ) -> impl Iterator<Item = &MethodSignatureFact> {
+        self.implementations
+            .get(spec)
+            .into_iter()
+            .flatten()
+            .map(|index| self.get(*index))
     }
 
     pub fn applicable(&self, store: &TypeStore, receiver: TypeId, name: &str) -> BTreeSet<u32> {

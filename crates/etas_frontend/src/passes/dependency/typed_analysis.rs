@@ -131,44 +131,36 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
             }
         }
 
-        fn spec_methods(&mut self, spec: &etas_types::CheckedSpecRef, method: Option<&str>) {
-            for implementation in &self.facts.spec_impls {
-                let matches = match spec {
-                    etas_types::CheckedSpecRef::Source(symbol) => {
-                        self.symbols.canonical_symbol(self.hir, *symbol)
-                            == self
-                                .symbols
-                                .canonical_symbol(self.hir, implementation.spec_symbol)
+        fn spec_methods(
+            &mut self,
+            spec: &etas_types::CheckedSpecRef,
+            member: Option<&etas_types::SpecMethodIdentity>,
+        ) {
+            let spec = match spec {
+                etas_types::CheckedSpecRef::Source(symbol) => {
+                    let Some(symbol) = self.symbols.canonical_symbol(self.hir, *symbol) else {
+                        self.missing = true;
+                        return;
+                    };
+                    match self.facts.external_specs.aliases.get(&symbol) {
+                        Some(identity) => etas_types::CheckedSpecRef::External(identity.clone()),
+                        None => etas_types::CheckedSpecRef::Source(symbol),
                     }
-                    etas_types::CheckedSpecRef::External(identity) => {
-                        self.facts
-                            .external_specs
-                            .aliases
-                            .get(&implementation.spec_symbol)
-                            == Some(identity)
-                    }
-                    etas_types::CheckedSpecRef::Std(_)
-                    | etas_types::CheckedSpecRef::Canonical(_) => false,
-                };
-                if !matches {
+                }
+                spec => spec.clone(),
+            };
+            for implementation in self.facts.methods.implementations_for_spec(&spec) {
+                if member.is_some_and(|member| implementation.spec_member.as_ref() != Some(member))
+                {
                     continue;
                 }
-                for candidate in implementation
-                    .methods
-                    .iter()
-                    .filter(|candidate| method.is_none_or(|name| candidate.name == name))
-                {
-                    match self
-                        .hir
-                        .symbols
-                        .get(candidate.symbol)
-                        .map(|symbol| &symbol.def)
-                    {
-                        Some(etas_hir::SymbolDef::Item { item }) => {
-                            self.items.insert(*item);
-                        }
-                        _ => self.missing = true,
+                match implementation.target {
+                    etas_types::method::MethodTarget::Source { callable, .. }
+                    | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                        self.items.insert(callable);
                     }
+                    etas_types::method::MethodTarget::External { .. } => {}
+                    _ => self.missing = true,
                 }
             }
         }
@@ -182,27 +174,12 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
                         self.items.insert(*callable);
                         return;
                     }
+                    etas_types::method::MethodTarget::BoundSpec { spec, member, .. } => {
+                        self.spec_methods(spec, Some(member));
+                        return;
+                    }
                     _ => {}
                 }
-            }
-            if let etas_hir::HirExpr::SpecMethodCall {
-                spec_path, method, ..
-            } = expr.data()
-            {
-                let spec = match spec_path.resolution {
-                    etas_hir::ResolveResult::Resolved(symbol) => {
-                        self.symbols.canonical_symbol(self.hir, symbol)
-                    }
-                    _ => None,
-                };
-                let Some(spec) = spec else {
-                    self.missing = true;
-                    return;
-                };
-                // Generic receivers may select different implementations at
-                // invocation time. Check candidate bodies without granting their
-                // execution authority; effect evidence chooses actual targets.
-                self.spec_methods(&etas_types::CheckedSpecRef::Source(spec), Some(method));
             }
             if let etas_hir::HirExpr::Path(path) = expr.data()
                 && let etas_hir::ResolveResult::Resolved(mut symbol) = path.resolution
