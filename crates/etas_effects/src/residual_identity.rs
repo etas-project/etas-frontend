@@ -68,7 +68,7 @@ pub trait TraceMonitorProjector: etas_core::memory::RetainedSize {
     fn project_trace_monitor(
         &self,
         request: TraceMonitorProjectionRequest<'_>,
-    ) -> Result<etas_code::residual::monitor::CompiledTraceAlternatives, ResidualIdentityError>;
+    ) -> Result<etas_code::residual::monitor::TraceComponentMonitor, ResidualIdentityError>;
 
     /// The contract reference for obligations created by this compilation:
     /// the checked source constraint, or an already frozen input contract.

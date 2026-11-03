@@ -195,6 +195,25 @@ impl BodyParameters {
                 .map(|row| engine.substitute_effect_row(row))
                 .transpose()?,
         };
+        for conformance in &ctx
+            .signature_base
+            .ok_or(BodyInstantiationError::MissingSignature(owner))?
+            .facts
+            .trace_spec_conformances
+        {
+            if conformance.item != owner {
+                continue;
+            }
+            let mut conformance = conformance.clone();
+            if let crate::TraceSpecConformanceTarget::Named { args, .. } = &mut conformance.target {
+                for argument in args {
+                    *argument = engine.substitute(*argument)?;
+                }
+            }
+            ctx.signature_facts
+                .trace_spec_conformances
+                .push(conformance);
+        }
         let symbol_types = flow
             .params
             .iter()

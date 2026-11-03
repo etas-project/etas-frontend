@@ -88,10 +88,15 @@ fn reject_uncovered_residuals(
 ) -> Result<(), EffectPipelineError> {
     let verified = residual_plans
         .plans()
-        .flat_map(|plan| plan.references().iter())
-        .collect::<BTreeSet<_>>();
+        .flat_map(|plan| plan.plan().obligations().iter())
+        .map(|obligation| (obligation.id(), obligation))
+        .collect::<BTreeMap<_, _>>();
     let covered = |checks: &crate::ResidualCheckSet| {
-        checks.iter().all(|reference| verified.contains(reference))
+        checks.iter().all(|reference| {
+            verified
+                .get(&reference.obligation())
+                .is_some_and(|obligation| obligation.accepts_reference(reference))
+        })
     };
     let mut anchors = BTreeMap::<DiagnosticAnchor, Option<HirItemId>>::new();
     let mut queue =
