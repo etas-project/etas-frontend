@@ -56,6 +56,7 @@ pub fn collect_expr<E>(
         }
         HirExpr::Record(record) => collect_record(ctx, &record, expected)?,
         HirExpr::EmptyRecordOrMap { span } => expected
+            .filter(|ty| !matches!(ctx.ctx.interner.store().get(*ty), Some(Type::Var(_))))
             .map(|ty| {
                 if matches!(ctx.ctx.interner.store().get(ty), Some(Type::Map { .. })) {
                     ty
@@ -66,13 +67,9 @@ pub fn collect_expr<E>(
                 }
             })
             .unwrap_or_else(|| {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span,
-                    message: "empty brace literal requires an expected record or Map[K, V] type"
-                        .to_owned(),
-                });
-                ctx.primitive(PrimitiveType::Never)
+                let ty = ctx.fresh_type_var();
+                ctx.validate(crate::ValidationRequest::EmptyBrace { ty, span });
+                ty
             }),
         HirExpr::Array { elems, span } => {
             collect_sequence(ctx, elems, span, SequenceKind::Array, expected)?
@@ -88,13 +85,9 @@ pub fn collect_expr<E>(
                 )
             })
             .unwrap_or_else(|| {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span,
-                    message: "empty sequence literal requires an expected Array[T] or List[T] type"
-                        .to_owned(),
-                });
-                ctx.primitive(PrimitiveType::Never)
+                let ty = ctx.fresh_type_var();
+                ctx.validate(crate::ValidationRequest::EmptySequence { ty, span });
+                ty
             }),
         HirExpr::Map { entries, span: _ } => {
             let expected_entries = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {

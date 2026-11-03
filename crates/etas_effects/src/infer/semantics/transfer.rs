@@ -125,6 +125,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         let mut state = state;
         self.record_structural_latent_result(expr, &mut state);
+        state = self.validate_callback_arguments(expr, state);
         self.note_operation_outcomes(expr, &mut state);
         if let Some(HirExpr::Infer { action, .. }) = self.hir.exprs.get(expr) {
             let span = action.span;

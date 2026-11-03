@@ -2,6 +2,52 @@ use etas_frontend::{CheckRequest, CheckScope, FrontendSession, ProjectInput, Sou
 use etas_types::method::MethodTarget;
 
 #[test]
+fn delayed_method_argument_inference_preserves_the_callback_effect_contract() {
+    let source = include_str!("fixtures/method_resolution/contextual_arguments.es");
+    let aliased = source
+        .replace(
+            "flow main() -> i32 ![] {",
+            "flow main() -> i32 ![] { let callback = item => { return item.read_value(); };",
+        )
+        .replace(
+            "next = item => { return item.read_value(); }",
+            "next = callback",
+        );
+    for source in [source.to_owned(), aliased] {
+        let output = etas_frontend::Frontend
+            .check_project(ProjectInput::single_source(SourceInput::anonymous(&source)));
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let checked = output.checked.unwrap();
+        let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
+        assert!(summary.escaping_effects.is_empty());
+        assert!(summary.requested_actions.effects.is_empty());
+        let effectful = source
+            .replace(
+                "flow main() -> i32 ![]",
+                "flow main() -> i32 ![Console.stdout_write]",
+            )
+            .replace(
+                "return item.read_value();",
+                "perform Console.stdout_write(\"not pure\"); return item.read_value();",
+            );
+        let output = etas_frontend::Frontend.check_project(ProjectInput::single_source(
+            SourceInput::anonymous(effectful),
+        ));
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == etas_core::DiagnosticCode::Effect(
+                        etas_core::EffectDiagnosticCode::EscapedEffect,
+                    )
+                    && diagnostic.severity == etas_core::Severity::Error
+            }),
+            "{:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
 fn explicit_method_rows_wait_for_callback_behavior_and_publish_one_instantiated_abi() {
     let source = include_str!("fixtures/method_resolution/callback_rows.es");
     for source in [source.to_owned(), source.replace(".run<", "::Runner.run<")] {

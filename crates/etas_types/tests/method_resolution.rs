@@ -116,28 +116,53 @@ fn long_source_method_chains_are_collected_without_native_recursion() {
 fn checked_method_abi_substitutes_rows_simultaneously_without_capturing_caller_binders() {
     let output = check(include_str!("fixtures/method_resolution/row_namespace.es"));
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let [fact] = output
+    assert_eq!(output.facts.checked_method_calls.len(), 2);
+    for fact in output.facts.checked_method_calls.values() {
+        for ty in [fact.signature.params[0], fact.signature.output] {
+            let Some(etas_types::Type::Function(flow)) = output.store.get(ty) else {
+                panic!("expected a callable type");
+            };
+            let row = flow.effects.as_ref().unwrap();
+            assert_eq!(row.tail.as_deref(), Some("F"));
+            assert!(row.effects.is_empty(), "{row:?}");
+        }
+        let Some(etas_types::Type::Function(console)) = output.store.get(fact.signature.params[1])
+        else {
+            panic!("expected the console callable parameter");
+        };
+        let row = console.effects.as_ref().unwrap();
+        assert!(row.tail.is_none());
+        assert_eq!(row.effects.len(), 1);
+        assert_eq!(row.effects[0].name, "Console.stdout_write");
+    }
+}
+
+#[test]
+fn delayed_chain_receivers_infer_named_empty_sequences_and_lambda_parameters() {
+    let output = check(include_str!(
+        "fixtures/method_resolution/contextual_arguments.es"
+    ));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 3);
+    let apply = output
         .facts
         .checked_method_calls
         .values()
-        .collect::<Vec<_>>()[..]
-    else {
-        panic!("expected one checked method");
-    };
-    for ty in [fact.signature.params[0], fact.signature.output] {
-        let Some(etas_types::Type::Function(flow)) = output.store.get(ty) else {
-            panic!("expected a callable type");
-        };
-        let row = flow.effects.as_ref().unwrap();
-        assert_eq!(row.tail.as_deref(), Some("F"));
-        assert!(row.effects.is_empty(), "{row:?}");
-    }
-    let Some(etas_types::Type::Function(console)) = output.store.get(fact.signature.params[1])
-    else {
-        panic!("expected the console callable parameter");
-    };
-    let row = console.effects.as_ref().unwrap();
-    assert!(row.tail.is_none());
-    assert_eq!(row.effects.len(), 1);
-    assert_eq!(row.effects[0].name, "Console.stdout_write");
+        .find(|call| {
+            output
+                .facts
+                .methods
+                .declaration(&call.target, &call.evidence)
+                .is_some_and(|method| method.name == "apply")
+        })
+        .unwrap();
+    assert_eq!(apply.argument_slots, [2, 4, 3, 1]);
+    assert!(matches!(
+        output.store.get(apply.signature.params[2]),
+        Some(etas_types::Type::Array(_))
+    ));
+    assert!(matches!(
+        output.store.get(apply.signature.params[3]),
+        Some(etas_types::Type::Map { .. })
+    ));
 }

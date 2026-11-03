@@ -84,6 +84,12 @@ pub(super) fn collect_selected<E>(
         });
     }
     let checked_generic_args = super::call::lower_callable_generic_args(ctx, generic_args);
+    let argument_names = std::iter::once(None)
+        .chain(args.iter().map(|arg| match arg {
+            HirArg::Positional(_) => None,
+            HirArg::Named { name, .. } => Some(name.clone()),
+        }))
+        .collect::<Vec<_>>();
     let associated_receiver = if matches!(selection, MethodSelection::Associated) {
         let etas_hir::HirExpr::Path(path) = &ctx.ctx.hir.exprs[receiver] else {
             unreachable!("associated method receiver is a type path")
@@ -109,6 +115,7 @@ pub(super) fn collect_selected<E>(
         .map(|(id, entry)| (id, entry.clone()))
         .collect::<Vec<_>>();
     let mut candidates = Vec::with_capacity(entries.len());
+    let mut candidate_hints = Vec::with_capacity(entries.len());
     for (index, entry) in entries {
         let owner_count = entry.owner_params.len();
         let mut signature = entry.signature.clone();
@@ -196,6 +203,7 @@ pub(super) fn collect_selected<E>(
             effects: signature.effects.clone(),
         };
         let mut ty = ctx.ctx.interner.intern(Type::Function(flow.clone()));
+        let mut inputs = signature.params.clone();
         if let Some(instantiated) = super::callable_instantiation::signature_hints(
             ctx,
             ty,
@@ -203,6 +211,7 @@ pub(super) fn collect_selected<E>(
             &checked_generic_args,
             span,
         ) {
+            inputs = instantiated.input;
             // Callback rows stay schematic until their latent sources solve.
             // An explicit result is still available to the next chain link.
             ty = ctx.ctx.interner.intern(Type::Function(FlowType {
@@ -210,6 +219,20 @@ pub(super) fn collect_selected<E>(
                 ..flow
             }));
         }
+        let mut names = entry.parameter_names.clone();
+        if entry.receiver == MethodReceiver::Associated {
+            names.insert(0, None);
+        }
+        candidate_hints.push(
+            crate::method::arguments::slots(&names, &argument_names)
+                .ok()
+                .and_then(|slots| {
+                    slots
+                        .into_iter()
+                        .map(|slot| inputs.get(slot as usize).copied())
+                        .collect()
+                }),
+        );
         candidates.push(CallableCandidate {
             ty,
             signature,
@@ -221,7 +244,7 @@ pub(super) fn collect_selected<E>(
             },
         });
     }
-    let hints = common_inputs(&candidates);
+    let hints = common_inputs(&candidate_hints);
     let receiver_ty = match associated_receiver {
         Some(ty) => ctx.record_expr_type(receiver, ty),
         None => super::expr::collect_expr(
@@ -251,12 +274,7 @@ pub(super) fn collect_selected<E>(
         method: method.into(),
         selection,
         probes,
-        argument_names: std::iter::once(None)
-            .chain(args.iter().map(|arg| match arg {
-                HirArg::Positional(_) => None,
-                HirArg::Named { name, .. } => Some(name.clone()),
-            }))
-            .collect(),
+        argument_names,
         access_module: ctx.ctx.hir.item_module(ctx.state.item),
         candidates,
         generic_args: checked_generic_args,
@@ -282,10 +300,10 @@ pub(super) fn collect_selected<E>(
     Ok(output)
 }
 
-fn common_inputs(candidates: &[CallableCandidate]) -> Option<Vec<TypeId>> {
-    let first = candidates.first()?.signature.params.clone();
+fn common_inputs(candidates: &[Option<Vec<TypeId>>]) -> Option<Vec<TypeId>> {
+    let first = candidates.first()?.as_ref()?.clone();
     candidates
         .iter()
-        .all(|candidate| candidate.signature.params == first)
+        .all(|candidate| candidate.as_ref() == Some(&first))
         .then_some(first)
 }

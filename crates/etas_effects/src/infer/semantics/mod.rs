@@ -3,6 +3,7 @@ pub(crate) mod argument_values;
 mod callable_generics;
 mod callable_reference;
 mod callable_summary;
+mod callback_contract;
 pub mod calls;
 mod capture_environment;
 mod constructor;
