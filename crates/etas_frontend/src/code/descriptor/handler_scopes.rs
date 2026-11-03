@@ -193,6 +193,12 @@ impl DefinitionDescriptorProjector<'_> {
         exit.enclosing_handlers
             .as_ref()?
             .iter()
+            .filter(|handler| match handler {
+                etas_effects::ParameterHandlerScopeRef::Native(handler) => {
+                    !self.error_handler_is_disjoint(*handler, exits)
+                }
+                etas_effects::ParameterHandlerScopeRef::External { .. } => true,
+            })
             .map(|handler| match handler {
                 etas_effects::ParameterHandlerScopeRef::Native(handler) => self
                     .checked_handler_scope(*handler, exits, exit.source.span())
@@ -203,6 +209,33 @@ impl DefinitionDescriptorProjector<'_> {
                 }
             })
             .collect()
+    }
+
+    fn error_handler_is_disjoint(&self, handler: HirExprId, exits: &CallableExitSummary) -> bool {
+        let Some(span) = self.handler_scope_source(handler) else {
+            return false;
+        };
+        let coverage = etas_effects::EffectCoverage {
+            registry: self.checked.effect_registry,
+            types: self.checked.type_store,
+        };
+        let mut evidence = exits
+            .handler_gaps
+            .iter()
+            .filter(|gap| gap.source.span() == span)
+            .peekable();
+        evidence.peek().is_some()
+            && evidence.all(|gap| {
+                // Escaping rows bound propagated Error instances, not action
+                // requests that an intrinsic may handle by default.
+                gap.normal_control
+                    && gap
+                        .handled
+                        .effects
+                        .iter()
+                        .all(|effect| matches!(effect, Effect::Error(_)))
+                    && coverage.rows_disjoint(&gap.handled, &gap.body_escaping)
+            })
     }
 
     fn handle_result_type(&self, handler: HirExprId) -> Option<TypeId> {
