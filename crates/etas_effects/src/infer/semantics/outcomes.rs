@@ -627,7 +627,17 @@ impl EffectSemantics<'_> {
                 }
             }
             Some(HirExpr::MethodCall { .. })
-                if !self.types.facts.agent_method_calls.contains_key(&expr) =>
+                if self
+                    .types
+                    .facts
+                    .checked_method_calls
+                    .get(&expr)
+                    .is_none_or(|fact| {
+                        matches!(
+                            fact.target,
+                            etas_types::method::MethodTarget::Standard { .. }
+                        )
+                    }) =>
             {
                 self.note_external_outcomes(expr, state)
             }

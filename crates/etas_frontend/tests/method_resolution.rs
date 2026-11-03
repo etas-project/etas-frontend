@@ -2,6 +2,31 @@ use etas_frontend::{CheckRequest, CheckScope, FrontendSession, ProjectInput, Sou
 use etas_types::method::MethodTarget;
 
 #[test]
+fn ordinary_and_selected_method_chains_preserve_complete_return_outcomes() {
+    let source = include_str!("fixtures/method_resolution/returned_chain.es");
+    for source in [
+        source.to_owned(),
+        source.replace(".number()", "::Number.number()"),
+    ] {
+        let output = etas_frontend::Frontend
+            .check_project(ProjectInput::single_source(SourceInput::anonymous(source)));
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let checked = output.checked.unwrap();
+        let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
+        let exits = summary.exits.as_ref().expect("checked call exits");
+        assert!(exits.gaps.is_empty(), "{exits:?}");
+        assert!(!exits.exits.is_empty());
+        assert!(
+            exits
+                .exits
+                .iter()
+                .all(|exit| matches!(exit.outcome, etas_effects::CallableOutcome::Returned { .. })),
+            "{exits:?}"
+        );
+    }
+}
+
+#[test]
 fn entry_reachability_follows_only_the_selected_method_bodies() {
     let mut session = FrontendSession::new();
     let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(
