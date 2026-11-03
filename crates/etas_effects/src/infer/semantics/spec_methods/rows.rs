@@ -1,4 +1,4 @@
-use etas_hir::{HirArg, HirExpr, HirExprId};
+use etas_hir::HirExprId;
 
 use crate::{
     ParameterCallTarget,
@@ -23,14 +23,8 @@ impl EffectSemantics<'_> {
         let invalid = || EffectSpecializationError::InvalidCallableEnvironment {
             reason: "method callback row has no checked argument capture".into(),
         };
-        let Some(HirExpr::SpecMethodCall { receiver, args, .. }) = self.hir.exprs.get(call) else {
-            return Err(invalid());
-        };
         let mut state = EffectState::for_unit(crate::EffectUnit::Item(snapshot.owner));
-        let inputs = std::iter::once(*receiver).chain(args.iter().map(|arg| match arg {
-            HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,
-        }));
-        for (position, expr) in inputs.enumerate() {
+        for (position, expr) in self.checked_method_arguments(call)?.into_iter().enumerate() {
             if let Some(sources) = snapshot
                 .parameters
                 .get(&ParameterCallTarget::Interface(position as u32))

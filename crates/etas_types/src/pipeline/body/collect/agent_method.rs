@@ -1,68 +1,6 @@
 use crate::pipeline::context::BodyCollectContext;
 use crate::{CallableGenericArg, ConstraintOrigin, SymbolTypeFact, TypeConstraint, TypeId};
 
-pub(super) fn has_method_name<E>(ctx: &BodyCollectContext<'_, '_, E>, name: &str) -> bool {
-    let facts = ctx
-        .ctx
-        .signature_base
-        .map_or(&ctx.ctx.signature_facts, |base| &base.facts);
-    facts
-        .agent_methods
-        .values()
-        .any(|method| method.name == name)
-}
-
-pub(super) fn deferred_candidates<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
-    name: &str,
-    arguments: &[CallableGenericArg],
-    span: etas_core::Span,
-) -> Vec<crate::CallableCandidate> {
-    let facts = ctx
-        .ctx
-        .signature_base
-        .map_or(&ctx.ctx.signature_facts, |base| &base.facts);
-    let mut methods = facts
-        .agent_methods
-        .values()
-        .filter(|method| method.name == name)
-        .cloned()
-        .collect::<Vec<_>>();
-    methods.sort_by_key(|method| method.symbol);
-    let mut candidates = vec![];
-    for method in methods {
-        let Some(mut candidate) = super::expr::callable_candidate_from_fact(
-            ctx,
-            SymbolTypeFact::Flow {
-                signature: method.callable,
-            },
-            true,
-        ) else {
-            continue;
-        };
-        let _ = super::callable_instantiation::signature_hints(
-            ctx,
-            candidate.ty,
-            &candidate.signature.generic_params,
-            arguments,
-            span,
-        );
-        let Some(crate::Type::Function(mut signature)) =
-            ctx.ctx.interner.store().get(candidate.ty).cloned()
-        else {
-            continue;
-        };
-        candidate.operation = crate::CallableCandidateOperation::AgentMethod {
-            symbol: method.symbol,
-            callable: candidate.ty,
-        };
-        signature.input.insert(0, method.component);
-        candidate.ty = ctx.ctx.interner.intern(crate::Type::Function(signature));
-        candidates.push(candidate);
-    }
-    candidates
-}
-
 pub fn validate_method_access<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     symbol: etas_hir::SymbolId,

@@ -6,6 +6,7 @@ use crate::{
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct HirTreeIndex {
+    pub item_children: HashMap<HirItemId, Vec<HirItemId>>,
     pub module_items: HashMap<HirModuleId, Vec<HirItemId>>,
     pub item_module: HashMap<HirItemId, HirModuleId>,
     pub item_body: HashMap<HirItemId, HirBodyRef>,
@@ -78,7 +79,17 @@ pub enum HirTreeNodeKind {
     Scope,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct HirBodyRef {
     pub item: HirItemId,
     pub kind: HirBodyKind,
@@ -90,7 +101,17 @@ impl HirBodyRef {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub enum HirBodyKind {
     Flow,
     Tool,

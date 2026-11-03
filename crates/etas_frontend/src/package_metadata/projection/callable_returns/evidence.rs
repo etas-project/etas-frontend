@@ -127,26 +127,32 @@ impl ProjectMetadataProjection<'_> {
         call: etas_hir::HirExprId,
         environment: CallableEnvironmentId,
     ) -> Result<SpecMethodInvocation, PackageMetadataError> {
-        let Some(etas_hir::HirExpr::SpecMethodCall {
-            receiver,
-            spec_path,
-            spec_args,
-            method,
-            args,
+        let fact = self
+            .checked
+            .types
+            .checked_method_calls
+            .get(&call)
+            .ok_or_else(|| invalid("method evidence has no checked call fact"))?;
+        let etas_types::method::MethodTarget::BoundSpec {
+            spec: etas_types::CheckedSpecRef::Source(symbol),
+            member,
             ..
-        }) = self.checked.hir.exprs.get(call)
+        } = &fact.target
         else {
             return Err(invalid(
-                "method evidence has no checked selection expression",
+                "method evidence has no checked bound witness recipe",
             ));
         };
-        let etas_hir::ResolveResult::Resolved(symbol) = spec_path.resolution else {
-            return Err(invalid("method evidence has no resolved spec identity"));
+        let etas_types::method::MethodEvidence::Bound {
+            args: spec_args, ..
+        } = &fact.evidence
+        else {
+            return Err(invalid("method evidence has no checked spec arguments"));
         };
         let symbol = self
             .checked
             .hir
-            .canonical_source_symbol(symbol)
+            .canonical_source_symbol(*symbol)
             .ok_or_else(|| invalid("method evidence has no canonical spec symbol"))?;
         let spec = self
             .symbol_canonical_path(symbol)
@@ -159,7 +165,7 @@ impl ProjectMetadataProjection<'_> {
             .and_then(|spec| {
                 spec.methods
                     .iter()
-                    .find(|candidate| candidate.name == *method)
+                    .find(|candidate| candidate.identity == *member)
             })
             .ok_or_else(|| invalid("method evidence has no checked method declaration"))?;
         let signature = declaration
@@ -196,30 +202,17 @@ impl ProjectMetadataProjection<'_> {
             .ok_or_else(|| invalid("method evidence has no checked binding environment"))?;
         let builder = Builder::new(self, snapshot.owner);
         let captured = builder.captured_projection(lexical_owner, parameters, environment)?;
-        let receiver = *self
-            .checked
-            .types
-            .expr_types
-            .get(receiver)
-            .ok_or_else(|| invalid("method evidence receiver has no checked type"))?;
+        let receiver = fact.receiver_type;
         let spec_args = spec_args
             .iter()
-            .map(|ty| {
-                let ty =
-                    *self.checked.types.type_refs.get(ty).ok_or_else(|| {
-                        invalid("method evidence spec argument has no checked type")
-                    })?;
-                captured.metadata_type(self, ty)
-            })
+            .map(|ty| captured.metadata_type(self, *ty))
             .collect::<Result<_, _>>()?;
-        let arguments = self.checked.types.generic_instantiations.get(&call);
+        let arguments = &fact.instantiation;
         let mut generic_arguments = Vec::new();
         for (position, parameter) in signature.generic_params.iter().enumerate() {
             if Some(position as u32) == declaration.receiver_param {
                 continue;
             }
-            let arguments = arguments
-                .ok_or_else(|| invalid("method evidence generic arguments are missing"))?;
             generic_arguments.push(match parameter.kind {
                 etas_types::CallableGenericParamKind::Type => {
                     let ty = *arguments
@@ -247,8 +240,8 @@ impl ProjectMetadataProjection<'_> {
             receiver: captured.metadata_type(self, receiver)?,
             spec,
             spec_args,
-            method: method.clone(),
-            arity: u32::try_from(args.len() + 1)
+            method: declaration.name.clone(),
+            arity: u32::try_from(fact.signature.params.len())
                 .map_err(|_| invalid("method arity exceeds u32"))?,
             generic_arguments,
             callable_arguments,

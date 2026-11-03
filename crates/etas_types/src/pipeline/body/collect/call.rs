@@ -9,12 +9,11 @@ use crate::{
     lower::type_ref::lower_type_ref,
     pipeline::{
         body::collect::{
-            expr::{callable_candidate_from_fact, collect_expr, value_type_from_fact},
+            expr::{callable_candidate_from_fact, collect_expr},
             std_member::{
                 raw_std_member_value_type_for_symbol, raw_std_qualified_path_value_type,
                 std_member_callable_signature_for_symbol, std_member_value_type_for_symbol,
-                std_method_candidates, std_qualified_path_callable_candidate,
-                std_qualified_path_value_type,
+                std_qualified_path_callable_candidate, std_qualified_path_value_type,
             },
         },
         context::BodyCollectContext,
@@ -510,7 +509,6 @@ fn collect_partially_resolved_method_call<E>(
             super::std_type_member::Call {
                 expr: call,
                 callee: Some(callee),
-                method,
                 candidates,
                 generic_args: checked_generic_args,
                 args,
@@ -553,58 +551,7 @@ fn collect_partially_resolved_method_call<E>(
         });
         return Ok(Some(output));
     }
-    let mut candidates = std_method_candidates(ctx, method);
-    candidates.extend(super::agent_method::deferred_candidates(
-        ctx,
-        method,
-        checked_generic_args,
-        span,
-    ));
-    if candidates.is_empty() && !super::agent_method::has_method_name(ctx, method) {
-        return Ok(None);
-    }
-    let Some(receiver_fact) = ctx
-        .state
-        .provisional
-        .symbol_types
-        .get(&receiver_symbol)
-        .or_else(|| ctx.ctx.symbol_fact(receiver_symbol))
-        .cloned()
-    else {
-        return Ok(None);
-    };
-    let Some(receiver_ty) = value_type_from_fact(ctx, receiver_fact) else {
-        return Ok(None);
-    };
-    let mut arg_tys = Vec::with_capacity(args.len() + 1);
-    arg_tys.push(receiver_ty);
-    let actual = args
-        .iter()
-        .map(|arg| match arg {
-            HirArg::Positional(expr) => collect_expr(ctx, *expr, None),
-            HirArg::Named { value, .. } => collect_expr(ctx, *value, None),
-        })
-        .collect::<Result<Vec<_>, E>>()?;
-    arg_tys.extend(actual);
-    let inferred =
-        specialized_method_output_for_args(ctx, &candidates, type_generic_args, &arg_tys, span);
-    // Overload outputs are contextual hints until the method solver selects a
-    // checked candidate, unlike the result of a resolved callable signature.
-    let output = expected
-        .or(inferred)
-        .unwrap_or_else(|| ctx.fresh_type_var());
-    ctx.emit(TypeConstraint::MethodCall {
-        expr: call,
-        method: method.clone(),
-        access_module: ctx.ctx.hir.item_module(ctx.state.item),
-        candidates,
-        generic_args: checked_generic_args.to_vec(),
-        arg_exprs: std::iter::once(None).chain(call_arg_exprs(args)).collect(),
-        args: arg_tys,
-        output,
-        origin: ConstraintOrigin { span },
-    });
-    Ok(Some(output))
+    Ok(None)
 }
 
 pub(super) fn select_call_output<E>(

@@ -89,8 +89,7 @@ impl EffectSemantics<'_> {
         call: HirExprId,
         state: &EffectState,
     ) -> Result<GenericSubstitutions, EffectSpecializationError> {
-        let mut checked = self.call_generic_bindings(call);
-        self.bind_spec_method_generic_parameters(call, &mut checked)?;
+        let checked = self.call_generic_bindings(call);
         let mut rows = checked
             .effect_rows
             .iter()

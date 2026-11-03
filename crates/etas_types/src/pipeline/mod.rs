@@ -39,6 +39,7 @@ pub fn check_top_level_items(
 ) -> crate::TypeOutput {
     let mut ctx = TypePipelineContext {
         hir,
+        hir_view: None,
         std_registry,
         interner: crate::TypeInterner::from_store(std::sync::Arc::unwrap_or_clone(seed.store)),
         signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),
@@ -138,6 +139,7 @@ fn infer_outputs_with_checkpoint<E>(
     checkpoint()?;
     let mut ctx = TypePipelineContext {
         hir,
+        hir_view: None,
         std_registry,
         interner: crate::TypeInterner::from_store(std::sync::Arc::unwrap_or_clone(seed.store)),
         signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),

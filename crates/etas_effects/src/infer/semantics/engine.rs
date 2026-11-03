@@ -26,6 +26,8 @@ pub(crate) struct EffectSemantics<'a> {
         &'a [crate::AnchoredExternalMetadata<crate::ExternalSpecImplementationMetadata>],
     pub(crate) implementation_graphs:
         std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
+    pub(crate) implementation_identities:
+        std::collections::BTreeMap<etas_code::MethodId, Option<usize>>,
     pub(crate) method_evidence: std::cell::RefCell<
         std::sync::Arc<
             std::collections::BTreeMap<
@@ -188,6 +190,7 @@ impl<'a> EffectSemantics<'a> {
             discovered_external_method_sources: Default::default(),
             external_implementations,
             implementation_graphs: Default::default(),
+            implementation_identities: Default::default(),
             method_evidence: std::cell::RefCell::new(method_evidence),
             method_callback_graphs: Default::default(),
             frozen_graphs,
@@ -254,6 +257,11 @@ impl<'a> EffectSemantics<'a> {
         };
         semantics.collect_std_callable_values();
         for (index, method) in semantics.external_implementations.iter().enumerate() {
+            semantics
+                .implementation_identities
+                .entry(method.identity.clone())
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(index));
             semantics
                 .implementation_graphs
                 .entry(method.graph_key)

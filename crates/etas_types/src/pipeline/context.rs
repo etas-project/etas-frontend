@@ -6,6 +6,7 @@ use crate::{TypeFacts, TypeInterner, TypeOutput, pipeline::symbols::TypeSymbolIn
 
 pub struct TypePipelineContext<'a> {
     pub hir: &'a HirProgram,
+    pub hir_view: Option<etas_hir::HirTreeView<'a>>,
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub interner: TypeInterner,
     pub signature_facts: TypeFacts,
@@ -128,6 +129,7 @@ impl<'a> TypePipelineContext<'a> {
     ) -> Self {
         Self {
             hir,
+            hir_view: None,
             std_registry,
             interner: TypeInterner::new(),
             signature_facts: TypeFacts::default(),
@@ -170,6 +172,7 @@ impl<'a> TypePipelineContext<'a> {
     ) -> Self {
         Self {
             hir,
+            hir_view: None,
             std_registry,
             interner: TypeInterner::from_store(crate::TypeStore::with_base(base.types.clone())),
             signature_facts: TypeFacts::default(),
@@ -229,6 +232,11 @@ impl<'a> TypePipelineContext<'a> {
         crate::pipeline::symbols::symbol_type_fact_as_type_id(self.symbol_fact(symbol)?)
     }
 
+    pub(crate) fn methods(&self) -> &std::sync::Arc<crate::method::MethodIndex> {
+        self.signature_base
+            .map_or(&self.signature_facts.methods, |base| &base.facts.methods)
+    }
+
     pub(crate) fn item_signature(
         &self,
         item: etas_hir::HirItemId,
@@ -275,13 +283,6 @@ impl<'a> TypePipelineContext<'a> {
         self.signature_facts
             .agent_signature(component)
             .or_else(|| self.signature_base?.facts.agent_signature(component))
-    }
-
-    pub(crate) fn spec_signature(
-        &self,
-        symbol: etas_hir::SymbolId,
-    ) -> Option<&crate::SpecSignature> {
-        self.lookup(|facts| &facts.spec_signatures, &symbol)
     }
 
     pub(crate) fn action_signature(

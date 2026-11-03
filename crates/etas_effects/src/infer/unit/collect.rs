@@ -42,19 +42,17 @@ impl EffectUnitCollector {
     }
 
     fn collect_effect_specific_units(&mut self, view: &HirTreeView<'_>) {
-        for module in view.modules() {
-            for item in module.items() {
-                let owner = item.id();
-                for body in item.bodies() {
-                    if let HirBodyKind::HandlerArm(arm) = body.id().kind {
-                        self.units.insert(EffectUnit::HandlerArm { owner, arm });
-                    }
-                    let mut visitor = EffectSpecificUnitVisitor {
-                        collector: self,
-                        owner,
-                    };
-                    walk_body(view, body.id(), &mut visitor);
+        for item in view.items() {
+            let owner = item.id();
+            for body in item.bodies() {
+                if let HirBodyKind::HandlerArm(arm) = body.id().kind {
+                    self.units.insert(EffectUnit::HandlerArm { owner, arm });
                 }
+                let mut visitor = EffectSpecificUnitVisitor {
+                    collector: self,
+                    owner,
+                };
+                walk_body(view, body.id(), &mut visitor);
             }
         }
     }

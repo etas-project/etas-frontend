@@ -36,6 +36,10 @@ fn spec_method_selection_composes_with_postfix_and_binary_expressions() {
         "packet::Encoder.encode().field",
         "packet::Encoder.encode()[0]",
         "packet::Encoder.encode()::Next.finish()",
+        "packet.first()::Encoder.encode().next()::Next.finish()",
+        "packet::Encoder.encode()::Next.finish().items[0].next()?",
+        "head :: packet::Encoder.encode() :: tail",
+        "packet::Encoder.encode()[0, 2).next()",
         "head :: tail",
     ] {
         let source = format!("flow main() -> unit {{ let result = {expression}; }}");

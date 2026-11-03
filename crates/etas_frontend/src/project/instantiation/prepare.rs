@@ -244,16 +244,19 @@ pub(crate) fn prepare_from_targets(
                 for item in targets.get(call).into_iter().flatten() {
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
-                    let method_fact = match hir.exprs.get(*call) {
-                        Some(etas_hir::HirExpr::SpecMethodCall {
-                            spec_path, method, ..
+                    let method_fact = match types
+                        .facts
+                        .checked_method_calls
+                        .get(call)
+                        .map(|fact| &fact.target)
+                    {
+                        Some(etas_types::method::MethodTarget::BoundSpec {
+                            spec: etas_types::CheckedSpecRef::Source(symbol),
+                            member,
+                            ..
                         }) => {
-                            let etas_hir::ResolveResult::Resolved(symbol) = spec_path.resolution
-                            else {
-                                return Err("spec invocation has no resolved spec".into());
-                            };
                             let symbol = hir
-                                .canonical_source_symbol(symbol)
+                                .canonical_source_symbol(*symbol)
                                 .ok_or("spec invocation has no canonical spec")?;
                             let method = types
                                 .facts
@@ -262,7 +265,7 @@ pub(crate) fn prepare_from_targets(
                                 .and_then(|spec| {
                                     spec.methods
                                         .iter()
-                                        .find(|candidate| candidate.name == *method)
+                                        .find(|candidate| candidate.identity == *member)
                                 })
                                 .ok_or("spec invocation has no checked method declaration")?;
                             let declaration = method

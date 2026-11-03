@@ -17,6 +17,7 @@ mod lambda_capture;
 pub mod latent;
 mod latent_source;
 mod metadata_callable;
+mod method_calls;
 mod native_callable;
 mod outcomes;
 mod parameter_inference;

@@ -283,6 +283,18 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         arity: usize,
     ) -> Result<Vec<HirExprId>, EffectSpecializationError> {
+        if self
+            .types
+            .facts
+            .checked_method_calls
+            .contains_key(&site.call)
+        {
+            let arguments = self.checked_method_arguments(site.call)?;
+            if arguments.len() != arity {
+                return Err(EffectSpecializationError::InvalidCallableParameterInterface);
+            }
+            return Ok(arguments);
+        }
         let arguments = match self.hir.exprs.get(site.call) {
             Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) => args
                 .iter()

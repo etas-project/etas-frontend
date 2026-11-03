@@ -1,44 +1,77 @@
-use etas_hir::{HirArg, HirGenericArg};
+use etas_hir::{HirArg, HirExprId, HirGenericArg};
 
 use crate::{
-    ConstraintOrigin, TypeConstraint, TypeId,
-    pipeline::{
-        body::collect::{
-            call::{
-                callable_output_for_expression, specialized_callable_output_for_args,
-                specialized_method_output_for_args,
-            },
-            expr::collect_expr,
-            std_member::{
-                raw_std_member_value_type, raw_std_method_candidates,
-                std_member_callable_signature, std_member_value_type, std_method_candidates,
-            },
-        },
-        context::BodyCollectContext,
-    },
+    AssignabilityReason, CallableCandidate, CallableCandidateOperation, ConstraintOrigin, FlowType,
+    Type, TypeConstraint, TypeId,
+    method::{MethodEvidence, MethodReceiver, MethodSelection},
+    pipeline::context::BodyCollectContext,
 };
+
+pub(super) struct SelectedMethodCall<'a> {
+    pub expr: HirExprId,
+    pub receiver: HirExprId,
+    pub method: &'a str,
+    pub generic_args: &'a [HirGenericArg],
+    pub args: &'a [HirArg],
+    pub selection: MethodSelection,
+    pub expected: Option<TypeId>,
+}
 
 pub fn collect_method_call<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
-    expr: etas_hir::HirExprId,
-    receiver: etas_hir::HirExprId,
+    expr: HirExprId,
+    receiver: HirExprId,
     method: &str,
     generic_args: &[HirGenericArg],
     args: &[HirArg],
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
-    ctx.checkpoint()?;
-    if let Some(ty) = super::agent_method::collect_agent_method_call(
+    let associated = match &ctx.ctx.hir.exprs[receiver] {
+        etas_hir::HirExpr::Path(path) => match path.resolution {
+            etas_hir::ResolveResult::Resolved(symbol) => matches!(
+                ctx.ctx.symbol_fact(symbol),
+                Some(
+                    crate::SymbolTypeFact::Type { .. }
+                        | crate::SymbolTypeFact::NominalType { .. }
+                        | crate::SymbolTypeFact::TypeAlias { .. }
+                )
+            ),
+            _ => false,
+        },
+        _ => false,
+    };
+    collect_selected(
         ctx,
+        SelectedMethodCall {
+            expr,
+            receiver,
+            method,
+            generic_args,
+            args,
+            selection: if associated {
+                MethodSelection::Associated
+            } else {
+                MethodSelection::Unqualified
+            },
+            expected,
+        },
+    )
+}
+
+pub(super) fn collect_selected<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    call: SelectedMethodCall<'_>,
+) -> Result<TypeId, E> {
+    let SelectedMethodCall {
         expr,
         receiver,
         method,
         generic_args,
         args,
+        selection,
         expected,
-    )? {
-        return Ok(ty);
-    }
+    } = call;
+    ctx.checkpoint()?;
     let span = ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks);
     if generic_args
         .iter()
@@ -47,239 +80,197 @@ pub fn collect_method_call<E>(
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span,
-            message: "method generic arguments cannot be wildcard selectors".to_owned(),
+            message: "method generic arguments cannot be wildcard selectors".into(),
         });
     }
     let checked_generic_args = super::call::lower_callable_generic_args(ctx, generic_args);
-    let type_generic_args = generic_args
-        .iter()
-        .filter_map(|arg| match arg {
-            HirGenericArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty),
-            HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
-        })
-        .collect::<Vec<_>>();
-    if method == "run" {
-        collect_expr(ctx, receiver, None)?;
-    }
-    if let etas_hir::HirExpr::Path(path) = &ctx.ctx.hir.exprs[receiver]
-        && let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
-    {
-        let candidates = super::std_member::std_type_member_candidates_for_symbol(
-            ctx,
-            symbol,
-            method,
-            checked_generic_args.is_empty(),
-        )
-        .into_iter()
-        .filter(|candidate| {
+    let associated_receiver = if matches!(selection, MethodSelection::Associated) {
+        let etas_hir::HirExpr::Path(path) = &ctx.ctx.hir.exprs[receiver] else {
+            unreachable!("associated method receiver is a type path")
+        };
+        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+            unreachable!("associated method has a resolved owner")
+        };
+        ctx.ctx.type_fact_as_type_id(symbol)
+    } else {
+        None
+    };
+    let entries = ctx
+        .ctx
+        .methods()
+        .member(method)
+        .filter(|(_, entry)| {
             matches!(
-                candidate.operation,
-                crate::CallableCandidateOperation::StdIntrinsic {
-                    has_receiver: false,
-                    ..
-                }
-            )
+                (&selection, entry.receiver),
+                (MethodSelection::Associated, MethodReceiver::Associated)
+            ) || (!matches!(selection, MethodSelection::Associated)
+                && entry.receiver != MethodReceiver::Associated)
         })
+        .map(|(id, entry)| (id, entry.clone()))
         .collect::<Vec<_>>();
-        if !candidates.is_empty() {
-            return super::std_type_member::collect(
-                ctx,
-                super::std_type_member::Call {
-                    expr,
-                    callee: None,
-                    method,
-                    candidates,
-                    generic_args: &checked_generic_args,
-                    args,
-                    span,
-                    expected,
-                },
+    let mut candidates = Vec::with_capacity(entries.len());
+    for (index, entry) in entries {
+        let owner_count = entry.owner_params.len();
+        let mut signature = entry.signature.clone();
+        signature
+            .generic_params
+            .splice(0..0, entry.owner_params.clone());
+        if entry.receiver == MethodReceiver::Associated {
+            signature.params.insert(
+                0,
+                associated_receiver.expect("associated owner has a checked type fact"),
             );
         }
-    }
-    let (std_member, generic_params) =
-        if let Some(signature) = std_member_callable_signature(ctx, receiver, method) {
-            let candidate = super::expr::callable_candidate_from_fact(
-                ctx,
-                crate::SymbolTypeFact::Flow { signature },
-                type_generic_args.is_empty(),
-            );
-            match candidate {
-                Some(candidate) => (Some(candidate.ty), candidate.signature.generic_params),
-                None => (None, Vec::new()),
-            }
-        } else {
-            let member = if type_generic_args.is_empty() {
-                std_member_value_type(ctx, receiver, method)
-            } else {
-                raw_std_member_value_type(ctx, receiver, method)
-            };
-            (member, Vec::new())
+        let original_parameters = signature.generic_params.clone();
+        let Some(mut signature) =
+            super::callable_instantiation::instantiate_signature(ctx, signature)
+        else {
+            continue;
         };
-    if let Some(callee_ty) = std_member {
-        let expected_inputs =
-            super::call::callable_input_types(ctx, callee_ty, &type_generic_args, span);
-        let arg_tys = args
+        let parameter_bindings = original_parameters
             .iter()
-            .enumerate()
-            .map(|(index, arg)| match arg {
-                HirArg::Positional(expr) => collect_expr(
-                    ctx,
-                    *expr,
-                    expected_inputs
-                        .as_ref()
-                        .and_then(|inputs| inputs.get(index).copied()),
-                ),
-                HirArg::Named { value, .. } => collect_expr(
-                    ctx,
-                    *value,
-                    expected_inputs
-                        .as_ref()
-                        .and_then(|inputs| inputs.get(index).copied()),
-                ),
-            })
-            .collect::<Result<Vec<_>, E>>()?;
-        let output = expected.unwrap_or_else(|| {
-            specialized_callable_output_for_args(ctx, callee_ty, &type_generic_args, &arg_tys, span)
-                .or_else(|| callable_output_for_expression(ctx, callee_ty))
-                .unwrap_or_else(|| ctx.fresh_type_var())
-        });
-        ctx.validate(crate::ValidationRequest::CallableArity {
-            callee_ty,
-            arg_count: arg_tys.len(),
-            span,
-        });
-        ctx.emit(TypeConstraint::Callable {
-            call: Some(expr),
-            callee: callee_ty,
-            generic_params,
-            generic_args: checked_generic_args,
-            arg_exprs: args
-                .iter()
-                .map(|arg| {
-                    Some(match arg {
-                        HirArg::Positional(expr) => *expr,
-                        HirArg::Named { value, .. } => *value,
-                    })
-                })
-                .collect(),
-            args: arg_tys,
-            output,
-            origin: ConstraintOrigin { span },
-        });
-        return Ok(output);
-    }
-
-    let mut candidates = if type_generic_args.is_empty() {
-        std_method_candidates(ctx, method)
-    } else {
-        raw_std_method_candidates(ctx, method)
-    };
-    candidates.extend(super::agent_method::deferred_candidates(
-        ctx,
-        method,
-        &checked_generic_args,
-        span,
-    ));
-    if !candidates.is_empty() || super::agent_method::has_method_name(ctx, method) {
-        let expected_inputs = common_candidate_inputs(ctx, &candidates);
-        let receiver_expected = expected_inputs
-            .as_ref()
-            .and_then(|inputs| inputs.first().copied());
-        let receiver_ty = collect_expr(ctx, receiver, receiver_expected)?;
-        let mut arg_tys = Vec::with_capacity(args.len() + 1);
-        arg_tys.push(receiver_ty);
-        let arguments = args
-            .iter()
-            .enumerate()
-            .map(|(index, arg)| {
-                let expected = expected_inputs
-                    .as_ref()
-                    .and_then(|inputs| inputs.get(index + 1).copied());
-                match arg {
-                    HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
-                    HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
+            .zip(&signature.generic_params)
+            .map(|(old, new)| (old.subject, new.subject))
+            .collect();
+        let evidence = {
+            let names = std::collections::HashMap::new();
+            let mut engine =
+                crate::TypeSubstitutionEngine::materializing(&mut ctx.ctx.interner, &names, None)
+                    .with_type_parameters(&parameter_bindings);
+            let result = match &entry.evidence {
+                MethodEvidence::Inherent => Ok(MethodEvidence::Inherent),
+                MethodEvidence::Implementation {
+                    spec,
+                    subject,
+                    args,
+                } => engine.substitute(*subject).and_then(|subject| {
+                    args.iter()
+                        .map(|arg| engine.substitute(*arg))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|args| MethodEvidence::Implementation {
+                            spec: spec.clone(),
+                            subject,
+                            args,
+                        })
+                }),
+                MethodEvidence::Bound {
+                    spec,
+                    subject,
+                    args,
+                } => engine.substitute(*subject).and_then(|subject| {
+                    args.iter()
+                        .map(|arg| engine.substitute(*arg))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(|args| MethodEvidence::Bound {
+                            spec: spec.clone(),
+                            subject,
+                            args,
+                        })
+                }),
+            };
+            match result {
+                Ok(evidence) => evidence,
+                Err(error) => {
+                    ctx.validate(crate::ValidationRequest::Diagnostic {
+                        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        span,
+                        message: error.to_string(),
+                    });
+                    continue;
                 }
-            })
-            .collect::<Result<Vec<_>, E>>()?;
-        arg_tys.extend(arguments);
-        let output = expected.unwrap_or_else(|| {
-            specialized_method_output_for_args(ctx, &candidates, &type_generic_args, &arg_tys, span)
-                .unwrap_or_else(|| ctx.fresh_type_var())
+            }
+        };
+        let owner_params = signature
+            .generic_params
+            .drain(..owner_count)
+            .collect::<Vec<_>>();
+        let owner_bindings = entry
+            .owner_params
+            .iter()
+            .zip(&owner_params)
+            .map(|(old, new)| (old.subject, new.subject))
+            .collect();
+        let ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+            input: signature.params.clone(),
+            output: signature.output,
+            effects: signature.effects.clone(),
+        }));
+        candidates.push(CallableCandidate {
+            ty,
+            signature,
+            operation: CallableCandidateOperation::Method {
+                index,
+                owner_params,
+                owner_bindings,
+                evidence,
+            },
         });
-        ctx.emit(TypeConstraint::MethodCall {
-            expr,
-            method: method.to_owned(),
-            access_module: ctx.ctx.hir.item_module(ctx.state.item),
-            candidates,
-            generic_args: checked_generic_args,
-            arg_exprs: std::iter::once(Some(receiver))
-                .chain(args.iter().map(|arg| {
-                    Some(match arg {
-                        HirArg::Positional(expr) => *expr,
-                        HirArg::Named { value, .. } => *value,
-                    })
-                }))
-                .collect(),
-            args: arg_tys,
-            output,
-            origin: ConstraintOrigin { span },
-        });
-        return Ok(output);
     }
-
-    let receiver_ty = collect_expr(ctx, receiver, None)?;
-    let output = expected.unwrap_or_else(|| ctx.fresh_type_var());
-    ctx.emit(TypeConstraint::FieldAccess {
-        base: receiver_ty,
-        field: method.to_owned(),
+    let hints = common_inputs(&candidates);
+    let receiver_ty = match associated_receiver {
+        Some(ty) => ctx.record_expr_type(receiver, ty),
+        None => super::expr::collect_expr(
+            ctx,
+            receiver,
+            hints.as_ref().and_then(|hints| hints.first()).copied(),
+        )?,
+    };
+    let mut arg_types = vec![receiver_ty];
+    for (index, arg) in args.iter().enumerate() {
+        let value = match arg {
+            HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
+        };
+        arg_types.push(super::expr::collect_expr(
+            ctx,
+            value,
+            hints
+                .as_ref()
+                .and_then(|hints| hints.get(index + 1))
+                .copied(),
+        )?);
+    }
+    let output = ctx.fresh_type_var();
+    let probes = candidates.iter().map(|_| ctx.fresh_type_var()).collect();
+    ctx.emit(TypeConstraint::MethodCall {
+        expr,
+        method: method.into(),
+        selection,
+        probes,
+        argument_names: std::iter::once(None)
+            .chain(args.iter().map(|arg| match arg {
+                HirArg::Positional(_) => None,
+                HirArg::Named { name, .. } => Some(name.clone()),
+            }))
+            .collect(),
+        access_module: ctx.ctx.hir.item_module(ctx.state.item),
+        candidates,
+        generic_args: checked_generic_args,
+        arg_exprs: std::iter::once(Some(receiver))
+            .chain(args.iter().map(|arg| {
+                Some(match arg {
+                    HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,
+                })
+            }))
+            .collect(),
+        args: arg_types,
         output,
         origin: ConstraintOrigin { span },
     });
+    if let Some(expected) = expected {
+        ctx.emit(TypeConstraint::Assignable {
+            from: output,
+            to: expected,
+            origin: ConstraintOrigin { span },
+            reason: AssignabilityReason::Other,
+        });
+    }
     Ok(output)
 }
 
-fn common_candidate_inputs<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
-    candidates: &[crate::CallableCandidate],
-) -> Option<Vec<TypeId>> {
-    let mut expected: Option<Vec<TypeId>> = None;
-    for candidate in candidates {
-        let Some(crate::Type::Function(flow)) = ctx.ctx.interner.store().get(candidate.ty) else {
-            return None;
-        };
-        if let Some(existing) = &expected {
-            if existing != &flow.input {
-                return None;
-            }
-        } else {
-            expected = Some(flow.input.clone());
-        }
-    }
-    let params = expected?;
-    let candidate = candidates.first()?;
-    let needs_instantiation = candidate.signature.generic_params.iter().any(|param| {
-        param.kind == crate::CallableGenericParamKind::Type
-            && matches!(
-                ctx.ctx.interner.store().get(param.subject),
-                Some(crate::Type::Named(_))
-            )
-    });
-    if !needs_instantiation {
-        return Some(params);
-    }
-    // Context hints belong to this call site, not to the method declaration.
-    // Keep the original candidates for solving explicit arguments and bounds.
-    let output = ctx.primitive(crate::PrimitiveType::Unit);
-    super::callable_instantiation::instantiate_signature(
-        ctx,
-        crate::CallableSignature {
-            generic_params: candidate.signature.generic_params.clone(),
-            params,
-            output,
-            effects: None,
-            requested_actions: None,
-        },
-    )
-    .map(|signature| signature.params)
+fn common_inputs(candidates: &[CallableCandidate]) -> Option<Vec<TypeId>> {
+    let first = candidates.first()?.signature.params.clone();
+    candidates
+        .iter()
+        .all(|candidate| candidate.signature.params == first)
+        .then_some(first)
 }

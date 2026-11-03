@@ -10,6 +10,7 @@ use crate::{
 
 #[derive(Default)]
 pub struct SignaturePipelineState {
+    pub methods: Vec<crate::method::MethodSignatureFact>,
     pub type_impl_methods: HashMap<SymbolId, crate::facts::TypeImplMethodFact>,
     pub agent_methods: HashMap<SymbolId, crate::facts::signatures::AgentMethodSignature>,
     pub enum_layouts: HashMap<TypeId, crate::EnumLayoutFact>,

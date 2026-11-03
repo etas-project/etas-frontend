@@ -379,7 +379,26 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         span: Span,
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
-        AnalysisStep::handled(self.std_method_call(expr, span, state))
+        match self
+            .types
+            .facts
+            .checked_method_calls
+            .get(&expr)
+            .map(|fact| &fact.target)
+        {
+            Some(
+                etas_types::method::MethodTarget::BoundSpec { .. }
+                | etas_types::method::MethodTarget::External { .. },
+            ) => self.spec_method_call(expr, span, state),
+            Some(etas_types::method::MethodTarget::Standard { .. }) => {
+                AnalysisStep::handled(self.std_method_call(expr, span, state))
+            }
+            _ => AnalysisStep::handled(self.incomplete_at(
+                span,
+                "method call has no scheduled checked behavior target",
+                state,
+            )),
+        }
     }
 
     fn spec_method_call(

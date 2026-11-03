@@ -788,6 +788,18 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
         let expr_id = expr.id();
         self.exprs.insert(expr_id);
+        if let Some(fact) = self
+            .types
+            .and_then(|types| types.checked_method_calls.get(&expr_id))
+        {
+            match &fact.target {
+                etas_types::method::MethodTarget::Source { callable, .. }
+                | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                    self.pending_items.push(*callable)
+                }
+                _ => {}
+            }
+        }
         if let Some(types) = self.types
             && let Some(symbol) = types.agent_method_calls.get(&expr_id)
         {
@@ -822,15 +834,10 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
             Some(HirExpr::Call { callee, .. }) => {
                 self.enqueue_local_item_for_expr_path(*callee);
             }
-            Some(HirExpr::MethodCall { receiver, .. }) => {
+            Some(
+                HirExpr::MethodCall { receiver, .. } | HirExpr::SpecMethodCall { receiver, .. },
+            ) => {
                 self.enqueue_local_item_for_expr_path(*receiver);
-                if let Some(HirExpr::MethodCall { method, .. }) = self.hir.exprs.get(expr_id)
-                    && let Some(HirExpr::Path(path)) = self.hir.exprs.get(*receiver)
-                    && let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
-                    && let Some(item) = agent_method_for_binding(self.hir, symbol, method)
-                {
-                    self.pending_items.push(item);
-                }
             }
             Some(HirExpr::Handle { handler, .. }) => {
                 self.enqueue_local_item_for_expr_path(*handler);

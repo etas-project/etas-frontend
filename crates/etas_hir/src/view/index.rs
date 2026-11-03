@@ -136,7 +136,32 @@ impl HirTreeIndexBuilder<'_> {
             }
             HirItem::Impl(item) => {
                 for (index, impl_item) in item.items.iter().enumerate() {
-                    if let crate::HirImplItem::Flow(flow) = impl_item {
+                    if let crate::HirImplItem::Callable { item: callable } = impl_item {
+                        let crate::HirItem::Flow(flow) = &self.program.items[*callable] else {
+                            self.missing(
+                                HirTreeNodeKind::Body,
+                                callable.0,
+                                Some(HirOwner::Item(item_id)),
+                            );
+                            continue;
+                        };
+                        self.index
+                            .item_children
+                            .entry(item_id)
+                            .or_default()
+                            .push(*callable);
+                        self.insert_item_module(*callable, self.index.item_module[&item_id]);
+                        self.insert_scope_owner(HirOwner::Item(*callable), flow.scope);
+                        let body = HirBodyRef::new(item_id, HirBodyKind::ImplFlow(index as u32));
+                        self.insert_body(
+                            *callable,
+                            body,
+                            HirOwner::Item(*callable),
+                            Some(flow.scope),
+                        );
+                        self.index_flow_body(flow.body, body, *callable);
+                        self.index_item_annotations(*callable, Some(flow.scope));
+                    } else if let crate::HirImplItem::Flow(flow) = impl_item {
                         let body = HirBodyRef::new(item_id, HirBodyKind::ImplFlow(index as u32));
                         self.insert_body(item_id, body, HirOwner::Item(item_id), Some(flow.scope));
                         self.index_flow_body(flow.body, body, item_id);

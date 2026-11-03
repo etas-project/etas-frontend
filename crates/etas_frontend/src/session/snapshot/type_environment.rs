@@ -8,6 +8,11 @@ use serde::Serialize;
 pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, String> {
     let mut parts = Vec::new();
     append(&mut parts, "known-std-types", &facts.known_std_types)?;
+    append(
+        &mut parts,
+        "method-environment-v1",
+        facts.methods.entries().collect::<Vec<_>>(),
+    )?;
     append(&mut parts, "enum-layouts", sorted(&facts.enum_layouts))?;
     append(
         &mut parts,

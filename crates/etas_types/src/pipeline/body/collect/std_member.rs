@@ -134,46 +134,6 @@ pub fn raw_std_member_value_type_for_symbol<E>(
     raw_value_type_from_fact(ctx, fact)
 }
 
-pub fn std_method_candidates<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
-    method: &str,
-) -> Vec<CallableCandidate> {
-    let registry = ctx.ctx.std_registry.clone();
-    registry
-        .symbols()
-        .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
-        .flat_map(|symbol| {
-            registry
-                .flow_declarations(symbol.id)
-                .enumerate()
-                .filter_map(|(overload, flow)| {
-                    std_method_candidate(ctx, &registry, symbol, flow, overload, true)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
-pub fn raw_std_method_candidates<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
-    method: &str,
-) -> Vec<CallableCandidate> {
-    let registry = ctx.ctx.std_registry.clone();
-    registry
-        .symbols()
-        .filter(|symbol| std_symbol_is_value_method_candidate(symbol, method))
-        .flat_map(|symbol| {
-            registry
-                .flow_declarations(symbol.id)
-                .enumerate()
-                .filter_map(|(overload, flow)| {
-                    std_method_candidate(ctx, &registry, symbol, flow, overload, false)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
 fn std_method_candidate<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     registry: &StdRegistry,
@@ -509,17 +469,6 @@ fn std_source_type_member_value_type_for_symbol<E>(
     } else {
         raw_value_type_from_fact(ctx, fact)
     }
-}
-
-fn std_symbol_is_value_method_candidate(symbol: &StdSymbol, method: &str) -> bool {
-    let StdDecl::Flow(flow) = &symbol.decl else {
-        return false;
-    };
-    if let Some(source_method) = &flow.source_method {
-        return source_method.kind == FlowSourceMethodKind::ValueMethod
-            && source_method.name == method;
-    }
-    symbol.name == method
 }
 
 fn std_symbol_is_type_member_candidate(symbol: &StdSymbol, member: &str) -> bool {

@@ -20,6 +20,7 @@ pub struct CheckBodyRequest<'a> {
 
 pub struct SignaturePipelineInput<'a> {
     pub program: &'a HirProgram,
+    pub view: Option<etas_hir::HirTreeView<'a>>,
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub source: SourceSignatureInput,
     pub std: StdSignatureInput,
@@ -39,6 +40,7 @@ impl<'a> SignaturePipelineInput<'a> {
     pub fn new(program: &'a HirProgram) -> Self {
         Self {
             program,
+            view: None,
             std_registry: Arc::new(etas_std::standard_registry()),
             source: SourceSignatureInput::default(),
             std: StdSignatureInput::default(),

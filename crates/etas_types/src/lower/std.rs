@@ -391,6 +391,42 @@ pub fn lower_std_type(
     lower_std_type_with_scope(ctx, registry, ty, None)
 }
 
+pub fn lower_std_method_owner(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    receiver: &StdType,
+    scope: Option<&[String]>,
+) -> Option<TypeId> {
+    let name = match receiver {
+        StdType::Array(_) => "Array",
+        StdType::List(_) => "List",
+        StdType::Map { .. } => "Map",
+        StdType::Set(_) => "Set",
+        StdType::Range(_) => "Range",
+        StdType::Slice(_) => "Slice",
+        StdType::Option(_) => "Option",
+        StdType::Result { .. } => "Result",
+        StdType::Schema(_) => "Schema",
+        StdType::Prompt => "Prompt",
+        StdType::PromptPart => "PromptPart",
+        StdType::Message(_) => "Message",
+        StdType::MemorySelection(_) => "MemorySelection",
+        StdType::Store { .. } => "Store",
+        StdType::MemoryRegion(_) | StdType::ResourceHandleMemoryRegion(_) => "MemoryRegion",
+        StdType::Named(name) | StdType::NamedApplied { name, .. } => name,
+        _ => return None,
+    };
+    let (identity, declaration) = scope
+        .and_then(|scope| lookup_scoped_std_type_decl(registry, scope, name))
+        .or_else(|| lookup_std_type_decl(registry, name))?;
+    Some(lower_std_type_decl_with_name(
+        ctx,
+        registry,
+        declaration,
+        Some(&identity),
+    ))
+}
+
 fn lower_std_type_with_scope(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,

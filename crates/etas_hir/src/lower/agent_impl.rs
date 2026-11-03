@@ -172,12 +172,6 @@ impl LowerCtx {
                             implementation: Some(implementation),
                         },
                     );
-                    self.hir
-                        .modules_arena
-                        .get_mut(self.current_module)
-                        .expect("current module shell")
-                        .items
-                        .push(body);
                     items.push(HirImplItem::Callable { item: body });
                 }
                 ast::ImplItem::Action(action) => {

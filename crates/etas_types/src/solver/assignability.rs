@@ -2,11 +2,22 @@ use crate::{PrimitiveType, Type, TypeId, TypeStore, TypeUnifier, UnifyError};
 
 pub struct TypeRelation<'a> {
     store: &'a TypeStore,
+    substitutions: Option<&'a crate::Substitution>,
 }
 
 impl<'a> TypeRelation<'a> {
     pub fn new(store: &'a TypeStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            substitutions: None,
+        }
+    }
+
+    pub fn with_substitution(store: &'a TypeStore, substitutions: &'a crate::Substitution) -> Self {
+        Self {
+            store,
+            substitutions: Some(substitutions),
+        }
     }
 }
 
@@ -25,13 +36,28 @@ impl Assignable for TypeRelation<'_> {
         if support_constraint_assignable(self.store, from, to) {
             return Ok(());
         }
-        let mut unifier = TypeUnifier::new(self.store).with_read_only_erasure();
+        let mut unifier = match self.substitutions {
+            Some(substitutions) => TypeUnifier::with_known_substitution(self.store, substitutions),
+            None => TypeUnifier::new(self.store),
+        }
+        .with_read_only_erasure();
         unifier.unify(from, to)
     }
 }
 
 pub fn is_assignable(store: &TypeStore, from: TypeId, to: TypeId) -> bool {
     TypeRelation::new(store).assignable(from, to).is_ok()
+}
+
+pub(super) fn is_assignable_with_substitution(
+    store: &TypeStore,
+    from: TypeId,
+    to: TypeId,
+    substitutions: &crate::Substitution,
+) -> bool {
+    TypeRelation::with_substitution(store, substitutions)
+        .assignable(from, to)
+        .is_ok()
 }
 
 fn support_constraint_assignable(store: &TypeStore, from: TypeId, to: TypeId) -> bool {

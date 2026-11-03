@@ -18,7 +18,7 @@ impl agent Second {
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let hir = lower_program(&parsed.value);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    HirTreeView::try_new(&hir).expect("valid method body ownership");
+    let view = HirTreeView::try_new(&hir).expect("valid method body ownership");
     assert_eq!(hir.agent_methods.len(), 3);
     for method in hir.agent_methods.values() {
         let SymbolDef::Item { item } = hir.symbols.get(method.symbol).unwrap().def else {
@@ -31,10 +31,13 @@ impl agent Second {
             .flat_map(|(_, module)| module.items.iter())
             .filter(|item| **item == method.body)
             .count();
+        assert_eq!(count, usize::from(method.implementation.is_none()));
         assert_eq!(
-            count, 1,
-            "method body must appear once in the module inventory"
+            view.items().filter(|item| item.id() == method.body).count(),
+            1,
+            "method declaration must occur exactly once in the structural inventory"
         );
+        assert_eq!(view.item(method.body).unwrap().bodies().count(), 1);
     }
 }
 

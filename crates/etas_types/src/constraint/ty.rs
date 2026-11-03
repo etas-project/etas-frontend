@@ -140,6 +140,9 @@ pub enum TypeConstraint {
     MethodCall {
         expr: etas_hir::HirExprId,
         method: String,
+        selection: crate::method::MethodSelection,
+        argument_names: Vec<Option<String>>,
+        probes: Vec<TypeId>,
         access_module: Option<etas_hir::HirModuleId>,
         candidates: Vec<CallableCandidate>,
         generic_args: Vec<CallableGenericArg>,
@@ -203,6 +206,12 @@ pub struct CallableCandidate {
 pub enum CallableCandidateOperation {
     #[default]
     Call,
+    Method {
+        index: u32,
+        owner_params: Vec<CallableGenericParam>,
+        owner_bindings: Vec<(TypeId, TypeId)>,
+        evidence: crate::method::MethodEvidence,
+    },
     EffectAction {
         symbol: etas_hir::SymbolId,
         target: etas_std::StdSymbolId,

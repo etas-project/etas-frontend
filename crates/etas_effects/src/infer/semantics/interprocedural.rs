@@ -136,9 +136,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         call: HirExprId,
         _state: &Self::Domain,
     ) -> Option<Self::Unit> {
-        let symbol = self.types.facts.agent_method_calls.get(&call)?;
-        let method = self.types.facts.agent_methods.get(symbol)?;
-        let target = EffectUnit::Item(method.body);
+        let target = self.checked_method_target(call)?;
         self.inputs
             .native_call_targets
             .entry(call)
@@ -153,7 +151,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         call: HirExprId,
         _state: &Self::Domain,
     ) -> Option<Self::Unit> {
-        let target = self.checked_spec_method_target(call)?;
+        let target = self.checked_method_target(call)?;
         self.inputs
             .native_call_targets
             .entry(call)
@@ -186,6 +184,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Some(target) = self.checked_method_target(expr) {
+            return vec![target];
+        }
         if let Some(fact) = self.types.facts.reflections.get(&expr) {
             use etas_types::facts::reflection::CheckedReflectionTarget;
             let declaration = match fact.target {
@@ -216,42 +217,6 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 {
                     return vec![unit];
                 }
-            }
-        }
-        if let Some(HirExpr::SpecMethodCall {
-            spec_path, method, ..
-        }) = self.hir.exprs.get(expr)
-        {
-            if let ResolveResult::Resolved(spec) = spec_path.resolution
-                && let Some(spec) = self.type_symbols.canonical_symbol(self.hir, spec)
-            {
-                // Discover candidate bodies so later evidence specialization can
-                // choose one solved summary. This does not merge their behavior.
-                let mut dependencies = std::collections::BTreeSet::new();
-                for implementation in &self.types.facts.spec_impls {
-                    if self
-                        .type_symbols
-                        .canonical_symbol(self.hir, implementation.spec_symbol)
-                        != Some(spec)
-                    {
-                        continue;
-                    }
-                    for candidate in implementation
-                        .methods
-                        .iter()
-                        .filter(|candidate| candidate.name == *method)
-                    {
-                        if let Some(SymbolDef::Item { item }) = self
-                            .hir
-                            .symbols
-                            .get(candidate.symbol)
-                            .map(|symbol| &symbol.def)
-                        {
-                            dependencies.insert(EffectUnit::Item(*item));
-                        }
-                    }
-                }
-                return dependencies.into_iter().collect();
             }
         }
         if matches!(self.hir.exprs.get(expr), Some(HirExpr::StageCompose { .. }))

@@ -3,6 +3,7 @@ pub mod enums;
 pub mod expressions;
 pub mod inference;
 pub mod method_specs;
+pub mod methods;
 pub mod reflection;
 pub mod signatures;
 mod spec_method;
@@ -26,6 +27,7 @@ pub use expressions::{
 };
 pub use impl_methods::TypeImplMethodFact;
 pub use inference::CheckedAgentInferenceFact;
+pub use methods::CheckedMethodCallFact;
 pub use reflection::{CheckedReflectionFact, CheckedReflectionTarget};
 pub use signatures::{
     AgentEntrySignature, AgentSignature, CallableGenericParam, CallableGenericParamKind,
@@ -46,6 +48,10 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    #[serde(default)]
+    pub methods: std::sync::Arc<crate::method::MethodIndex>,
+    #[serde(default)]
+    pub checked_method_calls: HashMap<HirExprId, CheckedMethodCallFact>,
     #[serde(default)]
     pub canonical_specs: CanonicalSpecFacts,
     pub type_impl_methods: HashMap<SymbolId, TypeImplMethodFact>,

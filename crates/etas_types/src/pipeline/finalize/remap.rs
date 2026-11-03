@@ -563,6 +563,22 @@ pub(crate) fn project_signature_facts(
 }
 
 fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '_>) {
+    let mut methods = facts.methods.entries().cloned().collect::<Vec<_>>();
+    if !methods.is_empty() {
+        for method in &mut methods {
+            method
+                .try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
+                .unwrap_or_else(|never| match never {});
+        }
+        facts.methods = std::sync::Arc::new(crate::method::MethodIndex::build(
+            remapper.target.store(),
+            methods,
+        ));
+    }
+    for fact in facts.checked_method_calls.values_mut() {
+        fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
+            .unwrap_or_else(|never| match never {});
+    }
     for (_, target) in facts.external_type_aliases.values_mut() {
         *target = remapper.ty(*target);
     }

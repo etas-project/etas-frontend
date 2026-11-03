@@ -3,6 +3,7 @@ pub mod constraint;
 pub mod diagnostic;
 pub mod facts;
 pub mod lower;
+pub mod method;
 pub mod pipeline;
 pub mod solver;
 pub mod ty;

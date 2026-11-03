@@ -57,6 +57,20 @@ impl Packet ~ Encoder { flow encode(self) -> i32 { return self.number; } }
         panic!("normalized method item");
     };
     assert_eq!(view.item(item).unwrap().bodies().count(), 1);
+    let body = view.item(item).unwrap().body().unwrap();
+    assert!(matches!(body.id().kind, etas_hir::HirBodyKind::ImplFlow(0)));
+    assert_eq!(body.item().id(), item);
+    assert!(
+        !hir.modules_arena
+            .iter()
+            .any(|(_, module)| module.items.contains(&item))
+    );
+    assert_eq!(
+        view.items()
+            .filter(|declaration| declaration.id() == item)
+            .count(),
+        1
+    );
     let HirItem::Flow(flow) = &hir.items[item] else {
         panic!("executable flow method");
     };

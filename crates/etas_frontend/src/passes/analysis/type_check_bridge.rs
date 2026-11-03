@@ -18,7 +18,7 @@ use crate::{
 };
 
 pub(super) fn build_signature_pipeline_input<'a>(
-    context: &ProjectContext,
+    context: &'a ProjectContext,
     program: &'a etas_hir::HirProgram,
 ) -> Result<
     (etas_types::SignaturePipelineInput<'a>, Vec<Diagnostic>),
@@ -32,6 +32,7 @@ pub(super) fn build_signature_pipeline_input<'a>(
     let mut diagnostics = Vec::new();
     let input = etas_types::SignaturePipelineInput {
         program,
+        view: Some(hir.view()),
         std_registry: context.std_registry.clone(),
         source: source_signature_input(hir),
         std: std_signature_input(context, hir),

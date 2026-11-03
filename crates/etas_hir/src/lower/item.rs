@@ -383,12 +383,6 @@ impl LowerCtx {
                     *self.hir.items.get_mut(body).expect("reserved method body") =
                         HirItem::Flow(callable);
                     self.map_item(body, flow.span);
-                    self.hir
-                        .modules_arena
-                        .get_mut(self.current_module)
-                        .expect("current module shell")
-                        .items
-                        .push(body);
                     HirImplItem::Callable { item: body }
                 }
                 (item_index, ImplItem::Action(action)) => {

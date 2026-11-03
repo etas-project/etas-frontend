@@ -175,6 +175,16 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
     }
     impl<'view, 'hir> HirVisitor<'view, 'hir> for Targets<'_> {
         fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
+            if let Some(fact) = self.facts.checked_method_calls.get(&expr.id()) {
+                match &fact.target {
+                    etas_types::method::MethodTarget::Source { callable, .. }
+                    | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                        self.items.insert(*callable);
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             if let etas_hir::HirExpr::SpecMethodCall {
                 spec_path, method, ..
             } = expr.data()

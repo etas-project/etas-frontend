@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use etas_hir::{HirArg, HirExpr, HirExprId, HirItemId, ResolveResult};
+use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
 
 use crate::{
@@ -142,14 +142,9 @@ impl EffectSemantics<'_> {
                 )
             })
             .collect();
-        let Some(HirExpr::SpecMethodCall { receiver, args, .. }) = self.hir.exprs.get(call) else {
-            return Err(invalid("spec invocation is missing its checked expression"));
-        };
-        let arguments = std::iter::once(*receiver).chain(args.iter().map(|arg| match arg {
-            HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,
-        }));
+        let arguments = self.checked_method_arguments(call)?;
         let mut captures = BTreeMap::new();
-        for (position, expr) in arguments.enumerate() {
+        for (position, expr) in arguments.into_iter().enumerate() {
             if !self.expr_type_contains_flow(expr) {
                 continue;
             }
@@ -182,22 +177,42 @@ impl EffectSemantics<'_> {
         call: HirExprId,
         environment: CallableEnvironmentId,
     ) -> Result<MethodEvidence, EffectSpecializationError> {
-        let Some(HirExpr::SpecMethodCall {
-            receiver,
-            spec_path,
-            spec_args,
-            method,
+        let fact = self
+            .types
+            .facts
+            .checked_method_calls
+            .get(&call)
+            .ok_or_else(|| invalid("method evidence has no checked call fact"))?;
+        if let etas_types::method::MethodTarget::External { identity } = &fact.target {
+            return self
+                .capture_external_method(
+                    identity,
+                    &fact.signature,
+                    environment,
+                    self.callable_environment(environment)?,
+                    fact.instantiation.clone(),
+                )
+                .map(MethodEvidence::Resolved);
+        }
+        let etas_types::method::MethodTarget::BoundSpec {
+            spec: etas_types::CheckedSpecRef::Source(spec),
+            member,
             ..
-        }) = self.hir.exprs.get(call)
+        } = &fact.target
         else {
-            return Err(invalid("method evidence has no checked selection"));
+            return Err(invalid(
+                "method evidence has no checked bound witness recipe",
+            ));
         };
-        let ResolveResult::Resolved(spec) = spec_path.resolution else {
-            return Err(invalid("method evidence has no resolved spec"));
+        let etas_types::method::MethodEvidence::Bound {
+            args: spec_args, ..
+        } = &fact.evidence
+        else {
+            return Err(invalid("method witness has no checked spec arguments"));
         };
         let spec = self
             .type_symbols
-            .canonical_symbol(self.hir, spec)
+            .canonical_symbol(self.hir, *spec)
             .ok_or_else(|| invalid("method evidence has no canonical spec identity"))?;
         let lexical_owner = *self
             .context
@@ -212,22 +227,12 @@ impl EffectSemantics<'_> {
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
         let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
             .with_effect_arguments(&type_rows);
-        let receiver = *self
-            .types
-            .facts
-            .expr_types
-            .get(receiver)
-            .ok_or_else(|| invalid("method evidence receiver has no checked type"))?;
-        let receiver = substitution.substitute(receiver)?;
+        let receiver = substitution.substitute(fact.receiver_type)?;
         let args = spec_args
             .iter()
             .map(|arg| {
-                let ty =
-                    *self.types.facts.type_refs.get(arg).ok_or_else(|| {
-                        invalid("method evidence spec argument has no checked type")
-                    })?;
                 substitution
-                    .substitute(ty)
+                    .substitute(*arg)
                     .map_err(EffectSpecializationError::from)
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -240,7 +245,7 @@ impl EffectSemantics<'_> {
         let method_fact = signature
             .methods
             .iter()
-            .find(|candidate| candidate.name == *method)
+            .find(|candidate| candidate.identity == *member)
             .ok_or_else(|| invalid("method evidence declaration is missing"))?;
         let declaration = method_fact
             .signature_in(&self.types.facts)
@@ -254,7 +259,7 @@ impl EffectSemantics<'_> {
         }
         self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
         if let Some(EffectUnit::Item(item)) =
-            self.spec_method_target_for_types(spec, receiver, &args, method)
+            self.checked_method_witness_target(receiver, &args, member)
         {
             self.discovered_spec_targets
                 .borrow_mut()
@@ -276,12 +281,18 @@ impl EffectSemantics<'_> {
                 )
                 .map(MethodEvidence::Resolved);
         }
-        if let Some(implementation) = self.external_spec_method(
-            &etas_types::CheckedSpecRef::Source(spec),
-            receiver,
-            &args,
-            method,
-        )? {
+        if let Some(implementation) = self
+            .types
+            .facts
+            .methods
+            .witness(receiver, &args, member)
+            .filter(|method| {
+                matches!(
+                    method.target,
+                    etas_types::method::MethodTarget::External { .. }
+                )
+            })
+        {
             return self
                 .capture_external_spec_implementation(
                     implementation,
@@ -325,11 +336,11 @@ impl EffectSemantics<'_> {
         let target = ParameterCallTarget::SpecMethod { call, environment };
         summary.action_trace = ActionTraceDomain::ParameterCall {
             target,
-            parameter: method.clone(),
+            parameter: method_fact.name.clone(),
             span,
         };
         summary.handler_requests =
-            crate::RequestInstantiationSummary::parameter(target, method.clone(), span);
+            crate::RequestInstantiationSummary::parameter(target, method_fact.name.clone(), span);
         super::deferred_completion(
             &mut summary,
             target,

@@ -26,6 +26,7 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
+    methods::materialize(ctx, &mut state);
     let definition_operations = match reflection::materialize(ctx, &state) {
         Ok(facts) => facts,
         Err(error) => {
@@ -79,6 +80,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .agent_method_calls
         .extend(state.solver_report.agent_method_calls);
+    ctx.signature_facts
+        .checked_method_calls
+        .extend(state.solver_report.checked_method_calls);
     ctx.signature_facts
         .reflections
         .extend(state.solver_report.reflections);
@@ -138,6 +142,7 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .extend(state.provisional.item_signatures);
 }
 
+mod methods;
 mod reflection;
 
 fn materialize_callable_references(
@@ -353,6 +358,9 @@ fn apply_solver_substitutions(
                 )?;
             }
         }
+    }
+    for fact in state.solver_report.checked_method_calls.values_mut() {
+        fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
     }
     Ok(())
 }

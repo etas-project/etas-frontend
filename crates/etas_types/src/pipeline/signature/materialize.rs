@@ -4,6 +4,10 @@ pub fn materialize_signature_facts(
     ctx: &mut TypePipelineContext<'_>,
     mut state: SignaturePipelineState,
 ) {
+    ctx.signature_facts.methods = std::sync::Arc::new(crate::method::MethodIndex::build(
+        ctx.interner.store(),
+        std::mem::take(&mut state.methods),
+    ));
     ctx.signature_facts
         .type_impl_methods
         .extend(state.type_impl_methods.drain());

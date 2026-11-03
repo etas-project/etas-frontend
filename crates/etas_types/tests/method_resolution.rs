@@ -1,0 +1,50 @@
+use etas_types::{check_program, method::MethodTarget};
+
+fn check(source: &str) -> etas_types::TypeOutput {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(1),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = etas_hir::lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    check_program(&hir)
+}
+
+#[test]
+fn inherent_spec_and_generic_calls_share_checked_targets() {
+    let output = check(include_str!("fixtures/method_resolution/mixed.es"));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.checked_method_calls.len(), 7);
+    assert_eq!(
+        output
+            .facts
+            .checked_method_calls
+            .values()
+            .filter(|fact| matches!(fact.target, MethodTarget::BoundSpec { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        output
+            .facts
+            .checked_method_calls
+            .values()
+            .all(|fact| output.store.get(fact.signature.output).is_some())
+    );
+}
+
+#[test]
+fn ambiguous_default_method_is_rejected_but_explicit_selection_has_a_target() {
+    let output = check(include_str!("fixtures/method_resolution/ambiguous.es"));
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("ambiguous")),
+        "{:?}",
+        output.diagnostics
+    );
+    assert_eq!(output.facts.checked_method_calls.len(), 1);
+}

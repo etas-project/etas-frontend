@@ -378,7 +378,9 @@ pub struct SpecMethodFact {
     pub signature: Option<CallableSignature>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum SpecMethodIdentity {
     Source(etas_hir::SymbolId),
     External { package: u32, path: Vec<String> },
