@@ -12,6 +12,7 @@ impl super::DefinitionCatalog {
             identity: environment.identity().clone(),
             revision: self.source_revision(environment, syntax)?,
             dependencies: environment.dependency_info()?,
+            generic_environment_context: environment.generic_environment_context(),
         };
         environment
             .contract()

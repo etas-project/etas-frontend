@@ -177,6 +177,11 @@ mod tests {
             .push(etas_types::DeferredEffectRowObligation {
                 param: "E".into(),
                 source: call,
+                fixed: etas_types::EffectRowRef {
+                    effects: vec![],
+                    tail: None,
+                },
+                concrete: vec![],
             });
         let before = context.types.as_ref().unwrap().facts.clone();
         let run = manager.run_pipeline(

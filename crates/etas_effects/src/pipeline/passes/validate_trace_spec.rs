@@ -10,6 +10,8 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateTraceSpecPass {
                 VALIDATED_EFFECT_FACTS,
                 TRACE_SPEC_MODELS,
                 TRACE_SPEC_ANALYSIS,
+                TRACE_STATIC_DISPOSITIONS,
+                VERIFIED_RESIDUAL_PLANS,
             ]))
             .produces(ArtifactSet::one(VALIDATED_TRACE_SPEC_FACTS))
     }
@@ -18,7 +20,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateTraceSpecPass {
         &mut self,
         context: &mut EffectPipelineContext<'a>,
         _pass_context: &PassContext<EffectPipelineContext<'a>>,
-        _manager: &mut PassManager<EffectPipelineContext<'a>>,
+        manager: &mut PassManager<EffectPipelineContext<'a>>,
     ) -> PassResult {
         let Some(registry) = context.registry.as_ref() else {
             return context.fail(missing(EffectStage::ValidateTraceSpecs, "effect registry"));
@@ -35,6 +37,18 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateTraceSpecPass {
                 "trace spec analysis",
             ));
         };
+        let Some(dispositions) = context.trace_static_dispositions.as_ref() else {
+            return context.fail(missing(
+                EffectStage::ValidateTraceSpecs,
+                "trace static dispositions",
+            ));
+        };
+        let Some(residual_plans) = context.verified_residual_plans.as_ref() else {
+            return context.fail(missing(
+                EffectStage::ValidateTraceSpecs,
+                "verified residual plans",
+            ));
+        };
         let Some(mut effects) = context.effects.take() else {
             return context.fail(missing(EffectStage::ValidateTraceSpecs, "effect facts"));
         };
@@ -46,8 +60,10 @@ impl<'a> Pass<EffectPipelineContext<'a>> for ValidateTraceSpecPass {
                 registry,
                 models,
                 analysis,
-                external_summaries: context.input.external_summaries,
+                dispositions,
+                residual_plans,
                 reachable_items: context.input.reachable_items,
+                control: manager.execution_control(),
             },
         ) {
             return context.fail(error);

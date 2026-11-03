@@ -135,9 +135,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 .symbols
                                 .canonical_symbol(ctx.hir, spec_symbol)
                                 .unwrap_or(spec_symbol);
-                            let methods = if state
-                                .spec_signatures
-                                .get(&spec_symbol)
+                            let methods = if spec_signature(ctx, state, spec_symbol)
                                 .is_some_and(|signature| !signature.methods.is_empty())
                             {
                                 impl_methods.clone()

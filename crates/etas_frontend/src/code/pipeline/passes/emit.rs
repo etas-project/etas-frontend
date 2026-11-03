@@ -14,7 +14,9 @@ use crate::{
         contract::CandidateContractAnalysis,
         service::{CandidateEmission, CheckedCandidate},
     },
-    passes::artifacts::{CHECKED_PROJECT, INTERPRETER_SUPPORT},
+    passes::artifacts::{
+        CHECKED_PROJECT, INTERPRETER_SUPPORT, RESIDUAL_BACKEND_SUPPORT, VERIFIED_RESIDUAL_PLANS,
+    },
 };
 
 pub(crate) const CANDIDATE_EMISSION: ArtifactKey = ArtifactKey::new("code", "candidate_emission");
@@ -26,6 +28,8 @@ impl Pass<ProjectContext> for EmitCheckedCandidatePass {
             .requires(ArtifactSet::from([
                 CHECKED_PROJECT,
                 INTERPRETER_SUPPORT,
+                RESIDUAL_BACKEND_SUPPORT,
+                VERIFIED_RESIDUAL_PLANS,
                 FROZEN_DEFINITION_ENVIRONMENT,
                 CANDIDATE_TARGET,
                 CANDIDATE_CONTRACT_ANALYSIS,
@@ -41,6 +45,9 @@ impl Pass<ProjectContext> for EmitCheckedCandidatePass {
         _: &PassContext<ProjectContext>,
         _: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        // Checked once against the residual plans and target support of this
+        // run; required only for a ready emission.
+        let residual_publication = crate::passes::execution::validate_residual_publication(context);
         let Some(candidate) = &mut context.candidate else {
             return PassResult::failed("candidate emission has no frozen environment");
         };
@@ -109,6 +116,12 @@ impl Pass<ProjectContext> for EmitCheckedCandidatePass {
         {
             return PassResult::failed("candidate backend rejected its checked entry");
         }
+        if let Err(reason) = residual_publication {
+            return PassResult::failed(reason);
+        }
+        if let Err(error) = analysis.validate_residual_for(checked) {
+            return PassResult::failed(error.to_string());
+        }
         if !proven {
             candidate.emission = Some(CandidateEmission::Rejected);
             return PassResult::changed(
@@ -116,6 +129,24 @@ impl Pass<ProjectContext> for EmitCheckedCandidatePass {
                 ArtifactSet::one(CANDIDATE_EMISSION),
             );
         }
+        // The checked candidate revision is final only after its contract
+        // validated; bind its residual plans to it now, never earlier.
+        let residual_binding = if checked.residual_plans().is_empty() {
+            None
+        } else {
+            match checked.residual_plans().bind_candidate(
+                checked,
+                entry,
+                candidate.overlay.revision(),
+            ) {
+                Ok(binding) => Some(binding),
+                Err(error) => {
+                    return PassResult::failed(format!(
+                        "candidate residual plans cannot be bound to its revision: {error:?}"
+                    ));
+                }
+            }
+        };
         candidate.emission = Some(CandidateEmission::Ready(Box::new(CheckedCandidate {
             descriptor_limits: descriptors.limits,
             descriptors: match &descriptors.catalog {
@@ -129,10 +160,20 @@ impl Pass<ProjectContext> for EmitCheckedCandidatePass {
                 }
             },
             program: checked.clone(),
+            frozen_application_program: match &candidate.frozen_application_program {
+                Some(program) => program.clone(),
+                None => {
+                    return PassResult::failed(
+                        "candidate emission has no frozen application evidence",
+                    );
+                }
+            },
             frozen: candidate.overlay.frozen().clone(),
             revision: candidate.overlay.revision().clone(),
             snapshot: candidate.snapshot,
             entry,
+            external_restoration: candidate.overlay.external_restoration().cloned(),
+            residual_binding,
         })));
         PassResult::changed(
             PreservedArtifacts::All,

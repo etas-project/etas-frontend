@@ -42,6 +42,63 @@ fn ordinary_flow_binding_reflection_retains_the_binding_type() {
 }
 
 #[test]
+fn generic_flow_reflection_records_instantiation_and_checks_bounds() {
+    let source = "import std.compiler.CallableDef; spec Allowed; type Accepted; impl Accepted ~ Allowed; flow identity<T ~ Allowed>(value: T) -> T ![] { return value; } flow inspect() -> CallableDef<(Accepted) -> Accepted ![]> { return ^identity; }";
+    let (_, output) = check(source);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let (&expr, _) = output.facts.reflections.iter().next().unwrap();
+    let bindings = output.facts.generic_instantiations.get(&expr).unwrap();
+    assert_eq!(bindings.type_bindings.len(), 1);
+    assert_eq!(bindings.type_bindings[0].0, "T");
+    assert!(matches!(
+        output.store.get(bindings.type_bindings[0].1),
+        Some(Type::Nominal { .. })
+    ));
+
+    let (_, rejected) = check(&source.replace(
+        "CallableDef<(Accepted) -> Accepted ![]>",
+        "CallableDef<(i32) -> i32 ![]>",
+    ));
+    assert!(
+        !rejected.diagnostics.is_empty(),
+        "unsatisfied spec bound was accepted"
+    );
+}
+
+#[test]
+fn effect_row_polymorphic_reflection_records_expected_row() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow source<effect E>() -> unit ![E] { return; } flow inspect() -> CallableDef<() -> unit ![Console.stdout_write]> { return ^source; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let (&expr, _) = output.facts.reflections.iter().next().unwrap();
+    let bindings = output.facts.generic_instantiations.get(&expr).unwrap();
+    assert_eq!(bindings.effect_row_bindings.len(), 1);
+    assert_eq!(bindings.effect_row_bindings[0].0, "E");
+    assert_eq!(bindings.effect_row_bindings[0].1.effects.len(), 1);
+    assert!(bindings.effect_row_bindings[0].1.tail.is_none());
+    let (_, rejected) = check(
+        "import std.compiler.CallableDef; flow source<effect E>() -> unit ![Console.stderr_write, E] { return; } flow inspect() -> CallableDef<() -> unit ![Console.stdout_write]> { return ^source; }",
+    );
+    assert!(
+        !rejected.diagnostics.is_empty(),
+        "incompatible effect row was accepted"
+    );
+}
+
+#[test]
+fn erased_generic_flow_reflection_keeps_binders_available_for_inspection() {
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow source<effect E>() -> unit ![E] { return; } flow inspect() -> CallableDef { return ^source; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let (_, output) = check(
+        "import std.compiler.CallableDef; flow source<T>(value: T) -> T ![] { return value; } flow inspect() -> CallableDef { return ^source; }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
 fn typed_flow_definition_selects_check_compile_and_edit_overloads() {
     let (_, output) = check(
         "import std.compiler.{CallableDef, SyntaxBlock, check, compile}; flow normalize(text: string) -> string ![] { return text; } flow revise(body: SyntaxBlock) -> (string) -> string ![] { let draft = (^normalize).with_body(body); let report = check(draft); return compile(draft); }",

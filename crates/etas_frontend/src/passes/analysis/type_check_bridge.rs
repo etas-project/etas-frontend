@@ -364,6 +364,7 @@ fn convert_external_spec_signature(
         path: signature.path.clone(),
         kind: convert_external_spec_kind(signature.kind),
         param_names: signature.param_names.clone(),
+        generic_params: convert_external_generic_params(&signature.generic_params),
         callable: signature
             .callable
             .as_ref()
@@ -445,12 +446,15 @@ fn convert_external_trace_spec_conformance(
             crate::ProjectExternalTraceSpecConformanceTargetInput::Inline => {
                 etas_types::ExternalTraceSpecConformanceTargetInput::Inline
             }
-            crate::ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args } => {
-                etas_types::ExternalTraceSpecConformanceTargetInput::Named {
-                    spec: spec.clone(),
-                    args: args.iter().map(convert_external_type).collect(),
-                }
-            }
+            crate::ProjectExternalTraceSpecConformanceTargetInput::Named {
+                spec,
+                definition,
+                args,
+            } => etas_types::ExternalTraceSpecConformanceTargetInput::Named {
+                spec: spec.clone(),
+                definition: definition.clone(),
+                args: args.iter().map(convert_external_type).collect(),
+            },
         },
     }
 }

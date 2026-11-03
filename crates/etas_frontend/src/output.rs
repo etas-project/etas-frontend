@@ -62,6 +62,10 @@ impl ProjectInput {
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
     pub reflection: crate::code::definition::ReflectionOptions,
+    /// Implemented residual-enforcement semantics of the selected execution
+    /// target. The default supports no residual plan, so every outstanding
+    /// residual obligation is rejected.
+    pub residual_target: etas_code::residual::target::ResidualTargetCapabilities,
 }
 
 impl ProjectCompileOptions {
@@ -76,6 +80,12 @@ impl ProjectCompileOptions {
         parts.extend(retained);
         parts.push("export-bodies");
         parts.extend(exported);
+        let residual_target;
+        if !self.residual_target.is_none() {
+            residual_target = self.residual_target.fingerprint().to_string();
+            parts.push("residual-target");
+            parts.push(&residual_target);
+        }
         crate::artifact::fingerprint_text(&parts).to_string()
     }
 }
@@ -88,8 +98,17 @@ pub enum EntryPolicy {
     Runnable,
 }
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectEnvironmentInput {
+    /// Caller-supplied pre-analysis identities; SourceId is only a lookup key.
+    pub stable_source_keys: Vec<ProjectStableSourceKeyInput>,
+    /// Package identity supplied by the source owner; never derived from a
+    /// source path or a session-local HIR identity by the frontend.
+    pub local_source_package: Option<etas_code::PackageKey>,
+    /// Per-file identities for standalone inputs without one project package.
+    pub standalone_source_packages: Vec<ProjectStandaloneSourcePackage>,
+    /// Locked dependency origins supplied by the filesystem/package owner.
+    pub dependency_source_packages: Vec<ProjectDependencySourcePackage>,
     pub external_definition_origins: Vec<ProjectExternalDefinitionOriginsInput>,
     pub external_packages: Vec<ProjectExternalPackageInput>,
     pub external_package_dependencies: Vec<ProjectExternalPackageDependencyInput>,
@@ -101,7 +120,55 @@ pub struct ProjectEnvironmentInput {
     pub external_modules_fingerprint: Option<String>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectStableSourceKeyInput {
+    pub source: SourceId,
+    pub key: etas_code::StableSourceKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectStandaloneSourcePackage {
+    pub source: SourceId,
+    pub package: etas_code::PackageKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectDependencySourcePackage {
+    pub package: ExternalPackageId,
+    pub import_root: String,
+    pub definition_package: etas_code::PackageKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourcePackageOriginError {
+    Missing,
+    Ambiguous,
+    Conflict,
+    UnsupportedSource,
+}
+
+pub(crate) fn resolve_stable_source_key(
+    entries: &[ProjectStableSourceKeyInput],
+    source: SourceId,
+) -> Result<etas_code::StableSourceKey, SourcePackageOriginError> {
+    let mut matching = entries.iter().filter(|entry| entry.source == source);
+    let key = matching
+        .next()
+        .ok_or(SourcePackageOriginError::Missing)?
+        .key;
+    if matching.next().is_some() {
+        return Err(SourcePackageOriginError::Ambiguous);
+    }
+    if entries
+        .iter()
+        .any(|entry| entry.source != source && entry.key == key)
+    {
+        return Err(SourcePackageOriginError::Conflict);
+    }
+    Ok(key)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalDefinitionOriginsInput {
     pub package: ExternalPackageId,
     pub origins: etas_code::identity::PackageDefinitionOrigins,
@@ -133,9 +200,147 @@ impl ValidatedExternalEnvironment {
 }
 
 impl ProjectEnvironmentInput {
+    pub fn stable_source_key(
+        &self,
+        source: SourceId,
+    ) -> Result<etas_code::StableSourceKey, SourcePackageOriginError> {
+        resolve_stable_source_key(&self.stable_source_keys, source)
+    }
+
+    /// SourceId is only a session lookup key. The returned package identity is
+    /// supplied by the package/source owner and is independent of that ID.
+    pub fn source_package(
+        &self,
+        source: &SourceInput,
+    ) -> Result<etas_code::PackageKey, SourcePackageOriginError> {
+        self.source_package_for(source.id, &source.kind)
+    }
+
+    pub(crate) fn source_package_for(
+        &self,
+        source: etas_core::SourceId,
+        kind: &crate::SourceKind,
+    ) -> Result<etas_code::PackageKey, SourcePackageOriginError> {
+        use crate::SourceKind;
+        match kind {
+            SourceKind::SourceProjectFile | SourceKind::SingleFileInput => {
+                let mut matches = self
+                    .standalone_source_packages
+                    .iter()
+                    .filter(|entry| entry.source == source);
+                let first = matches.next();
+                if matches.next().is_some()
+                    || (first.is_some() && self.local_source_package.is_some())
+                {
+                    return Err(SourcePackageOriginError::Ambiguous);
+                }
+                self.local_source_package
+                    .or_else(|| first.map(|entry| entry.package))
+                    .ok_or(SourcePackageOriginError::Missing)
+            }
+            SourceKind::DependencySourceOverlay {
+                package,
+                import_root,
+            } => {
+                let mut packages = self
+                    .external_packages
+                    .iter()
+                    .filter(|entry| entry.id == *package);
+                let first = packages.next().ok_or(SourcePackageOriginError::Missing)?;
+                if packages.next().is_some() {
+                    return Err(SourcePackageOriginError::Ambiguous);
+                }
+                if first.import_root != *import_root {
+                    return Err(SourcePackageOriginError::Missing);
+                }
+                let mut origins = self
+                    .dependency_source_packages
+                    .iter()
+                    .filter(|entry| entry.package == *package);
+                let first = origins.next().ok_or(SourcePackageOriginError::Missing)?;
+                if origins.next().is_some() {
+                    return Err(SourcePackageOriginError::Ambiguous);
+                }
+                if first.import_root != *import_root {
+                    return Err(SourcePackageOriginError::Conflict);
+                }
+                let mut metadata = self
+                    .external_definition_origins
+                    .iter()
+                    .filter(|entry| entry.package == *package);
+                if let Some(origin) = metadata.next() {
+                    if metadata.next().is_some() {
+                        return Err(SourcePackageOriginError::Ambiguous);
+                    }
+                    if origin.origins.package != first.definition_package {
+                        return Err(SourcePackageOriginError::Conflict);
+                    }
+                }
+                Ok(first.definition_package)
+            }
+            SourceKind::VirtualStd | SourceKind::VirtualGenerated | SourceKind::LspOverlay => {
+                Err(SourcePackageOriginError::UnsupportedSource)
+            }
+        }
+    }
+
     pub fn canonical_environment_fingerprint(&self) -> String {
-        let mut parts = vec!["frontend_project_environment:v1".to_owned()];
-        for input in &self.external_definition_origins {
+        self.environment_fingerprint_for(None)
+    }
+
+    fn environment_fingerprint_for(&self, selected: Option<ExternalPackageId>) -> String {
+        let mut parts = vec!["frontend_project_environment:v10".to_owned()];
+        let mut stable_sources = self
+            .stable_source_keys
+            .iter()
+            .filter(|_| selected.is_none())
+            .collect::<Vec<_>>();
+        stable_sources.sort_by_key(|entry| (entry.source.0, entry.key));
+        for entry in stable_sources {
+            parts.push(format!(
+                "stable-source:{}:{}",
+                entry.source.0,
+                entry.key.fingerprint()
+            ));
+        }
+        if selected.is_none()
+            && let Some(package) = self.local_source_package
+        {
+            parts.push(format!("local-source-package:{}", package.fingerprint()));
+        }
+        let mut source_packages = self
+            .standalone_source_packages
+            .iter()
+            .filter(|_| selected.is_none())
+            .collect::<Vec<_>>();
+        source_packages.sort_by_key(|entry| (entry.source.0, entry.package.fingerprint()));
+        for entry in source_packages {
+            parts.push(format!(
+                "standalone-source-package:{}:{}",
+                entry.source.0,
+                entry.package.fingerprint()
+            ));
+        }
+        let mut dependency_sources: Vec<_> = self
+            .dependency_source_packages
+            .iter()
+            .filter(|entry| selected.is_none_or(|id| entry.package == id))
+            .collect();
+        dependency_sources
+            .sort_by_key(|entry| (entry.package, &entry.import_root, entry.definition_package));
+        for entry in dependency_sources {
+            parts.push(format!(
+                "dependency-source-package:{}",
+                crate::artifact::dependency_source_package(entry)
+            ));
+        }
+        let mut origins: Vec<_> = self
+            .external_definition_origins
+            .iter()
+            .filter(|input| selected.is_none_or(|id| input.package == id))
+            .collect();
+        origins.sort_by_key(|input| input.package);
+        for input in origins {
             parts.push(format!(
                 "definition-origins:{}:{}",
                 input.package.0,
@@ -154,11 +359,12 @@ impl ProjectEnvironmentInput {
         }
         parts.push(format!(
             "external-packages:{}",
-            self.canonical_external_packages_fingerprint()
+            self.external_packages_fingerprint_for(selected)
         ));
         let mut dependencies = self
             .external_package_dependencies
             .iter()
+            .filter(|edge| selected.is_none_or(|id| edge.package == id))
             .map(|edge| (edge.package, edge.dependency))
             .collect::<Vec<_>>();
         dependencies.sort();
@@ -170,260 +376,148 @@ impl ProjectEnvironmentInput {
         }
         parts.push(format!(
             "external-modules:{}",
-            self.canonical_external_modules_fingerprint()
+            self.external_modules_fingerprint_for(selected)
         ));
         parts.push("public-metadata".to_owned());
-        let mut public_metadata = self.external_public_metadata.clone();
+        let mut public_metadata: Vec<_> = self
+            .external_public_metadata
+            .iter()
+            .filter(|metadata| selected.is_none_or(|id| metadata.package == id))
+            .collect();
         public_metadata.sort_by(|left, right| left.package.cmp(&right.package));
         for metadata in public_metadata {
             parts.push(format!("public-package:{}", metadata.package.0));
-            for signature in metadata.types {
+            for signature in &metadata.types {
                 parts.push(format!(
-                    "type:{}:{}",
-                    signature.path.join("."),
-                    signature.visibility
+                    "type:{}",
+                    crate::artifact::external_named_signature(signature)
                 ));
             }
-            for signature in metadata.values {
-                parts.push(format!("value:{}:{signature:?}", signature.path.join(".")));
-            }
-            for signature in metadata.enums {
+            for signature in &metadata.values {
                 parts.push(format!(
-                    "enum:{}:{}",
-                    signature.path.join("."),
-                    signature.visibility
+                    "value:{}",
+                    crate::artifact::external_named_signature(signature)
                 ));
             }
-            for signature in metadata.effects {
+            for signature in &metadata.enums {
                 parts.push(format!(
-                    "effect:{}:{}",
-                    signature.path.join("."),
-                    signature.visibility
+                    "enum:{}",
+                    crate::artifact::external_named_signature(signature)
                 ));
             }
-            for signature in metadata.flows {
-                parts.push(format!("flow:{}:{signature:?}", signature.path.join(".")));
-            }
-            for signature in metadata.agents {
-                parts.push(format!("agent:{}:{signature:?}", signature.path.join(".")));
-            }
-            for signature in metadata.tools {
-                parts.push(format!("tool:{}:{signature:?}", signature.path.join(".")));
-            }
-            for schema in metadata.tool_schemas {
+            for signature in &metadata.effects {
                 parts.push(format!(
-                    "tool-schema:{}:{}",
-                    schema.path.join("."),
-                    schema.schema_json
+                    "effect:{}",
+                    crate::artifact::external_named_signature(signature)
                 ));
             }
-            for signature in metadata.actions {
-                parts.push(format!("action:{}:{signature:?}", signature.path.join(".")));
-            }
-            for signature in metadata.spec_signatures {
+            for signature in &metadata.trace_specs {
                 parts.push(format!(
-                    "spec:{}:{:?}:{}",
-                    signature.path.join("."),
-                    signature.kind,
-                    signature.param_names.join(",")
-                ));
-                for method in signature.methods {
-                    parts.push(format!(
-                        "spec-method:{}:{}:{:?}",
-                        signature.path.join("."),
-                        method.name,
-                        method.signature
-                    ));
-                }
-                for bound in signature.super_specs {
-                    parts.push(format!(
-                        "spec-super:{}:{}:{}",
-                        signature.path.join("."),
-                        bound.spec.join("."),
-                        bound
-                            .args
-                            .iter()
-                            .map(external_type_fingerprint)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ));
-                }
-            }
-            for implementation in metadata.spec_impls {
-                parts.push(format!(
-                    "spec-impl:{}:{}:{}",
-                    external_type_fingerprint(&implementation.self_type),
-                    implementation.spec.join("."),
-                    implementation
-                        .args
-                        .iter()
-                        .map(external_type_fingerprint)
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    "trace-spec:{}",
+                    crate::artifact::external_named_signature(signature)
                 ));
             }
-            for fact in metadata.type_spec_satisfactions {
+            for signature in &metadata.flows {
                 parts.push(format!(
-                    "type-spec-satisfaction:{}:{}:{}",
-                    external_type_fingerprint(&fact.self_type),
-                    fact.spec.join("."),
-                    fact.args
-                        .iter()
-                        .map(external_type_fingerprint)
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    "flow:{}",
+                    crate::artifact::external_flow(signature)
                 ));
             }
-            for fact in metadata.callable_spec_satisfactions {
+            for signature in &metadata.agents {
                 parts.push(format!(
-                    "callable-spec-satisfaction:{}:{}:{}",
-                    fact.item.join("."),
-                    fact.spec.join("."),
-                    fact.args
-                        .iter()
-                        .map(external_type_fingerprint)
-                        .collect::<Vec<_>>()
-                        .join(",")
+                    "agent:{}",
+                    crate::artifact::external_agent(signature)
                 ));
             }
-            for fact in metadata.trace_spec_conformances {
+            for signature in &metadata.tools {
                 parts.push(format!(
-                    "trace-spec-conformance:{}:{}",
-                    fact.item.join("."),
-                    external_trace_spec_conformance_target_fingerprint(&fact.target)
+                    "tool:{}",
+                    crate::artifact::external_tool(signature)
                 ));
             }
-            for summary in metadata.effect_summaries {
-                if let Some(defaults) = &summary.default_handler_effects {
-                    parts.push(format!(
-                        "default-handler-effects:{}:{}:{}",
-                        summary.item.join("."),
-                        external_effect_row_fingerprint(&defaults.direct_effects),
-                        external_effect_row_fingerprint(&defaults.default_actions)
-                    ));
-                    for handler in &defaults.handlers {
-                        parts.push(format!(
-                            "default-handler:{}:{:?}:{}",
-                            summary.item.join("."),
-                            handler.action,
-                            external_effect_row_fingerprint(&handler.produced)
-                        ));
-                    }
-                }
+            for schema in &metadata.tool_schemas {
                 parts.push(format!(
-                    "effect-summary:{}:{}:{}:{}",
-                    summary.item.join("."),
-                    external_effect_row_fingerprint(&summary.public_effects),
-                    external_effect_row_fingerprint(&summary.requested_actions),
-                    external_effect_row_fingerprint(&summary.handled_requested_actions)
+                    "tool-schema:{}",
+                    crate::artifact::external_tool_schema(schema)
                 ));
+            }
+            for signature in &metadata.actions {
                 parts.push(format!(
-                    "returned-callables:{}:{:?}",
-                    summary.item.join("."),
-                    summary.returned_callables
+                    "action:{}",
+                    crate::artifact::external_action(signature)
                 ));
-                for latent in summary.latent_flows {
-                    parts.push(format!(
-                        "latent-flow:{}:{}:{}",
-                        summary.item.join("."),
-                        external_effect_row_fingerprint(&latent.declared_bound),
-                        external_effect_row_fingerprint(&latent.inferred_effects)
-                    ));
+            }
+            for signature in &metadata.spec_signatures {
+                parts.push(format!(
+                    "spec:{}",
+                    crate::artifact::external_spec(signature)
+                ));
+            }
+            for implementation in &metadata.spec_impls {
+                parts.push(format!(
+                    "spec-impl:{}",
+                    crate::artifact::external_spec_impl(implementation)
+                ));
+            }
+            for fact in &metadata.type_spec_satisfactions {
+                parts.push(format!(
+                    "type-spec-satisfaction:{}",
+                    crate::artifact::external_type_satisfaction(fact)
+                ));
+            }
+            for fact in &metadata.callable_spec_satisfactions {
+                parts.push(format!(
+                    "callable-spec-satisfaction:{}",
+                    crate::artifact::external_callable_satisfaction(fact)
+                ));
+            }
+            for fact in &metadata.trace_spec_conformances {
+                parts.push(format!(
+                    "trace-spec-conformance:{}",
+                    crate::artifact::external_trace_conformance(fact)
+                ));
+            }
+            for summary in &metadata.effect_summaries {
+                parts.push(format!(
+                    "effect-summary:{}",
+                    crate::artifact::external_effect_summary(summary)
+                ));
+                match &summary.returned_callables {
+                    Some(graph) => parts.push(format!(
+                        "returned-callables:some:{}",
+                        etas_package_metadata::callable_value_graph_input_fingerprint(graph)
+                    )),
+                    None => parts.push("returned-callables:none".to_owned()),
                 }
             }
-            for summary in metadata.action_summaries {
+            for summary in &metadata.action_summaries {
                 parts.push(format!(
-                    "action-summary:{}:{}",
-                    summary.action.join("."),
-                    summary.args.join(",")
+                    "action-summary:{}",
+                    crate::artifact::external_action_summary(summary)
                 ));
             }
-            for summary in metadata.trace_spec_summaries {
+            for summary in &metadata.trace_spec_summaries {
                 parts.push(format!(
                     "trace-spec-summary:{}",
-                    summary.trace_spec.join(".")
+                    crate::artifact::external_trace_summary(summary)
                 ));
-                for clause in summary.clauses {
-                    parts.push(format!(
-                        "trace-spec-clause:{}:{}:{}:{}:{}:{}",
-                        summary.trace_spec.join("."),
-                        clause.kind.as_str(),
-                        clause
-                            .pattern
-                            .as_ref()
-                            .map(external_effect_row_fingerprint)
-                            .unwrap_or_default(),
-                        clause
-                            .guard
-                            .as_ref()
-                            .map(external_effect_row_fingerprint)
-                            .unwrap_or_default(),
-                        clause
-                            .target
-                            .as_ref()
-                            .map(external_effect_row_fingerprint)
-                            .unwrap_or_default(),
-                        clause
-                            .obligation
-                            .as_ref()
-                            .map(external_effect_row_fingerprint)
-                            .unwrap_or_default()
-                    ));
-                }
             }
-            for re_export in metadata.re_exports {
+            for re_export in &metadata.re_exports {
                 parts.push(format!(
-                    "re-export:{}:{}",
-                    re_export.from.join("."),
-                    re_export.exported.join(".")
+                    "re-export:{}",
+                    crate::artifact::external_re_export(re_export)
                 ));
             }
         }
-        parts.push("effect-metadata".to_owned());
-        for tag in &self.external_effect_metadata.tags {
-            parts.push(format!(
-                "tag:{}:{}",
-                tag.path.join("."),
-                tag.runtime_requirement
-                    .as_ref()
-                    .map(|requirement| format!("{requirement:?}"))
-                    .unwrap_or_default()
-            ));
-        }
-        for action in &self.external_effect_metadata.actions {
-            parts.push(format!(
-                "action:{}:{}:{}:{}",
-                action.path.join("."),
-                action
-                    .effect_args
-                    .iter()
-                    .map(|arg| format!("{arg:?}"))
-                    .collect::<Vec<_>>()
-                    .join(","),
-                action.returns_never,
-                action
-                    .runtime_requirement
-                    .as_ref()
-                    .map(|requirement| format!("{requirement:?}"))
-                    .unwrap_or_default()
-            ));
-        }
-        for extension in &self.external_effect_metadata.extensions {
-            parts.push(format!(
-                "extends:{:?}:{}:{}",
-                extension.package,
-                extension.child.join("."),
-                extension.parent.join(".")
-            ));
-        }
+        parts.push(format!(
+            "dependency-effects:{}",
+            crate::artifact::external_dependency_effects(&self.external_effect_metadata)
+        ));
         parts.push("tool-bindings".to_owned());
         for binding in &self.tool_bindings {
             parts.push(format!(
-                "tool:{}:{}:{}:{}",
-                binding.tool,
-                binding.provider,
-                binding.effect_row.join(","),
-                binding.action_row.join(",")
+                "tool:{}",
+                crate::artifact::external_tool_binding(binding)
             ));
         }
         let refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
@@ -431,302 +525,73 @@ impl ProjectEnvironmentInput {
     }
 
     pub fn canonical_dependency_metadata_fingerprints(&self) -> Vec<(String, String)> {
-        let mut packages = self.external_packages.clone();
+        let mut packages: Vec<_> = self.external_packages.iter().collect();
         packages.sort_by(|left, right| left.import_root.cmp(&right.import_root));
         packages
             .into_iter()
             .map(|package| {
-                let mut parts = vec![
-                    "frontend_dependency_metadata:v1".to_owned(),
-                    format!("name:{}", package.name),
-                    format!("version:{}", package.version),
-                    format!("edition:{}", package.edition),
-                    format!("import-root:{}", package.import_root),
-                ];
-                let mut modules = self
-                    .external_modules
-                    .iter()
-                    .filter(|module| module.package == Some(package.id))
-                    .map(|module| format!("{module:?}"))
-                    .collect::<Vec<_>>();
-                modules.sort();
-                parts.extend(modules);
-                let mut metadata = self
-                    .external_public_metadata
-                    .iter()
-                    .filter(|metadata| metadata.package == package.id)
-                    .map(|metadata| format!("{metadata:?}"))
-                    .collect::<Vec<_>>();
-                metadata.sort();
-                parts.extend(metadata);
-                parts.push(format!(
-                    "dependency-effects:{:?}",
-                    self.external_effect_metadata
-                ));
-                let refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
-                (
-                    package.import_root,
-                    crate::artifact::fingerprint_text(&refs).to_string(),
-                )
+                let fingerprint = self.environment_fingerprint_for(Some(package.id));
+                (package.import_root.clone(), fingerprint)
             })
             .collect()
     }
 
     pub fn canonical_external_packages_fingerprint(&self) -> String {
-        let mut parts = vec!["frontend_external_packages:v1".to_owned()];
-        let mut packages = self.external_packages.clone();
+        self.external_packages_fingerprint_for(None)
+    }
+
+    fn external_packages_fingerprint_for(&self, selected: Option<ExternalPackageId>) -> String {
+        let mut parts = vec!["frontend_external_packages:v2".to_owned()];
+        let mut packages: Vec<_> = self
+            .external_packages
+            .iter()
+            .filter(|package| selected.is_none_or(|id| package.id == id))
+            .collect();
         packages.sort_by(|left, right| {
             left.import_root
                 .cmp(&right.import_root)
                 .then_with(|| left.name.cmp(&right.name))
                 .then_with(|| left.version.cmp(&right.version))
+                .then_with(|| left.edition.cmp(&right.edition))
                 .then_with(|| left.id.cmp(&right.id))
         });
         for package in packages {
-            parts.push(format!(
-                "package:{}:{}:{}:{}:{}",
-                package.id.0, package.name, package.version, package.edition, package.import_root
-            ));
+            parts.push(crate::artifact::external_package(package));
         }
         let refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
         crate::artifact::fingerprint_text(&refs).to_string()
     }
 
     pub fn canonical_external_modules_fingerprint(&self) -> String {
-        let mut parts = vec!["frontend_external_modules:v1".to_owned()];
+        self.external_modules_fingerprint_for(None)
+    }
+
+    fn external_modules_fingerprint_for(&self, selected: Option<ExternalPackageId>) -> String {
+        let mut parts = vec!["frontend_external_modules:v2".to_owned()];
         if let Some(fingerprint) = &self.external_modules_fingerprint {
             parts.push(format!("external-fingerprint:{fingerprint}"));
         }
-        let mut modules = self.external_modules.clone();
+        let mut modules: Vec<_> = self
+            .external_modules
+            .iter()
+            .filter(|module| selected.is_none_or(|id| module.package == Some(id)))
+            .collect();
         modules.sort_by(|left, right| {
             left.path
                 .segments
                 .cmp(&right.path.segments)
                 .then_with(|| left.id.cmp(&right.id))
+                .then_with(|| left.package.cmp(&right.package))
         });
         for module in modules {
-            parts.push(format!(
-                "module:{}:{}:{}",
-                module.id.0,
-                module
-                    .package
-                    .map(|package| package.0.to_string())
-                    .unwrap_or_default(),
-                module.path.segments.join(".")
-            ));
-            let mut exports = module.exports;
-            exports.sort_by(|left, right| {
-                left.name
-                    .cmp(&right.name)
-                    .then_with(|| left.symbol.cmp(&right.symbol))
-            });
-            for export in exports {
-                parts.push(format!(
-                    "export:{}:{}:{:?}",
-                    export.symbol.0, export.name, export.visibility
-                ));
-            }
+            parts.push(crate::artifact::external_module(module));
         }
         let refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
         crate::artifact::fingerprint_text(&refs).to_string()
     }
 }
 
-fn external_trace_spec_conformance_target_fingerprint(
-    target: &ProjectExternalTraceSpecConformanceTargetInput,
-) -> String {
-    match target {
-        ProjectExternalTraceSpecConformanceTargetInput::Inline => "inline".to_owned(),
-        ProjectExternalTraceSpecConformanceTargetInput::Named { spec, args } => format!(
-            "named:{}<{}>",
-            spec.join("."),
-            args.iter()
-                .map(external_type_fingerprint)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    }
-}
-
-fn external_effect_row_fingerprint(row: &ProjectExternalEffectRowInput) -> String {
-    row.effects
-        .iter()
-        .map(|effect| {
-            let args = effect
-                .args
-                .iter()
-                .map(external_effect_arg_fingerprint)
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{}<{args}>", effect.path.join("."))
-        })
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-fn external_effect_arg_fingerprint(arg: &ProjectExternalEffectArgInput) -> String {
-    match arg {
-        ProjectExternalEffectArgInput::Type(ty) => {
-            format!("type:{}", external_type_fingerprint(ty))
-        }
-        ProjectExternalEffectArgInput::Path(path) => format!("path:{}", path.join(".")),
-        ProjectExternalEffectArgInput::String(value) => format!("string:{value:?}"),
-        ProjectExternalEffectArgInput::Int(value) => format!("int:{value}"),
-        ProjectExternalEffectArgInput::Wildcard => "wildcard:_".to_owned(),
-    }
-}
-
-fn external_type_fingerprint(ty: &ProjectExternalTypeInput) -> String {
-    match ty {
-        ProjectExternalTypeInput::Primitive(name) => format!("primitive:{name}"),
-        ProjectExternalTypeInput::Var(name) => format!("var:{name}"),
-        ProjectExternalTypeInput::Named(path) => format!("named:{}", path.join(".")),
-        ProjectExternalTypeInput::Enum { path, variants } => format!(
-            "enum:{}:{}",
-            path.join("."),
-            variants
-                .iter()
-                .map(|variant| format!(
-                    "{}={}",
-                    variant.name,
-                    external_type_fingerprint(&variant.ty)
-                ))
-                .collect::<Vec<_>>()
-                .join("|")
-        ),
-        ProjectExternalTypeInput::Applied { path, args } => format!(
-            "applied:{}<{}>",
-            path.join("."),
-            args.iter()
-                .map(external_type_fingerprint)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        ProjectExternalTypeInput::Alias { path, target } => {
-            format!(
-                "alias:{}={}",
-                path.join("."),
-                external_type_fingerprint(target)
-            )
-        }
-        ProjectExternalTypeInput::Nominal {
-            path,
-            representation,
-        } => format!(
-            "nominal:{}={}",
-            path.join("."),
-            representation
-                .as_ref()
-                .map(|ty| external_type_fingerprint(ty))
-                .unwrap_or_default()
-        ),
-        ProjectExternalTypeInput::Array(element) => {
-            format!("array:{}", external_type_fingerprint(element))
-        }
-        ProjectExternalTypeInput::List(element) => {
-            format!("list:{}", external_type_fingerprint(element))
-        }
-        ProjectExternalTypeInput::Map { key, value } => format!(
-            "map:{}=>{}",
-            external_type_fingerprint(key),
-            external_type_fingerprint(value)
-        ),
-        ProjectExternalTypeInput::Set(element) => {
-            format!("set:{}", external_type_fingerprint(element))
-        }
-        ProjectExternalTypeInput::Range(index) => {
-            format!("range:{}", external_type_fingerprint(index))
-        }
-        ProjectExternalTypeInput::Slice(element) => {
-            format!("slice:{}", external_type_fingerprint(element))
-        }
-        ProjectExternalTypeInput::Option(inner) => {
-            format!("option:{}", external_type_fingerprint(inner))
-        }
-        ProjectExternalTypeInput::Result { ok, err } => format!(
-            "result:{}|{}",
-            external_type_fingerprint(ok),
-            external_type_fingerprint(err)
-        ),
-        ProjectExternalTypeInput::Record { fields } => format!(
-            "record:{{{}}}",
-            fields
-                .iter()
-                .map(|field| format!("{}:{}", field.name, external_type_fingerprint(&field.ty)))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        ProjectExternalTypeInput::Tuple(elements) => format!(
-            "tuple:({})",
-            elements
-                .iter()
-                .map(external_type_fingerprint)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        ProjectExternalTypeInput::Function {
-            input,
-            output,
-            effects,
-        } => format!(
-            "function:({})->{}!{}",
-            input
-                .iter()
-                .map(external_type_fingerprint)
-                .collect::<Vec<_>>()
-                .join(","),
-            external_type_fingerprint(output),
-            effects
-                .as_ref()
-                .map(external_effect_row_fingerprint)
-                .unwrap_or_default()
-        ),
-        ProjectExternalTypeInput::Handler {
-            handled,
-            produced,
-            result,
-        } => format!(
-            "handler:{}=>{} for {}",
-            external_effect_row_fingerprint(handled),
-            produced
-                .as_ref()
-                .map(external_effect_row_fingerprint)
-                .unwrap_or_default(),
-            result
-                .as_ref()
-                .map(|ty| external_type_fingerprint(ty))
-                .unwrap_or_default()
-        ),
-        ProjectExternalTypeInput::Trust { wrapper, inner } => {
-            format!("trust:{wrapper:?}:{}", external_type_fingerprint(inner))
-        }
-        ProjectExternalTypeInput::Prompt => "prompt".to_owned(),
-        ProjectExternalTypeInput::PromptPart => "prompt_part".to_owned(),
-        ProjectExternalTypeInput::Message(inner) => {
-            format!("message:{}", external_type_fingerprint(inner))
-        }
-        ProjectExternalTypeInput::MemorySelection(inner) => {
-            format!("memory_selection:{}", external_type_fingerprint(inner))
-        }
-        ProjectExternalTypeInput::Store { key, value } => format!(
-            "store:{}=>{}",
-            external_type_fingerprint(key),
-            external_type_fingerprint(value)
-        ),
-        ProjectExternalTypeInput::MemoryRegion(schema) => {
-            format!("memory_region:{}", external_type_fingerprint(schema))
-        }
-        ProjectExternalTypeInput::ResourceHandle { name, args } => format!(
-            "resource:{name}<{}>",
-            args.iter()
-                .map(external_type_fingerprint)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    }
-}
-
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalPackageInput {
     pub id: ExternalPackageId,
     pub name: String,
@@ -741,7 +606,7 @@ pub struct ProjectExternalPackageDependencyInput {
     pub dependency: ExternalPackageId,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalModuleInput {
     pub package: Option<ExternalPackageId>,
     pub id: ExternalModuleId,
@@ -749,7 +614,7 @@ pub struct ProjectExternalModuleInput {
     pub exports: Vec<ProjectExternalExportInput>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalPublicMetadataInput {
     pub package: ExternalPackageId,
     pub types: Vec<ProjectExternalNamedSignatureInput>,
@@ -787,6 +652,7 @@ pub struct ProjectExternalSpecSignatureInput {
     pub visibility: String,
     pub kind: ProjectExternalSpecKindInput,
     pub param_names: Vec<String>,
+    pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub callable: Option<ProjectExternalFlowSignatureInput>,
     pub methods: Vec<ProjectExternalSpecMethodInput>,
     pub super_specs: Vec<ProjectExternalSpecBoundInput>,
@@ -818,6 +684,7 @@ pub struct ProjectExternalSpecImplInput {
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
     pub methods: Vec<String>,
+    pub implementation_module: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -845,6 +712,7 @@ pub enum ProjectExternalTraceSpecConformanceTargetInput {
     Inline,
     Named {
         spec: Vec<String>,
+        definition: etas_code::DefinitionKey,
         args: Vec<ProjectExternalTypeInput>,
     },
 }
@@ -1021,6 +889,7 @@ pub struct ProjectExternalRecordFieldInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalEffectSummaryInput {
+    pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
     pub handler_requests: Option<ProjectExternalRequestInstantiationInput>,
     pub returned_callables: Option<etas_package_metadata::CallableValueGraph>,
@@ -1105,6 +974,7 @@ pub enum ProjectExternalActionTraceEventSourceInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalLatentFlowSummaryInput {
+    pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub declared_bound: ProjectExternalEffectRowInput,
     pub inferred_effects: ProjectExternalEffectRowInput,
 }
@@ -1118,7 +988,8 @@ pub struct ProjectExternalActionSummaryInput {
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalTraceSpecSummaryInput {
     pub trace_spec: Vec<String>,
-    pub clauses: Vec<ProjectExternalTraceSpecClauseInput>,
+    pub definition: etas_code::DefinitionKey,
+    pub alternatives: Vec<Vec<ProjectExternalTraceSpecClauseInput>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -1128,6 +999,25 @@ pub struct ProjectExternalTraceSpecClauseInput {
     pub guard: Option<ProjectExternalEffectRowInput>,
     pub target: Option<ProjectExternalEffectRowInput>,
     pub obligation: Option<ProjectExternalEffectRowInput>,
+    pub selector_bounds: Vec<ProjectExternalTraceSelectorBoundInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ProjectExternalTraceSelectorBoundInput {
+    pub operand: ProjectExternalTraceSelectorOperandInput,
+    pub effect_path: Vec<String>,
+    pub argument: u32,
+    pub binding: String,
+    pub spec_path: Vec<String>,
+    pub spec_args: Vec<ProjectExternalTypeInput>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub enum ProjectExternalTraceSelectorOperandInput {
+    Pattern,
+    Guard,
+    Target,
+    Obligation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -1138,24 +1028,13 @@ pub enum ProjectExternalTraceSpecClauseKindInput {
     RequireAfter,
 }
 
-impl ProjectExternalTraceSpecClauseKindInput {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Allow => "allow",
-            Self::Deny => "deny",
-            Self::RequireBefore => "require_before",
-            Self::RequireAfter => "require_after",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalReExportInput {
     pub from: Vec<String>,
     pub exported: Vec<String>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectExternalExportInput {
     pub symbol: ExternalSymbolId,
     pub name: String,
@@ -1337,6 +1216,7 @@ impl ProjectOutput {
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckedProgramData {
     pub(crate) reflection_targets: Arc<crate::code::reflection::CheckedReflectionTargets>,
+    pub(crate) foreign_type_bindings: Arc<crate::code::definition::ForeignTypeBindings>,
     pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
     pub compiler_version: String,
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
@@ -1362,6 +1242,8 @@ pub struct CheckedProgramData {
     pub entry_fact: ProjectEntryFact,
     pub entry: Option<HirItemId>,
     pub reachability: crate::ReachabilityFacts,
+    /// Verified, target-supported residual plans; frontend-constructed only.
+    pub(crate) residual: Arc<crate::residual::CheckedResidualPlans>,
 }
 
 impl std::ops::Deref for CheckedProgramData {
@@ -1373,6 +1255,17 @@ impl std::ops::Deref for CheckedProgramData {
 }
 
 impl CheckedProgramData {
+    /// Residual plans every execution of this program must install. Plans are
+    /// descriptions of required enforcement, not installation evidence.
+    pub fn residual_plans(&self) -> &crate::residual::CheckedResidualPlans {
+        &self.residual
+    }
+
+    /// Checks against the validated environment captured by this program.
+    pub fn uses_environment(&self, environment: &ProjectEnvironmentInput) -> bool {
+        self.definition_environment.environment() == environment
+    }
+
     pub fn checked_reflections(
         &self,
     ) -> &std::collections::HashMap<etas_hir::HirExprId, etas_types::CheckedReflectionFact> {
@@ -1384,6 +1277,13 @@ impl CheckedProgramData {
         expression: etas_hir::HirExprId,
     ) -> Option<(etas_hir::HirItemId, etas_core::Span)> {
         self.reflection_targets.site(expression)
+    }
+
+    pub fn reflection_resolution(
+        &self,
+        expression: etas_hir::HirExprId,
+    ) -> Option<&crate::HirPathResolution> {
+        self.reflection_targets.resolution(expression)
     }
 
     pub fn external_definition_origins(&self) -> &[ProjectExternalDefinitionOriginsInput] {

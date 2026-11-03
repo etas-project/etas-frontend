@@ -84,7 +84,16 @@ impl EffectSemantics<'_> {
                 if self.checked_empty_constructor_value(expr, symbol) {
                     return Some(Vec::new());
                 }
-                let mut sources = self.latent_sources_for_symbol(state, symbol)?;
+                let mut sources = match self.latent_sources_for_symbol(state, symbol) {
+                    Some(sources) => sources,
+                    None if self.external_reference_metadata(expr).is_some() => {
+                        vec![LatentSource::ExternalReference {
+                            value: expr,
+                            frozen: false,
+                        }]
+                    }
+                    None => return None,
+                };
                 if self.types.facts.generic_instantiations.contains_key(&expr) {
                     for source in &mut sources {
                         if let LatentSource::Unit(unit) = *source {

@@ -68,6 +68,8 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) call_completion_exits:
         std::collections::HashMap<(EffectUnit, HirExprId), crate::CallableExitSummary>,
     pub(crate) hir: &'a etas_hir::HirRevision,
+    pub(crate) residual_identity: Option<&'a dyn crate::ResidualIdentityProvider>,
+    pub(crate) source_snapshots: std::sync::Arc<crate::infer::analysis::EffectSourceSnapshots<'a>>,
     pub(crate) context: HirAnalysisContext,
     pub(crate) types: &'a TypeOutput,
     pub(crate) std_registry: &'a etas_std::StdRegistry,
@@ -115,6 +117,8 @@ impl<'a> EffectSemantics<'a> {
                 parameter_effects: Default::default(),
                 frozen_parameter_effects: Default::default(),
                 hir,
+                residual_identity: None,
+                source_snapshots: Default::default(),
                 types,
                 std_registry,
                 registry,
@@ -142,6 +146,8 @@ impl<'a> EffectSemantics<'a> {
             parameter_effects,
             frozen_parameter_effects,
             hir,
+            residual_identity,
+            source_snapshots,
             types,
             std_registry,
             registry,
@@ -151,6 +157,8 @@ impl<'a> EffectSemantics<'a> {
         } = input;
         let mut semantics = Self {
             argument_writes,
+            residual_identity,
+            source_snapshots,
             analysis_units: Default::default(),
             frozen_graphs,
             generic_effect_rows: Default::default(),

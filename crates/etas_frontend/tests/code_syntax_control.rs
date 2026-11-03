@@ -77,3 +77,32 @@ fn native_syntax_port_preserves_interruption_from_inside_lexer_and_formatter() {
     ));
     assert_eq!(control.checks.load(Ordering::Relaxed), 65);
 }
+
+#[test]
+fn controlled_project_check_stops_without_publishing_a_checked_project() {
+    let mut session = etas_frontend::FrontendSession::new();
+    let mut input = etas_frontend::ProjectInput::single_source(
+        etas_frontend::SourceInput::anonymous("module app; flow f() -> unit { return; }"),
+    );
+    input.options.entry_policy = etas_frontend::EntryPolicy::Optional;
+    let project = session.try_open_project(input).unwrap();
+    let control = std::sync::Arc::new(StopAfter {
+        checks: AtomicUsize::new(0),
+        stop_at: 0,
+        kind: PipelineInterruptionKind::Cancelled,
+    });
+    assert!(
+        session
+            .check_controlled(project, etas_frontend::CheckRequest::one_shot(), control)
+            .is_err()
+    );
+    let output = session
+        .check(project, etas_frontend::CheckRequest::one_shot())
+        .unwrap();
+    assert!(output.output.checked.is_some());
+    assert!(
+        output.output.diagnostics.is_empty(),
+        "{:?}",
+        output.output.diagnostics
+    );
+}

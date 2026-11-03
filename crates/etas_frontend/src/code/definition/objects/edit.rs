@@ -69,6 +69,8 @@ impl NativeDefinitionStore {
             reflection_access: original.0.reflection_access,
             provenance: super::DefinitionProvenance::Draft,
             implementation: None,
+            external_application: original.0.external_application.clone(),
+            external_restoration: original.0.external_restoration.clone(),
         })
     }
     pub fn body_overlay(

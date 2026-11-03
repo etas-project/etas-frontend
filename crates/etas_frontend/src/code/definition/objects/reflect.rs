@@ -304,6 +304,8 @@ impl NativeDefinitionStore {
             reflection_access: access,
             provenance: super::DefinitionProvenance::Source,
             implementation: None,
+            external_application: None,
+            external_restoration: None,
         })
         .map_err(Into::into)
     }

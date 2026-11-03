@@ -20,6 +20,7 @@ pub enum OverlayError {
     MissingDefaultEntry,
     InvalidFrozenSlot,
     InvalidRevision,
+    InvalidStableSourceIdentity,
     SourceIdentityExhausted,
     Syntax(SyntaxOperationError),
 }
@@ -33,6 +34,7 @@ pub struct DefaultBodyOverlay {
     fingerprint: CodeFingerprint,
     exposure: BodyExposure,
     revision_info: RevisionInfo,
+    external_restoration: Option<Arc<crate::code::definition::ExternalRestorationReceipt>>,
 }
 
 impl DefaultBodyOverlay {
@@ -41,7 +43,7 @@ impl DefaultBodyOverlay {
         body: SyntaxBlockRef,
         syntax: &NativeCodeSyntaxOperations,
     ) -> Result<Self, OverlayError> {
-        Self::prepare_inner(frozen, body, syntax, None)
+        Self::prepare_inner(frozen, body, syntax, None, None)
     }
 
     pub(crate) fn prepare_revision(
@@ -49,8 +51,9 @@ impl DefaultBodyOverlay {
         body: SyntaxBlockRef,
         syntax: &NativeCodeSyntaxOperations,
         revision: RevisionInfo,
+        external_restoration: Option<Arc<crate::code::definition::ExternalRestorationReceipt>>,
     ) -> Result<Self, OverlayError> {
-        Self::prepare_inner(frozen, body, syntax, Some(revision))
+        Self::prepare_inner(frozen, body, syntax, Some(revision), external_restoration)
     }
 
     fn prepare_inner(
@@ -58,6 +61,7 @@ impl DefaultBodyOverlay {
         body: SyntaxBlockRef,
         syntax: &NativeCodeSyntaxOperations,
         revision: Option<RevisionInfo>,
+        external_restoration: Option<Arc<crate::code::definition::ExternalRestorationReceipt>>,
     ) -> Result<Self, OverlayError> {
         let checked = frozen.checked();
         let item = frozen
@@ -112,6 +116,24 @@ impl DefaultBodyOverlay {
         let relocated = syntax
             .relocate_body(&body, SourceId(next))
             .map_err(OverlayError::Syntax)?;
+        let stable_source_key = match checked.sources.stable_source_key(slot.source) {
+            Ok(parent) => {
+                if declaration.source != slot.source {
+                    return Err(OverlayError::InvalidStableSourceIdentity);
+                }
+                Some(
+                    etas_code::StableSourceKey::generated_body(
+                        parent,
+                        source.file.text.as_bytes(),
+                        u64::from(declaration.range.start.0),
+                        u64::from(declaration.range.end.0),
+                    )
+                    .map_err(|_| OverlayError::InvalidStableSourceIdentity)?,
+                )
+            }
+            Err(crate::SourcePackageOriginError::Missing) => None,
+            Err(_) => return Err(OverlayError::InvalidStableSourceIdentity),
+        };
         let environment = frozen.fingerprint();
         let exposure = checked.definition_sources.exposure(item);
         let callable = frozen
@@ -181,11 +203,13 @@ impl DefaultBodyOverlay {
                 declaration,
                 syntax: body,
                 relocated,
+                stable_source_key,
                 unchanged,
             }),
             fingerprint,
             exposure,
             revision_info,
+            external_restoration,
         })
     }
 
@@ -212,6 +236,11 @@ impl DefaultBodyOverlay {
     }
     pub fn revision(&self) -> &RevisionInfo {
         &self.revision_info
+    }
+    pub(crate) fn external_restoration(
+        &self,
+    ) -> Option<&Arc<crate::code::definition::ExternalRestorationReceipt>> {
+        self.external_restoration.as_ref()
     }
     pub(crate) fn native_revision(&self) -> &Arc<super::NativeBodyRevision> {
         &self.revision

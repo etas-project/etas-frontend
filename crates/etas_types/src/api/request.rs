@@ -197,6 +197,7 @@ pub struct ExternalSpecSignatureInput {
     pub path: Vec<String>,
     pub kind: ExternalSpecKindInput,
     pub param_names: Vec<String>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub callable: Option<ExternalFlowSignatureInput>,
     pub methods: Vec<ExternalSpecMethodInput>,
     pub super_specs: Vec<ExternalSpecBoundInput>,
@@ -255,6 +256,7 @@ pub enum ExternalTraceSpecConformanceTargetInput {
     Inline,
     Named {
         spec: Vec<String>,
+        definition: etas_code::DefinitionKey,
         args: Vec<ExternalTypeInput>,
     },
 }

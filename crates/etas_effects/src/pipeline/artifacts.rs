@@ -12,6 +12,12 @@ pub(crate) const VALIDATED_EFFECT_FACTS: ArtifactKey =
 pub(crate) const TRACE_SPEC_MODELS: ArtifactKey = ArtifactKey::new("effects", "trace_spec_models");
 pub(crate) const TRACE_SPEC_ANALYSIS: ArtifactKey =
     ArtifactKey::new("effects", "trace_spec_analysis");
+pub(crate) const TRACE_STATIC_DISPOSITIONS: ArtifactKey =
+    ArtifactKey::new("effects", "trace_static_dispositions");
+pub(crate) const RESIDUAL_MONITOR_PLANS: ArtifactKey =
+    ArtifactKey::new("effects", "residual_monitor_plans");
+pub(crate) const VERIFIED_RESIDUAL_PLANS: ArtifactKey =
+    ArtifactKey::new("effects", "verified_residual_plans");
 pub(crate) const VALIDATED_TRACE_SPEC_FACTS: ArtifactKey =
     ArtifactKey::new("effects", "validated_trace_spec_facts");
 pub(crate) const EFFECT_OUTPUT: ArtifactKey = ArtifactKey::new("effects", "output");

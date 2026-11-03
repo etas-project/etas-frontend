@@ -118,11 +118,27 @@ impl Builder<'_, '_> {
         let mut parameter_bindings = vec![];
         let mut bound = BTreeSet::new();
         for target in trace_parameters(&summary.action_trace) {
-            let etas_effects::ParameterCallTarget::Native(symbol) = target else {
-                return Ok(None);
-            };
-            let Some(parameter) = self.parameter(symbol, CallableValueScope::Value(index))? else {
-                return Ok(None);
+            let parameter = match target {
+                etas_effects::ParameterCallTarget::Native(symbol) => {
+                    let Some(parameter) =
+                        self.parameter(symbol, CallableValueScope::Value(index))?
+                    else {
+                        return Ok(None);
+                    };
+                    parameter
+                }
+                etas_effects::ParameterCallTarget::Interface(position)
+                    if matches!(
+                        &reference.target,
+                        etas_effects::CallableReferenceTarget::External { .. }
+                    ) && (position as usize) < signature.input.len() =>
+                {
+                    etas_package_metadata::CallableValueParameter {
+                        scope: CallableValueScope::Value(index),
+                        position,
+                    }
+                }
+                _ => return Ok(None),
             };
             let label = match parameter.scope {
                 CallableValueScope::Root => format!("rp{}", parameter.position),
@@ -147,6 +163,7 @@ impl Builder<'_, '_> {
             return Ok(None);
         };
         Ok(Some(CallableValueNode {
+            residual_checks: summary.residual_checks.iter().cloned().collect(),
             handler_requests: projected.handler_requests,
             parent_scope: *self
                 .parents

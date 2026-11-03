@@ -1,10 +1,13 @@
 mod diagnostic_anchor;
 pub mod effect;
+mod external_trace;
 pub mod facts;
 pub mod infer;
 pub mod pipeline;
 mod pipeline_error;
 pub mod requirement;
+pub mod residual;
+mod residual_identity;
 pub mod substitution;
 pub mod trace_spec;
 pub mod validate;
@@ -44,19 +47,23 @@ pub use infer::{
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
-    EffectPipelineOutput, ExternalActionRequestMetadata, ExternalActionTraceMetadata,
-    ExternalArtifactAnchor, ExternalCallableContract, ExternalCallableValueMetadata,
-    ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
-    ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
-    ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,
-    ExternalRequestInstantiationMetadata, ExternalTraceSpecClauseKind,
-    ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
+    EffectPipelineOutput, EffectSourceSnapshot, ExternalActionRequestMetadata,
+    ExternalActionTraceMetadata, ExternalArtifactAnchor, ExternalCallableContract,
+    ExternalCallableValueMetadata, ExternalDefaultHandlerContributionMetadata,
+    ExternalDefaultHandlerEffectsMetadata, ExternalEffectMetadata, ExternalEffectRowMetadata,
+    ExternalEffectSummaryMetadata, ExternalLatentFlowSummaryMetadata,
+    ExternalParameterRequestMetadata, ExternalRequestInstantiationMetadata,
+    ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
     ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry,
-    RunEffectPipeline,
+    RunEffectPipeline, TraceSpecPipelineAnalysis,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{
     LimitBudgetKind, LimitKind, LimitRequirement, LimitValue, RequirementFact, RequirementSet,
+};
+pub use residual_identity::{
+    ResidualIdentityError, ResidualIdentityProvider, TraceMonitorProjectionRequest,
+    TraceMonitorProjector, TraceMonitorSourceLimits,
 };
 mod frozen;
 pub use frozen::{

@@ -150,7 +150,9 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Result<EffectSummary, super::specialize::EffectSpecializationError> {
         match source {
-            LatentSource::FrozenContract { .. } => self.solve_callable_summary(source, span),
+            LatentSource::FrozenContract { .. }
+            | LatentSource::ExternalFrozen { .. }
+            | LatentSource::ExternalReference { .. } => self.solve_callable_summary(source, span),
             LatentSource::Reference { .. } | LatentSource::StdReference { .. } => {
                 self.reference_summary(source, span)
             }
@@ -171,7 +173,9 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         match source {
-            LatentSource::FrozenContract { .. } => None,
+            LatentSource::FrozenContract { .. }
+            | LatentSource::ExternalFrozen { .. }
+            | LatentSource::ExternalReference { .. } => None,
             LatentSource::Captured { .. } | LatentSource::Metadata(_) => None,
             LatentSource::Unavailable { .. } => None,
             LatentSource::EnumConstructor(symbol) => self

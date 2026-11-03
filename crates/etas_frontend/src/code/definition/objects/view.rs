@@ -45,6 +45,12 @@ impl NativeDefinitionView {
     pub fn body(&self) -> Option<&etas_code::syntax::SyntaxBlockRef> {
         self.0.data.body()
     }
+    pub fn external_application(&self) -> Option<&super::CheckedExternalCallableApplication> {
+        self.0
+            .external_application
+            .as_ref()
+            .map(|evidence| &evidence.application)
+    }
     pub fn environment(&self) -> Result<&Arc<FrozenDefinitionEnvironment>, NativeDefinitionError> {
         match &self.0.environment {
             super::DefinitionEnvironment::Native(environment) => Ok(environment),
@@ -68,6 +74,10 @@ impl NativeDefinitionView {
     }
     pub fn signature_descriptors(&self) -> &etas_code::descriptor::DescriptorGraph {
         self.0.data.base().descriptors()
+    }
+    pub fn callable_header(&self) -> Option<&etas_code::descriptor::CallableHeaderInfo> {
+        let contract = self.0.data.base().contract();
+        contract.entry().and_then(|id| contract.callable(id))
     }
     pub fn declared_tools(&self) -> Result<&[etas_code::DefinitionKey], NativeDefinitionError> {
         Ok(&self.agent_header()?.tools)
@@ -156,6 +166,7 @@ impl NativeDefinitionView {
             identity: self.identity().clone(),
             revision: revision.inputs().clone(),
             dependencies: self.dependency_info()?,
+            generic_environment_context: None,
         };
         self.0
             .method_snapshots
@@ -244,8 +255,14 @@ impl NativeDefinitionView {
             Some(body) => body.clone(),
             None => self.private_body(syntax)?,
         };
-        DefaultBodyOverlay::prepare_revision(environment, body, syntax, self.revision().clone())
-            .map_err(NativeDefinitionError::Overlay)
+        DefaultBodyOverlay::prepare_revision(
+            environment,
+            body,
+            syntax,
+            self.revision().clone(),
+            self.0.external_restoration.clone(),
+        )
+        .map_err(NativeDefinitionError::Overlay)
     }
 
     fn private_body(

@@ -8,6 +8,7 @@ pub mod collect {
     pub mod resource_handles;
     pub mod specs;
     pub mod std_actions;
+    pub mod trace_patterns;
 }
 pub mod imports;
 pub mod materialize;
@@ -59,6 +60,7 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     collect::specs::record_type_param_bounds(ctx, &mut state);
     collect::aliases::collect_alias_bounds(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
+    collect::trace_patterns::collect_trace_pattern_types(ctx);
     collect::nominal_types::collect_members(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
     collect::effect_actions::collect_effect_actions(ctx, &mut state);

@@ -85,7 +85,6 @@ impl NativeDefinitionStore {
             .validate(limits)
             .map_err(NativeDefinitionError::SourceBundle)?;
         let original = self.resolve(expected)?;
-        let environment = original.environment()?;
         let base = original.0.data.base();
         let fail = NativeDefinitionError::SourceBundle;
         if original.identity() != &source.target
@@ -96,7 +95,7 @@ impl NativeDefinitionStore {
         if base.contract_fingerprint() != source.revision.contract {
             return Err(fail(SourceBundleError::ContractMismatch));
         }
-        if environment.compilation_fingerprint() != source.revision.compilation {
+        if original.revision().inputs().compilation != source.revision.compilation {
             return Err(fail(SourceBundleError::ConfigurationMismatch));
         }
         if base.environment() != source.revision.environment {
@@ -155,6 +154,8 @@ impl NativeDefinitionStore {
             reflection_access: original.0.reflection_access,
             provenance: super::DefinitionProvenance::Draft,
             implementation: None,
+            external_application: original.0.external_application.clone(),
+            external_restoration: original.0.external_restoration.clone(),
         })
         .map_err(Into::into)
     }

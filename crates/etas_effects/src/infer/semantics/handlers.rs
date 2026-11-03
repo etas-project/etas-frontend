@@ -16,6 +16,7 @@ use super::state::EffectState;
 
 mod completion;
 mod result;
+mod resuming;
 
 fn handler_evaluation_is_inert(
     entry: &EffectState,
@@ -81,7 +82,7 @@ impl EffectSemantics<'_> {
                 let Some(mut handler_state) = control.take_normal_state() else {
                     return control;
                 };
-                let body_state = parts.body.into_joined_domain();
+                let mut body_state = parts.body.into_joined_domain();
                 if let Some(HirExpr::Handle { body, .. }) = self.hir.exprs.get(expr) {
                     self.inputs
                         .handled_body_requests
@@ -125,23 +126,39 @@ impl EffectSemantics<'_> {
                         return control;
                     }
                 };
-                let value_completion = only_normal
-                    && !handler_state.incomplete
-                    && self.checked_value_handler_completion(
-                        expr,
+                let inert_handler = handler_only_normal
+                    && self.handler_evaluation_is_inert(handler, &entry, &handler_state);
+                let resuming_completion = if only_normal && inert_handler {
+                    match self.checked_resuming_handler_completion(
                         handler,
-                        &entry,
-                        &body_state,
-                        (&handled, &produced),
-                    );
+                        &mut body_state,
+                        (&definitely_handled, &produced),
+                    ) {
+                        Ok(complete) => complete,
+                        Err(interruption) => {
+                            self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                            control.join_normal(handler_state);
+                            return control;
+                        }
+                    }
+                } else {
+                    false
+                };
+                let value_completion = resuming_completion
+                    || (only_normal
+                        && !handler_state.incomplete
+                        && self.checked_value_handler_completion(
+                            expr,
+                            handler,
+                            &entry,
+                            &body_state,
+                            (&handled, &produced),
+                        ));
                 let mut result = body_state;
                 if !value_completion {
                     result.exits.handler_gaps.insert(crate::HandlerGapEvidence {
                         source: span.into(),
-                        normal_control: only_normal
-                            && handler_only_normal
-                            && !result.incomplete
-                            && self.handler_evaluation_is_inert(handler, &entry, &handler_state),
+                        normal_control: only_normal && inert_handler && !result.incomplete,
                         handled: handled.clone(),
                         body_escaping: result.summary.escaping_effects.clone(),
                     });
@@ -176,6 +193,55 @@ impl EffectSemantics<'_> {
                 result
                     .summary
                     .require_runtime(crate::RuntimeRequirementReason::RuntimeHandler);
+                let action_trace = if value_completion {
+                    Some(result.summary.action_trace.clone())
+                } else {
+                    match self.immutable_handler_value(handler) {
+                        Ok(Some((_, fact))) => {
+                            let mut trace = result.summary.action_trace.clone();
+                            let mut arm_actions = false;
+                            for arm in &fact.arms {
+                                let Some(summary) = self.inputs.unit_effects.get(&arm.unit) else {
+                                    control.join_normal(self.incomplete_at(
+                                        span,
+                                        "handler trace requires solved arm summaries",
+                                        result,
+                                    ));
+                                    return control;
+                                };
+                                arm_actions |= summary.action_trace
+                                    != crate::ActionTraceDomain::Empty
+                                    || !summary.requested_actions.is_empty();
+                                trace.seq_assign(summary.action_trace.clone());
+                            }
+                            if result.summary.action_trace.has_parameter_calls()
+                                && !result.exits.parameter_exits.is_empty()
+                            {
+                                // Parameter calls retain checked handler-scope templates;
+                                // their arm traces are applied at callback substitution.
+                                Some(result.summary.action_trace.clone())
+                            } else if arm_actions {
+                                trace.seq_assign(crate::ActionTraceDomain::UnknownOrder(
+                                    result.summary.requested_actions.effects.clone(),
+                                ));
+                                Some(trace.repeat().stabilize_for_fixpoint(None))
+                            } else {
+                                // Trace-inert arms cannot reorder requested actions.
+                                // Their unknown control outcomes remain explicit gaps.
+                                Some(trace)
+                            }
+                        }
+                        Ok(None) => None,
+                        Err(interruption) => {
+                            self.callable_summaries.borrow_mut().interruption = Some(interruption);
+                            control.join_normal(result);
+                            return control;
+                        }
+                    }
+                };
+                if let Some(trace) = &action_trace {
+                    result.summary.action_trace = trace.clone();
+                }
                 self.inputs.handle_applications.insert(
                     expr,
                     HandleApplicationFact {
@@ -183,6 +249,7 @@ impl EffectSemantics<'_> {
                         handled,
                         produced,
                         remaining,
+                        action_trace,
                     },
                 );
                 if let Err(error) =
@@ -831,13 +898,8 @@ impl EffectSemantics<'_> {
                     self.scan_handler_controls_in_arg(arg, in_lambda, scan);
                 }
             }
-            HirExpr::Handler { handlers, .. } => {
-                for arm in handlers {
-                    if let Some(arm) = self.hir.handler_arms.get(*arm) {
-                        self.scan_handler_controls_in_block_with_context(arm.body, in_lambda, scan);
-                    }
-                }
-            }
+            // Nested arms have their own resume/finish owner and validation.
+            HirExpr::Handler { .. } => {}
             HirExpr::Handle { body, handler, .. } => {
                 self.scan_handler_controls_in_expr(*body, in_lambda, scan);
                 self.scan_handler_controls_in_expr(*handler, in_lambda, scan);

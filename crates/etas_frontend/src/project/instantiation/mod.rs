@@ -10,7 +10,9 @@ use etas_hir::HirItemId;
 use etas_types::{CallableGenericParamKind, CallableSignature, EffectRowRef, TypeId};
 
 pub(crate) use index::normalized_row;
-pub(crate) use prepare::{InstantiationError, PreparationInput, PreparedInstantiations, prepare};
+pub(crate) use prepare::{
+    InstantiationError, PreparationInput, PreparedInstantiations, prepare, prepare_from_targets,
+};
 pub(crate) use rows::checked_row;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]

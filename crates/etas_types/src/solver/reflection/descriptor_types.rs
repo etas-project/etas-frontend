@@ -95,7 +95,7 @@ fn resolve_native_binding(
 ) -> Result<TypeId, &'static str> {
     let mut visited = BTreeSet::new();
     while let Some(Type::Named(named)) = input.store.get(ty) {
-        if named.source_parameter.is_some() {
+        if named.source_parameter.is_some() || input.store.parameter_identity(ty).is_some() {
             break;
         }
         let Some(bound) = input

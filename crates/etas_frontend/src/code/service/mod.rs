@@ -5,7 +5,9 @@ pub use definitions::NativeCompilerError;
 mod report;
 mod syntax;
 
-pub use crate::code::pipeline::{CandidateAnalysisError, CandidateBodyAnalysis};
+pub use crate::code::pipeline::{
+    CandidateAnalysisError, CandidateBodyAnalysis, CandidateDependencySource,
+};
 pub(crate) use candidate::CandidateEmission;
 pub use candidate::{
     CandidatePublisher, CandidateResolutionError, CheckedCandidate, CheckedCandidateResolver,

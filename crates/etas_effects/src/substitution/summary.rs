@@ -19,17 +19,13 @@ pub(crate) fn map_summary<M: SummaryMapper>(
         default_actions: mapper.row(&source.default_actions)?,
         handled_actions: mapper.row(&source.handled_actions)?,
         action_trace: map_trace(mapper, &source.action_trace)?,
-        residual_checks: crate::ResidualCheckSet::default(),
+        residual_checks: mapper.residual_checks(&source.residual_checks)?,
         trace_spec_obligations: requirements(mapper, &source.trace_spec_obligations)?,
         requirements: requirements(mapper, &source.requirements)?,
         determinism: source.determinism,
         independent_determinism: source.independent_determinism,
         support: source.support.clone(),
     };
-    for check in &source.residual_checks.checks {
-        mapper.checkpoint()?;
-        result.residual_checks.checks.insert(check.clone());
-    }
     if let Some(defaults) = &source.default_handler_effects {
         let mut mapped = crate::DefaultHandlerEffects {
             direct: mapper.row(&defaults.direct)?,

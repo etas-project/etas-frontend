@@ -14,5 +14,6 @@ pub(crate) struct NativeBodyRevision {
     pub declaration: Span,
     pub syntax: SyntaxBlockRef,
     pub relocated: Arc<RelocatedBodySyntax>,
+    pub stable_source_key: Option<etas_code::StableSourceKey>,
     pub unchanged: bool,
 }

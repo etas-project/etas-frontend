@@ -18,6 +18,8 @@ use crate::{
     },
 };
 
+mod frozen_applications;
+
 pub(crate) const CANDIDATE_INVOCATION_TYPES: ArtifactKey =
     ArtifactKey::new("code", "candidate_invocation_types");
 pub(crate) struct MaterializeCandidateInvocationTypesPass;
@@ -77,9 +79,33 @@ impl Pass<ProjectContext> for MaterializeCandidateInvocationTypesPass {
             };
             types.store = prepared.store.clone();
             context.native_instantiations = Some(prepared.plan.clone());
-            let checked = Arc::make_mut(checked);
-            checked.type_store = prepared.store;
-            checked.native_instantiations = prepared.plan;
+            let data = Arc::make_mut(checked);
+            data.type_store = prepared.store;
+            data.native_instantiations = prepared.plan;
+            let frozen_applications = match frozen_applications::prepare(
+                candidate.overlay.frozen(),
+                checked,
+                candidate.descriptor_limits,
+                manager.execution_control(),
+            ) {
+                Ok(program) => program,
+                Err(InstantiationError::Interrupted(interruption)) => {
+                    return PassResult::interrupted(interruption);
+                }
+                Err(InstantiationError::Invalid(reason)) => return PassResult::failed(reason),
+                Err(InstantiationError::Resource { reason, .. }) => {
+                    return PassResult::interrupted(etas_utils::PipelineInterruption {
+                        kind: etas_utils::PipelineInterruptionKind::ResourceLimit,
+                        reason,
+                    });
+                }
+            };
+            let Some(candidate) = &mut context.candidate else {
+                return PassResult::failed(
+                    "candidate disappeared during frozen application preparation",
+                );
+            };
+            candidate.frozen_application_program = Some(frozen_applications);
         }
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
     }

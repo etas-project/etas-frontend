@@ -7,6 +7,7 @@ pub(crate) enum ContractArtifactError {
     WrongSnapshot,
     WrongFrozenContract,
     IncompleteComponents,
+    InvalidResidualCoverage,
 }
 
 impl std::fmt::Display for ContractArtifactError {
@@ -15,6 +16,9 @@ impl std::fmt::Display for ContractArtifactError {
             Self::WrongSnapshot => "contract result belongs to another snapshot",
             Self::WrongFrozenContract => "contract result belongs to another frozen contract",
             Self::IncompleteComponents => "contract result omits or duplicates a component",
+            Self::InvalidResidualCoverage => {
+                "contract result has no matching verified residual coverage"
+            }
         })
     }
 }
@@ -63,10 +67,33 @@ impl CandidateContractAnalysis {
                 {
                     return Err(ContractArtifactError::IncompleteComponents);
                 }
-                Ok(checks
-                    .iter()
-                    .all(|check| check.relation == ContractRelation::Proven))
+                Ok(checks.iter().all(|check| match &check.relation {
+                    ContractRelation::Proven => true,
+                    ContractRelation::Guarded(required) => {
+                        check.component == ContractComponent::ResidualChecks && !required.is_empty()
+                    }
+                    _ => false,
+                }))
             }
         }
+    }
+
+    pub(crate) fn validate_residual_for(
+        &self,
+        checked: &crate::CheckedProgram,
+    ) -> Result<(), ContractArtifactError> {
+        if let Self::Analyzed { checks, .. } = self {
+            for check in checks {
+                if let ContractRelation::Guarded(required) = &check.relation {
+                    if check.component != ContractComponent::ResidualChecks
+                        || required.is_empty()
+                        || !checked.residual_plans().supports_references(required)
+                    {
+                        return Err(ContractArtifactError::InvalidResidualCoverage);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

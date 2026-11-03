@@ -15,6 +15,23 @@ impl EffectSemantics<'_> {
         let mut sources = BTreeSet::new();
         for source in returned {
             let parameter = match source {
+                crate::CallableReturnSource::ExternalFrozen { reflection } => {
+                    self.external_reflection_metadata(*reflection)
+                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                    sources.insert(LatentSource::ExternalFrozen {
+                        reflection: *reflection,
+                    });
+                    continue;
+                }
+                crate::CallableReturnSource::ExternalReference { value, frozen } => {
+                    self.external_reference_metadata(*value)
+                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                    sources.insert(LatentSource::ExternalReference {
+                        value: *value,
+                        frozen: *frozen,
+                    });
+                    continue;
+                }
                 crate::CallableReturnSource::FrozenContract {
                     unit,
                     reference,

@@ -130,10 +130,26 @@ pub(super) fn solve(
                     "reflected flow is missing its checked declaration signature",
                 ));
             }
+            let target =
+                if let Some(identity) = input.facts.external_definition_bindings.get(symbol) {
+                    if identity.kind() != etas_code::DefinitionKind::Flow {
+                        return Err(missing(
+                            "reflected external flow has an inconsistent declaration identity",
+                        ));
+                    }
+                    CheckedReflectionTarget::ExternalCallable {
+                        callable: etas_code::CallableId::declaration(identity.clone()).map_err(
+                            |_| missing("reflected external flow has an invalid callable identity"),
+                        )?,
+                        selected_spec: None,
+                    }
+                } else {
+                    CheckedReflectionTarget::Callable {
+                        declaration: *symbol,
+                    }
+                };
             (
-                CheckedReflectionTarget::Callable {
-                    declaration: *symbol,
-                },
+                target,
                 input.callable_descriptor.ok_or_else(|| {
                     missing("flow reflection is missing its typed CallableDef contract")
                 })?,

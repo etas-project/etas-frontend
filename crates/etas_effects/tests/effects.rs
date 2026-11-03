@@ -45,6 +45,9 @@ fn check_program(
     // Corruption fixtures edit raw HIR; analysis consumes a frozen revision.
     let hir = etas_hir::HirRevision::try_new(hir.clone()).unwrap();
     RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &hir,
         types,
@@ -2312,6 +2315,9 @@ tool search(q: string) -> string ![Network];
         action_row: Vec::new(),
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3828,6 +3834,9 @@ flow main() -> unit ![] {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let units = RunEffectPipeline::artifacts(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3891,6 +3900,9 @@ flow helper() -> unit {
 
     let main = flow_item(&hir, "main");
     let plan = RunEffectPipeline::plan(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3906,6 +3918,9 @@ flow helper() -> unit {
 
     assert!(plan.registry.tag_extends(CONSOLE_TAG, FILE_IO_TAG));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -3982,6 +3997,9 @@ flow main() -> unit ![Network] {
     let helper = flow_item(&hir, "helper");
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4107,6 +4125,9 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4209,6 +4230,9 @@ flow main() -> unit ![Transport] {
 
     let main = flow_item(&hir, "main");
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4349,6 +4373,9 @@ flow main() -> unit {
         }],
     };
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4416,6 +4443,9 @@ flow main() -> unit {
         },
     ];
     let missing_anchor_error = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4433,6 +4463,9 @@ flow main() -> unit {
         etas_effects::EffectPipelineError::MissingDiagnosticAnchor { .. }
     ));
     let output = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -4915,6 +4948,9 @@ flow main(path: string) -> string ![Workspace.read<_>]
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let pipeline = RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
         frozen_calls: None,
         hir: &etas_hir::HirRevision::try_new(hir.clone()).unwrap(),
         types: &types,
@@ -5102,6 +5138,206 @@ flow main() -> unit ![Error<IOError>] ~ Safe
 }
 
 #[test]
+fn trace_selector_binding_without_complete_facts_fails_closed() {
+    let source = r#"
+module app.main;
+type ReportsRoot;
+spec Region;
+spec Within<T>;
+effect Fs { action read<R>() -> unit; }
+spec Reports: trace = +Fs.read<R ~ Region + Within<ReportsRoot>>;
+flow main() -> unit ![] ~ Reports { return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(17),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+                && diagnostic
+                    .message
+                    .contains("trace selector bounds require checked summary and metadata support")
+        }),
+        "unrepresentable bounds must not become a wildcard: {:#?}",
+        output.diagnostics
+    );
+    assert!(output.facts.trace_specs.declaration_alternatives.is_empty());
+}
+
+#[test]
+fn trace_spec_expansion_limit_reports_incomplete_facts_at_source() {
+    let expression = std::iter::repeat_n("(+Gate.first | +Gate.second)", 14)
+        .collect::<Vec<_>>()
+        .join(" & ");
+    let source = format!(
+        "module app.main; effect Gate {{ action first() -> unit; action second() -> unit; }} spec Large: trace = {expression}; flow main() -> unit ![] ~ Large {{ return; }}"
+    );
+    let source_id = etas_core::SourceId(17);
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(source_id, None, source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+                && diagnostic
+                    .message
+                    .contains("trace spec alternatives exceed")
+                && diagnostic.primary.span.source == source_id
+        }),
+        "oversized trace spec must fail at its source: {:#?}",
+        output.diagnostics
+    );
+    assert!(
+        output.facts.trace_specs.declaration_alternatives.is_empty(),
+        "an oversized trace spec must not publish partial alternatives"
+    );
+}
+
+#[test]
+fn trace_before_operands_are_local_permissions_without_widening_alternatives() {
+    fn analyze(spec: &str, body: &str) -> Vec<etas_core::Diagnostic> {
+        let source = format!(
+            r#"
+module app.main;
+effect Gate {{ action check() -> unit; action send() -> unit; action extra() -> unit; }}
+spec Safe: trace = {spec};
+flow main() -> unit ![Gate.check, Gate.send, Gate.extra] ~ Safe {{ {body} }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(7),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        check_program(&hir, &types).diagnostics
+    }
+    let has_allow_violation = |diagnostics: &[etas_core::Diagnostic]| {
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecAllowViolation)
+        })
+    };
+    let valid = analyze(
+        "+Gate.extra & (Gate.check >> Gate.send)",
+        "perform Gate.check(); perform Gate.send(); perform Gate.extra();",
+    );
+    assert!(
+        !has_allow_violation(&valid),
+        "before operands must be allowed within their branch: {valid:#?}"
+    );
+    assert!(
+        valid.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            && diagnostic.message.contains("guard outcome")),
+        "an ordered request without checked guard outcome must not prove the temporal condition: {valid:#?}"
+    );
+    let wrong_order = analyze(
+        "+Gate.extra & (Gate.check >> Gate.send)",
+        "perform Gate.send(); perform Gate.check(); perform Gate.extra();",
+    );
+    assert!(
+        wrong_order.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecRequirementNotDominating)),
+        "a target before its guard remains a definite violation: {wrong_order:#?}"
+    );
+    let unrelated = analyze(
+        "Gate.check >> Gate.send",
+        "perform Gate.check(); perform Gate.send(); perform Gate.extra();",
+    );
+    assert!(
+        has_allow_violation(&unrelated),
+        "before-only spec must not allow unrelated actions: {unrelated:#?}"
+    );
+    let alternatives = analyze(
+        "(+Gate.extra & (Gate.check >> Gate.send)) | (+Gate.check & +Gate.extra)",
+        "perform Gate.check(); perform Gate.send(); perform Gate.extra();",
+    );
+    assert!(
+        !has_allow_violation(&alternatives),
+        "the first alternative's local permissions must cover all requests: {alternatives:#?}"
+    );
+    let cross_branch = analyze(
+        "(+Gate.check & +Gate.extra) | (+Gate.send & +Gate.extra)",
+        "perform Gate.check(); perform Gate.send(); perform Gate.extra();",
+    );
+    assert!(
+        has_allow_violation(&cross_branch),
+        "separate alternatives must not pool permissions: {cross_branch:#?}"
+    );
+}
+
+#[test]
+fn trace_after_spelling_requires_prior_evidence_without_requiring_target() {
+    fn analyze(spec: &str, body: &str) -> Vec<etas_core::Diagnostic> {
+        let source = format!(
+            r#"
+module app.main;
+effect Gate {{ action check() -> unit; action send() -> unit; action extra() -> unit; }}
+spec Safe: trace = {spec};
+flow main() -> unit ![Gate.check, Gate.send, Gate.extra] ~ Safe {{ {body} }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(7),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        check_program(&hir, &types).diagnostics
+    }
+
+    let spec = "+Gate.check & +Gate.send & (Gate.send << Gate.check)";
+    let without_target = analyze(spec, "perform Gate.check();");
+    assert!(
+        without_target.is_empty(),
+        "a prior action does not make the later action mandatory: {without_target:#?}"
+    );
+    let wrong_order = analyze(spec, "perform Gate.send(); perform Gate.check();");
+    assert!(
+        wrong_order.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecRequirementNotDominating)),
+        "the target before its prerequisite must fail: {wrong_order:#?}"
+    );
+    let ordered = analyze(spec, "perform Gate.check(); perform Gate.send();");
+    assert!(
+        ordered.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)),
+        "ordered requests without correlated outcomes are not proof: {ordered:#?}"
+    );
+    let implicit_permission = analyze(
+        "+Gate.extra & (Gate.send << Gate.check)",
+        "perform Gate.check();",
+    );
+    assert!(
+        implicit_permission.is_empty(),
+        "the << spelling must grant its local operand permissions: {implicit_permission:#?}"
+    );
+    let unrelated = analyze("Gate.send << Gate.check", "perform Gate.extra();");
+    assert!(
+        unrelated.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecAllowViolation)),
+        "local operand permissions must not allow unrelated actions: {unrelated:#?}"
+    );
+}
+
+#[test]
 fn inline_trace_spec_deny_rejects_requested_console_action() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
@@ -5202,6 +5438,544 @@ flow main() -> unit ![Error<IOError>] ~ Safe
                     .contains("trace spec deny clause rejects")
         }),
         "trace spec disjunction should fail when every alternative rejects the trace: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn trace_spec_specializes_known_callback_requested_actions() {
+    for (callback, denied) in [("quiet", false), ("noisy", true)] {
+        let source = format!(
+            r#"
+module app.main;
+import std.io.println;
+spec Safe: trace = -Console.stdout_write;
+flow relay(callback: () -> unit ![]) -> unit ![] {{ callback(); }}
+flow quiet() -> unit ![] {{ return; }}
+flow noisy() -> unit ![] {{ println("called")?; return; }}
+flow main() -> unit ![] ~ Safe {{ relay({callback}); }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let mut types = etas_types::check_program(&hir);
+        add_std_symbol_type_facts(&hir, &mut types);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        let output = check_program(&hir, &types);
+        if denied {
+            assert!(
+                output.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecDenied)
+                }),
+                "known noisy callback must be denied: {:#?}",
+                output.diagnostics
+            );
+        } else {
+            assert!(
+                output.diagnostics.is_empty(),
+                "known quiet callback must be accepted: {:#?}",
+                output.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn trace_spec_does_not_treat_pure_callback_as_empty_requested_actions() {
+    for constraint in ["-Console.stdout_write", "+Console.stdin_read_line"] {
+        let source = format!(
+            r#"
+module app.main;
+spec Safe: trace = {constraint};
+flow invoke(callback: () -> unit ![]) -> unit ![] ~ Safe {{ callback(); }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        let output = check_program(&hir, &types);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            }),
+            "{constraint}: callback can request handled actions: {:#?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn trace_spec_does_not_require_action_facts_for_uncalled_callback() {
+    let source = r#"
+module app.main;
+spec Safe: trace = -Console.stdout_write;
+flow invoke(callback: () -> unit ![]) -> unit ![] ~ Safe { return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+}
+
+#[test]
+fn trace_spec_does_not_ignore_open_callback_effect_row() {
+    for constraint in [
+        "-Console.stdout_write",
+        "+Console.stdout_write",
+        "Console.stdin_read_line >> Console.stdout_write",
+    ] {
+        let source = format!(
+            r#"
+module app.main;
+spec Safe: trace = {constraint};
+flow invoke<effect E>(callback: () -> unit ![E]) -> unit ![E] ~ Safe {{
+    callback();
+}}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        let output = check_program(&hir, &types);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            }),
+            "{constraint}: open callback row cannot prove the trace constraint: {:#?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn trace_spec_or_preserves_unknown_alternative_regardless_of_order() {
+    for expression in [
+        "-Gate.request<_> | -Gate.request<Restricted>",
+        "-Gate.request<Restricted> | -Gate.request<_>",
+    ] {
+        let source = format!(
+            r#"
+module app.main;
+type Restricted;
+effect Gate {{ action request<T>() -> unit; }}
+spec Safe: trace = {expression};
+flow main() -> unit ![Gate.request<_>] ~ Safe {{ perform Gate.request(); }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        let output = check_program(&hir, &types);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            }),
+            "{expression}: {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            !output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecDenied)
+            }),
+            "a possible alternative cannot be classified as a definite denial: {expression}: {:#?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn trace_spec_or_classifies_each_complete_conjunction() {
+    for (expression, accepted) in [
+        (
+            "(-Gate.request<_> & -Gate.request<Restricted>) | -Gate.request<_>",
+            false,
+        ),
+        ("-Gate.request<Restricted> | -Gate.inspect<_>", true),
+    ] {
+        let source = format!(
+            r#"
+module app.main;
+type Restricted;
+effect Gate {{ action request<T>() -> unit; action inspect<T>() -> unit; }}
+spec Safe: trace = {expression};
+flow main() -> unit ![Gate.request<_>] ~ Safe {{ perform Gate.request(); }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        let output = check_program(&hir, &types);
+        if accepted {
+            assert!(
+                output.diagnostics.is_empty(),
+                "{expression}: {:#?}",
+                output.diagnostics
+            );
+        } else {
+            assert!(
+                output.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecDenied)
+                }),
+                "both alternatives are definitely denied: {expression}: {:#?}",
+                output.diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn trace_spec_allow_reports_unknown_selector_as_incomplete() {
+    let source = r#"
+module app.main;
+type Restricted;
+effect Gate { action request<T>() -> unit; }
+spec Safe: trace = +Gate.request<Restricted>;
+flow main() -> unit ![Gate.request<_>] ~ Safe {
+    perform Gate.request();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+        }),
+        "unknown selector needs a checked proof: {:#?}",
+        output.diagnostics
+    );
+    assert!(
+        !output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecAllowViolation)
+        }),
+        "unknown selector is not a proven mismatch: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn trace_spec_allow_rejects_disjoint_nominal_selector() {
+    let source = r#"
+module app.main;
+type Restricted;
+type Public;
+effect Gate { action request<T>() -> unit; }
+spec Safe: trace = +Gate.request<Restricted>;
+flow main() -> unit ![Gate.request<Public>] ~ Safe {
+    perform Gate.request<Public>();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecAllowViolation)
+        }),
+        "disjoint nominal selector must be rejected: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn trace_spec_deny_does_not_treat_unknown_selector_as_disjoint() {
+    let source = r#"
+module app.main;
+type Restricted;
+effect Gate { action request<T>() -> unit; }
+spec Safe: trace = -Gate.request<Restricted>;
+flow main() -> unit ![Gate.request<_>] ~ Safe {
+    perform Gate.request();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+        }),
+        "an unknown selector cannot prove the deny clause is disjoint: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn trace_spec_deny_distinguishes_actions_of_the_same_effect() {
+    let source = r#"
+module app.main;
+type Restricted;
+effect Gate { action request<T>() -> unit; action inspect<T>() -> unit; }
+spec Safe: trace = -Gate.request<Restricted>;
+flow main() -> unit ![Gate.inspect<_>] ~ Safe {
+    perform Gate.inspect();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+}
+
+#[test]
+fn trace_spec_deny_distinguishes_distinct_nominal_type_selectors() {
+    let source = r#"
+module app.main;
+type Restricted;
+type Public;
+effect Gate { action request<T>() -> unit; }
+spec Safe: trace = -Gate.request<Restricted>;
+flow main() -> unit ![Gate.request<Public>] ~ Safe {
+    perform Gate.request<Public>();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+}
+
+#[test]
+fn trace_spec_conjunction_and_alternatives_preserve_original_structural_sites() {
+    let source = r#"module app.main;
+effect Gate { action a() -> unit; action b() -> unit; action c() -> unit; }
+spec Safe: trace = (+Gate.a | +Gate.b) & -Gate.c;
+flow main() -> unit ![] ~ Safe { return; }
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let conformance = output
+        .facts
+        .trace_specs
+        .conformances
+        .values()
+        .flatten()
+        .next()
+        .unwrap();
+    let paths = conformance
+        .alternatives
+        .iter()
+        .map(|alternative| {
+            alternative
+                .iter()
+                .map(|clause| clause.source_path().unwrap().to_vec())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec![vec![vec![0, 0], vec![1]], vec![vec![0, 1], vec![1]]]
+    );
+}
+
+#[test]
+fn trace_spec_structural_site_depth_exhaustion_is_diagnostic() {
+    let expression =
+        vec!["+Gate.a"; etas_package_metadata::MAX_METADATA_GRAPH_DEPTH + 2].join(" & ");
+    let source = format!(
+        "module app.main; effect Gate {{ action a() -> unit; }} spec Safe: trace = {expression}; flow main() -> unit ![] ~ Safe {{ return; }}"
+    );
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("trace spec source structure exceeds the depth limit")),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn trace_spec_loop_with_widened_order_remains_fail_closed() {
+    for body in [
+        "while ready limit Iterations(2) { perform Gate.approve(); } perform Gate.request();",
+        "while ready limit Iterations(2) { perform Gate.approve(); perform Gate.request(); }",
+    ] {
+        let source = format!(
+            r#"module app.main;
+effect Gate {{ action approve() -> unit; action request() -> unit; }}
+spec Safe: trace = Gate.approve >> Gate.request;
+flow main(ready: bool) -> unit ![Gate.approve, Gate.request] ~ Safe {{ {body} }}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let hir = lower_program(&parsed.value);
+        let types = etas_types::check_program(&hir);
+        assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+        let output = check_program(&hir, &types);
+        assert!(
+            output.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+            }),
+            "{:#?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn trace_spec_prior_action_does_not_ignore_unknown_target_selector() {
+    let source = r#"
+module app.main;
+type Restricted;
+effect Gate { action approve<T>() -> unit; action request<T>() -> unit; }
+spec Safe: trace = +Gate.request<_> & (Gate.approve<Restricted> >> Gate.request<Restricted>);
+flow main() -> unit ![Gate.request<_>] ~ Safe {
+    perform Gate.request();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+        }),
+        "an unknown target selector cannot discharge a prior-action constraint: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn trace_spec_prior_action_does_not_assume_unknown_guard_is_absent() {
+    let source = r#"
+module app.main;
+type Restricted;
+effect Gate { action approve<T>() -> unit; action request<T>() -> unit; }
+spec Safe: trace = +Gate.approve<_> & (Gate.approve<Restricted> >> Gate.request<Restricted>);
+flow main() -> unit ![Gate.approve<_>, Gate.request<Restricted>] ~ Safe {
+    perform Gate.approve();
+    perform Gate.request<Restricted>();
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
+        }),
+        "an unknown guard selector needs concrete evidence: {:#?}",
+        output.diagnostics
+    );
+    assert!(
+        !output.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == DiagnosticCode::Effect(EffectDiagnosticCode::TraceSpecRequirementNotDominating)
+        }),
+        "an unknown guard is not a known absent guard: {:#?}",
         output.diagnostics
     );
 }
@@ -6019,6 +6793,153 @@ flow main() -> unit ![Console.stdout_write, Error<i32>] {
                 .message
                 .contains("latent flow sources do not agree on the row bound to `effect E`")
         }),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn explicit_effect_binding_can_overlap_the_callback_fixed_row() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(f: () -> unit ![Console.stdout_write, E], g: () -> unit ![E]) -> unit ![Console.stdout_write, E] { f(); g(); }
+flow main() -> unit ![Console.stdout_write] {
+    both<![Console.stdout_write]>(
+        () => { perform Console.stdout_write("first"); },
+        () => { perform Console.stdout_write("second"); },
+    );
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.escaping_effects.effects.contains(&stdout));
+    assert!(summary.requested_actions.effects.contains(&stdout));
+}
+
+#[test]
+fn latent_source_cannot_violate_a_concrete_fixed_row_equation() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(f: () -> unit ![Console.stdout_write, E], g: () -> unit ![E]) -> unit ![Console.stdout_write, E] {
+    f(); g();
+}
+flow write() -> unit ![Console.stdout_write] { perform Console.stdout_write("first"); }
+flow main() -> unit ![Console.stdout_write, Error<i32>] {
+    both(write, () => { perform Error<i32>.raise(1); });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("latent flow sources do not agree on the row bound to `effect E`")),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn latent_source_can_refine_an_ambiguous_fixed_row_binding() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(f: () -> unit ![Console.stdout_write, E], g: () -> unit ![E]) -> unit ![Console.stdout_write, E] {
+    f(); g();
+}
+flow write() -> unit ![Console.stdout_write] { perform Console.stdout_write("first"); }
+flow main() -> unit ![Console.stdout_write] {
+    both(write, () => { perform Console.stdout_write("second"); });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn deferred_row_inference_subtracts_fixed_actions_from_each_callback() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(f: () -> unit ![Console.stdout_write, E], g: () -> unit ![E]) -> unit ![Console.stdout_write, E] {
+    f(); g();
+}
+flow main() -> unit ![Console.stdout_write] {
+    both(() => { perform Console.stdout_write("first"); }, () => { return; });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let summary = &output.facts.item_effects[&flow_item(&hir, "main")];
+    let stdout = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.escaping_effects.effects.contains(&stdout));
+    assert!(summary.requested_actions.effects.contains(&stdout));
+}
+
+#[test]
+fn inferred_concrete_row_does_not_skip_a_later_latent_source() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+flow both<effect E>(f: () -> unit ![E], g: () -> unit ![E]) -> unit ![E] {
+    f(); g();
+}
+flow write() -> unit ![Console.stdout_write] {
+    perform Console.stdout_write("first");
+}
+flow main() -> unit ![Console.stdout_write] {
+    both(write, () => { return; });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let mut types = etas_types::check_program(&hir);
+    add_std_symbol_type_facts(&hir, &mut types);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("latent flow sources do not agree on the row bound to `effect E`")),
         "{:?}",
         output.diagnostics
     );

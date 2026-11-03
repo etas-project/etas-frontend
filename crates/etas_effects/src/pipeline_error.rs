@@ -12,13 +12,22 @@ pub enum EffectStage {
     ValidateContracts,
     MaterializeTraceSpecs,
     AnalyzeTraceSpecs,
+    LowerResidualPlans,
+    VerifyResidualPlans,
     ValidateTraceSpecs,
     Emit,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectPipelineError {
+    InvalidSourceIdentity {
+        source: etas_core::SourceId,
+        reason: String,
+    },
     InvalidCallableFacts {
+        reason: String,
+    },
+    InvalidTraceSpecSourceSites {
         reason: String,
     },
     AnalysisLimitExceeded {
@@ -60,8 +69,15 @@ pub enum EffectPipelineError {
 impl std::fmt::Display for EffectPipelineError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidSourceIdentity { source, reason } => write!(
+                formatter,
+                "invalid effect source identity for {source:?}: {reason}"
+            ),
             Self::InvalidCallableFacts { reason } => {
                 write!(formatter, "invalid checked callable facts: {reason}")
+            }
+            Self::InvalidTraceSpecSourceSites { reason } => {
+                write!(formatter, "invalid trace spec source sites: {reason}")
             }
             Self::AnalysisLimitExceeded { resource, limit } => write!(
                 formatter,

@@ -22,6 +22,7 @@ mod outcomes;
 mod parameter_inference;
 mod request_templates;
 mod requirements;
+mod residual_bindings;
 mod returned_callable;
 mod shared;
 mod specialize;

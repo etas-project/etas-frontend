@@ -33,12 +33,7 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                     work.push(Work::Visit(part));
                 }
                 ActionTraceDomain::Event(event) => {
-                    let mut event = event.clone();
-                    event.action = mapper.effect(event.action)?;
-                    if !event.action.is_action() {
-                        return Err(mapper.invalid_structure());
-                    }
-                    values.push(ActionTraceDomain::Event(event));
+                    values.push(mapper.event(event)?);
                 }
                 ActionTraceDomain::UnknownOrder(actions) => {
                     values.push(ActionTraceDomain::UnknownOrder(

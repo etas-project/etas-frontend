@@ -409,6 +409,16 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                     );
                     continue;
                 }
+                crate::CheckedSpecRef::Canonical(spec) => {
+                    ctx.signature_facts.canonical_specs.impls.push(
+                        crate::facts::specs::CanonicalSpecImplFact {
+                            self_type,
+                            spec,
+                            args,
+                        },
+                    );
+                    continue;
+                }
             };
             ctx.signature_facts.spec_impls.push(SpecImplFact {
                 self_type,
@@ -458,6 +468,16 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                     );
                     continue;
                 }
+                crate::CheckedSpecRef::Canonical(spec) => {
+                    ctx.signature_facts.canonical_specs.impls.push(
+                        crate::facts::specs::CanonicalSpecImplFact {
+                            self_type,
+                            spec,
+                            args,
+                        },
+                    );
+                    continue;
+                }
             };
             ctx.signature_facts
                 .type_spec_satisfactions
@@ -491,18 +511,22 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 crate::ExternalTraceSpecConformanceTargetInput::Inline => {
                     ExternalTraceSpecConformanceTarget::Inline
                 }
-                crate::ExternalTraceSpecConformanceTargetInput::Named { spec, args } => {
-                    ExternalTraceSpecConformanceTarget::Named {
-                        spec: spec.clone(),
-                        args: args
-                            .iter()
-                            .map(|arg| lower_external_type(ctx, span, arg))
-                            .collect(),
-                    }
-                }
+                crate::ExternalTraceSpecConformanceTargetInput::Named {
+                    spec,
+                    definition,
+                    args,
+                } => ExternalTraceSpecConformanceTarget::Named {
+                    spec: spec.clone(),
+                    definition: definition.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| lower_external_type(ctx, span, arg))
+                        .collect(),
+                },
             };
             ctx.signature_facts.external_trace_spec_conformances.push(
                 ExternalTraceSpecConformanceFact {
+                    package: metadata.package.0,
                     item: fact.item.clone(),
                     target,
                     span: binding_span(input, metadata.package, &fact.item).unwrap_or(package_span),
@@ -588,43 +612,29 @@ fn lower_external_spec_signature(
         );
         return None;
     };
-    let methods = signature
-        .methods
-        .iter()
-        .map(|method| {
-            let signature = method.signature.as_ref().and_then(|signature| {
-                let generic_params = lower_external_callable_generic_params(
-                    ctx,
-                    span,
-                    package,
-                    &signature.path,
-                    &signature.generic_params,
-                )?;
-                Some(CallableSignature {
-                    generic_params,
-                    params: signature
-                        .params
-                        .iter()
-                        .map(|ty| lower_external_type(ctx, span, ty))
-                        .collect(),
-                    output: lower_external_type(ctx, span, &signature.output),
-                    effects: signature
-                        .effects
-                        .as_ref()
-                        .map(|row| lower_external_effect_row(ctx, span, row)),
-                    requested_actions: None,
-                })
-            });
-            SpecMethodFact {
-                identity: SpecMethodIdentity::External {
-                    package: package.0,
-                    path: method.path.clone(),
-                },
-                name: method.name.clone(),
-                signature,
-            }
+    let identity = crate::facts::specs::ExternalSpecIdentity {
+        package: package.0,
+        path: signature.path.clone(),
+    };
+    let Some(checked) = ctx.signature_facts.external_specs.signatures.get(&identity) else {
+        incomplete_external_type_facts(
+            ctx,
+            span,
+            "external spec has no checked signature facts".into(),
+        );
+        return None;
+    };
+    if checked.methods.len() != signature.methods.len()
+        || checked.methods.iter().zip(&signature.methods).any(|(checked, input)| {
+            checked.name != input.name
+                || !matches!(&checked.identity, SpecMethodIdentity::External { package: owner, path } if *owner == package.0 && *path == input.path)
+                || checked.signature.is_some() != input.signature.is_some()
         })
-        .collect();
+    {
+        incomplete_external_type_facts(ctx, span, "external spec method facts do not match checked metadata".into());
+        return None;
+    }
+    let methods = checked.methods.clone();
     let mut super_specs = Vec::with_capacity(signature.super_specs.len());
     for bound in &signature.super_specs {
         let super_spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len()) {
@@ -680,6 +690,51 @@ fn lower_external_spec_signature(
         methods,
         super_specs,
     })
+}
+
+fn lower_external_spec_methods(
+    ctx: &mut TypePipelineContext<'_>,
+    package: ExternalPackageKey,
+    span: etas_core::Span,
+    signature: &crate::ExternalSpecSignatureInput,
+) -> Option<Vec<SpecMethodFact>> {
+    let mut methods = Vec::with_capacity(signature.methods.len());
+    for method in &signature.methods {
+        let callable = if let Some(signature) = &method.signature {
+            let generic_params = lower_external_callable_generic_params(
+                ctx,
+                span,
+                package,
+                &signature.path,
+                &signature.generic_params,
+            )?;
+            Some(CallableSignature {
+                generic_params,
+                params: signature
+                    .params
+                    .iter()
+                    .map(|ty| lower_external_type(ctx, span, ty))
+                    .collect(),
+                output: lower_external_type(ctx, span, &signature.output),
+                effects: signature
+                    .effects
+                    .as_ref()
+                    .map(|row| lower_external_effect_row(ctx, span, row)),
+                requested_actions: None,
+            })
+        } else {
+            None
+        };
+        methods.push(SpecMethodFact {
+            identity: SpecMethodIdentity::External {
+                package: package.0,
+                path: method.path.clone(),
+            },
+            name: method.name.clone(),
+            signature: callable,
+        });
+    }
+    Some(methods)
 }
 
 fn empty_external_trace_spec_signature(

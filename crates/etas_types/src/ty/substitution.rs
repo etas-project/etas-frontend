@@ -20,6 +20,7 @@ pub enum TypeSubstitutionError {
     MissingTypeIdentity(TypeId),
     MissingEnumLayout(TypeId),
     MissingEffectIdentity(String),
+    MissingSpecIdentity(crate::CheckedSpecRef),
     UnresolvedParameter(TypeId),
     OpenEffectRow(String),
     CyclicType(TypeId),
@@ -63,6 +64,9 @@ impl std::fmt::Display for TypeSubstitutionError {
             }
             Self::MissingEffectIdentity(name) => {
                 write!(f, "effect has no checked relocation identity: {name}")
+            }
+            Self::MissingSpecIdentity(spec) => {
+                write!(f, "spec has no checked relocation identity: {spec:?}")
             }
             Self::UnresolvedParameter(ty) => {
                 write!(f, "unresolved generic value type at {ty:?}")
@@ -142,11 +146,19 @@ impl<'a> TypeSubstitutionBudget<'a> {
         Ok(())
     }
 
-    fn node(&self) -> Result<(), TypeSubstitutionError> {
+    pub(super) fn node(&self) -> Result<(), TypeSubstitutionError> {
         self.charge("nodes", &self.nodes, 1, self.max_nodes)
     }
-    fn edges(&self, amount: usize) -> Result<(), TypeSubstitutionError> {
+    pub(super) fn edges(&self, amount: usize) -> Result<(), TypeSubstitutionError> {
         self.charge("edges", &self.edges, amount, self.max_edges)
+    }
+
+    pub fn charge_node(&self) -> Result<(), TypeSubstitutionError> {
+        self.node()
+    }
+
+    pub fn charge_edges(&self, amount: usize) -> Result<(), TypeSubstitutionError> {
+        self.edges(amount)
     }
 }
 
@@ -174,10 +186,35 @@ pub struct TypeRelocationMaterializationInput<'a> {
     pub effect_names: &'a HashMap<String, String>,
 }
 
+pub fn canonical_parameters_for_application(
+    store: &TypeStore,
+    constructor: TypeId,
+    arguments: &[TypeId],
+) -> Result<HashMap<super::CanonicalTypeParameterIdentity, TypeId>, TypeSubstitutionError> {
+    let Some(owner) = store.nominal_identity(constructor) else {
+        return Ok(HashMap::new());
+    };
+    arguments
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, ty)| {
+            let index = u32::try_from(index)
+                .map_err(|_| TypeSubstitutionError::InvalidApplication(constructor))?;
+            let identity = super::CanonicalTypeParameterIdentity::new(owner.clone(), index)
+                .map_err(|_| TypeSubstitutionError::InvalidApplication(constructor))?;
+            Ok((identity, ty))
+        })
+        .collect()
+}
+
 pub struct TypeSubstitutionEngine<'a> {
     target: SubstitutionTarget<'a>,
+    existing_lookup: Option<&'a super::TypeLookupIndex>,
+    relocation_overrides: Option<&'a HashMap<TypeId, TypeId>>,
     named: Option<&'a HashMap<String, TypeId>>,
     parameters: Option<&'a HashMap<etas_hir::SymbolId, TypeId>>,
+    canonical_parameters: Option<&'a HashMap<super::CanonicalTypeParameterIdentity, TypeId>>,
     variables: Option<&'a Substitution>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
@@ -190,6 +227,22 @@ pub struct TypeSubstitutionEngine<'a> {
 }
 
 impl<'a> TypeSubstitutionEngine<'a> {
+    /// Whether this engine leaves identities in the existing type universe
+    /// unchanged. Relocation and materialization are never identity mappings.
+    pub fn is_identity_mapping(&self) -> bool {
+        matches!(self.target, SubstitutionTarget::Existing(_))
+            && self.named.is_none_or(HashMap::is_empty)
+            && self.parameters.is_none_or(HashMap::is_empty)
+            && self.canonical_parameters.is_none_or(HashMap::is_empty)
+            && self
+                .variables
+                .is_none_or(|values| values.iter().next().is_none())
+            && self.effect_rows.as_ref().is_none_or(|rows| match rows {
+                EffectRowSubstitution::Arguments(values)
+                | EffectRowSubstitution::Equations(values) => values.is_empty(),
+            })
+    }
+
     pub fn materializing(
         interner: &'a mut TypeInterner,
         named: &'a HashMap<String, TypeId>,
@@ -197,8 +250,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
     ) -> Self {
         Self {
             target: SubstitutionTarget::Materialize(interner),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: Some(named),
             parameters: None,
+            canonical_parameters: None,
             variables,
             effect_rows: None,
             closed_named_types: None,
@@ -214,8 +270,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
     pub fn existing(store: &'a TypeStore, named: &'a HashMap<String, TypeId>) -> Self {
         Self {
             target: SubstitutionTarget::Existing(store),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: Some(named),
             parameters: None,
+            canonical_parameters: None,
             variables: None,
             effect_rows: None,
             closed_named_types: None,
@@ -226,6 +285,17 @@ impl<'a> TypeSubstitutionEngine<'a> {
             budget: None,
             control: None,
         }
+    }
+
+    /// Read already-materialized types using an index built for this store.
+    pub fn existing_indexed(
+        store: &'a TypeStore,
+        lookup: &'a super::TypeLookupIndex,
+        named: &'a HashMap<String, TypeId>,
+    ) -> Self {
+        let mut engine = Self::existing(store, named);
+        engine.existing_lookup = Some(lookup);
+        engine
     }
 
     pub fn existing_with_variables(
@@ -286,8 +356,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
     pub fn relocating(input: TypeRelocationInput<'a>) -> Self {
         Self {
             target: SubstitutionTarget::Relocate(input),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: None,
             parameters: None,
+            canonical_parameters: None,
             variables: None,
             effect_rows: None,
             closed_named_types: None,
@@ -303,8 +376,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
     pub fn relocating_materialized(input: TypeRelocationMaterializationInput<'a>) -> Self {
         Self {
             target: SubstitutionTarget::RelocateMaterialize(input),
+            existing_lookup: None,
+            relocation_overrides: None,
             named: None,
             parameters: None,
+            canonical_parameters: None,
             variables: None,
             effect_rows: None,
             closed_named_types: None,
@@ -324,12 +400,33 @@ impl<'a> TypeSubstitutionEngine<'a> {
         )
     }
 
+    /// Materialize checked scope-local mappings without copying the shared
+    /// declaration map.
+    pub fn relocating_materialized_with_overrides(
+        input: TypeRelocationMaterializationInput<'a>,
+        overrides: &'a HashMap<TypeId, TypeId>,
+    ) -> Self {
+        let mut engine = Self::relocating_materialized(input);
+        engine.relocation_overrides = Some(overrides);
+        engine
+    }
+
     /// Source binders are identified by symbols, not by reusable display names.
     pub fn with_source_parameters(
         mut self,
         parameters: &'a HashMap<etas_hir::SymbolId, TypeId>,
     ) -> Self {
         self.parameters = Some(parameters);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
+    pub fn with_canonical_parameters(
+        mut self,
+        parameters: &'a HashMap<super::CanonicalTypeParameterIdentity, TypeId>,
+    ) -> Self {
+        self.canonical_parameters = Some(parameters);
         self.memo.clear();
         self.memo_depths.clear();
         self
@@ -471,7 +568,9 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let mapped = match &self.target {
             SubstitutionTarget::Relocate(input) => input.declaration_types.contains_key(&ty),
             SubstitutionTarget::RelocateMaterialize(input) => {
-                input.declaration_types.contains_key(&ty)
+                self.relocation_overrides
+                    .is_some_and(|map| map.contains_key(&ty))
+                    || input.declaration_types.contains_key(&ty)
             }
             _ => false,
         };
@@ -479,7 +578,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return Ok(vec![]);
         }
         if let Some(replacement) = self
-            .replacement(&data)
+            .replacement(ty, &data)
             .filter(|replacement| *replacement != ty)
         {
             if matches!(data, Type::Named(_)) {
@@ -584,7 +683,10 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return Ok(*mapped);
         }
         if let SubstitutionTarget::RelocateMaterialize(input) = &self.target
-            && let Some(mapped) = input.declaration_types.get(&ty)
+            && let Some(mapped) = self
+                .relocation_overrides
+                .and_then(|map| map.get(&ty))
+                .or_else(|| input.declaration_types.get(&ty))
         {
             input
                 .target
@@ -594,7 +696,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return Ok(*mapped);
         }
         if let Some(replacement) = self
-            .replacement(&ty_data)
+            .replacement(ty, &ty_data)
             .filter(|replacement| *replacement != ty)
         {
             if matches!(ty_data, Type::Named(_)) {
@@ -749,6 +851,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         // unique solver variables may be normalized inside them.
         let named = self.named.take();
         let parameters = self.parameters.take();
+        let canonical_parameters = self.canonical_parameters.take();
         let rows = self.effect_rows.take();
         let memo = std::mem::take(&mut self.memo);
         let depths = std::mem::take(&mut self.memo_depths);
@@ -756,6 +859,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let result = self.substitute(ty);
         self.named = named;
         self.parameters = parameters;
+        self.canonical_parameters = canonical_parameters;
         self.effect_rows = rows;
         self.memo = memo;
         self.memo_depths = depths;
@@ -763,7 +867,18 @@ impl<'a> TypeSubstitutionEngine<'a> {
         result
     }
 
-    fn replacement(&self, ty: &Type) -> Option<TypeId> {
+    fn replacement(&self, id: TypeId, ty: &Type) -> Option<TypeId> {
+        let store = match &self.target {
+            SubstitutionTarget::Materialize(interner) => interner.store(),
+            SubstitutionTarget::Existing(store) => store,
+            SubstitutionTarget::Relocate(input) => input.source,
+            SubstitutionTarget::RelocateMaterialize(input) => input.source,
+        };
+        if let Some(identity) = store.parameter_identity(id) {
+            return self
+                .canonical_parameters
+                .and_then(|parameters| parameters.get(identity).copied());
+        }
         match ty {
             Type::Named(name) => match self.parameters {
                 Some(parameters) => name
@@ -800,10 +915,16 @@ impl<'a> TypeSubstitutionEngine<'a> {
         }
         match &mut self.target {
             SubstitutionTarget::Materialize(interner) => Ok(interner.intern(specialized)),
-            SubstitutionTarget::Existing(store) => store
-                .iter()
-                .find_map(|(id, candidate)| (candidate == &specialized).then_some(id))
-                .ok_or(TypeSubstitutionError::UnmaterializedType(specialized)),
+            SubstitutionTarget::Existing(store) => {
+                let found = if let Some(lookup) = self.existing_lookup {
+                    lookup.get(store, &specialized)
+                } else {
+                    store
+                        .iter()
+                        .find_map(|(id, candidate)| (candidate == &specialized).then_some(id))
+                };
+                found.ok_or(TypeSubstitutionError::UnmaterializedType(specialized))
+            }
             SubstitutionTarget::Relocate(input) => input
                 .target_types
                 .get(input.target, &specialized)
@@ -1383,6 +1504,33 @@ mod tests {
     }
 
     #[test]
+    fn indexed_readonly_substitution_requires_an_existing_result() {
+        let mut interner = TypeInterner::new();
+        let parameter = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
+        let boolean = interner.primitive(PrimitiveType::Bool);
+        let integer = interner.primitive(PrimitiveType::I32);
+        let template = interner.intern(Type::Option(parameter));
+        let expected = interner.intern(Type::Option(boolean));
+        let store = interner.into_store();
+        let index = super::super::TypeLookupIndex::new(&store);
+        let known = HashMap::from([("T".into(), boolean)]);
+        assert_eq!(
+            TypeSubstitutionEngine::existing_indexed(&store, &index, &known).substitute(template),
+            Ok(expected)
+        );
+        let unknown = HashMap::from([("T".into(), integer)]);
+        assert_eq!(
+            TypeSubstitutionEngine::existing_indexed(&store, &index, &unknown).substitute(template),
+            Err(TypeSubstitutionError::UnmaterializedType(Type::Option(
+                integer
+            )))
+        );
+    }
+
+    #[test]
     fn simultaneous_named_arguments_still_normalize_solver_variables() {
         let mut interner = TypeInterner::new();
         let parameter = interner.intern(Type::Named(NamedTypeRef {
@@ -1428,6 +1576,42 @@ mod tests {
                 .substitute(template),
             Ok(expected)
         );
+    }
+
+    #[test]
+    fn relocation_uses_scope_overrides_without_copying_base_declarations() {
+        let mut source = TypeStore::new();
+        let binder = source.intern(Type::Named(NamedTypeRef {
+            name: "T".into(),
+            source_parameter: None,
+        }));
+        let declaration = source.intern(Type::Named(NamedTypeRef {
+            name: "U".into(),
+            source_parameter: None,
+        }));
+        let tuple = source.intern(Type::Tuple(vec![binder, declaration]));
+        let mut target = TypeInterner::new();
+        let boolean = target.primitive(PrimitiveType::Bool);
+        let integer = target.primitive(PrimitiveType::I32);
+        let base = HashMap::from([(declaration, integer)]);
+        let scoped = HashMap::from([(binder, boolean)]);
+        let names = HashMap::new();
+        let mapped = TypeSubstitutionEngine::relocating_materialized_with_overrides(
+            super::TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &base,
+                effect_names: &names,
+            },
+            &scoped,
+        )
+        .substitute(tuple)
+        .unwrap();
+        assert_eq!(
+            target.store().get(mapped),
+            Some(&Type::Tuple(vec![boolean, integer]))
+        );
+        assert_eq!(base, HashMap::from([(declaration, integer)]));
     }
 
     #[test]

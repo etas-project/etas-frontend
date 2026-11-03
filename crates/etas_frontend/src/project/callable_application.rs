@@ -20,6 +20,7 @@ pub struct CheckedCallableApplication {
     owner: HirItemId,
     arguments: Vec<CallableGenericArg>,
     signature: CallableSignature,
+    presented_type: Option<TypeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +82,59 @@ impl CheckedCallableApplication {
     }
     pub fn signature(&self) -> &CallableSignature {
         &self.signature
+    }
+
+    pub fn presented_type(&self) -> Option<TypeId> {
+        self.presented_type
+    }
+
+    /// The interface comes from a checked reflection fact in this program;
+    /// the existing solved behavior must fit its effect bound.
+    pub(crate) fn with_checked_interface(
+        &self,
+        ty: TypeId,
+        limits: etas_code::descriptor::DescriptorLimits,
+    ) -> Result<Self, CallableApplicationError> {
+        let Some(Type::Function(interface)) = self.program.type_store.get(ty) else {
+            return Err(CallableApplicationError::InvalidBinding(
+                "checked callable interface is not a function type".into(),
+            ));
+        };
+        if self.signature.params != interface.input || self.signature.output != interface.output {
+            return Err(CallableApplicationError::InvalidBinding(
+                "checked callable interface has different parameter or result types".into(),
+            ));
+        }
+        if self.signature.effects.as_ref().map(normalized_row)
+            == interface.effects.as_ref().map(normalized_row)
+        {
+            return Ok(self.clone());
+        }
+        if let Some(row) = &interface.effects {
+            let allowed = etas_effects::validate::resolve_checked_type_row(
+                &self.program.type_store,
+                &self.program.effect_registry,
+                row,
+            )
+            .map_err(CallableApplicationError::InvalidBinding)?;
+            let behavior = self.applied_behavior(limits, None).map_err(|error| {
+                CallableApplicationError::InvalidPreparedPlan(error.to_string())
+            })?;
+            if !(etas_effects::EffectCoverage {
+                registry: &self.program.effect_registry,
+                types: &self.program.type_store,
+            })
+            .row_covers(&allowed, &behavior.summary().escaping_effects)
+            {
+                return Err(CallableApplicationError::InvalidBinding(
+                    "checked callable behavior exceeds its presented effect interface".into(),
+                ));
+            }
+        }
+        let mut result = self.clone();
+        result.signature.effects = interface.effects.clone();
+        result.presented_type = Some(ty);
+        Ok(result)
     }
 }
 
@@ -266,6 +320,82 @@ impl CheckedProgramData {
             owner,
             arguments,
             signature,
+            presented_type: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EntryPolicy, Frontend, ProjectInput, SourceInput};
+
+    #[test]
+    fn presented_interface_rejects_effects_outside_the_checked_bound() {
+        let mut input = ProjectInput::single_source(SourceInput::anonymous(
+            r#"
+module app;
+effect Audit { action ping() -> unit; }
+flow effectful<T>(value: T) -> T { perform Audit.ping(); return value; }
+flow pure(value: bool) -> bool ![] { return value; }
+flow prepare() -> unit { let p: (bool) -> bool ![] = pure; effectful<bool>(true); return; }
+"#,
+        ));
+        input.options.entry_policy = EntryPolicy::Optional;
+        let output = Frontend.check_project(input);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let checked = output.checked.unwrap();
+        let owner = checked
+            .items
+            .iter()
+            .find_map(|(item, declaration)| match declaration {
+                HirItem::Flow(flow)
+                    if checked.symbols.get(flow.symbol).unwrap().name == "effectful" =>
+                {
+                    Some(item)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let boolean = checked
+            .type_store
+            .iter()
+            .find_map(|(id, ty)| {
+                (ty == &Type::Primitive(etas_types::PrimitiveType::Bool)).then_some(id)
+            })
+            .unwrap();
+        let interface = checked
+            .type_store
+            .iter()
+            .find_map(|(id, ty)| match ty {
+                Type::Function(flow)
+                    if flow.input == [boolean]
+                        && flow.output == boolean
+                        && flow
+                            .effects
+                            .as_ref()
+                            .is_some_and(|row| row.effects.is_empty() && row.tail.is_none()) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let application = checked
+            .checked_callable_application(owner, &[("T".into(), boolean)], &[])
+            .unwrap();
+        assert!(
+            !application
+                .applied_behavior(Default::default(), None)
+                .unwrap()
+                .summary()
+                .escaping_effects
+                .is_empty()
+        );
+        assert!(
+            application
+                .with_checked_interface(interface, Default::default())
+                .is_err()
+        );
     }
 }

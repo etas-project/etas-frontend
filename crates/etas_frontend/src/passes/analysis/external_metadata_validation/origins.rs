@@ -46,9 +46,22 @@ pub(super) fn validate(
     }
     for input in &environment.external_definition_origins {
         let fail = |reason| Error::package(input.package, reason);
-        if !packages.contains_key(&input.package) || !seen.insert(input.package) {
+        let Some(package) = packages.get(&input.package) else {
             return Err(fail(
                 "definition origins have an unknown or duplicate package binding".to_owned(),
+            ));
+        };
+        if !seen.insert(input.package) {
+            return Err(fail(
+                "definition origins have an unknown or duplicate package binding".to_owned(),
+            ));
+        }
+        let expected =
+            etas_code::PackageKey::from_name_and_version(&package.name, &package.version)
+                .map_err(|error| fail(error.to_string()))?;
+        if input.origins.package != expected {
+            return Err(fail(
+                "definition package origin does not match its name and version".to_owned(),
             ));
         }
         input

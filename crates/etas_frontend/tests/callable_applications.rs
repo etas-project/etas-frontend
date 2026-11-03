@@ -70,6 +70,81 @@ fn empty_row() -> EffectRowRef {
     }
 }
 
+#[test]
+fn nongeneric_applied_behavior_preserves_checked_residual_references() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+
+    let mut checked = check("module app; flow source(value: bool) -> bool ![] { return value; }");
+    let owner = item(&checked, "source");
+    let reference = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([31; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let data = Arc::make_mut(&mut checked);
+    Arc::make_mut(&mut data.effects)
+        .item_effects
+        .get_mut(&owner)
+        .unwrap()
+        .residual_checks
+        .insert(reference.clone());
+
+    let application = checked
+        .checked_callable_application(owner, &[], &[])
+        .unwrap();
+    let behavior = application
+        .applied_behavior(DescriptorLimits::default(), None)
+        .unwrap();
+    assert_eq!(
+        behavior
+            .summary()
+            .residual_checks
+            .iter()
+            .collect::<Vec<_>>(),
+        vec![&reference]
+    );
+}
+
+#[test]
+fn generic_applied_behavior_requires_checked_residual_substitution() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+
+    let mut checked = check(
+        "module app; flow source<T>(value: T) -> T ![] { return value; }
+         flow prepare() -> bool ![] { return source(true); }",
+    );
+    let owner = item(&checked, "source");
+    let Some(etas_types::ItemSignature::Flow(prepare)) = checked
+        .types
+        .item_signatures
+        .get(&item(&checked, "prepare"))
+    else {
+        panic!("prepare signature");
+    };
+    let boolean = prepare.output;
+    let reference = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([32; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let data = Arc::make_mut(&mut checked);
+    Arc::make_mut(&mut data.effects)
+        .item_effects
+        .get_mut(&owner)
+        .unwrap()
+        .residual_checks
+        .insert(reference);
+    let application = checked
+        .checked_callable_application(owner, &[("T".into(), boolean)], &[])
+        .unwrap();
+    assert!(matches!(
+        application.applied_behavior(DescriptorLimits::default(), None),
+        Err(etas_frontend::CallableBehaviorError::Substitution(
+            etas_effects::substitution::SummarySubstitutionError::UnsupportedResidualSubstitution
+        ))
+    ));
+}
+
 const BOUND_SOURCE: &str = "module app;
     flow Worker<T, effect E>(value: T, callback: () -> unit ![E]) -> T ![E] { callback(); return value; }
     flow noop() -> unit ![] { return; }

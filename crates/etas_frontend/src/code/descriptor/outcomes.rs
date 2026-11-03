@@ -26,6 +26,11 @@ impl DefinitionDescriptorProjector<'_> {
         let Some(Some(TypeInfo::Function(owner))) = self.types.get(signature.0 as usize) else {
             return false;
         };
+        let generic_binders = owner
+            .generics
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
         let coverage = etas_effects::EffectCoverage {
             registry: self.checked.effect_registry,
             types: self.checked.type_store,
@@ -116,7 +121,7 @@ impl DefinitionDescriptorProjector<'_> {
             };
             arguments.len() == callback.parameters.len()
                 && callback.generics.is_empty()
-                && row.tail.is_none()
+                && row.tail.is_none_or(|tail| generic_binders.contains(&tail))
                 && row
                     .effects
                     .iter()
@@ -253,10 +258,33 @@ impl DefinitionDescriptorProjector<'_> {
                     },
                 )?,
             )?;
+            let template = self
+                .types
+                .get(signature.0 as usize)
+                .and_then(Option::as_ref)
+                .and_then(|ty| match ty {
+                    TypeInfo::Function(owner) => owner.parameters.get(call.position as usize),
+                    _ => None,
+                })
+                .and_then(|parameter| self.types.get(parameter.ty.0 as usize))
+                .and_then(Option::as_ref)
+                .and_then(|ty| match ty {
+                    TypeInfo::Function(callback) => callback.effects,
+                    _ => None,
+                })
+                .and_then(|row| self.rows.get(row.0 as usize))
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    ProjectionError::Invalid("parameter outcome has no checked callback row".into())
+                })?
+                .tail
+                .is_some();
             let terminal = self.reserve_trace()?;
-            self.traces[terminal.0 as usize] = Some(TraceInfo::Outcome(
-                CallableOutcomeInfo::ParameterNonReturn(call),
-            ));
+            self.traces[terminal.0 as usize] = Some(TraceInfo::Outcome(if template {
+                CallableOutcomeInfo::ParameterNonReturnTemplate(call)
+            } else {
+                CallableOutcomeInfo::ParameterNonReturn(call)
+            }));
             let branch = self.reserve_trace()?;
             self.traces[branch.0 as usize] = Some(TraceInfo::Seq(vec![prefix, terminal]));
             branches.push(branch);

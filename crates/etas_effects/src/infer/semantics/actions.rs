@@ -698,6 +698,7 @@ impl EffectSemantics<'_> {
                 }
             }
             HirEffectArg::Wildcard { .. }
+            | HirEffectArg::PatternBinding { .. }
             | HirEffectArg::String { .. }
             | HirEffectArg::Int { .. } => None,
         }

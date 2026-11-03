@@ -24,7 +24,9 @@ use crate::incremental::{
     CachedTypeBodyArtifact, CheckRequest, CheckResponse, DiagnosticSet, SourceVersion,
     artifact_meta_matches,
 };
-use crate::pipeline::{FrontendPipelineRequest, FrontendPipelineRun, run_check_pipeline};
+use crate::pipeline::{
+    FrontendPipelineRequest, FrontendPipelineRun, run_check_pipeline, run_controlled_check_pipeline,
+};
 use crate::{BODY_UNIT_KIND, ParsedSource, ProjectInput, ProjectOutput, SourceSet, UnitKind};
 
 use super::snapshot::diagnostic_sources;
@@ -113,6 +115,17 @@ where
         memory_probe: Option<super::FrontendMemoryProbe>,
     ) -> Result<CheckResponse, FrontendSessionError> {
         self.check_with_pipeline(request, memory_probe, run_check_pipeline)
+    }
+
+    pub(super) fn check_controlled_with_memory_probe(
+        &mut self,
+        request: CheckRequest,
+        memory_probe: Option<super::FrontendMemoryProbe>,
+        control: Arc<dyn etas_utils::PipelineExecutionControl>,
+    ) -> Result<CheckResponse, FrontendSessionError> {
+        self.check_with_pipeline(request, memory_probe, |request| {
+            run_controlled_check_pipeline(request, Some(control))
+        })
     }
 
     fn check_with_pipeline(

@@ -65,6 +65,15 @@ pub enum ReturnObservation {
     etas_core::RetainedSize,
 )]
 pub enum CallableReturnSource {
+    /// A checked metadata-backed reflection and its frozen callable contract.
+    ExternalFrozen {
+        reflection: HirExprId,
+    },
+    /// A checked metadata-backed callable reference at its application site.
+    ExternalReference {
+        value: HirExprId,
+        frozen: bool,
+    },
     FrozenContract {
         unit: EffectUnit,
         reference: Option<HirExprId>,
@@ -133,6 +142,11 @@ pub enum CallableAnalysisKind {
 pub enum CallableReferenceTarget {
     Source(etas_hir::HirItemId),
     StdIntrinsic(u32),
+    External {
+        callable: etas_code::CallableId,
+        frozen: bool,
+        reflection: bool,
+    },
 }
 
 #[derive(

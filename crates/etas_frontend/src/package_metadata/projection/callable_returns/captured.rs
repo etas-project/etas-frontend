@@ -46,7 +46,11 @@ impl Builder<'_, '_> {
                     normalize_generic_type(&mut ty, &projection.type_names);
                     projection.types.insert(parameter.name.clone(), ty);
                 }
-                (CallableGenericParamKind::Effect, CallableGenericValue::EffectRow(row)) => {
+                (
+                    CallableGenericParamKind::Effect,
+                    CallableGenericValue::EffectRow(row)
+                    | CallableGenericValue::EffectRowFromCall { row, .. },
+                ) => {
                     projection.rows.insert(
                         parameter.name.clone(),
                         self.projection.effect_row_metadata(

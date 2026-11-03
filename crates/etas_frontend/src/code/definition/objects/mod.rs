@@ -4,8 +4,10 @@ mod checked;
 mod diff;
 mod edit;
 mod external;
+mod external_application;
 mod methods;
 mod reflect;
+mod restore_external;
 mod source;
 mod store;
 mod view;
@@ -24,6 +26,7 @@ use etas_code::{
 use super::{FrozenDefinitionContract, FrozenDefinitionEnvironment};
 
 pub use bindings::{FrozenReflectionBindings, NativeCallableReflection, NativeSourceReflection};
+pub use external_application::CheckedExternalCallableApplication;
 pub use store::NativeDefinitionStore;
 use store::SourceReflectionKey;
 pub use view::{NativeAgentMethodView, NativeDefinitionView, NativeMethodSnapshot};
@@ -51,6 +54,7 @@ pub enum NativeDefinitionError {
     MissingRevisionContext,
     MissingSourceEnvironment,
     CandidateInputMismatch,
+    TypeRelocation(etas_types::TypeSubstitutionError),
     MissingBodySource,
     WrongDefinitionKind,
     SourceBundle(etas_code::definition::SourceBundleError),
@@ -59,7 +63,10 @@ pub enum NativeDefinitionError {
 
 impl fmt::Display for NativeDefinitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "native code definition operation failed: {self:?}")
+        match self {
+            Self::TypeRelocation(error) => write!(f, "native code type relocation failed: {error}"),
+            _ => write!(f, "native code definition operation failed: {self:?}"),
+        }
     }
 }
 impl std::error::Error for NativeDefinitionError {}
@@ -81,6 +88,20 @@ struct NativeDefinition {
     reflection_access: Option<etas_hir::HirModuleId>,
     provenance: DefinitionProvenance,
     implementation: Option<Arc<crate::code::service::CheckedCandidate>>,
+    external_application: Option<Arc<ExternalApplicationEvidence>>,
+    external_restoration: Option<Arc<ExternalRestorationReceipt>>,
+}
+
+#[derive(etas_core::RetainedSize)]
+pub(crate) struct ExternalRestorationReceipt {
+    metadata_base: Arc<etas_code::definition::FrozenDefinition<FrozenDefinitionContract>>,
+    native_environment: Arc<FrozenDefinitionEnvironment>,
+}
+
+#[derive(etas_core::RetainedSize)]
+struct ExternalApplicationEvidence {
+    application: CheckedExternalCallableApplication,
+    catalog: Arc<super::DefinitionCatalog>,
 }
 
 #[derive(Clone, etas_core::RetainedSize)]

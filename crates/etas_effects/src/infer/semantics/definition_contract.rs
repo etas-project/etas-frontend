@@ -98,7 +98,12 @@ impl EffectSemantics<'_> {
                 };
                 Some(vec![LatentSource::FrozenContract {
                     unit,
-                    reference: None,
+                    reference: self
+                        .types
+                        .facts
+                        .generic_instantiations
+                        .contains_key(&expr)
+                        .then_some(expr),
                     environment: None,
                 }])
             }
@@ -111,7 +116,9 @@ impl EffectSemantics<'_> {
                         .map(|source| freeze(source, expr))
                         .collect()
                 }),
-            CheckedReflectionTarget::ExternalCallable { .. } => None,
+            CheckedReflectionTarget::ExternalCallable { .. } => self
+                .external_reflection_metadata(expr)
+                .map(|_| vec![LatentSource::ExternalFrozen { reflection: expr }]),
         }
     }
 
@@ -157,8 +164,13 @@ fn freeze(source: LatentSource, expr: HirExprId) -> LatentSource {
             source.analysis = crate::CallableAnalysisKind::FrozenContract;
             LatentSource::Metadata(source)
         }
+        LatentSource::ExternalReference { value, .. } => LatentSource::ExternalReference {
+            value,
+            frozen: true,
+        },
         // A generic descriptor retains its symbolic parameter until application.
         source @ (LatentSource::FrozenContract { .. }
+        | LatentSource::ExternalFrozen { .. }
         | LatentSource::Parameter { .. }
         | LatentSource::Unavailable { .. }) => source,
         _ => LatentSource::Unavailable { expr },

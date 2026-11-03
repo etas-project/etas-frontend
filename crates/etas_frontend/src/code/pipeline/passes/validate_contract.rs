@@ -7,7 +7,9 @@ use super::overlay::CANDIDATE_BODY_OVERLAYS_APPLIED;
 use super::sources::FROZEN_DEFINITION_ENVIRONMENT;
 use super::target::CANDIDATE_TARGET;
 use crate::{
-    ProjectContext, code::contract::CandidateContractAnalysis, passes::artifacts::CHECKED_PROJECT,
+    ProjectContext,
+    code::contract::CandidateContractAnalysis,
+    passes::artifacts::{CHECKED_PROJECT, RESIDUAL_BACKEND_SUPPORT, VERIFIED_RESIDUAL_PLANS},
 };
 
 pub(crate) const CANDIDATE_CONTRACT_ANALYSIS: ArtifactKey =
@@ -20,6 +22,8 @@ impl Pass<ProjectContext> for ValidateCandidateContractPass {
         PassDescriptor::new("ValidateCandidateContractPass", PassKind::Analysis)
             .requires(ArtifactSet::from([
                 CHECKED_PROJECT,
+                VERIFIED_RESIDUAL_PLANS,
+                RESIDUAL_BACKEND_SUPPORT,
                 FROZEN_DEFINITION_ENVIRONMENT,
                 CANDIDATE_TARGET,
                 CANDIDATE_BODY_OVERLAYS_APPLIED,
@@ -35,6 +39,11 @@ impl Pass<ProjectContext> for ValidateCandidateContractPass {
         _: &PassContext<ProjectContext>,
         _: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        if context.checked.is_some() {
+            if let Err(reason) = crate::passes::execution::validate_residual_publication(context) {
+                return PassResult::failed(reason);
+            }
+        }
         let Some(candidate) = &mut context.candidate else {
             return PassResult::failed("candidate contract has no frozen definition environment");
         };
@@ -88,6 +97,11 @@ impl Pass<ProjectContext> for ValidateCandidateContractPass {
                 Err(error) => return PassResult::failed(error.to_string()),
             },
         };
+        if let Some(checked) = &context.checked {
+            if let Err(error) = analysis.validate_residual_for(checked) {
+                return PassResult::failed(error.to_string());
+            }
+        }
         candidate.contract_analysis = Some(analysis);
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
     }
@@ -112,6 +126,8 @@ mod tests {
         assert!(
             [
                 CHECKED_PROJECT,
+                VERIFIED_RESIDUAL_PLANS,
+                RESIDUAL_BACKEND_SUPPORT,
                 FROZEN_DEFINITION_ENVIRONMENT,
                 CANDIDATE_TARGET,
                 CANDIDATE_BODY_OVERLAYS_APPLIED,

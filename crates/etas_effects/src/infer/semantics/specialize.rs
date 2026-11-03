@@ -18,6 +18,9 @@ pub(crate) enum EffectSpecializationError {
     MemoryProvenance(String),
     InvalidActionSignature(crate::ActionRef),
     InvalidDefaultHandlerAction,
+    UnsupportedResidualSubstitution,
+    ResidualSubstitution(etas_code::residual::identity::ResidualSubstitutionError),
+    ResidualIdentity(crate::ResidualIdentityError),
     InvalidCallableReturnSources,
     InvalidCallableParameterInterface,
     InvalidCallableEnvironment { reason: String },
@@ -43,6 +46,9 @@ impl std::fmt::Display for EffectSpecializationError {
             Self::InvalidDefaultHandlerAction => f.write_str(
                 "default handler specialization must preserve one closed checked action",
             ),
+            Self::UnsupportedResidualSubstitution => f.write_str("checked residual substitutions are not available"),
+            Self::ResidualSubstitution(error) => write!(f, "invalid checked residual substitution: {error:?}"),
+            Self::ResidualIdentity(reason) => write!(f, "checked residual argument identity is unavailable: {reason}"),
             Self::InvalidCallableReturnSources => f.write_str(
                 "returned callable sources require a matching checked callee parameter interface",
             ),
@@ -98,21 +104,63 @@ impl EffectSemantics<'_> {
         &self,
         state: &EffectState,
         obligations: &[etas_types::DeferredEffectRowObligation],
+        existing: &BTreeMap<String, EffectRow>,
     ) -> Result<BTreeMap<String, EffectRow>, EffectSpecializationError> {
-        let mut solved = BTreeMap::<String, EffectRow>::new();
+        let mut equations = BTreeMap::<String, Vec<(EffectRow, EffectRow)>>::new();
         for obligation in obligations {
             let source_summary =
                 self.latent_summary_for_expr(state, obligation.source, &obligation.param)?;
-            if let Some(existing) = solved.get(&obligation.param)
-                && existing != &source_summary.escaping_effects
-            {
-                return Err(
-                    EffectSpecializationError::IncompatibleLatentEffectBindings {
-                        param: obligation.param.clone(),
-                    },
-                );
+            equations
+                .entry(obligation.param.clone())
+                .or_default()
+                .push((
+                    self.row_from_type_ref(&obligation.fixed),
+                    source_summary.escaping_effects,
+                ));
+            equations
+                .entry(obligation.param.clone())
+                .or_default()
+                .extend(obligation.concrete.iter().map(|equation| {
+                    (
+                        self.row_from_type_ref(&equation.fixed),
+                        self.row_from_type_ref(&equation.actual),
+                    )
+                }));
+        }
+        let mut solved = BTreeMap::new();
+        for (param, equations) in equations {
+            let incompatible = || EffectSpecializationError::IncompatibleLatentEffectBindings {
+                param: param.clone(),
+            };
+            let known = existing.get(&param);
+            let mut result = known.cloned().unwrap_or_else(|| EffectRow {
+                effects: crate::EffectSet::new(),
+                open: equations.first().and_then(|(_, actual)| actual.open),
+            });
+            for (fixed, actual) in &equations {
+                if fixed.open.is_some()
+                    || actual.open != result.open
+                    || fixed
+                        .effects
+                        .iter()
+                        .any(|effect| !actual.effects.contains(effect))
+                {
+                    return Err(incompatible());
+                }
+                for effect in actual.effects.iter() {
+                    if known.is_none() && !fixed.effects.contains(effect) {
+                        result.effects.insert(effect.clone());
+                    }
+                }
             }
-            solved.insert(obligation.param.clone(), source_summary.escaping_effects);
+            for (fixed, actual) in &equations {
+                let mut combined = fixed.clone();
+                combined.union_assign(&result);
+                if combined != *actual {
+                    return Err(incompatible());
+                }
+            }
+            solved.insert(param, result);
         }
         Ok(solved)
     }
@@ -221,11 +269,29 @@ impl EffectSemantics<'_> {
             return Ok(summary.clone());
         }
 
-        let mut specialized = self.specialize_summary_with_bindings(
+        let residual_bindings = if !summary.residual_checks.is_empty()
+            && (!type_bindings.is_empty() || !effect_row_bindings.is_empty())
+        {
+            let EffectUnit::Item(owner) = callee else {
+                return Err(EffectSpecializationError::UnsupportedResidualSubstitution);
+            };
+            let values = self.native_creation_generics(owner, site.call, state, environment)?;
+            Some(self.native_residual_bindings(
+                owner,
+                &values,
+                &summary.residual_checks,
+                site.call,
+                environment,
+            )?)
+        } else {
+            None
+        };
+        let mut specialized = self.specialize_summary_with_residual_bindings(
             summary,
             &bindings,
             &type_bindings,
             &effect_row_bindings,
+            residual_bindings.as_ref(),
         )?;
         let param_types = params
             .iter()
@@ -335,6 +401,28 @@ impl EffectSemantics<'_> {
         type_bindings: &[(String, TypeId)],
         effect_row_bindings: &[(String, EffectRow)],
     ) -> Result<EffectSummary, EffectSpecializationError> {
+        self.specialize_summary_with_residual_bindings(
+            summary,
+            bindings,
+            type_bindings,
+            effect_row_bindings,
+            None,
+        )
+    }
+
+    fn specialize_summary_with_residual_bindings(
+        &self,
+        summary: &EffectSummary,
+        bindings: &[(String, HirExprId)],
+        type_bindings: &[(String, TypeId)],
+        effect_row_bindings: &[(String, EffectRow)],
+        residual_bindings: Option<
+            &BTreeMap<
+                etas_code::residual::identity::GenericParameterId,
+                etas_code::residual::identity::GenericArgumentIdentity,
+            >,
+        >,
+    ) -> Result<EffectSummary, EffectSpecializationError> {
         if bindings.is_empty() && type_bindings.is_empty() && effect_row_bindings.is_empty() {
             return Ok(summary.clone());
         }
@@ -345,6 +433,8 @@ impl EffectSemantics<'_> {
                 bindings,
                 type_bindings,
                 rows: effect_row_bindings,
+                residual_bindings,
+                residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names),
             },
             summary,

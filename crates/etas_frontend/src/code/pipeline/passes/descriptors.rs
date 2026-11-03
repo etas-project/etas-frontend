@@ -85,6 +85,7 @@ impl Pass<ProjectContext> for BuildDefinitionDescriptorsPass {
             &candidate.bound_body,
         ) {
             (Some(catalog), Some(application), Some(body)) => {
+                let presented_type = application.presented_type;
                 if body.owner() != application.owner || body.arguments() != application.arguments {
                     return PassResult::failed(
                         "candidate bound body does not match its application",
@@ -131,6 +132,15 @@ impl Pass<ProjectContext> for BuildDefinitionDescriptorsPass {
                 ) {
                     Ok(application) => application,
                     Err(error) => return PassResult::failed(error.to_string()),
+                };
+                let application = match presented_type {
+                    Some(interface) => {
+                        match application.with_checked_interface(interface, limits) {
+                            Ok(application) => application,
+                            Err(error) => return PassResult::failed(error.to_string()),
+                        }
+                    }
+                    None => application,
                 };
                 match crate::code::definition::FrozenDefinitionContract::capture_application(
                     catalog,

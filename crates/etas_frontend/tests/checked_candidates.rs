@@ -44,12 +44,20 @@ const PURE: &str = "module app; agent Worker() -> i32 { return 1; } flow inspect
 fn compile_without_a_prior_report_emits_a_native_checked_candidate() {
     let frozen = frozen(PURE);
     let replacement = overlay(frozen.clone(), "return 2;");
-    let expected_snapshot = replacement.fingerprint();
+    let draft_fingerprint = replacement.fingerprint();
     let expected_revision = replacement.revision().clone();
+    let repeated = replacement.clone();
     let candidate = FrontendSession::new()
         .compile_body_overlay(replacement)
         .unwrap();
-    assert_eq!(candidate.snapshot_fingerprint(), expected_snapshot);
+    let independently_compiled = FrontendSession::new()
+        .compile_body_overlay(repeated)
+        .unwrap();
+    assert_ne!(candidate.snapshot_fingerprint(), draft_fingerprint);
+    assert_eq!(
+        candidate.snapshot_fingerprint(),
+        independently_compiled.snapshot_fingerprint()
+    );
     assert_eq!(*candidate.revision(), expected_revision);
     assert_eq!(candidate.identity(), frozen.identity());
     assert_eq!(candidate.program().entry, Some(candidate.entry()));

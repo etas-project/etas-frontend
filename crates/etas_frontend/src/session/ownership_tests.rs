@@ -12,6 +12,152 @@ use crate::{
 const SOURCE: &str = "module main; flow helper(x: i32) -> i32 { return x + 1; } flow main() -> i32 { return helper(2); }";
 
 #[test]
+fn source_identity_is_replaced_and_does_not_survive_remove_and_readd() {
+    use etas_code::{CodeFingerprint, StableSourceKey, StableSourceOrigin};
+    let key = |byte| {
+        StableSourceKey::new(
+            StableSourceOrigin::Project(CodeFingerprint::from_bytes([byte; 32])),
+            &["main.es".into()],
+        )
+        .unwrap()
+    };
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(SOURCE));
+    input
+        .environment
+        .stable_source_keys
+        .push(crate::ProjectStableSourceKeyInput {
+            source: SourceId(0),
+            key: key(1),
+        });
+    let mut session = FrontendSession::new();
+    let project = session.open_project(input);
+    let mut replacement = session.projects[&project].input.environment.clone();
+    replacement.stable_source_keys[0].key = key(2);
+    session
+        .apply_changes(
+            project,
+            ProjectChangeSet {
+                revision: ProjectRevision(1),
+                source_changes: vec![],
+                dependency_overlay_changes: vec![],
+                environment_change: Some(crate::EnvironmentChange::Replace(Box::new(replacement))),
+                option_changes: vec![],
+            },
+        )
+        .unwrap();
+    let state = &session.projects[&project];
+    assert_eq!(
+        state
+            .sources
+            .to_source_bundle()
+            .stable_source_key(SourceId(0)),
+        Ok(key(2))
+    );
+    session
+        .apply_changes(
+            project,
+            ProjectChangeSet {
+                revision: ProjectRevision(2),
+                source_changes: vec![
+                    SourceChange::Remove(SourceId(0)),
+                    SourceChange::Add(SourceInput::anonymous(SOURCE)),
+                ],
+                dependency_overlay_changes: vec![],
+                environment_change: None,
+                option_changes: vec![],
+            },
+        )
+        .unwrap();
+    let state = &session.projects[&project];
+    assert_eq!(
+        state.input.environment.stable_source_key(SourceId(0)),
+        Err(crate::SourcePackageOriginError::Missing)
+    );
+    assert_eq!(
+        state
+            .sources
+            .to_source_bundle()
+            .stable_source_key(SourceId(0)),
+        Err(crate::SourcePackageOriginError::Missing)
+    );
+}
+
+#[test]
+fn overlay_source_keys_are_incremental_and_cannot_rebind_existing_sources() {
+    use etas_code::{CodeFingerprint, StableSourceKey, StableSourceOrigin};
+    let key = |byte| {
+        StableSourceKey::new(
+            StableSourceOrigin::Project(CodeFingerprint::from_bytes([byte; 32])),
+            &["main.es".into()],
+        )
+        .unwrap()
+    };
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(SOURCE));
+    input
+        .environment
+        .stable_source_keys
+        .push(crate::ProjectStableSourceKeyInput {
+            source: SourceId(0),
+            key: key(1),
+        });
+    let mut session = FrontendSession::new();
+    let project = session.open_project(input);
+    let package = crate::ExternalPackageId(7);
+    let overlay = crate::DependencyOverlayChange {
+        package,
+        import_root: "dep".into(),
+        added_sources: vec![SourceInput {
+            id: SourceId(1),
+            path: None,
+            text: "module dep;".into(),
+            kind: crate::SourceKind::DependencySourceOverlay {
+                package,
+                import_root: "dep".into(),
+            },
+        }],
+    };
+    let change = |identity| ProjectChangeSet {
+        revision: ProjectRevision(1),
+        source_changes: vec![],
+        dependency_overlay_changes: vec![overlay.clone()],
+        environment_change: Some(crate::EnvironmentChange::AddOverlaySourceKeys(vec![
+            identity,
+        ])),
+        option_changes: vec![],
+    };
+    let invalid = crate::ProjectStableSourceKeyInput {
+        source: SourceId(0),
+        key: key(2),
+    };
+    assert!(matches!(
+        session.apply_changes(project, change(invalid)),
+        Err(super::FrontendSessionError::InvalidOverlaySourceIdentity(
+            SourceId(0)
+        ))
+    ));
+    let duplicate = crate::ProjectStableSourceKeyInput {
+        source: SourceId(1),
+        key: key(1),
+    };
+    assert!(matches!(
+        session.apply_changes(project, change(duplicate)),
+        Err(super::FrontendSessionError::InvalidOverlaySourceIdentity(
+            SourceId(1)
+        ))
+    ));
+    let valid = crate::ProjectStableSourceKeyInput {
+        source: SourceId(1),
+        key: key(2),
+    };
+    session.apply_changes(project, change(valid)).unwrap();
+    let state = &session.projects[&project];
+    assert!(!state.pending_project_wide_change);
+    let sources = state.sources.to_source_bundle();
+    assert_eq!(sources.stable_source_key(SourceId(0)), Ok(key(1)));
+    assert_eq!(sources.stable_source_key(SourceId(1)), Ok(key(2)));
+}
+
+#[test]
 fn output_snapshot_and_cache_share_the_same_semantic_allocations() {
     let mut session = FrontendSession::new();
     let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(SOURCE)));

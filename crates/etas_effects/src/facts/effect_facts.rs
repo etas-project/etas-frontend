@@ -141,6 +141,7 @@ impl EffectFacts {
         let call = match trace {
             TraceInfo::ParameterCall(call)
             | TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturn(call))
+            | TraceInfo::Outcome(CallableOutcomeInfo::ParameterNonReturnTemplate(call))
                 if call_index == 0 =>
             {
                 call
@@ -253,9 +254,97 @@ mod external_scope_tests {
     etas_core::RetainedSize,
 )]
 pub struct TraceSpecFacts {
+    /// Source sites validated during this effect analysis. Consumers must
+    /// revalidate them against the retained source snapshot before use.
+    #[serde(
+        serialize_with = "serialize_clause_sites",
+        deserialize_with = "deserialize_clause_sites"
+    )]
+    pub source_clause_sites: BTreeMap<
+        etas_code::residual::identity::ClauseId,
+        etas_code::residual::identity::SourceClauseSite,
+    >,
+    /// Declaration-level OR alternatives; each inner vector is one conjunction.
+    pub declaration_alternatives:
+        HashMap<HirItemId, crate::trace_spec::TraceSpecClauseAlternatives>,
     pub items: HashMap<HirItemId, Vec<TraceSpecClauseFact>>,
     pub symbols: HashMap<SymbolId, Vec<TraceSpecClauseFact>>,
     pub conformances: HashMap<HirItemId, Vec<TraceSpecConformanceModelFact>>,
+}
+
+fn serialize_clause_sites<S>(
+    sites: &BTreeMap<
+        etas_code::residual::identity::ClauseId,
+        etas_code::residual::identity::SourceClauseSite,
+    >,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::{Error, SerializeSeq};
+    if sites.len() > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
+        return Err(S::Error::custom("trace clause site limit exceeded"));
+    }
+    let mut sequence = serializer.serialize_seq(Some(sites.len()))?;
+    for (id, site) in sites {
+        if *id != site.id() {
+            return Err(S::Error::custom(
+                "trace clause site key does not match its identity",
+            ));
+        }
+        sequence.serialize_element(site)?;
+    }
+    sequence.end()
+}
+
+fn deserialize_clause_sites<'de, D>(
+    deserializer: D,
+) -> Result<
+    BTreeMap<
+        etas_code::residual::identity::ClauseId,
+        etas_code::residual::identity::SourceClauseSite,
+    >,
+    D::Error,
+>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Sites;
+    impl<'de> serde::de::Visitor<'de> for Sites {
+        type Value = BTreeMap<
+            etas_code::residual::identity::ClauseId,
+            etas_code::residual::identity::SourceClauseSite,
+        >;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded sequence of unique trace clause sites")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            use serde::de::Error;
+            let limit = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
+            if sequence.size_hint().is_some_and(|size| size > limit) {
+                return Err(A::Error::custom("trace clause site limit exceeded"));
+            }
+            let mut sites = BTreeMap::new();
+            while let Some(site) =
+                sequence.next_element::<etas_code::residual::identity::SourceClauseSite>()?
+            {
+                if sites.len() >= limit {
+                    return Err(A::Error::custom("trace clause site limit exceeded"));
+                }
+                if sites.insert(site.id(), site).is_some() {
+                    return Err(A::Error::custom("duplicate trace clause site identity"));
+                }
+            }
+            Ok(sites)
+        }
+    }
+    deserializer.deserialize_seq(Sites)
 }
 
 /// A checked conformance's alternatives, before the legacy display projection
@@ -265,6 +354,10 @@ pub struct TraceSpecFacts {
 )]
 pub struct TraceSpecConformanceModelFact {
     pub span: Span,
+    /// Present only when the declaration and all static source bindings have
+    /// stable identities. This is not a verified residual plan.
+    #[serde(default)]
+    pub source_spec_instance: Option<etas_code::residual::identity::SourceSpecInstance>,
     pub alternatives: crate::trace_spec::TraceSpecClauseAlternatives,
 }
 
@@ -523,6 +616,9 @@ pub struct HandleApplicationFact {
     pub handled: EffectRow,
     pub produced: EffectRow,
     pub remaining: EffectRow,
+    /// Applied arm traces at their request positions, or an explicit widened
+    /// approximation. None means the handler's latent trace is unavailable.
+    pub action_trace: Option<crate::ActionTraceDomain>,
 }
 
 #[derive(

@@ -53,6 +53,20 @@ impl CheckedCallableApplication {
         limits: DescriptorLimits,
         control: Option<&dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<AppliedCallableBehavior, CallableBehaviorError> {
+        self.applied_behavior_with_residual_bindings(limits, control, None)
+    }
+
+    pub(crate) fn applied_behavior_with_residual_bindings(
+        &self,
+        limits: DescriptorLimits,
+        control: Option<&dyn etas_utils::PipelineExecutionControl>,
+        residual_bindings: Option<
+            &std::collections::BTreeMap<
+                etas_code::residual::identity::GenericParameterId,
+                etas_code::residual::identity::GenericArgumentIdentity,
+            >,
+        >,
+    ) -> Result<AppliedCallableBehavior, CallableBehaviorError> {
         let checked = self.program();
         let source = checked
             .effects
@@ -110,15 +124,33 @@ impl CheckedCallableApplication {
             .with_source_parameters(&types)
             .with_effect_arguments(&row_refs)
             .with_expansion_depth(limits.max_expansion_depth);
-        let summary = EffectSummarySubstitution::new(
+        let mut substitution = EffectSummarySubstitution::new(
             types,
             &checked.effect_registry,
             &rows,
             limits.max_nodes,
             control,
-        )
-        .apply(source)
-        .map_err(CallableBehaviorError::Substitution)?;
+        );
+        if let Some(bindings) = residual_bindings {
+            substitution = substitution.with_residual_bindings(bindings);
+        }
+        let summary = substitution
+            .apply(source)
+            .map_err(CallableBehaviorError::Substitution)?;
+        if residual_bindings.is_some()
+            && summary.residual_checks.iter().any(|reference| {
+                reference.substitutions().values().any(|argument| {
+                    matches!(argument,
+                etas_code::residual::identity::GenericArgumentIdentity::TypeParameter(_)
+                | etas_code::residual::identity::GenericArgumentIdentity::EffectRowParameter(_)
+            )
+                })
+            })
+        {
+            return Err(CallableBehaviorError::InvalidApplication(
+                "applied residual obligation retains an unbound generic parameter".into(),
+            ));
+        }
         Ok(AppliedCallableBehavior {
             application: self.clone(),
             summary: Arc::new(summary),

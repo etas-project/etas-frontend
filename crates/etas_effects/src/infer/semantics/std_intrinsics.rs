@@ -1136,29 +1136,6 @@ impl EffectSemantics<'_> {
         Some(specialized)
     }
 
-    pub(crate) fn action_effect_with_omitted_selector(&self, action: ActionRef) -> Effect {
-        let Some(signature) = self.registry.action_signature(&action) else {
-            return Effect::Action(action);
-        };
-        if signature.effect_args.is_empty() {
-            return Effect::Action(action);
-        }
-        let args = signature
-            .effect_args
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                signature
-                    .selector_defaults
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .cloned()
-                    .unwrap_or(etas_types::EffectArgRef::Wildcard)
-            })
-            .collect();
-        Effect::AppliedAction(ActionInstanceRef { action, args })
-    }
-
     pub(crate) fn type_id_for_external_effect_path(&self, path: &[String]) -> Option<TypeId> {
         if path.len() == 1 && !self.is_standard_type_name(path.first()?) {
             return None;

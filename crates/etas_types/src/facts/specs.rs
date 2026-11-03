@@ -2,6 +2,8 @@ use crate::{CallableSignature, TypeId};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecFacts {
+    #[serde(default)]
+    pub canonical: CanonicalSpecFacts,
     pub external_signatures:
         std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub external_impls: Vec<ExternalSpecImplFact>,
@@ -25,6 +27,181 @@ pub enum CheckedSpecRef {
     Source(etas_hir::SymbolId),
     Std(Vec<String>),
     External(ExternalSpecIdentity),
+    Canonical(etas_code::DefinitionKey),
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct CanonicalSpecFacts {
+    pub signatures: std::collections::HashMap<etas_code::DefinitionKey, CanonicalSpecSignatureFact>,
+    pub impls: Vec<CanonicalSpecImplFact>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct CanonicalSpecSignatureFact {
+    pub kind: SpecKind,
+    pub param_names: Vec<String>,
+    pub param_kinds: Vec<crate::CallableGenericParamKind>,
+    pub param_bounds: Vec<Vec<CheckedSpecBound>>,
+    pub super_specs: Vec<CheckedSpecBound>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct CanonicalSpecImplFact {
+    pub self_type: TypeId,
+    pub spec: etas_code::DefinitionKey,
+    pub args: Vec<TypeId>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RelocatedSpecFacts {
+    pub canonical: CanonicalSpecFacts,
+    pub std_impls: Vec<CheckedStdSpecImplFact>,
+}
+
+#[derive(Debug)]
+pub enum RelocatedSpecValidationError {
+    Invalid(&'static str),
+    Interrupted(etas_utils::PipelineInterruption),
+}
+
+impl From<&'static str> for RelocatedSpecValidationError {
+    fn from(reason: &'static str) -> Self {
+        Self::Invalid(reason)
+    }
+}
+
+impl RelocatedSpecFacts {
+    pub fn validate(
+        &self,
+        existing: &crate::TypeFacts,
+        store: &crate::TypeStore,
+        control: Option<&dyn etas_utils::PipelineExecutionControl>,
+    ) -> Result<(), RelocatedSpecValidationError> {
+        let checkpoint = || {
+            control
+                .map_or(Ok(()), |control| control.checkpoint())
+                .map_err(RelocatedSpecValidationError::Interrupted)
+        };
+        let signature = |key: &etas_code::DefinitionKey| {
+            self.canonical
+                .signatures
+                .get(key)
+                .or_else(|| existing.canonical_specs.signatures.get(key))
+        };
+        for (identity, fact) in &self.canonical.signatures {
+            checkpoint()?;
+            if identity.kind() != etas_code::DefinitionKind::Spec
+                || fact.param_names.len() != fact.param_kinds.len()
+                || fact.param_names.len() != fact.param_bounds.len()
+                || existing
+                    .canonical_specs
+                    .signatures
+                    .get(identity)
+                    .is_some_and(|old| old != fact)
+            {
+                return Err("invalid or conflicting canonical spec declaration".into());
+            }
+            for bound in fact.param_bounds.iter().flatten().chain(&fact.super_specs) {
+                checkpoint()?;
+                for ty in &bound.args {
+                    checkpoint()?;
+                    if store.get(*ty).is_none() {
+                        return Err("canonical spec bound references a missing type".into());
+                    }
+                }
+                match &bound.spec {
+                    CheckedSpecRef::Canonical(key) => {
+                        let Some(target) = signature(key) else {
+                            return Err("canonical super-spec declaration is missing".into());
+                        };
+                        if target.kind != SpecKind::TypeSpec
+                            || target.param_names.len() != bound.args.len()
+                        {
+                            return Err(
+                                "canonical super-spec has an incompatible kind or arity".into()
+                            );
+                        }
+                    }
+                    CheckedSpecRef::Std(_) => {}
+                    CheckedSpecRef::Source(_) | CheckedSpecRef::External(_) => {
+                        return Err("relocated spec contains a source-local reference".into());
+                    }
+                }
+            }
+        }
+        for implementation in &self.canonical.impls {
+            checkpoint()?;
+            let Some(declaration) = signature(&implementation.spec) else {
+                return Err("canonical implementation has no declaration".into());
+            };
+            if declaration.kind != SpecKind::TypeSpec
+                || declaration.param_names.len() != implementation.args.len()
+                || store.get(implementation.self_type).is_none()
+            {
+                return Err("canonical implementation has invalid checked types or arity".into());
+            }
+            for ty in &implementation.args {
+                checkpoint()?;
+                if store.get(*ty).is_none() {
+                    return Err(
+                        "canonical implementation has invalid checked types or arity".into(),
+                    );
+                }
+            }
+        }
+        for implementation in &self.std_impls {
+            checkpoint()?;
+            if store.get(implementation.self_type).is_none() {
+                return Err("standard spec implementation references a missing type".into());
+            }
+            for ty in &implementation.args {
+                checkpoint()?;
+                if store.get(*ty).is_none() {
+                    return Err("standard spec implementation references a missing type".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn merge_into(
+        self,
+        facts: &mut crate::TypeFacts,
+        control: Option<&dyn etas_utils::PipelineExecutionControl>,
+    ) -> Result<(), etas_utils::PipelineInterruption> {
+        let checkpoint = || control.map_or(Ok(()), |control| control.checkpoint());
+        for (identity, signature) in self.canonical.signatures {
+            checkpoint()?;
+            facts.canonical_specs.signatures.insert(identity, signature);
+        }
+        let mut canonical = std::collections::HashSet::new();
+        for item in &facts.canonical_specs.impls {
+            checkpoint()?;
+            canonical.insert((item.self_type, item.spec.clone(), item.args.clone()));
+        }
+        for item in self.canonical.impls {
+            checkpoint()?;
+            if canonical.insert((item.self_type, item.spec.clone(), item.args.clone())) {
+                facts.canonical_specs.impls.push(item);
+            }
+        }
+        let mut standard = std::collections::HashSet::new();
+        for item in &facts.std_spec_impls {
+            checkpoint()?;
+            standard.insert((item.self_type, item.spec.clone(), item.args.clone()));
+        }
+        for item in self.std_impls {
+            checkpoint()?;
+            if standard.insert((item.self_type, item.spec.clone(), item.args.clone())) {
+                facts.std_spec_impls.push(item);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(
@@ -39,6 +216,8 @@ pub struct ExternalSpecIdentity {
 pub struct ExternalSpecSignatureFact {
     pub kind: SpecKind,
     pub param_names: Vec<String>,
+    pub generic_params: Vec<crate::CallableGenericParam>,
+    pub methods: Vec<SpecMethodFact>,
     pub super_specs: Vec<CheckedSpecBound>,
 }
 
@@ -153,6 +332,7 @@ pub struct ExternalCallableSpecSatisfactionFact {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalTraceSpecConformanceFact {
+    pub package: u32,
     pub item: Vec<String>,
     pub target: ExternalTraceSpecConformanceTarget,
     pub span: etas_core::Span,
@@ -162,6 +342,7 @@ pub struct ExternalTraceSpecConformanceFact {
 pub enum ExternalTraceSpecConformanceTarget {
     Named {
         spec: Vec<String>,
+        definition: etas_code::DefinitionKey,
         args: Vec<TypeId>,
     },
     Inline,
@@ -219,4 +400,42 @@ pub struct SpecSuperBoundFact {
     pub spec_symbol: etas_hir::SymbolId,
     pub super_spec: CheckedSpecRef,
     pub args: Vec<TypeId>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn relocated_spec_validation_checks_cancellation_inside_arguments() {
+        struct CancelAfterTwo(AtomicUsize);
+        impl etas_utils::PipelineExecutionControl for CancelAfterTwo {
+            fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+                if self.0.fetch_add(1, Ordering::Relaxed) >= 2 {
+                    return Err(etas_utils::PipelineInterruption {
+                        kind: etas_utils::PipelineInterruptionKind::Cancelled,
+                        reason: "cancelled".into(),
+                    });
+                }
+                Ok(())
+            }
+        }
+        let mut store = crate::TypeStore::new();
+        let ty = store.intern(crate::Type::Primitive(crate::PrimitiveType::Bool));
+        let facts = RelocatedSpecFacts {
+            std_impls: vec![CheckedStdSpecImplFact {
+                self_type: ty,
+                spec: vec!["std".into(), "S".into()],
+                args: vec![ty, ty, ty],
+            }],
+            ..Default::default()
+        };
+        let control = CancelAfterTwo(AtomicUsize::new(0));
+        assert!(matches!(
+            facts.validate(&crate::TypeFacts::default(), &store, Some(&control)),
+            Err(RelocatedSpecValidationError::Interrupted(_))
+        ));
+        assert_eq!(control.0.load(Ordering::Relaxed), 3);
+    }
 }

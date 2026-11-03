@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -64,13 +64,41 @@ pub(crate) fn prepare(
     seeds: &[NativeInstantiation],
     interner: Option<TypeInterner>,
 ) -> Result<PreparedInstantiations, InstantiationError> {
-    let PreparationInput {
-        hir,
-        types,
-        effects,
-        limits,
-        control,
-    } = input;
+    let targets = input
+        .effects
+        .native_call_targets
+        .iter()
+        .filter_map(|(site, targets)| {
+            let items = targets
+                .iter()
+                .filter_map(|target| match target {
+                    etas_effects::EffectUnit::Item(item) => Some(*item),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            (!items.is_empty()).then_some((*site, items))
+        })
+        .collect();
+    prepare_from_targets(
+        input.hir,
+        input.types,
+        &targets,
+        input.limits,
+        input.control,
+        seeds,
+        interner,
+    )
+}
+
+pub(crate) fn prepare_from_targets(
+    hir: &HirRevision,
+    types: &TypeOutput,
+    targets: &HashMap<HirExprId, BTreeSet<HirItemId>>,
+    limits: etas_code::descriptor::DescriptorLimits,
+    control: Option<&dyn PipelineExecutionControl>,
+    seeds: &[NativeInstantiation],
+    interner: Option<TypeInterner>,
+) -> Result<PreparedInstantiations, InstantiationError> {
     if types.facts.generic_instantiations.is_empty() && seeds.is_empty() {
         return Ok(PreparedInstantiations {
             store: types.store.clone(),
@@ -80,15 +108,7 @@ pub(crate) fn prepare(
     let index = hir.index();
     let mut calls = BTreeMap::<HirItemId, Vec<HirExprId>>::new();
     for call in types.facts.generic_instantiations.keys() {
-        if !effects
-            .native_call_targets
-            .get(call)
-            .is_some_and(|targets| {
-                targets
-                    .iter()
-                    .any(|target| matches!(target, etas_effects::EffectUnit::Item(_)))
-            })
-        {
+        if targets.get(call).is_none_or(BTreeSet::is_empty) {
             continue;
         }
         let owner = index
@@ -221,10 +241,7 @@ pub(crate) fn prepare(
             }
             for call in calls.get(&instance.owner).into_iter().flatten() {
                 let fact = &types.facts.generic_instantiations[call];
-                for target in effects.native_call_targets.get(call).into_iter().flatten() {
-                    let etas_effects::EffectUnit::Item(item) = target else {
-                        continue;
-                    };
+                for item in targets.get(call).into_iter().flatten() {
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
                     let arguments = bind_call(&mut substitution, target_signature, fact)?;

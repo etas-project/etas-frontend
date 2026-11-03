@@ -35,6 +35,9 @@ impl ContractComponent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContractRelation {
     Proven,
+    /// Exact, supported dynamic obligations; valid only for ResidualChecks.
+    /// Native installation is still required before publishing a callable.
+    Guarded(std::collections::BTreeSet<etas_code::residual::identity::ResidualObligationRef>),
     Rejected(ContractRejection),
     Unproven(ContractUncertainty),
 }

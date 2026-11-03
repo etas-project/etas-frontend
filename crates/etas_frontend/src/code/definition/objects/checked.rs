@@ -21,7 +21,11 @@ impl NativeDefinitionStore {
         limits: DescriptorLimits,
     ) -> Result<DefinitionRef, NativeDefinitionError> {
         let original = self.resolve(definition)?;
-        if !Arc::ptr_eq(original.environment()?, candidate.frozen())
+        let matches_environment = original
+            .environment()
+            .is_ok_and(|environment| Arc::ptr_eq(environment, candidate.frozen()))
+            || candidate.matches_external_definition(self, definition);
+        if !matches_environment
             || original.identity() != candidate.identity()
             || original.revision() != candidate.revision()
         {
@@ -66,7 +70,7 @@ impl NativeDefinitionStore {
             return Err(NativeDefinitionError::CandidateInputMismatch);
         }
         let mut auxiliary = BTreeMap::new();
-        for id in original.environment()?.contract().methods() {
+        for id in candidate.frozen().contract().methods() {
             let callable = catalog.callable(id).ok_or_else(|| {
                 NativeDefinitionError::Projection(ProjectionError::MissingIdentity(
                     "checked auxiliary callable".into(),
@@ -92,7 +96,7 @@ impl NativeDefinitionStore {
         }
         self.publish(NativeDefinition {
             data,
-            environment: super::DefinitionEnvironment::Native(original.environment()?.clone()),
+            environment: super::DefinitionEnvironment::Native(candidate.frozen().clone()),
             auxiliary,
             method_snapshots: original.0.method_snapshots.clone(),
             analysis_configuration: original.0.analysis_configuration,
@@ -103,6 +107,8 @@ impl NativeDefinitionStore {
                 snapshot: candidate.snapshot_fingerprint(),
             },
             implementation: Some(Arc::new(candidate.clone())),
+            external_application: original.0.external_application.clone(),
+            external_restoration: candidate.external_restoration.clone(),
         })
         .map_err(Into::into)
     }

@@ -552,14 +552,14 @@ impl Parser<'_> {
 
     fn spec_unary(&mut self) -> SpecExpr {
         if let Some(plus) = self.cursor.eat_punct(Punct::Plus) {
-            let pattern = self.effect_ref();
+            let pattern = self.trace_effect_pattern();
             return SpecExpr::Allow {
                 span: plus.span.cover(pattern.span),
                 pattern,
             };
         }
         if let Some(minus) = self.cursor.eat_punct(Punct::Minus) {
-            let pattern = self.effect_ref();
+            let pattern = self.trace_effect_pattern();
             return SpecExpr::Deny {
                 span: minus.span.cover(pattern.span),
                 pattern,
@@ -606,7 +606,7 @@ impl Parser<'_> {
             self.expect_punct(Punct::RParen, "expected `)` after spec expression");
             return expr;
         }
-        SpecExpr::Atom(self.effect_ref())
+        SpecExpr::Atom(self.trace_effect_pattern())
     }
 
     pub(crate) fn flow_signature(&mut self) -> FlowSignature {

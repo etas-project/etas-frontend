@@ -77,6 +77,7 @@ pub(super) fn export(
             identity: header.identity.clone(),
             revision: catalog.source_revision(&frozen, &syntax)?,
             dependencies: frozen.dependency_info()?,
+            generic_environment_context: None,
         });
     }
     let mut flows = Vec::with_capacity(flow_headers.len());
@@ -89,6 +90,7 @@ pub(super) fn export(
             identity: frozen.identity().clone(),
             revision: catalog.source_revision(&frozen, &syntax)?,
             dependencies: frozen.dependency_info()?,
+            generic_environment_context: frozen.generic_environment_context(),
         });
     }
     let mut entries = Vec::new();

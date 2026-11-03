@@ -30,7 +30,7 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
         };
     }
     let lowered = match ctx.hir.types[ty].clone() {
-        HirType::Primitive { kind, .. } => ctx.interner.primitive(map_primitive(kind)),
+        HirType::Primitive { kind, .. } => ctx.interner.primitive(PrimitiveType::from_hir(kind)),
         HirType::Tuple { elems, .. } => {
             let elems = elems
                 .into_iter()
@@ -615,29 +615,4 @@ fn known_type_constructor_arity(name: &str) -> Option<usize> {
         "Prompt" | "PromptPart" => 0,
         _ => return None,
     })
-}
-
-fn map_primitive(kind: HirPrimitiveType) -> PrimitiveType {
-    match kind {
-        HirPrimitiveType::Bool => PrimitiveType::Bool,
-        HirPrimitiveType::I8 => PrimitiveType::I8,
-        HirPrimitiveType::I16 => PrimitiveType::I16,
-        HirPrimitiveType::I32 => PrimitiveType::I32,
-        HirPrimitiveType::I64 => PrimitiveType::I64,
-        HirPrimitiveType::I128 => PrimitiveType::I128,
-        HirPrimitiveType::Isize => PrimitiveType::ISize,
-        HirPrimitiveType::U8 => PrimitiveType::U8,
-        HirPrimitiveType::U16 => PrimitiveType::U16,
-        HirPrimitiveType::U32 => PrimitiveType::U32,
-        HirPrimitiveType::U64 => PrimitiveType::U64,
-        HirPrimitiveType::U128 => PrimitiveType::U128,
-        HirPrimitiveType::Usize => PrimitiveType::USize,
-        HirPrimitiveType::F32 => PrimitiveType::F32,
-        HirPrimitiveType::F64 => PrimitiveType::F64,
-        HirPrimitiveType::Char => PrimitiveType::Char,
-        HirPrimitiveType::String => PrimitiveType::String,
-        HirPrimitiveType::Bytes => PrimitiveType::Bytes,
-        HirPrimitiveType::Unit => PrimitiveType::Unit,
-        HirPrimitiveType::Never => PrimitiveType::Never,
-    }
 }

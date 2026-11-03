@@ -185,6 +185,13 @@ impl BodyEffectOutput {
             if let Some(specs) = output.facts.trace_specs.items.get(item) {
                 body.facts.trace_specs.items.insert(*item, specs.clone());
             }
+            if let Some(alternatives) = output.facts.trace_specs.declaration_alternatives.get(item)
+            {
+                body.facts
+                    .trace_specs
+                    .declaration_alternatives
+                    .insert(*item, alternatives.clone());
+            }
             if let Some(models) = output.facts.trace_specs.conformances.get(item) {
                 body.facts
                     .trace_specs

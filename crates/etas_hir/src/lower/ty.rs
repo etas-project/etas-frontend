@@ -186,6 +186,14 @@ impl LowerCtx {
         match arg {
             ast::EffectArg::Type(ty) => HirEffectArg::Type(self.lower_type(ty, scope, item_id)),
             ast::EffectArg::Path(path) => HirEffectArg::Path(self.resolve_path(path, scope, false)),
+            ast::EffectArg::PatternBinding { name, bounds, span } => HirEffectArg::PatternBinding {
+                name: name.text.clone(),
+                bounds: bounds
+                    .iter()
+                    .map(|bound| self.lower_type_param_bound(bound, scope, item_id))
+                    .collect(),
+                span: *span,
+            },
             ast::EffectArg::Wildcard { span } => HirEffectArg::Wildcard { span: *span },
             ast::EffectArg::String { value, span } => HirEffectArg::String {
                 value: value.clone(),

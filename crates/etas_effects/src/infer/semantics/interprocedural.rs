@@ -368,9 +368,63 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             for source in sources {
                 let mut summary = match self.latent_source_summary(source, site.span) {
                     Ok(summary) => summary,
-                    Err(error) => return self.incomplete_at(site.span, error.to_string(), state),
+                    Err(error) => {
+                        return self.incomplete_at(site.span, error.to_string(), state);
+                    }
                 };
-                if let LatentSource::Metadata(source) = source {
+                if let LatentSource::ExternalFrozen { reflection } = source {
+                    let Some(metadata) = self.external_reflection_metadata(reflection) else {
+                        return self.incomplete_at(
+                            site.span,
+                            "external frozen callable has no unique checked metadata",
+                            state,
+                        );
+                    };
+                    summary = match self.external_call_summary_from_metadata(
+                        metadata,
+                        &site,
+                        &mut state,
+                        Some(reflection),
+                    ) {
+                        Ok(Some(summary)) => summary,
+                        Ok(None) => {
+                            return self.incomplete_at(
+                                site.span,
+                                "external frozen callable has incomplete checked effect facts",
+                                state,
+                            );
+                        }
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
+                } else if let LatentSource::ExternalReference { value, .. } = source {
+                    let Some(metadata) = self.external_reference_metadata(value) else {
+                        return self.incomplete_at(
+                            site.span,
+                            "external callable reference has no unique checked metadata",
+                            state,
+                        );
+                    };
+                    summary = match self.external_call_summary_from_metadata(
+                        metadata,
+                        &site,
+                        &mut state,
+                        Some(value),
+                    ) {
+                        Ok(Some(summary)) => summary,
+                        Ok(None) => {
+                            return self.incomplete_at(
+                                site.span,
+                                "external callable reference has incomplete checked effect facts",
+                                state,
+                            );
+                        }
+                        Err(error) => {
+                            return self.incomplete_at(site.span, error.to_string(), state);
+                        }
+                    };
+                } else if let LatentSource::Metadata(source) = source {
                     summary = match self.metadata_value_call(source, &site, &mut state) {
                         Ok(summary) => summary,
                         Err(error) => {

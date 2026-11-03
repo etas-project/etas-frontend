@@ -111,9 +111,12 @@ fn verify_prefix(
         return Err(invalid("signature type universe has a different size"));
     }
     let prefix = TypeStore::with_base(base.clone());
-    for ((_, actual), (_, expected)) in store.iter().zip(prefix.iter()) {
+    for ((actual_id, actual), (expected_id, expected)) in store.iter().zip(prefix.iter()) {
         checkpoint(control)?;
-        if actual != expected {
+        if actual != expected
+            || store.nominal_identity(actual_id) != prefix.nominal_identity(expected_id)
+            || store.parameter_identity(actual_id) != prefix.parameter_identity(expected_id)
+        {
             return Err(invalid("signature type universe changed"));
         }
     }
@@ -132,6 +135,36 @@ mod tests {
     use etas_hir::HirProgram;
     use etas_types::{Type, ty::MemoryPlaceType};
 
+    #[test]
+    fn prepared_prefix_rejects_changed_canonical_nominal_identity() {
+        use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+        let identity = |package: &str| {
+            DefinitionKey::new(
+                PackageKey::from_name_and_version(package, "1.0.0").unwrap(),
+                vec!["app".into()],
+                vec!["Token".into()],
+                DefinitionKind::Type,
+            )
+            .unwrap()
+        };
+        let nominal = Type::Nominal(etas_types::NominalTypeRef {
+            name: "Token".into(),
+            params: vec![],
+            representation: None,
+            read_only_erased_view: false,
+        });
+        let mut original = etas_types::TypeInterner::new();
+        original
+            .intern_canonical_nominal(identity("first"), nominal.clone())
+            .unwrap();
+        let base = etas_types::ty::SharedTypeBase::new(original.into_store());
+        let mut other = etas_types::TypeInterner::new();
+        other
+            .intern_canonical_nominal(identity("second"), nominal)
+            .unwrap();
+        assert!(verify_prefix(other.store(), &base, true, None).is_err());
+    }
+
     fn input<'a>(
         hir: &'a HirRevision,
         types: &'a TypeOutput,
@@ -139,6 +172,9 @@ mod tests {
         dependencies: Option<&'a DependencyEffectMetadata>,
     ) -> EffectPipelineInput<'a> {
         EffectPipelineInput {
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
             frozen_calls: None,
             hir,
             types,

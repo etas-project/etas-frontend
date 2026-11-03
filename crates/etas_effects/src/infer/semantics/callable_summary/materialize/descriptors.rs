@@ -182,9 +182,9 @@ impl EffectSemantics<'_> {
         &self,
         reference: &CallableReturnReference,
     ) -> Result<(Vec<String>, Vec<etas_hir::SymbolId>), EffectSpecializationError> {
-        match reference.target {
+        match &reference.target {
             CallableReferenceTarget::Source(item) => {
-                let params = self.unit_params(EffectUnit::Item(item)).ok_or_else(|| {
+                let params = self.unit_params(EffectUnit::Item(*item)).ok_or_else(|| {
                     invalid("source reference has no checked parameter interface")
                 })?;
                 let names = params
@@ -205,7 +205,7 @@ impl EffectSemantics<'_> {
                     .std_callable_values
                     .get(&reference.value)
                     .ok_or_else(|| invalid("standard reference has no checked descriptor"))?;
-                if intrinsic != fact.intrinsic {
+                if *intrinsic != fact.intrinsic {
                     return Err(invalid(
                         "standard reference intrinsic identity does not match",
                     ));
@@ -225,7 +225,7 @@ impl EffectSemantics<'_> {
                 if declaration
                     .intrinsic
                     .as_ref()
-                    .is_none_or(|descriptor| descriptor.id.0 != intrinsic)
+                    .is_none_or(|descriptor| descriptor.id.0 != *intrinsic)
                 {
                     return Err(invalid(
                         "standard reference descriptor has a different intrinsic identity",
@@ -246,6 +246,28 @@ impl EffectSemantics<'_> {
                         .collect(),
                     vec![],
                 ))
+            }
+            CallableReferenceTarget::External {
+                callable,
+                reflection,
+                ..
+            } => {
+                let metadata = if *reflection {
+                    self.external_reflection_metadata(reference.value)
+                } else {
+                    self.external_reference_metadata(reference.value)
+                }
+                .ok_or_else(|| invalid("external reference has no checked metadata"))?;
+                if metadata
+                    .callable_contract
+                    .as_ref()
+                    .is_none_or(|contract| &contract.header.id != callable)
+                {
+                    return Err(invalid(
+                        "external reference has a different callable identity",
+                    ));
+                }
+                Ok((metadata.param_names.clone(), vec![]))
             }
         }
     }

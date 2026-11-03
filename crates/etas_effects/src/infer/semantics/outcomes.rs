@@ -222,6 +222,19 @@ impl EffectSemantics<'_> {
                 super::state::LatentSource::Unit(_)
                 | super::state::LatentSource::Reference { .. }
                 | super::state::LatentSource::EnumConstructor(_) => return None,
+                super::state::LatentSource::ExternalFrozen { reflection } => {
+                    self.external_reflection_metadata(*reflection)?;
+                    crate::CallableReturnSource::ExternalFrozen {
+                        reflection: *reflection,
+                    }
+                }
+                super::state::LatentSource::ExternalReference { value, frozen } => {
+                    self.external_reference_metadata(*value)?;
+                    crate::CallableReturnSource::ExternalReference {
+                        value: *value,
+                        frozen: *frozen,
+                    }
+                }
                 super::state::LatentSource::Unavailable { .. } => return None,
             };
             returned.insert(source);

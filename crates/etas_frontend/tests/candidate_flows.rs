@@ -57,6 +57,237 @@ fn definitions_from(source: &str) -> (Arc<NativeDefinitionStore>, etas_hir::HirE
 }
 
 #[test]
+fn direct_generic_reflection_rejects_an_unresolved_phantom_parameter() {
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        r#"module app;
+import std.compiler.CallableDef;
+flow normalize<T>(value: i32) -> i32 ![] { return value; }
+flow prepare() -> unit { normalize<bool>(1); normalize<string>(1); return; }
+flow inspect() -> CallableDef<(i32) -> i32 ![]> { return ^normalize; }
+"#,
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.checked.is_none());
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("generic callable value has an unresolved type argument")),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn direct_generic_reflection_rejects_a_forged_type_application() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+import std.compiler.CallableDef;
+flow normalize<T>(value: T) -> T ![] { return value; }
+flow prepare() -> unit { normalize<bool>(true); normalize<string>("value"); return; }
+flow inspect() -> CallableDef<(bool) -> bool ![]> { return ^normalize; }
+"#,
+    );
+    let checked = store.catalog().checked_program();
+    let owner = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if checked
+                    .hir
+                    .symbols
+                    .get(flow.symbol)
+                    .is_some_and(|symbol| symbol.name == "normalize") =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    for (ty, accepted) in [
+        (etas_types::PrimitiveType::Bool, true),
+        (etas_types::PrimitiveType::String, false),
+    ] {
+        let ty = checked
+            .type_store
+            .iter()
+            .find_map(|(id, value)| (value == &etas_types::Type::Primitive(ty)).then_some(id))
+            .unwrap();
+        let application = checked
+            .checked_callable_application(owner, &[("T".into(), ty)], &[])
+            .unwrap();
+        assert_eq!(
+            store
+                .reflect_callable_application(expr, &application, Default::default())
+                .is_ok(),
+            accepted,
+        );
+    }
+}
+
+#[test]
+fn generic_reflection_requires_the_matching_checked_lexical_application() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+import std.compiler.CallableDef;
+flow normalize<T>(value: T) -> T ![] { return value; }
+flow outer<U>() -> CallableDef<(U) -> U ![]> { return ^normalize; }
+flow prepare() -> unit { outer<bool>(); outer<string>(); return; }
+"#,
+    );
+    let checked = store.catalog().checked_program();
+    let item = |name: &str| {
+        checked
+            .hir
+            .items
+            .iter()
+            .find_map(|(id, item)| match item {
+                etas_hir::HirItem::Flow(flow)
+                    if checked
+                        .hir
+                        .symbols
+                        .get(flow.symbol)
+                        .is_some_and(|symbol| symbol.name == name) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let primitive = |primitive| {
+        checked
+            .type_store
+            .iter()
+            .find_map(|(id, ty)| (ty == &etas_types::Type::Primitive(primitive)).then_some(id))
+            .unwrap()
+    };
+    let boolean = primitive(etas_types::PrimitiveType::Bool);
+    let string = primitive(etas_types::PrimitiveType::String);
+    let target = checked
+        .checked_callable_application(item("normalize"), &[("T".into(), boolean)], &[])
+        .unwrap();
+    let lexical = checked
+        .checked_callable_application(item("outer"), &[("U".into(), boolean)], &[])
+        .unwrap();
+    let other = checked
+        .checked_callable_application(item("outer"), &[("U".into(), string)], &[])
+        .unwrap();
+    assert!(
+        store
+            .reflect_callable_application_in_context(
+                expr,
+                &target,
+                Some(&lexical),
+                Default::default()
+            )
+            .is_ok()
+    );
+    assert!(
+        store
+            .reflect_callable_application_in_context(
+                expr,
+                &target,
+                Some(&other),
+                Default::default()
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .reflect_callable_application_in_context(expr, &target, None, Default::default())
+            .is_err()
+    );
+}
+
+#[test]
+fn flow_candidate_with_unknown_trace_selector_is_not_accepted() {
+    for constraint in [
+        "-Gate.request<Restricted>",
+        "-Gate.request<_> | -Gate.request<Restricted>",
+    ] {
+        let (store, expr) = definitions_from(&format!(
+            r#"module app;
+type Restricted;
+effect Gate {{ action request<T>() -> unit; }}
+spec Safe: trace = {constraint};
+flow normalize() -> unit ![Gate.request<_>] ~ Safe {{ return; }}
+flow inspect() -> unit {{ let definition = ^normalize; return; }}"#,
+        ));
+        let original = store.reflect_flow(expr).unwrap();
+        let draft = store
+            .with_body(
+                &original,
+                store
+                    .syntax_operations()
+                    .parse_body("perform Gate.request(); return;")
+                    .unwrap(),
+            )
+            .unwrap();
+        let overlay = store
+            .resolve(&draft)
+            .unwrap()
+            .body_overlay(store.syntax_operations())
+            .unwrap();
+        let analysis = FrontendSession::new()
+            .analyze_body_overlay(overlay)
+            .unwrap();
+        assert!(
+            analysis.output().diagnostics.iter().any(|diagnostic| {
+                diagnostic.code
+                    == etas_core::DiagnosticCode::Effect(
+                        etas_core::EffectDiagnosticCode::IncompleteEffectFacts,
+                    )
+            }),
+            "candidate must report an unproved selector: {:?}",
+            analysis.output().diagnostics
+        );
+        assert!(analysis.into_checked_candidate(Default::default()).is_err());
+    }
+}
+
+#[test]
+fn flow_candidate_cannot_hide_callback_requests_behind_an_empty_effect_row() {
+    let (store, expr) = definitions_from(
+        r#"module app;
+spec Safe: trace = -Console.stdout_write;
+flow normalize(callback: () -> unit ![]) -> unit ![] ~ Safe { return; }
+flow inspect() -> unit { let definition = ^normalize; return; }"#,
+    );
+    let original = store.reflect_flow(expr).unwrap();
+    let draft = store
+        .with_body(
+            &original,
+            store
+                .syntax_operations()
+                .parse_body("callback(); return;")
+                .unwrap(),
+        )
+        .unwrap();
+    let overlay = store
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(store.syntax_operations())
+        .unwrap();
+    let analysis = FrontendSession::new()
+        .analyze_body_overlay(overlay)
+        .unwrap();
+    assert!(
+        analysis.output().diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::IncompleteEffectFacts,
+                )
+        }),
+        "candidate callback requests are not proven empty: {:?}",
+        analysis.output().diagnostics
+    );
+    assert!(analysis.into_checked_candidate(Default::default()).is_err());
+}
+
+#[test]
 fn narrower_flow_analysis_is_accepted_without_replacing_its_frozen_contract() {
     let (store, expr) = definitions_from(
         r#"
@@ -705,6 +936,309 @@ fn flow_candidate_rejects_output_changes_and_additional_handled_requests() {
         );
         assert!(analysis.into_checked_candidate(Default::default()).is_err());
     }
+}
+
+#[test]
+fn candidate_prepares_new_frozen_reflection_instances_without_mutating_source() {
+    candidate_prepares_new_frozen_reflection_instances(true, false);
+}
+
+#[test]
+fn candidate_prepares_unannotated_frozen_reflection_instances_without_mutating_source() {
+    candidate_prepares_new_frozen_reflection_instances(false, false);
+}
+
+#[test]
+fn candidate_prepares_unannotated_frozen_reflection_with_wider_interface() {
+    candidate_prepares_new_frozen_reflection_instances(false, true);
+}
+
+fn candidate_prepares_new_frozen_reflection_instances(
+    explicit_effects: bool,
+    wider_interface: bool,
+) {
+    use etas_types::{PrimitiveType, Type};
+
+    let source = r#"module app;
+import std.compiler.CallableDef;
+flow helper<T>(value: T) -> T ![] { return value; }
+flow normalize<U>(value: U) -> U ![] { return value; }
+flow inspect(selected: (bool) -> bool ![]) -> unit { let definition = ^selected; return; }
+flow prepare() -> unit { normalize<bool>(true); return; }
+"#;
+    let source = if explicit_effects {
+        source.to_owned()
+    } else {
+        source.replace(
+            "flow helper<T>(value: T) -> T ![]",
+            "flow helper<T>(value: T) -> T",
+        )
+    };
+    let (store, expression) = definitions_from(&source);
+    let source = store.catalog().checked_program();
+    let item = |name: &str| {
+        source
+            .items
+            .iter()
+            .find_map(|(id, item)| match item {
+                etas_hir::HirItem::Flow(flow)
+                    if source.symbols.get(flow.symbol).unwrap().name == name =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let boolean = source
+        .type_store
+        .iter()
+        .find_map(|(id, ty)| (ty == &Type::Primitive(PrimitiveType::Bool)).then_some(id))
+        .unwrap();
+    let helper = item("helper");
+    let bindings = [("T".into(), boolean)];
+    assert!(
+        source
+            .checked_callable_application(helper, &bindings, &[])
+            .is_err()
+    );
+    let selected = source
+        .checked_callable_application(item("normalize"), &[("U".into(), boolean)], &[])
+        .unwrap();
+    let original = store
+        .reflect_callable_application(expression, &selected, Default::default())
+        .unwrap();
+    let body_source = if wider_interface {
+        "let definition: CallableDef<(U) -> U ![Console.stdout_write]> = ^helper; return value;"
+    } else {
+        "let definition: CallableDef<(U) -> U ![]> = ^helper; return value;"
+    };
+    let body = store.syntax_operations().parse_body(body_source).unwrap();
+    let draft = store.with_body(&original, body).unwrap();
+    let overlay = store
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(store.syntax_operations())
+        .unwrap();
+    let candidate = FrontendSession::new()
+        .compile_body_overlay(overlay)
+        .unwrap();
+    assert!(
+        source
+            .checked_callable_application(helper, &bindings, &[])
+            .is_err()
+    );
+    let catalog = candidate.definition_catalog(Default::default()).unwrap();
+    let frozen = etas_frontend::code::definition::FrozenReflectionBindings::build(
+        store.clone(),
+        &candidate,
+        &catalog,
+    )
+    .unwrap();
+    let candidate_store = NativeDefinitionStore::new(
+        catalog,
+        store.syntax_operations().clone(),
+        Default::default(),
+    );
+    let program = candidate.program();
+    let candidate_helper = program
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if program.symbols.get(flow.symbol).unwrap().name == "helper" =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let candidate_boolean = program
+        .type_store
+        .iter()
+        .find_map(|(id, ty)| (ty == &Type::Primitive(PrimitiveType::Bool)).then_some(id))
+        .unwrap();
+    let target = program
+        .checked_callable_application(candidate_helper, &[("T".into(), candidate_boolean)], &[])
+        .unwrap();
+    let site = program
+        .checked_reflections()
+        .iter()
+        .find_map(|(expr, fact)| {
+            (program.hir.index().expr_item.get(expr) == Some(&candidate.entry())
+                && matches!(
+                    fact.target,
+                    etas_types::CheckedReflectionTarget::Callable { .. }
+                ))
+            .then_some(*expr)
+        })
+        .unwrap();
+    let (backend, definition) = frozen
+        .reflect_callable_application(&candidate_store, site, &target, None, Default::default())
+        .unwrap();
+    assert!(backend.resolve(&definition).is_ok());
+    assert!(!Arc::ptr_eq(source, backend.catalog().checked_program()));
+    assert!(
+        source
+            .checked_callable_application(helper, &bindings, &[])
+            .is_err()
+    );
+    assert!(
+        backend
+            .catalog()
+            .checked_program()
+            .checked_callable_application(helper, &bindings, &[])
+            .is_ok()
+    );
+}
+
+#[test]
+fn frozen_generic_reflection_rejects_foreign_or_mismatched_applications() {
+    use etas_frontend::code::definition::FrozenReflectionBindings;
+    use etas_types::{PrimitiveType, Type};
+
+    let (source, expression) = definitions_from(
+        r#"module app;
+import std.compiler.CallableDef;
+flow helper<T>(value: T) -> T ![] { return value; }
+flow normalize<U>(value: U) -> U ![] { return value; }
+flow inspect(selected: (bool) -> bool ![]) -> unit { let definition = ^selected; return; }
+flow prepare() -> unit { normalize<bool>(true); helper<bool>(true); helper<string>("x"); return; }
+"#,
+    );
+    let checked = source.catalog().checked_program();
+    let item = |name: &str| {
+        checked
+            .items
+            .iter()
+            .find_map(|(id, item)| match item {
+                etas_hir::HirItem::Flow(flow)
+                    if checked.symbols.get(flow.symbol).unwrap().name == name =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let boolean = checked
+        .type_store
+        .iter()
+        .find_map(|(id, ty)| (ty == &Type::Primitive(PrimitiveType::Bool)).then_some(id))
+        .unwrap();
+    let selected = checked
+        .checked_callable_application(item("normalize"), &[("U".into(), boolean)], &[])
+        .unwrap();
+    let original = source
+        .reflect_callable_application(expression, &selected, Default::default())
+        .unwrap();
+    let body = source
+        .syntax_operations()
+        .parse_body("let definition: CallableDef<(U) -> U ![]> = ^helper; return value;")
+        .unwrap();
+    let draft = source.with_body(&original, body).unwrap();
+    let overlay = source
+        .resolve(&draft)
+        .unwrap()
+        .body_overlay(source.syntax_operations())
+        .unwrap();
+    let candidate = FrontendSession::new()
+        .compile_body_overlay(overlay)
+        .unwrap();
+    let catalog = candidate.definition_catalog(Default::default()).unwrap();
+    let frozen = FrozenReflectionBindings::build(source.clone(), &candidate, &catalog).unwrap();
+    let candidate_store = NativeDefinitionStore::new(
+        catalog.clone(),
+        source.syntax_operations().clone(),
+        Default::default(),
+    );
+    let program = candidate.program();
+    let helper = program
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if program.symbols.get(flow.symbol).unwrap().name == "helper" =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let primitive = |kind| {
+        program
+            .type_store
+            .iter()
+            .find_map(|(id, ty)| (ty == &Type::Primitive(kind)).then_some(id))
+            .unwrap()
+    };
+    let boolean = primitive(PrimitiveType::Bool);
+    let string = primitive(PrimitiveType::String);
+    let target = program
+        .checked_callable_application(helper, &[("T".into(), boolean)], &[])
+        .unwrap();
+    let wrong = program
+        .checked_callable_application(helper, &[("T".into(), string)], &[])
+        .unwrap();
+    let lexical = program
+        .checked_callable_application(candidate.entry(), &[("U".into(), boolean)], &[])
+        .unwrap();
+    let expression = program
+        .checked_reflections()
+        .iter()
+        .find_map(|(expr, fact)| {
+            (program.hir.index().expr_item.get(expr) == Some(&candidate.entry())
+                && matches!(
+                    fact.target,
+                    etas_types::CheckedReflectionTarget::Callable { .. }
+                ))
+            .then_some(*expr)
+        })
+        .unwrap();
+    assert!(
+        frozen
+            .reflect_callable_application(
+                &candidate_store,
+                expression,
+                &target,
+                Some(&lexical),
+                Default::default()
+            )
+            .is_ok()
+    );
+    assert!(
+        frozen
+            .reflect_callable_application(
+                &candidate_store,
+                expression,
+                &wrong,
+                Some(&lexical),
+                Default::default()
+            )
+            .is_err()
+    );
+    assert!(
+        frozen
+            .reflect_callable_application(
+                &candidate_store,
+                expression,
+                &target,
+                None,
+                Default::default()
+            )
+            .is_ok()
+    );
+    assert!(
+        frozen
+            .reflect_callable_application(
+                &source,
+                expression,
+                &target,
+                Some(&lexical),
+                Default::default()
+            )
+            .is_err()
+    );
 }
 
 #[test]

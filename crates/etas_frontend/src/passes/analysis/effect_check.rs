@@ -1,6 +1,7 @@
 mod anchors;
 mod body_artifacts;
 mod external_metadata;
+mod residual_identity;
 
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -15,9 +16,10 @@ use self::external_metadata::{
 };
 use crate::incremental::CheckScope;
 use crate::passes::artifacts::{
-    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, PREPARED_EFFECT_REGISTRY,
-    PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS, TYPE_ENVIRONMENT, TYPE_OUTPUT,
-    VALIDATED_EXTERNAL_ENVIRONMENT, global_with_diagnostics,
+    ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, PARSED_SOURCE_SET,
+    PREPARED_EFFECT_REGISTRY, PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS, SOURCE_SET,
+    TYPE_ENVIRONMENT, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, VERIFIED_RESIDUAL_PLANS,
+    global_with_diagnostics,
 };
 use crate::{ProjectContext, UnitKind, UnitTarget};
 
@@ -185,8 +187,13 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 VALIDATED_EXTERNAL_ENVIRONMENT,
                 PROJECT_ENTRY,
                 ANALYSIS_REACHABILITY_FACTS,
+                SOURCE_SET,
+                PARSED_SOURCE_SET,
             ]))
-            .produces(global_with_diagnostics([EFFECT_OUTPUT]))
+            .produces(global_with_diagnostics([
+                EFFECT_OUTPUT,
+                VERIFIED_RESIDUAL_PLANS,
+            ]))
     }
 
     fn run(
@@ -195,6 +202,9 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        context.residual_plans = None;
+        context.residual_support = None;
+        context.residual_identities = None;
         if let Err(error) = record_reused_effect_body_artifacts(context) {
             return PassResult::failed(error);
         }
@@ -209,13 +219,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 "effect checking requires resolved imports for external metadata anchors",
             );
         };
-        let Some(environment) = context
-            .validated_external_environment
-            .as_ref()
-            .map(|validated| validated.environment())
-        else {
+        let Some(validated_environment) = context.validated_external_environment.as_ref() else {
             return PassResult::failed("effect checking requires validated external metadata");
         };
+        let environment = validated_environment.environment();
         let external_anchors = ExternalImportAnchorIndex::build(resolved_imports, environment);
         let mut external_metadata_diagnostics = Vec::new();
         let Some(prepared) = context.prepared_effect_registry.take() else {
@@ -263,11 +270,69 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                     std_registry: context.std_registry.as_ref(),
                     limits: candidate.descriptor_limits,
                     reachable_items,
+                    foreign_type_bindings: candidate
+                        .bound_application
+                        .as_ref()
+                        .map(|application| application.foreign_type_bindings.as_ref()),
                 })
             }
             None => None,
         };
+        let Some(source_set) = context.sources.as_ref() else {
+            return PassResult::failed("effect checking requires source snapshots");
+        };
+        let Some(modules) = context.modules.as_ref() else {
+            return PassResult::failed("residual identity projection requires the module index");
+        };
+        let residual_identity = residual_identity::CheckedResidualIdentities::new(
+            residual_identity::CheckedResidualIdentityInput {
+                hir: &hir.hir,
+                types,
+                std_registry: context.std_registry.as_ref(),
+                imports: resolved_imports,
+                modules,
+                sources: source_set,
+                parsed: &context.parsed_sources,
+                environment: validated_environment,
+                overlay: context
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| &candidate.overlay),
+                control: manager.execution_control(),
+                foreign_type_bindings: context
+                    .candidate
+                    .as_ref()
+                    .and_then(|candidate| candidate.bound_application.as_ref())
+                    .map(|application| application.foreign_type_bindings.as_ref()),
+                limits: context
+                    .candidate
+                    .as_ref()
+                    .map_or_else(Default::default, |candidate| candidate.descriptor_limits),
+            },
+        );
+        let mut source_snapshots = Vec::new();
+        for source in &source_set.files {
+            match crate::output::resolve_stable_source_key(
+                &source_set.stable_source_keys,
+                source.id,
+            ) {
+                Ok(key) => source_snapshots.push(etas_effects::EffectSourceSnapshot {
+                    source: source.id,
+                    key,
+                    text: &source.text,
+                }),
+                Err(crate::SourcePackageOriginError::Missing) => {}
+                Err(error) => {
+                    return PassResult::failed(format!(
+                        "invalid stable effect source identity: {error:?}"
+                    ));
+                }
+            }
+        }
         let input = etas_effects::EffectPipelineInput {
+            source_snapshots: &source_snapshots,
+            residual_identity: Some(&residual_identity),
+            trace_monitor_projector: Some(&residual_identity),
             frozen_calls: frozen_calls
                 .as_ref()
                 .map(|provider| provider as &dyn etas_effects::FrozenCallableSummaryProvider),
@@ -291,6 +356,16 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             Err(error) => return pipeline_failure(error),
         };
         let mut output = pipeline_output.effects;
+        let residual_plans = pipeline_output.trace_specs.into_residual_plans();
+        if !residual_plans.is_empty() {
+            // Concrete actions are later projected with exactly the identities
+            // that projected these plans' patterns.
+            let Some(index) = residual_identity.into_identity_index() else {
+                return PassResult::failed("verified residual plans have no identity index");
+            };
+            context.residual_identities = Some(std::sync::Arc::new(index));
+        }
+        context.residual_plans = Some(std::sync::Arc::new(residual_plans));
         let Some(entry) = context.entry.as_ref() else {
             return PassResult::failed(
                 "effect checking requires the resolved project entry artifact",
@@ -349,7 +424,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             .diagnostics
             .extend(output.diagnostics.iter().cloned());
         context.effects = Some(output.into());
-        PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(EFFECT_OUTPUT))
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::from([EFFECT_OUTPUT, VERIFIED_RESIDUAL_PLANS]),
+        )
     }
 }
 

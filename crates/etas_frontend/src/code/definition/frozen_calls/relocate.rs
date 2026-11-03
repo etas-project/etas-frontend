@@ -369,6 +369,15 @@ impl<'a> Relocation<'a> {
             CallableReferenceTarget::StdIntrinsic(intrinsic) => {
                 CallableReferenceTarget::StdIntrinsic(*intrinsic)
             }
+            CallableReferenceTarget::External {
+                callable,
+                frozen,
+                reflection,
+            } => CallableReferenceTarget::External {
+                callable: callable.clone(),
+                frozen: *frozen,
+                reflection: *reflection,
+            },
         };
         let type_bindings = reference
             .type_bindings
@@ -742,6 +751,16 @@ impl<'a> Relocation<'a> {
                                                     } else {
                                                     ReturnObservation::CallableSources(sources.iter().map(|source| {
                                                         Ok(match source {
+                                                            CallableReturnSource::ExternalFrozen { reflection } => {
+                                                                let target = *self.native_exprs.get(reflection).ok_or_else(|| invalid("returned external reflection has no checked target binding"))?;
+                                                                let original = self.original.types.reflections.get(reflection).ok_or_else(|| invalid("returned external reflection has no source fact"))?;
+                                                                let relocated = self.target.types.reflections.get(&target).ok_or_else(|| invalid("returned external reflection has no target fact"))?;
+                                                                if original.target != relocated.target {
+                                                                    return Err(invalid("returned external reflection target changed"));
+                                                                }
+                                                                CallableReturnSource::ExternalFrozen { reflection: target }
+                                                            },
+                                                            CallableReturnSource::ExternalReference { .. } => return Err(invalid("returned external reference has no checked relocation facts")),
                                                             CallableReturnSource::Captured { unit, environment } => CallableReturnSource::Captured { unit: self.captured_unit(*unit)?, environment: *environment },
                                                             CallableReturnSource::Parameter(symbol) => CallableReturnSource::Parameter(
                                                                 self.parameters.get(symbol).copied().ok_or_else(|| invalid("frozen returned parameter has no checked target identity"))?

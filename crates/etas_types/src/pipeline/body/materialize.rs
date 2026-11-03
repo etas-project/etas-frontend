@@ -331,6 +331,28 @@ fn apply_solver_substitutions(
                 &substitutions,
             )?;
         }
+        for obligation in &mut fact.deferred_effect_row_obligations {
+            obligation.fixed = crate::substitute_effect_row_params(
+                &mut ctx.interner,
+                obligation.fixed.clone(),
+                &named_substitutions,
+                &substitutions,
+            )?;
+            for equation in &mut obligation.concrete {
+                equation.fixed = crate::substitute_effect_row_params(
+                    &mut ctx.interner,
+                    equation.fixed.clone(),
+                    &named_substitutions,
+                    &substitutions,
+                )?;
+                equation.actual = crate::substitute_effect_row_params(
+                    &mut ctx.interner,
+                    equation.actual.clone(),
+                    &named_substitutions,
+                    &substitutions,
+                )?;
+            }
+        }
     }
     Ok(())
 }

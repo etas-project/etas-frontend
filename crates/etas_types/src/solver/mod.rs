@@ -567,6 +567,12 @@ impl TypeSolver {
                 );
             }
         }
+        callable_reference::validate_bindings(
+            input.store,
+            &mut report,
+            &callable_references,
+            checkpoint,
+        )?;
         checkpoint()?;
         Ok(report)
     }
@@ -697,16 +703,38 @@ fn solve_callable_constraint(
         let Some(Type::Function(flow)) = store.get(input.callee) else {
             return report;
         };
-        for (index, (actual, expected)) in input.args.iter().zip(&flow.input).enumerate() {
-            let inference = effect_row::infer_bindings_from_types(
-                store,
-                *expected,
-                *actual,
-                &report.named_substitutions,
-                &report.substitutions,
-                &effect_param_names,
-                &mut effect_row_bindings,
-            );
+        let pairs = input
+            .args
+            .iter()
+            .zip(&flow.input)
+            .map(|(actual, expected)| (*expected, *actual))
+            .collect::<Vec<_>>();
+        let explicit_rows = effect_row_bindings
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let inferences = effect_row::infer_bindings_from_type_pairs(
+            store,
+            &pairs,
+            &report.named_substitutions,
+            &report.substitutions,
+            &effect_param_names,
+            &mut effect_row_bindings,
+        );
+        let deferred_names = inferences
+            .iter()
+            .flat_map(|inference| inference.deferred.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let concrete = inferences
+            .iter()
+            .flat_map(|inference| inference.concrete.iter().cloned())
+            .collect::<Vec<_>>();
+        for name in &deferred_names {
+            if !explicit_rows.contains(name) {
+                effect_row_bindings.remove(name);
+            }
+        }
+        for (index, inference) in inferences.into_iter().enumerate() {
             if !inference.matches {
                 report.push(SolverFailure {
                     code: etas_core::TypeDiagnosticCode::TypeMismatch,
@@ -716,10 +744,7 @@ fn solve_callable_constraint(
                 });
                 break;
             }
-            for name in inference.deferred {
-                if effect_row_bindings.contains_key(&name) {
-                    continue;
-                }
+            for (name, fixed) in inference.deferred_fixed {
                 let Some(expr) = input.arg_exprs.get(index).copied().flatten() else {
                     report.push(SolverFailure {
                         code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
@@ -732,12 +757,29 @@ fn solve_callable_constraint(
                 };
                 if !deferred_effect_row_obligations.iter().any(
                     |obligation: &crate::DeferredEffectRowObligation| {
-                        obligation.param == name && obligation.source == expr
+                        obligation.param == name
+                            && obligation.source == expr
+                            && obligation.fixed == fixed
                     },
                 ) {
+                    let first = !deferred_effect_row_obligations
+                        .iter()
+                        .any(|obligation| obligation.param == name);
+                    let concrete = if first {
+                        concrete
+                            .iter()
+                            .filter_map(|(param, equation)| {
+                                (param == &name).then_some(equation.clone())
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
                     deferred_effect_row_obligations.push(crate::DeferredEffectRowObligation {
                         param: name,
                         source: expr,
+                        fixed,
+                        concrete,
                     });
                 }
             }
@@ -1315,9 +1357,7 @@ fn nominal_representation(store: &TypeStore, ty: crate::TypeId) -> Option<crate:
         if !visited.insert(current) {
             return None;
         }
-        let (representation, substitutions) = crate::nominal_representation_parts(store, current)?;
-        current =
-            crate::substitute_named_params_in_store(store, representation, &substitutions).ok()?;
+        current = crate::ty::applied_representation_in_store(store, current).ok()??;
         if crate::nominal_representation_parts(store, current).is_none() {
             return Some(current);
         }
@@ -1519,6 +1559,9 @@ fn resolve_known_substitutions(store: &TypeStore, report: &SolverReport, ty: Typ
     let mut current = resolve_substitution(store, &report.substitutions, ty);
     let mut seen = 0usize;
     while let Some(Type::Named(name)) = store.get(current) {
+        if store.parameter_identity(current).is_some() {
+            break;
+        }
         let Some(next) = report.named_substitutions.get(&name.name).copied() else {
             break;
         };

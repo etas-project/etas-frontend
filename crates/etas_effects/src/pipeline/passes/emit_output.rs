@@ -8,6 +8,10 @@ impl<'a> Pass<EffectPipelineContext<'a>> for EmitOutputPass {
             .requires(ArtifactSet::from([
                 EFFECT_REGISTRY,
                 EFFECT_UNITS,
+                TRACE_SPEC_MODELS,
+                TRACE_SPEC_ANALYSIS,
+                TRACE_STATIC_DISPOSITIONS,
+                VERIFIED_RESIDUAL_PLANS,
                 VALIDATED_TRACE_SPEC_FACTS,
             ]))
             .produces(ArtifactSet::one(EFFECT_OUTPUT))
@@ -19,6 +23,15 @@ impl<'a> Pass<EffectPipelineContext<'a>> for EmitOutputPass {
         _pass_context: &PassContext<EffectPipelineContext<'a>>,
         _manager: &mut PassManager<EffectPipelineContext<'a>>,
     ) -> PassResult {
+        if context.trace_spec_analysis.is_none() {
+            return context.fail(missing(EffectStage::Emit, "trace spec analysis"));
+        }
+        if context.trace_static_dispositions.is_none() {
+            return context.fail(missing(EffectStage::Emit, "trace static dispositions"));
+        }
+        if context.verified_residual_plans.is_none() {
+            return context.fail(missing(EffectStage::Emit, "verified residual plans"));
+        }
         let Some(registry) = context.registry.take() else {
             return context.fail(missing(EffectStage::Emit, "effect registry"));
         };
@@ -28,6 +41,10 @@ impl<'a> Pass<EffectPipelineContext<'a>> for EmitOutputPass {
         let Some(mut effects) = context.effects.take() else {
             return context.fail(missing(EffectStage::Emit, "validated effect output"));
         };
+        let Some(models) = context.trace_spec_models.take() else {
+            return context.fail(missing(EffectStage::Emit, "trace spec models"));
+        };
+        effects.facts.trace_specs.source_clause_sites = models.source_clause_sites;
         let artifacts = EffectPipelineArtifacts {
             registry: std::sync::Arc::new(registry),
             dependency_metadata: context

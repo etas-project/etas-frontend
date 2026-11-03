@@ -20,7 +20,7 @@ pub use effects::{
 pub use enums::{EnumLayoutFact, EnumVariantLayoutFact};
 pub use expressions::{
     CheckedIndexKind, CheckedSliceKind, CheckedStdCallFact, DeferredEffectRowObligation,
-    FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
+    EffectRowEquation, FieldProjectionFact, GenericInstantiationFact, TryExprTypeFact,
 };
 pub use inference::CheckedAgentInferenceFact;
 pub use reflection::{CheckedReflectionFact, CheckedReflectionTarget};
@@ -29,11 +29,12 @@ pub use signatures::{
     CallableSignature, FlowSignature, ItemSignature, ToolSignature, TopLevelLetSignature,
 };
 pub use specs::{
-    CallableSpecSatisfactionFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
+    CallableSpecSatisfactionFact, CanonicalSpecFacts, CanonicalSpecImplFact,
+    CanonicalSpecSignatureFact, CheckedSpecBound, CheckedSpecRef, CheckedStdSpecImplFact,
     ExternalCallableSpecSatisfactionFact, ExternalTraceSpecConformanceFact,
-    ExternalTraceSpecConformanceTarget, SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind,
-    SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
-    TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
+    ExternalTraceSpecConformanceTarget, RelocatedSpecFacts, SpecFacts, SpecImplFact,
+    SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature,
+    SpecSuperBoundFact, TraceSpecConformanceFact, TraceSpecConformanceTarget, TypeParamBoundFact,
     TypeSpecSatisfactionFact,
 };
 pub use symbols::{KnownStdTypes, ResourceHandleFact, SymbolTypeFact};
@@ -42,6 +43,8 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    #[serde(default)]
+    pub canonical_specs: CanonicalSpecFacts,
     pub external_specs: specs::ExternalSpecFacts,
     pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, TypeId)>,
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
@@ -136,6 +139,7 @@ impl TypeFacts {
 impl From<&TypeFacts> for SpecFacts {
     fn from(facts: &TypeFacts) -> Self {
         Self {
+            canonical: facts.canonical_specs.clone(),
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
             external_aliases: facts.external_specs.aliases.clone(),

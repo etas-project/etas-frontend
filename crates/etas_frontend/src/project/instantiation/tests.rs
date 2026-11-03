@@ -282,6 +282,11 @@ fn invocation_preparation_rejects_unmaterialized_deferred_rows() {
         .push(etas_types::DeferredEffectRowObligation {
             param: "E".into(),
             source: call,
+            fixed: etas_types::EffectRowRef {
+                effects: vec![],
+                tail: None,
+            },
+            concrete: vec![],
         });
     let result = prepare(
         PreparationInput {

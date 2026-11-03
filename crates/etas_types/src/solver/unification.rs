@@ -205,12 +205,36 @@ impl<'a> TypeUnifier<'a> {
                     (None, None) | (None, Some(_)) | (Some(_), None) => Ok(()),
                 }
             }
-            (Some(Type::Named(a)), Some(Type::Named(b))) if a == b => Ok(()),
-            (Some(Type::Nominal(a)), Some(Type::Nominal(b))) if a.name == b.name => Ok(()),
+            (Some(Type::Named(a)), Some(Type::Named(b)))
+                if match (
+                    self.store.parameter_identity(lhs),
+                    self.store.parameter_identity(rhs),
+                ) {
+                    (Some(left), Some(right)) => left == right,
+                    (None, None) => a == b,
+                    _ => false,
+                } =>
+            {
+                Ok(())
+            }
+            (Some(Type::Nominal(a)), Some(Type::Nominal(b)))
+                if match (
+                    self.store.nominal_identity(lhs),
+                    self.store.nominal_identity(rhs),
+                ) {
+                    (Some(left), Some(right)) => left == right,
+                    (None, None) => a.name == b.name,
+                    _ => false,
+                } =>
+            {
+                Ok(())
+            }
             (Some(Type::Applied { constructor, args }), Some(Type::Nominal(view)))
                 if self.read_only_erasure
                     && view.read_only_erased_view
                     && args.len() == view.params.len()
+                    && self.store.nominal_identity(TypeId(constructor.0))
+                        == self.store.nominal_identity(rhs)
                     && matches!(self.store.get(TypeId(constructor.0)), Some(Type::Nominal(declaration)) if declaration == view) =>
             {
                 Ok(())

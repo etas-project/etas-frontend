@@ -8,7 +8,7 @@ mod infer_callable_outputs;
 mod invocation_types;
 pub use definition_sources::RetainDefinitionSourcesPass;
 pub use generic_effect_rows::MaterializeGenericEffectRowsPass;
-pub use invocation_types::PrepareInvocationTypesPass;
+pub use invocation_types::{PrepareDirectInvocationTypesPass, PrepareInvocationTypesPass};
 mod annotations;
 mod loop_progress;
 mod top_level_let;

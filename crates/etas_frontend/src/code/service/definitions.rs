@@ -56,7 +56,7 @@ impl NativeDefinitionStore {
         &self,
         definition: &DefinitionRef,
         session: &mut FrontendSession,
-        dependency_sources: Vec<crate::SourceInput>,
+        dependency_sources: Vec<super::CandidateDependencySource>,
         limits: DescriptorLimits,
         control: Arc<dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<super::CandidateBodyAnalysis, NativeCompilerError> {

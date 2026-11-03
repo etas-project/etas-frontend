@@ -114,7 +114,9 @@ impl<'a> AcyclicEnumPayloads<'a> {
             .cloned()
             .zip(args.iter().copied())
             .collect();
-        let mut substitution = TypeSubstitutionEngine::materializing(interner, &bindings, None);
+        let canonical = super::canonical_parameters_for_application(interner.store(), owner, args)?;
+        let mut substitution = TypeSubstitutionEngine::materializing(interner, &bindings, None)
+            .with_canonical_parameters(&canonical);
         layout
             .variants
             .iter()

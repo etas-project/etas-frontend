@@ -6,6 +6,7 @@ pub(super) fn source_set_from_input(input: &ProjectInput) -> SourceSet {
         source_root: crate::project::source_root_for_project_input(input),
         environment_fingerprint: input.environment.canonical_environment_fingerprint(),
         external_modules_fingerprint: input.environment.canonical_external_modules_fingerprint(),
+        stable_source_keys: input.environment.stable_source_keys.clone(),
         files: input.sources.iter().map(source_file_from_input).collect(),
     }
 }

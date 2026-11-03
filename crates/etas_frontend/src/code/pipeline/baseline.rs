@@ -116,9 +116,19 @@ pub(super) fn needs_completion(overlay: &DefaultBodyOverlay) -> bool {
         .frozen()
         .contract()
         .callables()
-        .any(|(_, callable)| {
+        .any(|(id, callable)| {
             let analysis = &callable.analysis;
-            analysis.effects.requested.is_none()
+            let missing_residual_summary =
+                overlay.frozen().callable_owner(id).is_none_or(|owner| {
+                    !overlay
+                        .frozen()
+                        .checked()
+                        .effects
+                        .item_effects
+                        .contains_key(&owner)
+                });
+            missing_residual_summary
+                || analysis.effects.requested.is_none()
                 || analysis.effects.escaping.is_none()
                 || (analysis.determinism.is_none() && analysis.independent_determinism.is_none())
                 || analysis.trace.is_none()

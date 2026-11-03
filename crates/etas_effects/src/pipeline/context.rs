@@ -31,6 +31,9 @@ pub(super) struct EffectPipelineContext<'a> {
     pub(super) effects: Option<EffectOutput>,
     pub(super) trace_spec_models: Option<crate::trace_spec::TraceSpecModelStore>,
     pub(super) trace_spec_analysis: Option<crate::trace_spec::TraceSpecAnalysisOutput>,
+    pub(super) trace_static_dispositions: Option<crate::trace_spec::TraceStaticDispositions>,
+    pub(super) residual_monitor_plans: Option<crate::residual::ResidualMonitorPlans>,
+    pub(super) verified_residual_plans: Option<crate::residual::VerifiedResidualPlans>,
     pub(super) failure: Option<EffectPipelineError>,
 }
 
@@ -50,6 +53,9 @@ impl<'a> EffectPipelineContext<'a> {
             effects: None,
             trace_spec_models: None,
             trace_spec_analysis: None,
+            trace_static_dispositions: None,
+            residual_monitor_plans: None,
+            verified_residual_plans: None,
             failure: None,
         }
     }
@@ -68,6 +74,26 @@ impl<'a> EffectPipelineContext<'a> {
                     stage: EffectStage::Emit,
                     artifact: "effect output",
                 })?,
+            trace_specs: super::TraceSpecPipelineAnalysis {
+                analysis: self.trace_spec_analysis.ok_or(
+                    EffectPipelineError::MissingStageArtifact {
+                        stage: EffectStage::Emit,
+                        artifact: "trace spec analysis",
+                    },
+                )?,
+                dispositions: self.trace_static_dispositions.ok_or(
+                    EffectPipelineError::MissingStageArtifact {
+                        stage: EffectStage::Emit,
+                        artifact: "trace static dispositions",
+                    },
+                )?,
+                residual_plans: self.verified_residual_plans.ok_or(
+                    EffectPipelineError::MissingStageArtifact {
+                        stage: EffectStage::Emit,
+                        artifact: "verified residual plans",
+                    },
+                )?,
+            },
         })
     }
 

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     EffectArgRef, HandlerProducedEffects, RecordType, ResourceHandleType, Type, TypeId,
-    TypeInterner, TypeStore, TypeSubstitutionError, substitute_named_params,
-    substitute_named_params_in_store,
+    TypeInterner, TypeStore, TypeSubstitutionEngine, TypeSubstitutionError,
+    canonical_parameters_for_application,
 };
 
 pub fn applied_representation(
@@ -14,7 +14,37 @@ pub fn applied_representation(
     else {
         return Ok(None);
     };
-    substitute_named_params(interner, representation, &substitutions).map(Some)
+    let canonical = application_parameters(interner.store(), ty)?;
+    TypeSubstitutionEngine::materializing(interner, &substitutions, None)
+        .with_canonical_parameters(&canonical)
+        .substitute(representation)
+        .map(Some)
+}
+
+pub fn applied_representation_in_store(
+    store: &TypeStore,
+    ty: TypeId,
+) -> Result<Option<TypeId>, TypeSubstitutionError> {
+    let Some((representation, substitutions)) = nominal_representation_parts(store, ty) else {
+        return Ok(None);
+    };
+    let canonical = application_parameters(store, ty)?;
+    TypeSubstitutionEngine::existing(store, &substitutions)
+        .with_canonical_parameters(&canonical)
+        .substitute(representation)
+        .map(Some)
+}
+
+fn application_parameters(
+    store: &TypeStore,
+    ty: TypeId,
+) -> Result<HashMap<super::CanonicalTypeParameterIdentity, TypeId>, TypeSubstitutionError> {
+    match store.get(ty) {
+        Some(Type::Applied { constructor, args }) => {
+            canonical_parameters_for_application(store, TypeId(constructor.0), args)
+        }
+        _ => Ok(HashMap::new()),
+    }
 }
 
 pub fn nominal_representation_parts(
@@ -57,8 +87,11 @@ pub fn record_fields_with_applied_params(
             let Some(mut record) = record_fields_with_applied_params(store, representation)? else {
                 return Ok(None);
             };
+            let canonical = application_parameters(store, ty)?;
             for field in &mut record.fields {
-                field.ty = substitute_named_params_in_store(store, field.ty, &substitutions)?;
+                field.ty = TypeSubstitutionEngine::existing(store, &substitutions)
+                    .with_canonical_parameters(&canonical)
+                    .substitute(field.ty)?;
             }
             Ok(Some(record))
         }

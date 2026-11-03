@@ -218,9 +218,23 @@ pub(super) fn build(
             },
         );
     }
+    let application_program = candidate.frozen_application_program();
+    let source_applications = if Arc::ptr_eq(application_program, source.catalog.checked_program())
+    {
+        source.clone()
+    } else {
+        let origins = candidate.frozen().origins_for(application_program)?;
+        let catalog = Arc::new(DefinitionCatalog::build(
+            application_program.clone(),
+            &origins,
+            candidate.descriptor_limits,
+        )?);
+        Arc::new(source.with_catalog(catalog))
+    };
     Ok(FrozenReflectionBindings {
         program: candidate.program().clone(),
         source,
+        source_applications,
         bindings,
     })
 }

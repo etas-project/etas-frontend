@@ -39,7 +39,7 @@ pub fn collect_expr<E>(
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Reflect(reflection) => {
-            super::reflection::collect_reflection(ctx, expr, &reflection)
+            super::reflection::collect_reflection(ctx, expr, &reflection, expected)
         }
         HirExpr::Path(path) => {
             let ty = collect_path(ctx, expr, &path, expected);

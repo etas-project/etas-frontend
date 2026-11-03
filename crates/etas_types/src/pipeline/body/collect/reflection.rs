@@ -9,6 +9,7 @@ pub(super) fn collect_reflection<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: HirExprId,
     reflection: &HirReflectExpr,
+    expected: Option<TypeId>,
 ) -> TypeId {
     let (binding, members) = match &reflection.target {
         HirReflectTarget::Path(path) => {
@@ -39,14 +40,6 @@ pub(super) fn collect_reflection<E>(
             Vec::new(),
         ),
     };
-    let callable_type = match &binding {
-        ReflectionBinding::CallableDeclaration(symbol) => {
-            let fact = ctx.ctx.symbol_fact(*symbol).cloned();
-            fact.and_then(|fact| super::expr::value_type_from_fact(ctx, fact))
-        }
-        ReflectionBinding::Value { ty, .. } => Some(*ty),
-        _ => None,
-    };
     let code = ctx
         .ctx
         .signature_base
@@ -54,6 +47,51 @@ pub(super) fn collect_reflection<E>(
             &base.facts.known_std_types.code
         })
         .clone();
+    let expected_callable = expected.and_then(|ty| {
+        let crate::Type::Applied { constructor, args } = ctx.ctx.interner.store().get(ty)? else {
+            return None;
+        };
+        if code.callable_definition != Some(TypeId(constructor.0)) {
+            return None;
+        }
+        let [callable] = args.as_slice() else {
+            return None;
+        };
+        Some(*callable)
+    });
+    let callable_type = match &binding {
+        ReflectionBinding::CallableDeclaration(symbol) => {
+            let fact = ctx.ctx.symbol_fact(*symbol).cloned();
+            let generic = matches!(
+                &fact,
+                Some(SymbolTypeFact::Flow { signature }) if !signature.generic_params.is_empty()
+            );
+            if let (true, Some(expected)) = (generic, expected_callable) {
+                super::callable_reference::collect(
+                    ctx,
+                    expr,
+                    *symbol,
+                    reflection.span,
+                    Some(expected),
+                )
+                .map(|actual| {
+                    ctx.emit(TypeConstraint::Assignable {
+                        from: actual,
+                        to: expected,
+                        origin: ConstraintOrigin {
+                            span: reflection.span,
+                        },
+                        reason: crate::AssignabilityReason::Annotation,
+                    });
+                    expected
+                })
+            } else {
+                fact.and_then(|fact| super::expr::value_type_from_fact(ctx, fact))
+            }
+        }
+        ReflectionBinding::Value { ty, .. } => Some(*ty),
+        _ => None,
+    };
     let callable_descriptor = callable_type.and_then(|ty| {
         crate::lower::code::callable_definition_type(&mut ctx.ctx.interner, &code, ty)
     });

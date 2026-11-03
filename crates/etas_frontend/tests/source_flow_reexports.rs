@@ -225,6 +225,9 @@ fn source_import_effect_analysis_rejects_missing_cyclic_and_dangling_identity_fa
         }
         let hir = HirRevision::try_new(hir).unwrap();
         let result = RunEffectPipeline::run(EffectPipelineInput {
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
             frozen_calls: None,
             hir: &hir,
             types: &types,

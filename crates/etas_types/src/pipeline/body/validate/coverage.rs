@@ -118,6 +118,17 @@ impl Coverage<'_, '_> {
             _ => (ty, Vec::new()),
         };
         if let Some(layout) = self.ctx.enum_layout(base).cloned() {
+            let canonical = match crate::ty::canonical_parameters_for_application(
+                self.ctx.interner.store(),
+                base,
+                &args,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.incomplete(error.to_string());
+                    return None;
+                }
+            };
             let substitutions = layout
                 .type_params
                 .into_iter()
@@ -132,11 +143,13 @@ impl Coverage<'_, '_> {
                         .fields
                         .into_iter()
                         .map(|field| {
-                            crate::substitute_named_params(
+                            crate::TypeSubstitutionEngine::materializing(
                                 &mut self.ctx.interner,
-                                field,
                                 &substitutions,
+                                None,
                             )
+                            .with_canonical_parameters(&canonical)
+                            .substitute(field)
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(Constructor {

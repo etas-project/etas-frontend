@@ -3,19 +3,28 @@ use etas_code::{CodeFingerprint, DefinitionKey};
 use etas_hir::{HirItemId, HirModuleId, ScopeId};
 use std::sync::Arc;
 
+pub(super) struct FrozenCallableBindings {
+    pub slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
+    pub owners: std::collections::BTreeMap<etas_code::CallableId, HirItemId>,
+    pub proof_catalog: Option<Arc<super::DefinitionCatalog>>,
+}
+
 /// The target's native immutable compilation environment. It contains no
 /// caller frames, Host context, credentials, or filesystem-backed resolver.
 #[derive(etas_core::RetainedSize)]
 pub struct FrozenDefinitionEnvironment {
     checked: CheckedProgram,
     origins: Arc<crate::code::identity::DefinitionOrigins>,
+    proof_catalog: Option<Arc<super::DefinitionCatalog>>,
     contract: Arc<super::FrozenDefinitionContract>,
     declaration: HirItemId,
     default_body: Option<HirItemId>,
     module: HirModuleId,
     declaration_scope: Option<ScopeId>,
     callable_slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
+    callable_owners: std::collections::BTreeMap<etas_code::CallableId, HirItemId>,
     fingerprint: CodeFingerprint,
+    generic_environment_context: Option<CodeFingerprint>,
     dependency_modules:
         std::collections::BTreeMap<Vec<String>, crate::code::identity::SourceModuleOrigin>,
 }
@@ -28,8 +37,17 @@ impl FrozenDefinitionEnvironment {
         default_body: Option<HirItemId>,
         origins: Arc<crate::code::identity::DefinitionOrigins>,
         body_revisions: CodeFingerprint,
-        callable_slots: std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef>,
+        callables: FrozenCallableBindings,
     ) -> Result<Arc<Self>, ProjectionError> {
+        if callables
+            .proof_catalog
+            .as_ref()
+            .is_some_and(|catalog| !Arc::ptr_eq(catalog.checked_program(), &checked))
+        {
+            return Err(ProjectionError::Invalid(
+                "frozen proof catalog belongs to another checked program".into(),
+            ));
+        }
         let decl = checked.items.get(declaration).ok_or_else(|| {
             ProjectionError::Invalid("frozen definition declaration is missing".into())
         })?;
@@ -119,15 +137,43 @@ impl FrozenDefinitionEnvironment {
             options.as_bytes(),
             body_revisions.as_bytes().as_slice(),
             origin_bindings.as_bytes().as_slice(),
-            contract_fingerprint.as_bytes().as_slice(),
         ];
         parts.extend(
             source_fingerprints
                 .iter()
                 .map(|fingerprint| fingerprint.as_bytes().as_slice()),
         );
-        let fingerprint =
-            CodeFingerprint::of_parts("etas.code.frozen-definition-environment.v2", parts);
+        let generic_flow = match decl {
+            etas_hir::HirItem::Flow(_) => match checked.types.item_signatures.get(&declaration) {
+                Some(etas_types::ItemSignature::Flow(signature)) => {
+                    !signature.generic_params.is_empty()
+                }
+                _ => {
+                    return Err(ProjectionError::Invalid(
+                        "frozen flow has no checked signature".into(),
+                    ));
+                }
+            },
+            _ => false,
+        };
+        let (fingerprint, generic_environment_context) = if generic_flow {
+            let context =
+                CodeFingerprint::of_parts("etas.code.generic-definition-context.v1", parts);
+            (
+                etas_code::descriptor::DefinitionSnapshotInfo::generic_environment_fingerprint(
+                    context,
+                    contract_fingerprint,
+                ),
+                Some(context),
+            )
+        } else {
+            // Preserve the existing ordering for non-generic definitions.
+            parts.insert(9, contract_fingerprint.as_bytes().as_slice());
+            (
+                CodeFingerprint::of_parts("etas.code.frozen-definition-environment.v2", parts),
+                None,
+            )
+        };
         let mut dependency_modules = std::collections::BTreeMap::new();
         for input in checked.external_definition_origins() {
             for module in &input.origins.modules {
@@ -148,19 +194,25 @@ impl FrozenDefinitionEnvironment {
         Ok(Arc::new(Self {
             checked,
             origins,
+            proof_catalog: callables.proof_catalog,
             contract,
             declaration,
             default_body,
             module,
             declaration_scope,
-            callable_slots,
+            callable_slots: callables.slots,
+            callable_owners: callables.owners,
             fingerprint,
+            generic_environment_context,
             dependency_modules,
         }))
     }
 
     pub fn fingerprint(&self) -> CodeFingerprint {
         self.fingerprint
+    }
+    pub fn generic_environment_context(&self) -> Option<CodeFingerprint> {
+        self.generic_environment_context
     }
     pub fn identity(&self) -> &DefinitionKey {
         self.contract.identity()
@@ -193,8 +245,15 @@ impl FrozenDefinitionEnvironment {
     ) -> &std::collections::BTreeMap<etas_code::CallableId, crate::AstBodyRef> {
         &self.callable_slots
     }
+    pub(crate) fn callable_owner(&self, callable: &etas_code::CallableId) -> Option<HirItemId> {
+        self.callable_owners.get(callable).copied()
+    }
     pub fn checked(&self) -> &CheckedProgram {
         &self.checked
+    }
+
+    pub(crate) fn proof_catalog(&self) -> Option<&Arc<super::DefinitionCatalog>> {
+        self.proof_catalog.as_ref()
     }
     pub(crate) fn compilation_fingerprint(&self) -> CodeFingerprint {
         let options = self.checked.compile_options.canonical_options_fingerprint();

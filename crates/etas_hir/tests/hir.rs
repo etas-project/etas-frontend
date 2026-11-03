@@ -616,6 +616,37 @@ impl ReportsRoot ~ Region + Within<ReportsRoot> + RegionWithin<ReportsRoot, Work
 }
 
 #[test]
+fn lowers_trace_selector_binding_and_all_bounds() {
+    let hir = lower(
+        "type ReportsRoot; spec Region; spec Within<T>; effect Fs { action read<R>() -> unit; } spec Reports: trace = +Fs.read<R ~ Region + Within<ReportsRoot>>;",
+    );
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let spec = hir
+        .items
+        .iter()
+        .find_map(|(_, item)| match item {
+            HirItem::Spec(item) if item.trace.is_some() => Some(item),
+            _ => None,
+        })
+        .expect("trace spec");
+    let Some(etas_hir::HirSpecExpr::Allow { pattern, .. }) = &spec.trace else {
+        panic!("expected allow pattern");
+    };
+    let [etas_hir::HirEffectArg::PatternBinding { name, bounds, .. }] = pattern.args.as_slice()
+    else {
+        panic!("expected constrained selector binding");
+    };
+    assert_eq!(name, "R");
+    assert_eq!(bounds.len(), 2);
+    assert_eq!(bounds[1].args.len(), 1);
+    assert!(
+        bounds
+            .iter()
+            .all(|bound| matches!(bound.path.resolution, etas_hir::ResolveResult::Resolved(_)))
+    );
+}
+
+#[test]
 fn lowers_trace_spec_expression() {
     let hir = lower(
         r#"

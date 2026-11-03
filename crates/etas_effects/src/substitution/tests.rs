@@ -37,6 +37,133 @@ fn apply(
 }
 
 #[test]
+fn residual_summary_substitution_fails_closed_until_checked_bindings_exist() {
+    use etas_code::{
+        CodeFingerprint,
+        residual::identity::{
+            GenericArgumentIdentity, GenericParameterId, ObligationId, ResidualObligationRef,
+        },
+    };
+    let (store, _, boolean) = types();
+    let registry = EffectRegistry::with_standard_effects();
+    let mut source = EffectSummary::local();
+    let parameter =
+        GenericParameterId::from_canonical_fingerprint(CodeFingerprint::from_bytes([8; 32]));
+    source.residual_checks.insert(
+        ResidualObligationRef::new(
+            ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([9; 32])),
+            [(parameter, GenericArgumentIdentity::TypeParameter(parameter))]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        apply(&source, &store, boolean, &registry),
+        Err(SummarySubstitutionError::UnsupportedResidualSubstitution)
+    ));
+}
+
+#[test]
+fn residual_summary_identity_mapping_preserves_references_but_rejects_rows() {
+    use etas_code::{
+        CodeFingerprint,
+        residual::identity::{ObligationId, ResidualObligationRef},
+    };
+    let (store, _, boolean) = types();
+    let registry = EffectRegistry::with_standard_effects();
+    let mut source = EffectSummary::local();
+    let reference = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([11; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    source.residual_checks.insert(reference.clone());
+    let names = HashMap::new();
+    let engine = TypeSubstitutionEngine::existing(&store, &names);
+    let result = EffectSummarySubstitution::new(engine, &registry, &[], 4096, None)
+        .apply(&source)
+        .unwrap();
+    assert_eq!(
+        result.residual_checks.iter().collect::<Vec<_>>(),
+        vec![&reference]
+    );
+    let rows = [("E".into(), EffectRow::empty())];
+    let engine = TypeSubstitutionEngine::existing(&store, &names);
+    assert!(matches!(
+        EffectSummarySubstitution::new(engine, &registry, &rows, 4096, None).apply(&source),
+        Err(SummarySubstitutionError::UnsupportedResidualSubstitution)
+    ));
+    let named = HashMap::from([("T".to_owned(), boolean)]);
+    let engine = TypeSubstitutionEngine::existing(&store, &named);
+    assert!(matches!(
+        EffectSummarySubstitution::new(engine, &registry, &[], 4096, None).apply(&source),
+        Err(SummarySubstitutionError::UnsupportedResidualSubstitution)
+    ));
+}
+
+#[test]
+fn residual_summary_substitutes_portable_type_and_effect_binders() {
+    use etas_code::{
+        CodeFingerprint,
+        residual::identity::{
+            GenericArgumentIdentity, GenericParameterId, ObligationId, ResidualObligationRef,
+            ResidualSubstitutionError,
+        },
+    };
+    use std::collections::BTreeMap;
+    let fp = |byte| CodeFingerprint::from_bytes([byte; 32]);
+    let type_param = GenericParameterId::from_canonical_fingerprint(fp(1));
+    let effect_param = GenericParameterId::from_canonical_fingerprint(fp(2));
+    let reference = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(fp(3)),
+        BTreeMap::from([
+            (
+                type_param,
+                GenericArgumentIdentity::TypeParameter(type_param),
+            ),
+            (
+                effect_param,
+                GenericArgumentIdentity::EffectRowParameter(effect_param),
+            ),
+        ]),
+    )
+    .unwrap();
+    let mut source = EffectSummary::local();
+    source.residual_checks.insert(reference.clone());
+    let bindings = BTreeMap::from([
+        (type_param, GenericArgumentIdentity::Type(fp(4))),
+        (effect_param, GenericArgumentIdentity::EffectRow(fp(5))),
+    ]);
+    let (store, _, boolean) = types();
+    let registry = EffectRegistry::with_standard_effects();
+    let names = HashMap::from([("T".to_owned(), boolean)]);
+    let rows = [("E".into(), EffectRow::empty())];
+    let engine = TypeSubstitutionEngine::existing(&store, &names);
+    let mapped = EffectSummarySubstitution::new(engine, &registry, &rows, 4096, None)
+        .with_residual_bindings(&bindings)
+        .apply(&source)
+        .unwrap();
+    let result = mapped.residual_checks.iter().next().unwrap();
+    assert_eq!(result.obligation(), reference.obligation());
+    assert_eq!(
+        result.substitutions()[&type_param],
+        GenericArgumentIdentity::Type(fp(4))
+    );
+    assert_eq!(
+        result.substitutions()[&effect_param],
+        GenericArgumentIdentity::EffectRow(fp(5))
+    );
+    let invalid = BTreeMap::from([(type_param, GenericArgumentIdentity::EffectRow(fp(5)))]);
+    let engine = TypeSubstitutionEngine::existing(&store, &names);
+    assert!(matches!(
+        EffectSummarySubstitution::new(engine, &registry, &rows, 4096, None)
+            .with_residual_bindings(&invalid).apply(&source),
+        Err(SummarySubstitutionError::Residual(ResidualSubstitutionError::KindMismatch(id))) if id == type_param
+    ));
+}
+
+#[test]
 fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_provenance() {
     let (store, parameter, boolean) = types();
     let registry = EffectRegistry::with_standard_effects();

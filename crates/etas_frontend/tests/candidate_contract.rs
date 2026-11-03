@@ -85,6 +85,324 @@ fn relation(analysis: &CandidateBodyAnalysis, component: ContractComponent) -> &
 }
 
 #[test]
+fn candidate_cannot_drop_a_frozen_residual_obligation() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; flow original(value: bool) -> bool ![] { return value; }
+         flow inspect() -> unit { let definition = ^original; return; }",
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checked = output.checked.unwrap();
+    let owner = checked
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if checked.symbols.get(flow.symbol).unwrap().name == "original" =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let expression = *checked.types.reflections.keys().next().unwrap();
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([64; 32]));
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(&checked, package).unwrap(),
+        standard_package: package,
+        external_definitions: BTreeMap::new(),
+    };
+    let original = DefinitionCatalog::build(checked.clone(), &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    let obligation = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([63; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let data = Arc::make_mut(&mut checked);
+    Arc::make_mut(&mut data.effects)
+        .item_effects
+        .get_mut(&owner)
+        .unwrap()
+        .residual_checks
+        .insert(obligation);
+    let frozen = DefinitionCatalog::build(checked, &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    assert_ne!(
+        original.contract().fingerprint(),
+        frozen.contract().fingerprint()
+    );
+    let analysis = analyze(frozen, "return false;");
+    assert_eq!(
+        relation(&analysis, ContractComponent::ResidualChecks),
+        &ContractRelation::Unproven(ContractUncertainty::UnsupportedResidualChecks)
+    );
+    assert!(analysis.into_checked_candidate(Default::default()).is_err());
+}
+
+#[test]
+fn candidate_cannot_drop_public_or_latent_residual_obligations() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; public flow original() -> () -> unit ![] { return () => { return; }; }
+         flow inspect() -> unit { let definition = ^original; return; }",
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let original = output.checked.unwrap();
+    let owner = original
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if original.symbols.get(flow.symbol).unwrap().name == "original" =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let expression = *original.types.reflections.keys().next().unwrap();
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([65; 32]));
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(&original, package).unwrap(),
+        standard_package: package,
+        external_definitions: BTreeMap::new(),
+    };
+    let obligation = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([66; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let clean = DefinitionCatalog::build(original.clone(), &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    for latent in [false, true] {
+        let mut checked = original.clone();
+        let effects = Arc::make_mut(&mut Arc::make_mut(&mut checked).effects);
+        let contract = effects
+            .public_contracts
+            .iter_mut()
+            .find(|contract| contract.item == owner)
+            .unwrap();
+        if latent {
+            let value = contract.latent_flows.first().unwrap().value;
+            effects
+                .latent_effects
+                .get_mut(&value)
+                .unwrap()
+                .summary
+                .residual_checks
+                .insert(obligation.clone());
+        } else {
+            contract.residual_checks.insert(obligation.clone());
+        }
+        let frozen = DefinitionCatalog::build(checked, &origins, DescriptorLimits::default())
+            .unwrap()
+            .freeze_flow(expression)
+            .unwrap();
+        assert_ne!(
+            clean.contract().fingerprint(),
+            frozen.contract().fingerprint(),
+            "latent={latent}"
+        );
+        let analysis = analyze(frozen, "return () => { return; };");
+        assert_eq!(
+            relation(&analysis, ContractComponent::ResidualChecks),
+            &ContractRelation::Unproven(ContractUncertainty::UnsupportedResidualChecks),
+            "latent={latent}"
+        );
+        assert!(analysis.into_checked_candidate(Default::default()).is_err());
+    }
+}
+
+#[test]
+fn candidate_cannot_drop_private_returned_callable_residuals() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; flow original() -> () -> unit ![] { return () => { return; }; }
+         flow inspect() -> unit { let definition = ^original; return; }",
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checked = output.checked.unwrap();
+    let expression = *checked.types.reflections.keys().next().unwrap();
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([68; 32]));
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(&checked, package).unwrap(),
+        standard_package: package,
+        external_definitions: BTreeMap::new(),
+    };
+    let clean = DefinitionCatalog::build(checked.clone(), &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    let obligation = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([67; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let effects = Arc::make_mut(&mut Arc::make_mut(&mut checked).effects);
+    assert_eq!(effects.latent_effects.len(), 1);
+    effects
+        .latent_effects
+        .values_mut()
+        .next()
+        .unwrap()
+        .summary
+        .residual_checks
+        .insert(obligation);
+    let frozen = DefinitionCatalog::build(checked, &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    assert_ne!(
+        clean.contract().fingerprint(),
+        frozen.contract().fingerprint()
+    );
+    let analysis = analyze(frozen, "return () => { return; };");
+    assert_eq!(
+        relation(&analysis, ContractComponent::ResidualChecks),
+        &ContractRelation::Unproven(ContractUncertainty::UnsupportedResidualChecks)
+    );
+    assert!(analysis.into_checked_candidate(Default::default()).is_err());
+}
+
+#[test]
+fn unreachable_private_lambda_residual_does_not_change_returned_callable_contract() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; import std.io.println;
+         flow original() -> () -> unit ![] {
+             let unused = () => { println(\"unused\")?; return; };
+             return () => { return; };
+         }
+         flow inspect() -> unit { let definition = ^original; return; }",
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checked = output.checked.unwrap();
+    let expression = *checked.types.reflections.keys().next().unwrap();
+    let obligation = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([69; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let effects = Arc::make_mut(&mut Arc::make_mut(&mut checked).effects);
+    let unused = effects
+        .latent_effects
+        .values_mut()
+        .find(|fact| !fact.summary.requested_actions.is_empty())
+        .unwrap();
+    unused.summary.residual_checks.insert(obligation);
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([70; 32]));
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(&checked, package).unwrap(),
+        standard_package: package,
+        external_definitions: BTreeMap::new(),
+    };
+    let frozen = DefinitionCatalog::build(checked, &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    let analysis = analyze(frozen, "return () => { return; };");
+    assert_eq!(
+        relation(&analysis, ContractComponent::ResidualChecks),
+        &ContractRelation::Proven
+    );
+}
+
+#[test]
+fn candidate_cannot_drop_returned_source_callable_residuals() {
+    use etas_code::residual::identity::{ObligationId, ResidualObligationRef};
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app; flow helper() -> unit ![] { return; }
+         flow original() -> () -> unit ![] { return helper; }
+         flow inspect() -> unit { let definition = ^original; return; }",
+    ));
+    input.options.entry_policy = EntryPolicy::Optional;
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checked = output.checked.unwrap();
+    let expression = *checked.types.reflections.keys().next().unwrap();
+    let helper = checked
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            etas_hir::HirItem::Flow(flow)
+                if checked.symbols.get(flow.symbol).unwrap().name == "helper" =>
+            {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let obligation = ResidualObligationRef::new(
+        ObligationId::from_canonical_fingerprint(CodeFingerprint::from_bytes([71; 32])),
+        Default::default(),
+    )
+    .unwrap();
+    let effects = Arc::make_mut(&mut Arc::make_mut(&mut checked).effects);
+    effects
+        .unit_effects
+        .get_mut(&etas_effects::EffectUnit::Item(helper))
+        .unwrap()
+        .residual_checks
+        .insert(obligation);
+    let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([72; 32]));
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(&checked, package).unwrap(),
+        standard_package: package,
+        external_definitions: BTreeMap::new(),
+    };
+    let frozen = DefinitionCatalog::build(checked, &origins, DescriptorLimits::default())
+        .unwrap()
+        .freeze_flow(expression)
+        .unwrap();
+    let analysis = analyze(frozen, "return () => { return; };");
+    assert_eq!(
+        relation(&analysis, ContractComponent::ResidualChecks),
+        &ContractRelation::Unproven(ContractUncertainty::MissingFrozenAnalysis)
+    );
+    assert!(analysis.into_checked_candidate(Default::default()).is_err());
+}
+
+#[test]
+fn candidate_with_unknown_trace_selector_is_not_accepted() {
+    let frozen = freeze(
+        r#"module app;
+type Restricted;
+effect Gate { action request<T>() -> unit; }
+spec Safe: trace = -Gate.request<Restricted>;
+agent Worker() -> unit ![Gate.request<_>] ~ Safe { return; }
+flow inspect() -> unit { let d = ^Worker; return; }"#,
+        false,
+    );
+    let analysis = analyze(frozen, "perform Gate.request(); return;");
+    assert!(
+        analysis.output().diagnostics.iter().any(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::IncompleteEffectFacts,
+                )
+        }),
+        "candidate must report an unproved selector: {:?}",
+        analysis.output().diagnostics
+    );
+    assert!(analysis.into_checked_candidate(Default::default()).is_err());
+}
+
+#[test]
 fn handled_new_requests_do_not_fit_an_empty_frozen_action_bound() {
     let frozen = freeze(
         "module app; import std.io.println; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let d = ^Worker; return; }",
@@ -387,15 +705,19 @@ fn inferred_output_changes_cannot_replace_the_frozen_interface() {
 }
 
 #[test]
-fn missing_frozen_analysis_is_not_an_empty_contract() {
+fn missing_frozen_analysis_is_rebuilt_from_the_original_body() {
     let frozen = freeze(
-        "module app; agent Worker() -> i32 { return 1; } flow inspect() -> unit { let d = ^Worker; return; }",
+        "module app; import std.io.println; agent Worker() -> i32 { println(\"original\")?; return 1; } flow inspect() -> unit { let d = ^Worker; return; }",
         true,
     );
-    let analysis = analyze(frozen, "return 2;");
+    let analysis = analyze(frozen, "println(\"candidate\")?; return 2;");
     assert_eq!(
         relation(&analysis, ContractComponent::RequestedActions),
-        &ContractRelation::Unproven(ContractUncertainty::MissingFrozenAnalysis)
+        &ContractRelation::Proven
+    );
+    assert_eq!(
+        relation(&analysis, ContractComponent::ResidualChecks),
+        &ContractRelation::Proven
     );
 }
 

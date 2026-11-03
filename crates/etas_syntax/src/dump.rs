@@ -937,6 +937,11 @@ impl AstDump for ast::EffectArg {
                 path.span,
                 path_field(f, "path", path).into_iter().collect(),
             ),
+            Self::PatternBinding { name, bounds, span } => {
+                let mut fields = token_text_field(f, &name.text);
+                push_spec_bounds(f, &mut fields, bounds);
+                f.line("EffectPatternBinding", *span, fields);
+            }
             Self::Wildcard { span } => f.line("EffectWildcardArg", *span, Vec::new()),
             Self::String { value, span } => f.line(
                 "EffectStringArg",

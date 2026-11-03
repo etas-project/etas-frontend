@@ -35,9 +35,44 @@ where
         let mut changed_sources = Vec::new();
         let mut source_membership_change = false;
 
+        if let Some(EnvironmentChange::AddOverlaySourceKeys(keys)) = &changes.environment_change {
+            let added = changes
+                .dependency_overlay_changes
+                .iter()
+                .flat_map(|change| change.added_sources.iter().map(|source| source.id))
+                .collect::<HashSet<_>>();
+            let mut seen_sources = self
+                .input
+                .environment
+                .stable_source_keys
+                .iter()
+                .map(|entry| entry.source)
+                .collect::<HashSet<_>>();
+            let mut seen_keys = self
+                .input
+                .environment
+                .stable_source_keys
+                .iter()
+                .map(|entry| entry.key)
+                .collect::<HashSet<_>>();
+            for entry in keys {
+                if !added.contains(&entry.source)
+                    || !seen_sources.insert(entry.source)
+                    || !seen_keys.insert(entry.key)
+                {
+                    return Err(FrontendSessionError::InvalidOverlaySourceIdentity(
+                        entry.source,
+                    ));
+                }
+            }
+        }
+
         let option_changes = changes.option_changes;
-        let mut broad_project_change =
-            changes.environment_change.is_some() || !option_changes.is_empty();
+        let mut environment_changed = changes.environment_change.is_some();
+        let mut broad_project_change = matches!(
+            &changes.environment_change,
+            Some(EnvironmentChange::Replace(_))
+        ) || !option_changes.is_empty();
 
         if !option_changes.is_empty() {
             let changed_options = option_changes
@@ -51,10 +86,14 @@ where
             );
         }
 
+        let mut overlay_keys = None;
         if let Some(change) = changes.environment_change {
             match change {
                 EnvironmentChange::Replace(environment) => {
-                    self.input.environment = environment;
+                    self.input.environment = *environment;
+                }
+                EnvironmentChange::AddOverlaySourceKeys(keys) => {
+                    overlay_keys = Some(keys);
                 }
             }
         }
@@ -82,6 +121,20 @@ where
                     source_membership_change = true;
                     let index = self.source_index(source)?;
                     self.input.sources.remove(index);
+                    let binding_count = self.input.environment.standalone_source_packages.len();
+                    self.input
+                        .environment
+                        .standalone_source_packages
+                        .retain(|entry| entry.source != source);
+                    environment_changed |=
+                        self.input.environment.standalone_source_packages.len() != binding_count;
+                    let stable_count = self.input.environment.stable_source_keys.len();
+                    self.input
+                        .environment
+                        .stable_source_keys
+                        .retain(|entry| entry.source != source);
+                    environment_changed |=
+                        self.input.environment.stable_source_keys.len() != stable_count;
                     let file_index = self.source_file_index(source)?;
                     self.sources.files.remove(file_index);
                     self.source_versions.remove(&source);
@@ -117,6 +170,20 @@ where
 
         for change in changes.dependency_overlay_changes {
             self.apply_dependency_overlay_change(change, &mut added_sources, &mut changed_sources)?;
+        }
+
+        if let Some(keys) = overlay_keys {
+            self.input.environment.stable_source_keys.extend(keys);
+        }
+
+        if environment_changed {
+            self.sources.stable_source_keys = self.input.environment.stable_source_keys.clone();
+            self.sources.environment_fingerprint =
+                self.input.environment.canonical_environment_fingerprint();
+            self.sources.external_modules_fingerprint = self
+                .input
+                .environment
+                .canonical_external_modules_fingerprint();
         }
 
         changed_sources.sort_by_key(|source| source.0);

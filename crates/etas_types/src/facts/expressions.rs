@@ -26,6 +26,16 @@ pub struct FieldProjectionFact {
 pub struct DeferredEffectRowObligation {
     pub param: String,
     pub source: etas_hir::HirExprId,
+    pub fixed: EffectRowRef,
+    pub concrete: Vec<EffectRowEquation>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct EffectRowEquation {
+    pub fixed: EffectRowRef,
+    pub actual: EffectRowRef,
 }
 
 #[derive(

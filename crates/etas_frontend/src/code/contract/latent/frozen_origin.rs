@@ -191,6 +191,23 @@ fn preserves_references(
                     CallableReferenceTarget::Source(before),
                     CallableReferenceTarget::Source(after),
                 ) => preservation.preserves_source_item(*before, *after) && expected == &binding,
+                (
+                    CallableReferenceTarget::External {
+                        callable: before,
+                        frozen: left,
+                        reflection: left_reflection,
+                    },
+                    CallableReferenceTarget::External {
+                        callable: after,
+                        frozen: right,
+                        reflection: right_reflection,
+                    },
+                ) => {
+                    before == after
+                        && left == right
+                        && left_reflection == right_reflection
+                        && expected == &binding
+                }
                 _ => false,
             }
         }) {
@@ -267,9 +284,11 @@ fn preserves_bindings(
         };
         match (param.kind, actual) {
             (CallableGenericParamKind::Type, V::Type(ty)) if *ty == param.subject => {}
-            (CallableGenericParamKind::Effect, V::EffectRow(row))
-                if row.effects.is_empty()
-                    && row.open == Some(etas_effects::effect_var_id_from_name(&param.name)) => {}
+            (
+                CallableGenericParamKind::Effect,
+                V::EffectRow(row) | V::EffectRowFromCall { row, .. },
+            ) if row.effects.is_empty()
+                && row.open == Some(etas_effects::effect_var_id_from_name(&param.name)) => {}
             _ => return Ok(false),
         }
     }

@@ -1,5 +1,5 @@
 use etas_code::descriptor::*;
-use etas_types::{ResourceHandleType, TrustWrapper, Type, TypeId};
+use etas_types::{ResourceHandleType, Type, TypeId};
 
 use super::{DefinitionDescriptorProjector, ProjectionError};
 use crate::code::identity::TypeDeclaration;
@@ -142,28 +142,27 @@ impl DefinitionDescriptorProjector<'_> {
                         .transpose()?,
                 });
             }
-            Type::Array(ty) => (BuiltinTypeInfo::Array, vec![ty]),
-            Type::List(ty) => (BuiltinTypeInfo::List, vec![ty]),
-            Type::Map { key, value } => (BuiltinTypeInfo::Map, vec![key, value]),
-            Type::Set(ty) => (BuiltinTypeInfo::Set, vec![ty]),
-            Type::Range { index } => (BuiltinTypeInfo::Range, vec![index]),
-            Type::Slice(ty) => (BuiltinTypeInfo::Slice, vec![ty]),
-            Type::Option(ty) => (BuiltinTypeInfo::Option, vec![ty]),
-            Type::Result { ok, err } => (BuiltinTypeInfo::Result, vec![ok, err]),
-            Type::Schema(ty) => (BuiltinTypeInfo::Schema, vec![ty]),
-            Type::Prompt => (BuiltinTypeInfo::Prompt, Vec::new()),
-            Type::PromptPart => (BuiltinTypeInfo::PromptPart, Vec::new()),
-            Type::Message(ty) => (BuiltinTypeInfo::Message, vec![ty]),
-            Type::MemorySelection(ty) => (BuiltinTypeInfo::MemorySelection, vec![ty]),
-            Type::Store { key, value } => (BuiltinTypeInfo::Store, vec![key, value]),
-            Type::MemoryRegion(ty) => (BuiltinTypeInfo::MemoryRegion, vec![ty]),
-            Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
-                (BuiltinTypeInfo::MemoryRegionHandle, vec![schema])
-            }
-            Type::ResourceHandle(ResourceHandleType::ExternalTool { signature }) => {
-                (BuiltinTypeInfo::ExternalToolHandle, vec![signature])
-            }
-            Type::Trust { wrapper, inner } => (trust_info(wrapper), vec![inner]),
+            builtin @ (Type::Array(_)
+            | Type::List(_)
+            | Type::Map { .. }
+            | Type::Set(_)
+            | Type::Range { .. }
+            | Type::Slice(_)
+            | Type::Option(_)
+            | Type::Result { .. }
+            | Type::Schema(_)
+            | Type::Prompt
+            | Type::PromptPart
+            | Type::Message(_)
+            | Type::MemorySelection(_)
+            | Type::Store { .. }
+            | Type::MemoryRegion(_)
+            | Type::ResourceHandle(
+                ResourceHandleType::MemoryRegion { .. } | ResourceHandleType::ExternalTool { .. },
+            )
+            | Type::Trust { .. }) => builtin
+                .builtin_descriptor_parts()
+                .ok_or(ProjectionError::UnresolvedType(source))?,
             Type::Nominal(_) | Type::Enum(_) => {
                 return Err(ProjectionError::MissingIdentity(format!(
                     "checked type {source:?}"
@@ -297,37 +296,5 @@ impl DefinitionDescriptorProjector<'_> {
 }
 
 pub(super) fn primitive_info(primitive: etas_types::PrimitiveType) -> PrimitiveInfo {
-    use etas_types::PrimitiveType as P;
-    match primitive {
-        P::Unit => PrimitiveInfo::Unit,
-        P::Never => PrimitiveInfo::Never,
-        P::Bool => PrimitiveInfo::Bool,
-        P::I8 => PrimitiveInfo::I8,
-        P::I16 => PrimitiveInfo::I16,
-        P::I32 => PrimitiveInfo::I32,
-        P::I64 => PrimitiveInfo::I64,
-        P::I128 => PrimitiveInfo::I128,
-        P::ISize => PrimitiveInfo::Isize,
-        P::U8 => PrimitiveInfo::U8,
-        P::U16 => PrimitiveInfo::U16,
-        P::U32 => PrimitiveInfo::U32,
-        P::U64 => PrimitiveInfo::U64,
-        P::U128 => PrimitiveInfo::U128,
-        P::USize => PrimitiveInfo::Usize,
-        P::F32 => PrimitiveInfo::F32,
-        P::F64 => PrimitiveInfo::F64,
-        P::Char => PrimitiveInfo::Char,
-        P::String => PrimitiveInfo::String,
-        P::Bytes => PrimitiveInfo::Bytes,
-    }
-}
-
-pub(super) fn trust_info(wrapper: TrustWrapper) -> BuiltinTypeInfo {
-    match wrapper {
-        TrustWrapper::Trusted => BuiltinTypeInfo::Trusted,
-        TrustWrapper::Untrusted => BuiltinTypeInfo::Untrusted,
-        TrustWrapper::Secret => BuiltinTypeInfo::Secret,
-        TrustWrapper::Public => BuiltinTypeInfo::Public,
-        TrustWrapper::Sanitized => BuiltinTypeInfo::Sanitized,
-    }
+    primitive.descriptor_info()
 }

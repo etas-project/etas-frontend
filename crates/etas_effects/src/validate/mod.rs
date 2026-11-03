@@ -620,6 +620,15 @@ fn declared_action_effect(
     })
 }
 
+pub(crate) fn checked_external_action_effect(
+    registry: &EffectRegistry,
+    types: &etas_types::TypeStore,
+    action: ActionRef,
+    args: &[etas_types::EffectArgRef],
+) -> Option<crate::Effect> {
+    declared_action_effect(registry, types, action, args).ok()
+}
+
 fn validate_declared_action_arg(
     registry: &EffectRegistry,
     types: &etas_types::TypeStore,
@@ -628,7 +637,8 @@ fn validate_declared_action_arg(
 ) -> Result<(), DeclaredRowError> {
     match kind {
         EffectActionArgKind::Type => match arg {
-            etas_types::EffectArgRef::Type(_) | etas_types::EffectArgRef::Wildcard => Ok(()),
+            etas_types::EffectArgRef::Type(ty) if types.get(*ty).is_some() => Ok(()),
+            etas_types::EffectArgRef::Wildcard => Ok(()),
             _ => Err(DeclaredRowError::invalid_action_arg(kind)),
         },
         EffectActionArgKind::MemoryPlace => match arg {
@@ -637,22 +647,31 @@ fn validate_declared_action_arg(
                 Some(etas_types::Type::MemoryPlace(_)) => Ok(()),
                 _ => Err(DeclaredRowError::invalid_action_arg(kind)),
             },
-            etas_types::EffectArgRef::Path(_) | etas_types::EffectArgRef::Wildcard => Ok(()),
+            etas_types::EffectArgRef::Path(path) if valid_static_selector_path(path) => Ok(()),
+            etas_types::EffectArgRef::Wildcard => Ok(()),
+            etas_types::EffectArgRef::Path(_) => Err(DeclaredRowError::invalid_action_arg(kind)),
             etas_types::EffectArgRef::String(_) | etas_types::EffectArgRef::Int(_) => {
                 Err(DeclaredRowError::invalid_action_arg(kind))
             }
         },
         EffectActionArgKind::StaticResourcePath { .. } => match arg {
-            etas_types::EffectArgRef::Path(_) | etas_types::EffectArgRef::String(_) => Ok(()),
+            etas_types::EffectArgRef::Path(path) if valid_static_selector_path(path) => Ok(()),
+            etas_types::EffectArgRef::String(_) | etas_types::EffectArgRef::Wildcard => Ok(()),
             _ => Err(DeclaredRowError::invalid_action_arg(kind)),
         },
         EffectActionArgKind::StringPattern => match arg {
-            etas_types::EffectArgRef::String(_)
-            | etas_types::EffectArgRef::Path(_)
-            | etas_types::EffectArgRef::Wildcard => Ok(()),
+            etas_types::EffectArgRef::Path(path) if valid_static_selector_path(path) => Ok(()),
+            etas_types::EffectArgRef::String(_) | etas_types::EffectArgRef::Wildcard => Ok(()),
             _ => Err(DeclaredRowError::invalid_action_arg(kind)),
         },
     }
+}
+
+fn valid_static_selector_path(path: &[String]) -> bool {
+    !path.is_empty()
+        && path
+            .iter()
+            .all(|segment| !segment.is_empty() && !segment.contains('\0'))
 }
 
 fn validate_declared_effect_row(
@@ -918,7 +937,7 @@ fn latent_declared_by_item(tree: &HirTreeView<'_>, item: HirItemId, latent: HirE
         == Some(item)
 }
 
-fn owner_item(tree: &HirTreeView<'_>, mut owner: HirOwner) -> Option<HirItemId> {
+pub(crate) fn owner_item(tree: &HirTreeView<'_>, mut owner: HirOwner) -> Option<HirItemId> {
     loop {
         owner = match owner {
             HirOwner::Item(item) => return Some(item),

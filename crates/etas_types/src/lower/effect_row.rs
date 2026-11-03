@@ -249,6 +249,10 @@ fn lower_effect_arg(
                 }
             }
         }
+        HirEffectArg::PatternBinding { span, .. } => {
+            invalid_static_effect_arg(ctx, *span, "pattern bindings are only valid in trace specs");
+            None
+        }
         HirEffectArg::Wildcard { .. } => Some(EffectArgRef::Wildcard),
         HirEffectArg::String { value, .. } => Some(EffectArgRef::String(value.clone())),
         HirEffectArg::Int { text, .. } => Some(EffectArgRef::Int(text.clone())),

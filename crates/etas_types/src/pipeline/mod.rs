@@ -87,11 +87,15 @@ fn body_delta_output(
     base: &crate::SignatureEnvironment,
     item: etas_hir::HirItemId,
 ) -> crate::BodyTypeOutput {
+    let (types, nominal_identities, parameter_identities) =
+        ctx.interner.into_store().into_local_parts();
     crate::BodyTypeOutput {
         owner: item,
         base: base.types.identity(),
         base_len: base.types.len(),
-        types: ctx.interner.into_store().into_local_types(),
+        types,
+        nominal_identities,
+        parameter_identities,
         facts: ctx.signature_facts,
         diagnostics: ctx.diagnostics,
     }

@@ -275,7 +275,14 @@ impl EffectSemantics<'_> {
                 }
             }
         }
-        if calls.is_empty() {
+        let has_callback_calls = !calls.is_empty();
+        // A plain external call is replayable only when its checked trace and
+        // request template prove there are no actions or callback invocations.
+        if !has_callback_calls
+            && (!matches!(summary.action_trace, ActionTraceDomain::Empty)
+                || !actions.is_empty()
+                || !parameters.is_empty())
+        {
             return None;
         }
         let etas_code::descriptor::TypeInfo::Function(portable_signature) =
@@ -607,7 +614,7 @@ impl EffectSemantics<'_> {
                 _ => return None,
             }
         }
-        (!exits.exits.is_empty() && callback_exit).then_some(exits)
+        (!exits.exits.is_empty() && (callback_exit || !has_callback_calls)).then_some(exits)
     }
 
     fn checked_descriptor_action(

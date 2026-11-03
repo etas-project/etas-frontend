@@ -23,6 +23,12 @@ impl EffectSemantics<'_> {
             source => source,
         };
         match source {
+            LatentSource::ExternalFrozen { reflection } => self
+                .external_frozen_summary(reflection, key.span())
+                .map(CallableSummaryPlan::Leaf),
+            LatentSource::ExternalReference { value, .. } => self
+                .external_reference_summary(value, key.span())
+                .map(CallableSummaryPlan::Leaf),
             LatentSource::Captured { unit, environment } => {
                 self.prepare_native_value_summary(unit, environment, key.span(), key.mode)
             }

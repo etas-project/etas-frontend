@@ -63,7 +63,9 @@ impl EffectSemantics<'_> {
                 })?;
             match value {
                 Value::Type(ty) => types.push((binding.label.clone(), *ty)),
-                Value::EffectRow(row) => rows.push((binding.label.clone(), row.clone())),
+                Value::EffectRow(row) | Value::EffectRowFromCall { row, .. } => {
+                    rows.push((binding.label.clone(), row.clone()))
+                }
             }
         }
         Ok((types, rows))
@@ -94,7 +96,7 @@ impl EffectSemantics<'_> {
             .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
             .collect::<BTreeMap<_, _>>();
         for (name, row) in
-            self.solve_deferred_effect_row_obligations(state, &checked.deferred_effect_rows)?
+            self.solve_deferred_effect_row_obligations(state, &checked.deferred_effect_rows, &rows)?
         {
             if rows.get(&name).is_some_and(|previous| previous != &row) {
                 return Err(
@@ -149,14 +151,20 @@ impl EffectSemantics<'_> {
                             param: parameter.name.clone(),
                         })?,
                 ),
-                etas_types::CallableGenericParamKind::Effect => Value::EffectRow(
-                    rows.iter()
+                etas_types::CallableGenericParamKind::Effect => {
+                    let row = rows
+                        .iter()
                         .find(|(name, _)| name == &parameter.name)
                         .map(|(_, row)| row.clone())
                         .ok_or_else(|| EffectSpecializationError::MissingEffectRowBinding {
                             param: parameter.name.clone(),
-                        })?,
-                ),
+                        })?;
+                    if row.open.is_some() {
+                        Value::EffectRowFromCall { row, source: call }
+                    } else {
+                        Value::EffectRow(row)
+                    }
+                }
             };
             values.insert(
                 Parameter::Native {
@@ -188,9 +196,10 @@ impl EffectSemantics<'_> {
                 (etas_types::CallableGenericParamKind::Type, Some(Value::Type(ty))) => {
                     types.push((parameter.name.clone(), *ty))
                 }
-                (etas_types::CallableGenericParamKind::Effect, Some(Value::EffectRow(row))) => {
-                    rows.push((parameter.name.clone(), row.clone()))
-                }
+                (
+                    etas_types::CallableGenericParamKind::Effect,
+                    Some(Value::EffectRow(row) | Value::EffectRowFromCall { row, .. }),
+                ) => rows.push((parameter.name.clone(), row.clone())),
                 _ => {
                     return Err(EffectSpecializationError::InvalidCallableEnvironment {
                         reason: "captured generic binding is missing or has the wrong kind".into(),
@@ -224,6 +233,15 @@ impl EffectSemantics<'_> {
                     ),
                     Value::EffectRow(row) => {
                         Value::EffectRow(self.specialize_effect_row(&row, &[], &types, &rows)?)
+                    }
+                    Value::EffectRowFromCall { row, source } => {
+                        let specialized = self.specialize_effect_row(&row, &[], &types, &rows)?;
+                        if specialized == row {
+                            Value::EffectRowFromCall { row, source }
+                        } else {
+                            // The old call site cannot establish a changed row's identity.
+                            Value::EffectRow(specialized)
+                        }
                     }
                 };
                 Ok((parameter, value))

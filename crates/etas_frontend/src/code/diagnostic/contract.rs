@@ -23,7 +23,7 @@ pub(crate) fn contract_diagnostic(
     locations: &mut super::DiagnosticProjector<'_>,
 ) -> Result<Option<DiagnosticRecord>, CheckReportError> {
     let (code, message, witness) = match &check.relation {
-        ContractRelation::Proven => return Ok(None),
+        ContractRelation::Proven | ContractRelation::Guarded(_) => return Ok(None),
         ContractRelation::Rejected(rejection) => match rejection {
             R::ChangedInterface => (
                 "code::ChangedInterface",

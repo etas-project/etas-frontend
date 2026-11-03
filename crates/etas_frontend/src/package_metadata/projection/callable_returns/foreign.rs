@@ -272,6 +272,7 @@ impl Builder<'_, '_> {
             return Ok(None);
         };
         Ok(Some(CallableValueNode {
+            residual_checks: summary.residual_checks.iter().cloned().collect(),
             handler_requests: projected.handler_requests,
             behavior: projected.behavior,
             parent_scope,

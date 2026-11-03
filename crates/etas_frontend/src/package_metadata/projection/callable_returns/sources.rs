@@ -25,6 +25,23 @@ impl Builder<'_, '_> {
                 ));
             }
             let instance = match source {
+                CallableReturnSource::ExternalFrozen { reflection } => {
+                    let reference = self.external_reference(reflection, true)?;
+                    output.insert(CallableValueSource::FrozenContract(
+                        self.reserve_reference(reference, scope)?,
+                    ));
+                    continue;
+                }
+                CallableReturnSource::ExternalReference { value, frozen } => {
+                    let reference = self.external_reference(value, frozen)?;
+                    let index = self.reserve_reference(reference, scope)?;
+                    output.insert(if frozen {
+                        CallableValueSource::FrozenContract(index)
+                    } else {
+                        CallableValueSource::Value(index)
+                    });
+                    continue;
+                }
                 CallableReturnSource::FrozenContract {
                     unit,
                     reference,
@@ -167,12 +184,35 @@ impl Builder<'_, '_> {
 }
 
 impl Builder<'_, '_> {
+    fn external_reference(
+        &self,
+        value: etas_hir::HirExprId,
+        frozen: bool,
+    ) -> Result<etas_effects::CallableReturnReference, PackageMetadataError> {
+        let mut matches = self.projection.checked.effects.callable_references.keys().filter(|reference| {
+            reference.value == value && reference.environment.is_none()
+                && matches!(&reference.target, etas_effects::CallableReferenceTarget::External { frozen: actual, .. } if *actual == frozen)
+        });
+        match (matches.next(), matches.next()) {
+            (Some(reference), None) => Ok(reference.clone()),
+            _ => Err(invalid(
+                "external callable has no unique checked reference analysis",
+            )),
+        }
+    }
     pub(super) fn checked_origin(
         &self,
         origin: CallableValueOrigin,
     ) -> Result<Option<(CallableReturnSource, Option<CallableEnvironmentId>)>, PackageMetadataError>
     {
         Ok(Some(match origin {
+            CallableValueOrigin::ExternalFrozen { reflection } => {
+                (CallableReturnSource::ExternalFrozen { reflection }, None)
+            }
+            CallableValueOrigin::ExternalReference { value, frozen } => (
+                CallableReturnSource::ExternalReference { value, frozen },
+                None,
+            ),
             CallableValueOrigin::FrozenContract {
                 unit,
                 reference,

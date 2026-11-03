@@ -10,11 +10,13 @@ use crate::passes::{
     ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
     FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
-    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareEffectRegistryPass,
-    PrepareInvocationTypesPass, ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass,
-    RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
-    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
-    ValidateItemAnnotationsPass, ValidateTopLevelLetPass, VerifyInterpreterSupportPass,
+    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
+    PrepareEffectRegistryPass, PrepareInvocationTypesPass, ResolveEntryItemPass,
+    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
+    VerifyInterpreterSupportPass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
@@ -107,7 +109,9 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(FinalizeTypeFactsPass)
         .pass(CompleteTypedAnalysisReachabilityPass)
         .pass(CompleteTypedRuntimeReachabilityPass)
+        .pass(PrepareDirectInvocationTypesPass)
         .pass(RunEffectPipelinePass)
+        .pass(ValidateResidualBackendSupportPass)
         .pass(MaterializeGenericEffectRowsPass)
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)

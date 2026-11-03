@@ -668,38 +668,49 @@ fn external_trace_spec_summary_metadata(
     summary: &crate::ProjectExternalTraceSpecSummaryInput,
     types: &TypeOutput,
 ) -> Result<etas_effects::ExternalTraceSpecSummaryMetadata, String> {
-    let clauses = summary
-        .clauses
+    let alternatives = summary
+        .alternatives
         .iter()
-        .map(|clause| {
-            Ok(etas_effects::ExternalTraceSpecClauseMetadata {
-                kind: external_trace_spec_clause_kind(clause.kind),
-                pattern: clause
-                    .pattern
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-                guard: clause
-                    .guard
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-                target: clause
-                    .target
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-                obligation: clause
-                    .obligation
-                    .as_ref()
-                    .map(|row| external_trace_spec_row(row, types))
-                    .transpose()?,
-            })
+        .map(|clauses| {
+            clauses
+                .iter()
+                .map(|clause| {
+                    if !clause.selector_bounds.is_empty() {
+                        return Err(
+                            "trace selector bounds require checked replay support".to_owned()
+                        );
+                    }
+                    Ok(etas_effects::ExternalTraceSpecClauseMetadata {
+                        kind: external_trace_spec_clause_kind(clause.kind),
+                        pattern: clause
+                            .pattern
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                        guard: clause
+                            .guard
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                        target: clause
+                            .target
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                        obligation: clause
+                            .obligation
+                            .as_ref()
+                            .map(|row| external_trace_spec_row(row, types))
+                            .transpose()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_effects::ExternalTraceSpecSummaryMetadata {
         trace_spec: summary.trace_spec.clone(),
-        clauses,
+        definition: summary.definition.clone(),
+        alternatives,
     })
 }
 

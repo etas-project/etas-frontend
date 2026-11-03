@@ -320,6 +320,9 @@ mod tests {
         )
         .unwrap();
         let output = crate::RunEffectPipeline::run(crate::EffectPipelineInput {
+            source_snapshots: &[],
+            residual_identity: None,
+            trace_monitor_projector: None,
             frozen_calls: None,
             hir: &hir,
             types: &types,

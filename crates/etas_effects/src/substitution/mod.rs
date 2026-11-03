@@ -4,17 +4,24 @@ mod summary;
 mod tests;
 mod trace;
 
+use etas_code::residual::identity::{
+    GenericArgumentIdentity, GenericParameterId, ResidualSubstitutionError,
+};
 use etas_types::{EffectArgRef, TypeId, TypeSubstitutionEngine};
+use std::collections::BTreeMap;
 
 use crate::{Effect, EffectRegistry, EffectRow, EffectSet, EffectSummary};
 
 pub(crate) use summary::map_summary;
+pub(crate) use trace::map_trace;
 
 #[derive(Debug)]
 pub enum SummarySubstitutionError {
     Type(etas_types::TypeSubstitutionError),
     InvalidAction(crate::ActionRef),
     InvalidStructure,
+    UnsupportedResidualSubstitution,
+    Residual(ResidualSubstitutionError),
     UnboundRow(crate::EffectVarId),
     AmbiguousRow(crate::EffectVarId),
     ResourceLimit,
@@ -30,6 +37,10 @@ impl std::fmt::Display for SummarySubstitutionError {
                 "summary action has no matching checked signature: {action:?}"
             ),
             Self::InvalidStructure => f.write_str("invalid effect summary structure"),
+            Self::UnsupportedResidualSubstitution => {
+                f.write_str("checked residual substitutions are not available")
+            }
+            Self::Residual(error) => write!(f, "invalid residual substitution: {error:?}"),
             Self::UnboundRow(row) => write!(f, "effect summary retains an unbound row: {row:?}"),
             Self::AmbiguousRow(row) => {
                 write!(f, "effect summary has ambiguous row arguments: {row:?}")
@@ -52,8 +63,30 @@ pub(crate) trait SummaryMapper {
     type Error;
     fn checkpoint(&mut self) -> Result<(), Self::Error>;
     fn invalid_structure(&self) -> Self::Error;
+    fn unsupported_residual_substitution(&self) -> Self::Error;
+    fn residual_checks(
+        &mut self,
+        checks: &crate::ResidualCheckSet,
+    ) -> Result<crate::ResidualCheckSet, Self::Error> {
+        if checks.is_empty() {
+            Ok(crate::ResidualCheckSet::default())
+        } else {
+            Err(self.unsupported_residual_substitution())
+        }
+    }
     fn ty(&mut self, ty: TypeId) -> Result<TypeId, Self::Error>;
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error>;
+    fn event(
+        &mut self,
+        event: &crate::ActionEvent,
+    ) -> Result<crate::ActionTraceDomain, Self::Error> {
+        let mut event = event.clone();
+        event.action = self.effect(event.action)?;
+        if !event.action.is_action() {
+            return Err(self.invalid_structure());
+        }
+        Ok(crate::ActionTraceDomain::Event(event))
+    }
     fn row(&mut self, row: &EffectRow) -> Result<EffectRow, Self::Error>;
 }
 
@@ -67,6 +100,7 @@ pub struct EffectSummarySubstitution<'a> {
     by_variable: std::collections::HashMap<crate::EffectVarId, &'a EffectRow>,
     remaining: usize,
     control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
+    residual_bindings: Option<&'a BTreeMap<GenericParameterId, GenericArgumentIdentity>>,
 }
 
 impl<'a> EffectSummarySubstitution<'a> {
@@ -84,7 +118,18 @@ impl<'a> EffectSummarySubstitution<'a> {
             by_variable: std::collections::HashMap::new(),
             remaining: max_nodes,
             control,
+            residual_bindings: None,
         }
+    }
+
+    /// Supplies portable, checked binder identities; this is descriptive
+    /// substitution, not plan verification or installation evidence.
+    pub fn with_residual_bindings(
+        mut self,
+        bindings: &'a BTreeMap<GenericParameterId, GenericArgumentIdentity>,
+    ) -> Self {
+        self.residual_bindings = Some(bindings);
+        self
     }
 
     pub fn apply(
@@ -137,6 +182,33 @@ impl SummaryMapper for EffectSummarySubstitution<'_> {
     }
     fn invalid_structure(&self) -> Self::Error {
         SummarySubstitutionError::InvalidStructure
+    }
+    fn unsupported_residual_substitution(&self) -> Self::Error {
+        SummarySubstitutionError::UnsupportedResidualSubstitution
+    }
+    fn residual_checks(
+        &mut self,
+        checks: &crate::ResidualCheckSet,
+    ) -> Result<crate::ResidualCheckSet, Self::Error> {
+        if !checks.is_empty()
+            && self.residual_bindings.is_none()
+            && (!self.types.is_identity_mapping() || !self.rows.is_empty())
+        {
+            return Err(self.unsupported_residual_substitution());
+        }
+        let mut result = crate::ResidualCheckSet::default();
+        for reference in checks.iter() {
+            self.checkpoint()?;
+            let reference = if let Some(bindings) = self.residual_bindings {
+                reference
+                    .substitute_with_budget(bindings, &mut self.remaining)
+                    .map_err(SummarySubstitutionError::Residual)?
+            } else {
+                reference.clone()
+            };
+            result.insert(reference);
+        }
+        Ok(result)
     }
     fn ty(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
         self.checkpoint()?;

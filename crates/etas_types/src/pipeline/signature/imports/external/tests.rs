@@ -17,10 +17,34 @@ fn with_declarations(
     declarations: Vec<Decl>,
     assert: impl FnOnce(&TypePipelineContext<'_>, etas_hir::SymbolId),
 ) {
+    with_declarations_and_specs(declarations, Vec::new(), assert);
+}
+
+fn with_declarations_and_specs(
+    declarations: Vec<Decl>,
+    specs: Vec<crate::ExternalSpecSignatureInput>,
+    assert: impl FnOnce(&TypePipelineContext<'_>, etas_hir::SymbolId),
+) {
+    with_binding(
+        declarations,
+        specs,
+        "import dep.A;",
+        path("A"),
+        |ctx, symbol| assert(ctx, symbol),
+    );
+}
+
+fn with_binding(
+    declarations: Vec<Decl>,
+    specs: Vec<crate::ExternalSpecSignatureInput>,
+    source: &str,
+    binding_path: Vec<String>,
+    assert: impl FnOnce(&mut TypePipelineContext<'_>, etas_hir::SymbolId),
+) {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(73),
         None,
-        "import dep.A;",
+        source,
     ));
     assert!(parsed.diagnostics.is_empty());
     let hir = etas_hir::lower_program(&parsed.value);
@@ -44,7 +68,7 @@ fn with_declarations(
             tools: Vec::new(),
             effects: Vec::new(),
             trace_specs: Vec::new(),
-            spec_signatures: Vec::new(),
+            spec_signatures: specs,
             spec_impls: Vec::new(),
             type_spec_satisfactions: Vec::new(),
             callable_spec_satisfactions: Vec::new(),
@@ -54,14 +78,184 @@ fn with_declarations(
         symbol_bindings: vec![crate::ExternalSymbolBindingInput {
             symbol,
             package,
-            path: path("A"),
+            path: binding_path,
             span,
         }],
         ..Default::default()
     };
     let mut ctx = TypePipelineContext::new(&hir);
     apply_external_signature_input(&mut ctx, &input);
-    assert(&ctx, symbol);
+    assert(&mut ctx, symbol);
+}
+
+#[test]
+fn imported_spec_alias_reuses_checked_external_method_signature() {
+    let method_path = vec!["dep".into(), "Show".into(), "render".into()];
+    let signature = crate::ExternalSpecSignatureInput {
+        path: path("Show"),
+        kind: crate::ExternalSpecKindInput::Type,
+        param_names: vec![],
+        generic_params: vec![],
+        callable: None,
+        methods: vec![crate::ExternalSpecMethodInput {
+            name: "render".into(),
+            path: method_path.clone(),
+            signature: Some(crate::ExternalFlowSignatureInput {
+                path: method_path,
+                generic_params: vec![],
+                params: vec![Ty::Primitive("i32".into())],
+                output: Ty::Primitive("string".into()),
+                effects: None,
+            }),
+        }],
+        super_specs: vec![],
+    };
+    with_binding(
+        vec![],
+        vec![signature],
+        "import dep.Show as A;",
+        path("Show"),
+        |ctx, symbol| {
+            assert!(ctx.diagnostics.is_empty(), "{:?}", ctx.diagnostics);
+            let identity = crate::facts::specs::ExternalSpecIdentity {
+                package: 7,
+                path: path("Show"),
+            };
+            let external = &ctx.signature_facts.external_specs.signatures[&identity].methods[0];
+            let alias = &ctx.signature_facts.spec_signatures[&symbol].methods[0];
+            assert_eq!(alias.name, external.name);
+            assert_eq!(alias.signature, external.signature);
+            assert!(matches!((&alias.identity, &external.identity),
+            (SpecMethodIdentity::External { package: left, path: left_path }, SpecMethodIdentity::External { package: right, path: right_path })
+            if left == right && left_path == right_path));
+        },
+    );
+}
+
+#[test]
+fn imported_spec_alias_rejects_missing_checked_method_facts() {
+    let signature = crate::ExternalSpecSignatureInput {
+        path: path("Show"),
+        kind: crate::ExternalSpecKindInput::Type,
+        param_names: vec![],
+        generic_params: vec![],
+        callable: None,
+        methods: vec![crate::ExternalSpecMethodInput {
+            name: "render".into(),
+            path: vec!["dep".into(), "Show".into(), "render".into()],
+            signature: None,
+        }],
+        super_specs: vec![],
+    };
+    with_binding(
+        vec![],
+        vec![signature.clone()],
+        "import dep.Show as A;",
+        path("Show"),
+        |ctx, symbol| {
+            assert!(ctx.diagnostics.is_empty(), "{:?}", ctx.diagnostics);
+            let identity = crate::facts::specs::ExternalSpecIdentity {
+                package: 7,
+                path: path("Show"),
+            };
+            ctx.signature_facts
+                .external_specs
+                .signatures
+                .get_mut(&identity)
+                .unwrap()
+                .methods
+                .clear();
+            let span = ctx.hir.symbols.get(symbol).unwrap().definition_span;
+            assert!(
+                lower_external_spec_signature(ctx, ExternalPackageKey(7), symbol, span, &signature)
+                    .is_none()
+            );
+            assert!(!ctx.diagnostics.is_empty());
+        },
+    );
+}
+
+#[test]
+fn external_spec_methods_are_checked_without_importing_the_spec_name() {
+    let method_path = vec!["dep".into(), "Show".into(), "render".into()];
+    let signature = crate::ExternalSpecSignatureInput {
+        path: path("Show"),
+        kind: crate::ExternalSpecKindInput::Type,
+        param_names: vec![],
+        generic_params: vec![],
+        callable: None,
+        methods: vec![crate::ExternalSpecMethodInput {
+            name: "render".into(),
+            path: method_path.clone(),
+            signature: Some(crate::ExternalFlowSignatureInput {
+                path: method_path.clone(),
+                generic_params: vec![
+                    crate::ExternalCallableGenericParamInput {
+                        name: "T".into(),
+                        kind: crate::ExternalCallableGenericParamKindInput::Type,
+                        bounds: vec![crate::ExternalSpecBoundInput {
+                            spec: path("Show"),
+                            args: vec![],
+                        }],
+                    },
+                    crate::ExternalCallableGenericParamInput {
+                        name: "E".into(),
+                        kind: crate::ExternalCallableGenericParamKindInput::Effect,
+                        bounds: vec![],
+                    },
+                ],
+                params: vec![Ty::Primitive("i32".into()), Ty::Var("T".into())],
+                output: Ty::Primitive("string".into()),
+                effects: Some(crate::ExternalEffectRowInput {
+                    effects: vec![crate::ExternalEffectRefInput {
+                        path: vec!["Error".into()],
+                        args: vec![crate::ExternalEffectArgInput::Type(Ty::Var("T".into()))],
+                    }],
+                    tail: Some("E".into()),
+                }),
+            }),
+        }],
+        super_specs: vec![],
+    };
+    with_declarations_and_specs(
+        vec![declaration("A", Ty::Primitive("i32".into()))],
+        vec![signature],
+        |ctx, _| {
+            assert!(ctx.diagnostics.is_empty(), "{:?}", ctx.diagnostics);
+            let identity = crate::facts::specs::ExternalSpecIdentity {
+                package: 7,
+                path: path("Show"),
+            };
+            let signature = &ctx.signature_facts.external_specs.signatures[&identity];
+            assert_eq!(signature.methods.len(), 1);
+            let method = &signature.methods[0];
+            assert_eq!(method.name, "render");
+            assert!(
+                matches!(&method.identity, SpecMethodIdentity::External { package: 7, path } if *path == method_path)
+            );
+            let callable = method.signature.as_ref().unwrap();
+            assert_eq!(callable.params.len(), 2);
+            assert_eq!(callable.generic_params.len(), 2);
+            assert_eq!(callable.params[1], callable.generic_params[0].subject);
+            assert_eq!(callable.generic_params[0].bounds.len(), 1);
+            assert_eq!(
+                callable.effects.as_ref().unwrap().tail.as_deref(),
+                Some("E")
+            );
+            assert_eq!(
+                callable.effects.as_ref().unwrap().effects[0].args,
+                vec![crate::EffectArgRef::Type(callable.params[1])]
+            );
+            assert!(matches!(
+                ctx.interner.store().get(callable.params[0]),
+                Some(Type::Primitive(crate::PrimitiveType::I32))
+            ));
+            assert!(matches!(
+                ctx.interner.store().get(callable.output),
+                Some(Type::Primitive(crate::PrimitiveType::String))
+            ));
+        },
+    );
 }
 
 #[test]

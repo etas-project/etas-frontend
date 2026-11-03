@@ -1,5 +1,8 @@
+mod descriptor;
 mod display;
 mod enum_payload;
+mod foreign;
+mod graph;
 mod nominal;
 mod normalize;
 mod primitive;
@@ -10,13 +13,22 @@ mod store;
 mod substitution;
 
 pub(crate) use store::TypeBaseBuildError;
-pub use store::{SharedTypeBase, TypeBaseId, TypeInterner, TypeLookupIndex, TypeStore};
+pub use store::{
+    CanonicalTypeParameterIdentity, SharedTypeBase, TypeBaseId, TypeInterner, TypeLookupIndex,
+    TypeStore,
+};
 
+pub use descriptor::{
+    ClosedStructuralTypeError, closed_structural_type_fingerprint, symbolic_action_type_selector,
+    symbolic_structural_type_template,
+};
 pub use display::display_type;
+pub use foreign::{ForeignTypeGraph, ForeignTypeGraphInput, relocate_foreign_type_graph};
+pub use graph::checked_type_graph;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
 pub use normalize::{
-    applied_representation, nominal_representation_parts, record_fields_with_applied_params,
-    type_contains_named_param,
+    applied_representation, applied_representation_in_store, nominal_representation_parts,
+    record_fields_with_applied_params, type_contains_named_param,
 };
 pub use primitive::PrimitiveType;
 pub use representation::{TypeRepresentationMaterializer, materialize_representations};
@@ -24,8 +36,9 @@ pub use row::{EffectArgRef, EffectRef, EffectRowRef};
 pub use scheme::{TypeConstructorId, TypeScheme, TypeVarId};
 pub use substitution::{
     TypeRelocationInput, TypeRelocationMaterializationInput, TypeSubstitutionBudget,
-    TypeSubstitutionEngine, TypeSubstitutionError, substitute_effect_row_params,
-    substitute_named_params, substitute_named_params_in_store, substitute_type_params,
+    TypeSubstitutionEngine, TypeSubstitutionError, canonical_parameters_for_application,
+    substitute_effect_row_params, substitute_named_params, substitute_named_params_in_store,
+    substitute_type_params,
 };
 
 #[derive(

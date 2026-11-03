@@ -22,6 +22,7 @@ pub(crate) struct FrozenCalls<'a> {
     pub std_registry: &'a etas_std::StdRegistry,
     pub limits: etas_code::descriptor::DescriptorLimits,
     pub reachable_items: &'a std::collections::BTreeSet<HirItemId>,
+    pub foreign_type_bindings: Option<&'a crate::code::definition::ForeignTypeBindings>,
 }
 
 impl etas_effects::FrozenCallableSummaryProvider for FrozenCalls<'_> {
@@ -52,6 +53,7 @@ impl FrozenCalls<'_> {
         let origins: DefinitionOrigins = frozen.origins_for_hir(self.hir)?;
         let input = DescriptorInput {
             hir: self.hir,
+            sources: None,
             types: &self.types.facts,
             type_store: &self.types.store,
             std_registry: self.std_registry,
@@ -59,6 +61,7 @@ impl FrozenCalls<'_> {
             module_index: self.modules,
             effect_registry: registry,
             effects: None,
+            foreign_type_bindings: self.foreign_type_bindings,
         };
         let from =
             projection::Projection::build(original.as_ref().into(), &source_origins, self.limits)?;

@@ -1547,6 +1547,12 @@ fn hir_item_signature_fingerprint_parts(
         HirItem::Spec(item) => {
             parts.push("kind:spec".to_owned());
             parts.push(format!("symbol:{}", symbol_name(hir, item.symbol)));
+            if let Some(trace) = &item.trace {
+                parts.push(format!(
+                    "trace:{}",
+                    hir_spec_expr_signature_part(trace, hir)
+                ));
+            }
             for (index, bound) in item.bounds.iter().enumerate() {
                 parts.push(format!(
                     "super_spec:{index}:{}",
@@ -1880,6 +1886,23 @@ fn hir_effect_arg_signature_part(arg: &HirEffectArg, hir: &HirProgram) -> String
     match arg {
         HirEffectArg::Type(ty) => format!("type:{}", hir_type_signature_part(*ty, hir)),
         HirEffectArg::Path(path) => format!("path:{}", path_signature_part(path)),
+        HirEffectArg::PatternBinding { name, bounds, .. } => format!(
+            "pattern:{name}:{}",
+            bounds
+                .iter()
+                .map(|bound| format!(
+                    "{}<{}>",
+                    path_signature_part(&bound.path),
+                    bound
+                        .args
+                        .iter()
+                        .map(|ty| hir_type_signature_part(*ty, hir))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ))
+                .collect::<Vec<_>>()
+                .join("+")
+        ),
         HirEffectArg::Wildcard { .. } => "wildcard:_".to_owned(),
         HirEffectArg::String { value, .. } => format!("string:{value:?}"),
         HirEffectArg::Int { text, .. } => format!("int:{text}"),
@@ -1953,6 +1976,15 @@ fn source_set_fingerprint(sources: &SourceSet) -> ArtifactFingerprint {
         );
         parts.push(source.text.to_string());
         parts.push(format!("{:?}", source.kind));
+    }
+    let mut stable_keys = sources.stable_source_keys.iter().collect::<Vec<_>>();
+    stable_keys.sort_by_key(|entry| (entry.source.0, entry.key));
+    for entry in stable_keys {
+        parts.push(format!(
+            "stable-source:{}:{}",
+            entry.source.0,
+            entry.key.fingerprint()
+        ));
     }
     let refs = parts.iter().map(String::as_str).collect::<Vec<_>>();
     fingerprint_text(&refs)

@@ -112,6 +112,51 @@ fn applied_constructors_use_identity_not_arena_numbers() {
 }
 
 #[test]
+fn canonical_type_and_binder_identities_participate_in_fingerprints() {
+    use etas_code::{DefinitionKey, DefinitionKind, PackageKey};
+    let key = |package: &str| {
+        DefinitionKey::new(
+            PackageKey::from_name_and_version(package, "1.0.0").unwrap(),
+            vec!["app".into()],
+            vec!["Token".into()],
+            DefinitionKind::Type,
+        )
+        .unwrap()
+    };
+    let make = |package: &str| {
+        let mut types = etas_types::TypeInterner::new();
+        let nominal = types
+            .intern_canonical_nominal(
+                key(package),
+                Type::Nominal(NominalTypeRef {
+                    name: "Token".into(),
+                    params: vec![],
+                    representation: None,
+                    read_only_erased_view: false,
+                }),
+            )
+            .unwrap();
+        let binder = types
+            .intern_canonical_parameter(
+                etas_types::ty::CanonicalTypeParameterIdentity::new(key(package), 0).unwrap(),
+                "T".into(),
+            )
+            .unwrap();
+        (types.into_store(), nominal, binder)
+    };
+    let (first, nominal_a, binder_a) = make("first");
+    let (second, nominal_b, binder_b) = make("second");
+    assert_ne!(
+        type_part(nominal_a, &first).unwrap(),
+        type_part(nominal_b, &second).unwrap()
+    );
+    assert_ne!(
+        type_part(binder_a, &first).unwrap(),
+        type_part(binder_b, &second).unwrap()
+    );
+}
+
+#[test]
 fn missing_checked_types_are_errors_not_panics_or_placeholder_hashes() {
     let error = type_part(TypeId(9), &TypeStore::new()).unwrap_err();
     assert!(error.contains("missing type 9"));

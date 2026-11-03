@@ -6,9 +6,10 @@ use etas_code::{
 };
 
 use super::DefinitionCatalog;
-use crate::code::descriptor::ProjectionError;
+use crate::{CheckedProgram, code::descriptor::ProjectionError};
 
 mod application;
+pub(super) use application::applied_contract_fingerprint;
 mod latent_fingerprint;
 
 /// Immutable contract description. Native compilation additionally requires
@@ -255,9 +256,41 @@ impl FrozenDefinitionContract {
             let signature = graph.type_fingerprint(callable.signature)?;
             let rows = &callable.analysis.effects;
             let mut fields = vec![callable.id.fingerprint(), signature];
+            let residuals = match &applied {
+                Some(applied) => Some(&applied.behavior.summary().residual_checks),
+                None => catalog
+                    .item_owner(&callable.id)
+                    .and_then(|item| catalog.checked.effects.item_effects.get(&item))
+                    .map(|summary| &summary.residual_checks),
+            };
+            fields.push(match residuals {
+                Some(checks) => {
+                    let references = checks
+                        .iter()
+                        .map(|reference| reference.fingerprint())
+                        .collect::<Vec<_>>();
+                    CodeFingerprint::of_parts(
+                        "etas.code.frozen-residual-references.v1",
+                        references
+                            .iter()
+                            .map(|reference| reference.as_bytes().as_slice()),
+                    )
+                }
+                None => {
+                    CodeFingerprint::of_bytes("etas.code.unavailable-residual-references.v1", b"")
+                }
+            });
+            let item = catalog.item_owner(&callable.id).ok_or_else(|| {
+                ProjectionError::MissingIdentity("frozen residual callable owner".into())
+            })?;
+            fields.push(public_residual_fingerprint(&catalog.checked, item));
             fields.push(match latent_graphs.get(&callable.id) {
                 Some(graph) => latent_fingerprint::fingerprint(catalog, &graph.graph)?,
                 None => CodeFingerprint::of_bytes("etas.code.no-latent-contract-proof.v1", b""),
+            });
+            fields.push(match latent_graphs.get(&callable.id) {
+                Some(graph) => graph_residual_fingerprint(&catalog.checked, graph),
+                None => CodeFingerprint::of_bytes("etas.code.no-latent-residual-graph.v1", b""),
             });
             fields.push(match request_instances.get(&callable.id) {
                 Some(instances) => CodeFingerprint::of_parts(
@@ -315,14 +348,23 @@ impl FrozenDefinitionContract {
                 None => CodeFingerprint::of_bytes("etas.code.absent-contract-outcomes.v1", b""),
             });
             parts.push(CodeFingerprint::of_parts(
-                "etas.code.frozen-callable-contract.v5",
+                "etas.code.frozen-callable-contract.v8",
                 fields.iter().map(|part| part.as_bytes().as_slice()),
             ));
         }
         let fingerprint = CodeFingerprint::of_parts(
-            "etas.code.frozen-definition-contract.v1",
+            "etas.code.frozen-definition-contract.v2",
             parts.iter().map(|part| part.as_bytes().as_slice()),
         );
+        let fingerprint = match &applied {
+            Some(applied) => application::applied_contract_fingerprint(
+                applied.template_fingerprint,
+                applied.fingerprint,
+                &graph,
+                &applied.header,
+            )?,
+            None => fingerprint,
+        };
         Ok(Arc::new(Self {
             owner,
             graph,
@@ -376,6 +418,115 @@ impl FrozenDefinitionContract {
     ) -> Option<&Arc<crate::package_metadata::CheckedCallableGraph>> {
         self.latent_graphs.get(id)
     }
+}
+
+fn residual_references_fingerprint(
+    checks: &etas_effects::ResidualCheckSet,
+    domain: &'static str,
+) -> CodeFingerprint {
+    let references = checks
+        .iter()
+        .map(|reference| reference.fingerprint())
+        .collect::<Vec<_>>();
+    CodeFingerprint::of_parts(
+        domain,
+        references.iter().map(|value| value.as_bytes().as_slice()),
+    )
+}
+
+fn graph_residual_fingerprint(
+    checked: &CheckedProgram,
+    graph: &crate::package_metadata::CheckedCallableGraph,
+) -> CodeFingerprint {
+    let Some(facts) = crate::package_metadata::graph_residual_facts(checked, graph) else {
+        return CodeFingerprint::of_bytes("etas.code.unavailable-graph-residual-facts.v1", b"");
+    };
+    let nodes = facts
+        .iter()
+        .map(|facts| {
+            let solved = residual_references_fingerprint(
+                facts.solved,
+                "etas.code.graph-solved-residuals.v1",
+            );
+            let latent = facts.latent.map_or_else(
+                || CodeFingerprint::of_bytes("etas.code.no-node-latent-residuals.v1", b""),
+                |checks| {
+                    residual_references_fingerprint(checks, "etas.code.graph-latent-residuals.v1")
+                },
+            );
+            CodeFingerprint::of_parts(
+                "etas.code.graph-residual-node.v1",
+                [solved.as_bytes().as_slice(), latent.as_bytes().as_slice()],
+            )
+        })
+        .collect::<Vec<_>>();
+    CodeFingerprint::of_parts(
+        "etas.code.graph-residual-nodes.v1",
+        nodes.iter().map(|value| value.as_bytes().as_slice()),
+    )
+}
+
+// These references currently gate execution rather than proving installation.
+// An exact portable latent-plan binding remains required before that gate opens.
+fn public_residual_fingerprint(
+    checked: &CheckedProgram,
+    item: etas_hir::HirItemId,
+) -> CodeFingerprint {
+    let mut contracts = Vec::new();
+    for contract in checked
+        .effects
+        .public_contracts
+        .iter()
+        .filter(|contract| contract.item == item)
+    {
+        let mut references = contract
+            .residual_checks
+            .iter()
+            .map(|reference| reference.fingerprint())
+            .collect::<Vec<_>>();
+        references.sort_unstable();
+        let public = CodeFingerprint::of_parts(
+            "etas.code.public-residual-references.v1",
+            references.iter().map(|value| value.as_bytes().as_slice()),
+        );
+        let mut latents = Vec::new();
+        for latent in &contract.latent_flows {
+            let fingerprint = match checked.effects.latent_effects.get(&latent.value) {
+                Some(fact) => {
+                    let mut references = fact
+                        .summary
+                        .residual_checks
+                        .iter()
+                        .map(|reference| reference.fingerprint())
+                        .collect::<Vec<_>>();
+                    references.sort_unstable();
+                    CodeFingerprint::of_parts(
+                        "etas.code.latent-residual-references.v1",
+                        references.iter().map(|value| value.as_bytes().as_slice()),
+                    )
+                }
+                None => CodeFingerprint::of_bytes(
+                    "etas.code.unavailable-latent-residual-references.v1",
+                    b"",
+                ),
+            };
+            latents.push(fingerprint);
+        }
+        latents.sort_unstable();
+        let latent = CodeFingerprint::of_parts(
+            "etas.code.latent-residual-set.v1",
+            latents.iter().map(|value| value.as_bytes().as_slice()),
+        );
+        contracts.push(CodeFingerprint::of_parts(
+            "etas.code.public-residual-contract.v1",
+            [public.as_bytes().as_slice(), latent.as_bytes().as_slice()],
+        ));
+    }
+    contracts.sort_unstable();
+    CodeFingerprint::of_parts(
+        "etas.code.public-residual-contracts.v1",
+        contracts.iter().map(|value| value.as_bytes().as_slice()),
+    )
 }
 
 pub(crate) fn callable_request_instances(

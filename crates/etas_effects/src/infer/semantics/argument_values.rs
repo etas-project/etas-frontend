@@ -173,6 +173,24 @@ pub(super) fn enclosing_handlers(
     expression: HirExprId,
     control: Option<&dyn etas_utils::PipelineExecutionControl>,
 ) -> Result<(Option<bool>, Option<Vec<HirExprId>>), etas_utils::PipelineInterruption> {
+    handler_context(hir, expression, control, false)
+}
+
+pub(super) fn nearest_enclosing_handler(
+    hir: &HirRevision,
+    expression: HirExprId,
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+) -> Result<Option<HirExprId>, etas_utils::PipelineInterruption> {
+    let (_, handlers) = handler_context(hir, expression, control, true)?;
+    Ok(handlers.and_then(|handlers| handlers.first().copied()))
+}
+
+fn handler_context(
+    hir: &HirRevision,
+    expression: HirExprId,
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+    nearest_only: bool,
+) -> Result<(Option<bool>, Option<Vec<HirExprId>>), etas_utils::PipelineInterruption> {
     use etas_hir::{HirBodyKind, HirOwner};
     let index = hir.index();
     let Some(mut owner) = index.expr_owner.get(&expression).copied() else {
@@ -193,6 +211,9 @@ pub(super) fn enclosing_handlers(
                     Some(HirExpr::Handle { body, handler, .. }) => {
                         if child == HirOwner::Expr(*body) {
                             handlers.push(*handler);
+                            if nearest_only {
+                                return Ok((Some(false), Some(handlers)));
+                            }
                         } else if child != HirOwner::Expr(*handler) {
                             return Ok((None, None));
                         }

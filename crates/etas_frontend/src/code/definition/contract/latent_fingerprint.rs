@@ -35,7 +35,13 @@ struct Fingerprinter<'a> {
 
 impl Fingerprinter<'_> {
     fn node(&self, node: &metadata::CallableValueNode) -> Result<CodeFingerprint, ProjectionError> {
+        let residuals = node
+            .residual_checks
+            .iter()
+            .map(|reference| reference.fingerprint())
+            .collect::<Vec<_>>();
         let mut parts = vec![
+            combine("etas.code.latent-residual-references.v1", residuals),
             encoded("behavior", &node.behavior)?,
             encoded("parent", &node.parent_scope)?,
             encoded("generic-bindings", &node.generic_bindings)?,
@@ -97,7 +103,7 @@ impl Fingerprinter<'_> {
             ),
             None => combine("etas.code.unavailable-request-instances.v1", []),
         });
-        Ok(combine("etas.code.latent-node.v1", parts))
+        Ok(combine("etas.code.latent-node.v2", parts))
     }
 
     fn requests(

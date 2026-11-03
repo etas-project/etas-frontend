@@ -68,6 +68,36 @@ impl EffectSemantics<'_> {
                 value,
                 environment,
             ),
+            LatentSource::ExternalFrozen { reflection } => (
+                CallableReferenceTarget::External {
+                    callable: self
+                        .external_reflection_metadata(reflection)?
+                        .callable_contract
+                        .as_ref()?
+                        .header
+                        .id
+                        .clone(),
+                    frozen: true,
+                    reflection: true,
+                },
+                reflection,
+                None,
+            ),
+            LatentSource::ExternalReference { value, frozen } => (
+                CallableReferenceTarget::External {
+                    callable: self
+                        .external_reference_metadata(value)?
+                        .callable_contract
+                        .as_ref()?
+                        .header
+                        .id
+                        .clone(),
+                    frozen,
+                    reflection: false,
+                },
+                value,
+                None,
+            ),
             _ => return None,
         };
         let mut reference = self.callable_reference_key(target, value)?;
@@ -183,6 +213,8 @@ pub(super) fn reference_value(source: LatentSource) -> Option<HirExprId> {
         LatentSource::Reference { value, .. } | LatentSource::StdReference { value, .. } => {
             Some(value)
         }
+        LatentSource::ExternalFrozen { reflection } => Some(reflection),
+        LatentSource::ExternalReference { value, .. } => Some(value),
         _ => None,
     }
 }
@@ -199,6 +231,11 @@ pub(in crate::infer::semantics) fn with_environment(
         }),
         LatentSource::StdReference { value, .. } => {
             Ok(LatentSource::StdReference { value, environment })
+        }
+        source @ (LatentSource::ExternalFrozen { .. } | LatentSource::ExternalReference { .. })
+            if environment.is_none() =>
+        {
+            Ok(source)
         }
         _ => Err(invalid(
             "capture target is not a checked callable reference",

@@ -113,7 +113,7 @@ impl DefinitionCatalog {
     }
 
     pub fn freeze_callable_application(
-        &self,
+        self: &Arc<Self>,
         application: &crate::CheckedCallableApplication,
         limits: etas_code::descriptor::DescriptorLimits,
     ) -> Result<Arc<super::FrozenDefinitionEnvironment>, ProjectionError> {
@@ -122,7 +122,7 @@ impl DefinitionCatalog {
         }
         let contract =
             super::FrozenDefinitionContract::capture_application(self, application, limits)?;
-        self.freeze_contract(contract, application.owner())
+        self.freeze_contract(contract, application.owner(), Some(self.clone()))
     }
 
     pub(super) fn editable_flow_reflection(
@@ -176,7 +176,7 @@ impl DefinitionCatalog {
             ));
         }
         let contract = super::FrozenDefinitionContract::capture_flow(self, header)?;
-        self.freeze_contract(contract, item)
+        self.freeze_contract(contract, item, None)
     }
 
     pub(super) fn freeze_agent_view(
@@ -208,13 +208,14 @@ impl DefinitionCatalog {
             .header
             .clone();
         let contract = super::FrozenDefinitionContract::capture_agent(self, agent)?;
-        self.freeze_contract(contract, item)
+        self.freeze_contract(contract, item, None)
     }
 
     fn freeze_contract(
         &self,
         contract: Arc<super::FrozenDefinitionContract>,
         declaration: HirItemId,
+        proof_catalog: Option<Arc<Self>>,
     ) -> Result<Arc<super::FrozenDefinitionEnvironment>, ProjectionError> {
         let body = contract
             .entry()
@@ -224,16 +225,22 @@ impl DefinitionCatalog {
                 })
             })
             .transpose()?;
-        let callable_slots = contract
+        let callable_owners = contract
             .callables()
             .map(|(id, _)| {
                 let item = self.item_owner(id).ok_or_else(|| {
                     ProjectionError::MissingIdentity("frozen callable native body owner".into())
                 })?;
+                Ok((id.clone(), item))
+            })
+            .collect::<Result<std::collections::BTreeMap<_, _>, ProjectionError>>()?;
+        let callable_slots = callable_owners
+            .iter()
+            .map(|(id, item)| {
                 let slot = self
                     .checked
                     .definition_sources
-                    .body(item)
+                    .body(*item)
                     .cloned()
                     .ok_or_else(|| {
                         ProjectionError::MissingIdentity("frozen callable native body slot".into())
@@ -248,7 +255,11 @@ impl DefinitionCatalog {
             body,
             self.origins.clone(),
             self.body_revision_fingerprint()?,
-            callable_slots,
+            super::environment::FrozenCallableBindings {
+                slots: callable_slots,
+                owners: callable_owners,
+                proof_catalog,
+            },
         )
     }
 
@@ -424,6 +435,11 @@ impl DefinitionCatalog {
         &self,
     ) -> impl Iterator<Item = (etas_types::TypeId, &DefinitionKey)> {
         super::relocation::native_type_declarations(&self.checked.type_store, &self.identities)
+    }
+
+    pub(crate) fn native_type_declaration(&self, ty: etas_types::TypeId) -> Option<&DefinitionKey> {
+        let declaration = self.identities.types.get(&ty)?;
+        declaration.alias.is_none().then_some(&declaration.identity)
     }
 
     pub fn native_effect_identity(
@@ -671,6 +687,14 @@ impl DefinitionCatalog {
                             .identities
                             .symbol(*symbol)
                             .ok_or(ProjectionError::MissingDeclaration(*symbol)),
+                        CheckedSpecRef::Canonical(identity)
+                            if identity.kind() == etas_code::DefinitionKind::Spec =>
+                        {
+                            Ok(identity)
+                        }
+                        CheckedSpecRef::Canonical(_) => Err(ProjectionError::Invalid(
+                            "canonical spec identity has the wrong kind".into(),
+                        )),
                         CheckedSpecRef::Std(path)
                         | CheckedSpecRef::External(
                             etas_types::facts::specs::ExternalSpecIdentity { path, .. },
@@ -924,6 +948,16 @@ impl DefinitionCatalog {
                     .identities
                     .symbol(*symbol)
                     .ok_or(ProjectionError::MissingDeclaration(*symbol))?,
+                CheckedSpecRef::Canonical(identity)
+                    if identity.kind() == etas_code::DefinitionKind::Spec =>
+                {
+                    identity
+                }
+                CheckedSpecRef::Canonical(_) => {
+                    return Err(ProjectionError::Invalid(
+                        "canonical spec identity has the wrong kind".into(),
+                    ));
+                }
                 CheckedSpecRef::Std(path)
                 | CheckedSpecRef::External(etas_types::facts::specs::ExternalSpecIdentity {
                     path,

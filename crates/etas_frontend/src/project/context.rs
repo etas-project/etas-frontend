@@ -60,6 +60,12 @@ pub struct ProjectContext {
     pub(crate) type_body_outputs: HashMap<UnitId, Arc<etas_types::BodyTypeOutput>>,
     pub(crate) effect_body_outputs: HashMap<UnitId, Arc<etas_effects::BodyEffectOutput>>,
     pub(crate) effect_pipeline_artifacts: Option<Arc<EffectPipelineArtifacts>>,
+    /// Residual plans verified against this run's trace analysis.
+    pub(crate) residual_plans: Option<Arc<etas_effects::residual::VerifiedResidualPlans>>,
+    /// Selected-target support for every verified plan.
+    pub(crate) residual_support: Option<Arc<crate::passes::execution::ResidualBackendSupportFacts>>,
+    /// Identity index of the same run's canonical residual projections.
+    pub(crate) residual_identities: Option<Arc<crate::code::identity::DefinitionIdentityIndex>>,
     pub types: Option<TypeOutput>,
     pub effects: Option<SharedEffectOutput>,
     pub entry: Option<ProjectEntryFact>,
@@ -117,6 +123,9 @@ impl ProjectContext {
             type_body_outputs: HashMap::new(),
             effect_body_outputs: HashMap::new(),
             effect_pipeline_artifacts: None,
+            residual_plans: None,
+            residual_support: None,
+            residual_identities: None,
             types: None,
             effects: None,
             entry: None,

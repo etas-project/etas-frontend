@@ -378,7 +378,7 @@ fn selected_callable(
             .is_some_and(|entry| entry.method == Some(symbol)))
 }
 
-pub(super) fn callable_signature<'a>(
+pub(crate) fn callable_signature<'a>(
     checked: crate::code::descriptor::DescriptorInput<'a>,
     item: HirItemId,
 ) -> Option<&'a CallableSignature> {
@@ -389,7 +389,7 @@ pub(super) fn callable_signature<'a>(
     }
 }
 
-pub(super) fn callable_source_header(
+pub(crate) fn callable_source_header(
     checked: crate::code::descriptor::DescriptorInput<'_>,
     item: HirItemId,
 ) -> Result<(Vec<Option<String>>, Option<etas_types::TypeId>), ProjectionError> {

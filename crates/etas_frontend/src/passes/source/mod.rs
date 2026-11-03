@@ -41,6 +41,7 @@ impl Pass<ProjectContext> for BuildSourceSetPass {
                 .input
                 .environment
                 .canonical_external_modules_fingerprint(),
+            stable_source_keys: context.input.environment.stable_source_keys.clone(),
             files,
         }));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(SOURCE_SET))

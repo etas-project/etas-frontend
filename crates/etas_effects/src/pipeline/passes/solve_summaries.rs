@@ -36,6 +36,13 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
             ));
         };
         let parameter_effects = std::sync::Arc::new(frozen_calls.parameter_effects.clone());
+        let source_snapshots = match crate::infer::analysis::EffectSourceSnapshots::new(
+            context.input.source_snapshots,
+            manager.execution_control(),
+        ) {
+            Ok(snapshots) => std::sync::Arc::new(snapshots),
+            Err(error) => return context.fail(error),
+        };
         let analysis = run_effect_analysis(
             EffectAnalysisInput {
                 frozen_graphs: std::sync::Arc::new(frozen_calls.graphs.clone()),
@@ -49,6 +56,8 @@ impl<'a> Pass<EffectPipelineContext<'a>> for SolveSummariesPass {
                 parameter_effects: parameter_effects.clone(),
                 frozen_parameter_effects: parameter_effects,
                 hir: context.input.hir,
+                residual_identity: context.input.residual_identity,
+                source_snapshots,
                 types: context.input.types,
                 std_registry: context.input.std_registry,
                 memory_provenance: memory_provenance.clone(),

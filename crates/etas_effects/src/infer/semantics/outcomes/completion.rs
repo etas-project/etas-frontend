@@ -30,6 +30,9 @@ impl EffectSemantics<'_> {
         }) {
             return true;
         }
+        if self.checked_total_integer_identity(expr) {
+            return true;
+        }
         if !boolean(expr) {
             return false;
         }
@@ -51,6 +54,57 @@ impl EffectSemantics<'_> {
                 expr: operand,
                 ..
             }) => boolean(*operand),
+            _ => false,
+        }
+    }
+
+    fn checked_total_integer_identity(&self, expr: HirExprId) -> bool {
+        use etas_hir::HirBinaryOp as B;
+        use etas_types::PrimitiveType as P;
+
+        let Some(HirExpr::Binary { lhs, op, rhs, .. }) = self.hir.exprs.get(expr) else {
+            return false;
+        };
+        let Some(ty) = self.types.facts.expr_types.get(&expr).copied() else {
+            return false;
+        };
+        if !matches!(
+            self.types.store.get(ty),
+            Some(Type::Primitive(
+                P::I8
+                    | P::I16
+                    | P::I32
+                    | P::I64
+                    | P::I128
+                    | P::ISize
+                    | P::U8
+                    | P::U16
+                    | P::U32
+                    | P::U64
+                    | P::U128
+                    | P::USize
+            ))
+        ) || self.types.facts.expr_types.get(lhs) != Some(&ty)
+            || self.types.facts.expr_types.get(rhs) != Some(&ty)
+        {
+            return false;
+        }
+        let literal = |id: HirExprId| {
+            let expression = self.hir.exprs.get(id)?;
+            match super::super::argument_values::checked_literal_value(
+                self.hir, self.types, expression, ty,
+            )? {
+                crate::ParameterArgumentValue::Integer {
+                    negative: false,
+                    magnitude,
+                } => Some(magnitude),
+                _ => None,
+            }
+        };
+        match op {
+            B::Add => literal(*lhs) == Some(0) || literal(*rhs) == Some(0),
+            B::Sub => literal(*rhs) == Some(0),
+            B::Mul => matches!(literal(*lhs), Some(0 | 1)) || matches!(literal(*rhs), Some(0 | 1)),
             _ => false,
         }
     }
