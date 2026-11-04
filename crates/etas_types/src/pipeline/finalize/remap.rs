@@ -578,10 +578,11 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
                 .try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
                 .unwrap_or_else(|never| match never {});
         }
-        facts.methods = std::sync::Arc::new(crate::method::MethodIndex::build(
-            remapper.target.store(),
-            methods,
-        ));
+        facts.methods = std::sync::Arc::new(
+            facts
+                .methods
+                .with_remapped_types(remapper.target.store(), methods),
+        );
     }
     for fact in facts.checked_method_calls.values_mut() {
         fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))

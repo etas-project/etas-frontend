@@ -6,6 +6,7 @@ use super::{MethodEvidence, MethodSignatureFact, MethodTarget};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct MethodIndex {
+    pub(super) source_origins: HashMap<etas_hir::SymbolId, etas_code::MethodId>,
     entries: Vec<MethodSignatureFact>,
     members: HashMap<String, Vec<u32>>,
     nominal: HashMap<TypeId, HashMap<String, Vec<u32>>>,
@@ -16,6 +17,29 @@ pub struct MethodIndex {
 }
 
 impl MethodIndex {
+    pub fn target_identity<'a>(
+        &'a self,
+        target: &'a MethodTarget,
+    ) -> Option<&'a etas_code::MethodId> {
+        match target {
+            MethodTarget::Source { symbol, .. } | MethodTarget::Agent { symbol, .. } => {
+                self.source_origins.get(symbol)
+            }
+            MethodTarget::External { identity } => Some(identity),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_remapped_types(
+        &self,
+        store: &TypeStore,
+        entries: Vec<MethodSignatureFact>,
+    ) -> Self {
+        let mut index = Self::build(store, entries);
+        index.source_origins = self.source_origins.clone();
+        index
+    }
+
     pub fn build(store: &TypeStore, entries: Vec<MethodSignatureFact>) -> Self {
         let mut result = Self::default();
         for (index, entry) in entries.into_iter().enumerate() {

@@ -51,7 +51,7 @@ fn lower_objects(
                     let source_type = type_id(&node.source_type, resolver)?;
                     let implementation = resolver.method_witness(source_type, &bound.args, &member)
                         .ok_or_else(|| "object member has no checked implementation evidence".to_owned())?;
-                    if !matches!(&implementation.target, etas_types::method::MethodTarget::External { identity } if identity == method) {
+                    if resolver.method_identity(&implementation.target) != Some(method) {
                         return Err("object member target disagrees with its checked implementation".into());
                     }
                 }

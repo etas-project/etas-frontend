@@ -111,7 +111,12 @@ impl EffectSemantics<'_> {
                 invalid("metadata object generic recipe has no checked implementation")
             })?;
         if let ExistentialWitnessTarget::Implementation { method, .. } = &witness.target
-            && !matches!(&implementation.target, MethodTarget::External { identity } if identity == method)
+            && self
+                .types
+                .facts
+                .methods
+                .target_identity(&implementation.target)
+                != Some(method)
         {
             return Err(invalid(
                 "metadata object target differs from its checked member witness",

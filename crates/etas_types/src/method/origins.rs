@@ -109,6 +109,8 @@ impl MethodIndex {
             }
             entries.push(entry);
         }
-        Ok(Self::build(store, entries))
+        let mut index = Self::build(store, entries);
+        index.source_origins = origins.clone();
+        Ok(index)
     }
 }

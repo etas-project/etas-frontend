@@ -23,6 +23,13 @@ impl<'a> CheckedExternalTypeResolver<'a> {
     ) -> Option<&crate::method::MethodSignatureFact> {
         self.types.facts.methods.witness(receiver, args, member)
     }
+
+    pub fn method_identity<'b>(
+        &'b self,
+        target: &'b crate::method::MethodTarget,
+    ) -> Option<&'b etas_code::MethodId> {
+        self.types.facts.methods.target_identity(target)
+    }
     pub fn spec_member_identity(
         &self,
         spec: &crate::ExternalSpecIdentity,
