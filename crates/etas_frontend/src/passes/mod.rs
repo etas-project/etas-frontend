@@ -34,7 +34,9 @@ pub use hir::{
     PredeclareProjectSymbolsPass,
 };
 pub use module::{BuildModuleCatalogPass, BuildModuleIndexPass, BuildUnitTreePass};
-pub use optimization::{AgentEffectLegalityPass, PrepareVersionedRequestPass};
+pub use optimization::{
+    AgentEffectLegalityPass, PrepareVersionedRequestPass, VersionedPreparationCsePass,
+};
 pub use output::{BuildCheckedProjectPass, ResolveEntryItemPass, ValidateEntryContractPass};
 pub use resolution::{
     ApplyResolvedImportsToHirPass, BindValidatedExternalImportTargetsPass, CatalogModuleProvider,

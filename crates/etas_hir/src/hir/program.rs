@@ -26,6 +26,7 @@ pub struct HirProgram {
     pub modules_arena: HirModuleArena,
     pub source_map: SourceMap,
     pub diagnostics: Vec<Diagnostic>,
+    optimized_out_exprs: std::collections::HashSet<crate::HirExprId>,
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -37,6 +38,14 @@ pub struct HirAgentMethod {
 }
 
 impl HirProgram {
+    pub fn mark_expr_optimized_out(&mut self, expression: crate::HirExprId) {
+        self.optimized_out_exprs.insert(expression);
+    }
+
+    pub fn is_expr_optimized_out(&self, expression: crate::HirExprId) -> bool {
+        self.optimized_out_exprs.contains(&expression)
+    }
+
     /// Follow resolver-owned source bindings without reinterpreting textual paths.
     pub fn canonical_source_symbol(&self, symbol: crate::SymbolId) -> Option<crate::SymbolId> {
         let mut current = symbol;

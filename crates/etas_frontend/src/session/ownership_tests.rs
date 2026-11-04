@@ -412,7 +412,7 @@ fn memory_instrumentation_observes_real_passes_without_changing_retention() {
     assert!(result.output.checked.is_some());
     assert!(result.memory.retained_revision.is_none());
     assert!(result.memory.before.unwrap().allocations < result.memory.after.unwrap().allocations);
-    assert_eq!(result.memory.hir_index_builds, 3);
+    assert_eq!(result.memory.hir_index_builds, 2);
     assert!(
         result
             .memory

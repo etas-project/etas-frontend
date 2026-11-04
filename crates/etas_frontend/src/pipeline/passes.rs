@@ -17,7 +17,7 @@ use crate::passes::{
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
     ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
-    VerifyInterpreterSupportPass,
+    VerifyInterpreterSupportPass, VersionedPreparationCsePass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
@@ -120,6 +120,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(AnalyzeLoopProgressPass)
         .pass(AgentEffectLegalityPass)
         .pass(PrepareVersionedRequestPass)
+        .pass(VersionedPreparationCsePass)
         .pass(VerifyInterpreterSupportPass);
     if !candidate {
         pipeline.push_pass(ValidateEntryContractPass);

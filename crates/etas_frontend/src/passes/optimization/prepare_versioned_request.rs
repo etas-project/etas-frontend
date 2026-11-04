@@ -36,12 +36,16 @@ impl Pass<ProjectContext> for PrepareVersionedRequestPass {
             let output = context.hir.take().expect("HIR output should exist");
             let hoists = find_hoists(&output.hir, legality);
             rewritten = hoists.values().map(Vec::len).sum();
-            let mut editor = output.hir.edit();
-            apply_hoists(editor.program_mut(), &hoists);
-            let hir = editor
-                .finish()
-                .expect("typed-HIR optimization must preserve tree ownership");
-            context.hir = Some(HirOutput { hir });
+            context.hir = Some(if hoists.is_empty() {
+                output
+            } else {
+                let mut editor = output.hir.edit();
+                apply_hoists(editor.program_mut(), &hoists);
+                let hir = editor
+                    .finish()
+                    .expect("typed-HIR optimization must preserve tree ownership");
+                HirOutput { hir }
+            });
         }
         context
             .optimization_report

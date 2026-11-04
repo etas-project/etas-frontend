@@ -663,7 +663,9 @@ impl HirTreeIndexBuilder<'_> {
             }
         }
         for (expr, _) in self.program.exprs.iter() {
-            if !self.index.expr_owner.contains_key(&expr) {
+            if !self.index.expr_owner.contains_key(&expr)
+                && !self.program.is_expr_optimized_out(expr)
+            {
                 self.diagnostics.push(HirTreeIndexDiagnostic::OrphanNode {
                     kind: HirTreeNodeKind::Expr,
                     id: expr.0,
