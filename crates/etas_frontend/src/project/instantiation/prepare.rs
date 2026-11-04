@@ -142,6 +142,9 @@ pub(crate) fn prepare_from_targets(
         .chain(types.facts.checked_method_calls.keys())
         .chain(types.facts.existential_packs.keys())
     {
+        if hir.program().is_expr_optimized_out(*call) {
+            continue;
+        }
         if targets.get(call).is_none_or(BTreeSet::is_empty)
             && !types.facts.checked_method_calls.contains_key(call)
             && !types.facts.existential_packs.contains_key(call)
@@ -168,6 +171,9 @@ pub(crate) fn prepare_from_targets(
     }
     let mut roots = BTreeMap::<HirItemId, Vec<TypeId>>::new();
     for (expr, ty) in &types.facts.expr_types {
+        if hir.program().is_expr_optimized_out(*expr) {
+            continue;
+        }
         let owner = index
             .expr_item
             .get(expr)
@@ -175,6 +181,9 @@ pub(crate) fn prepare_from_targets(
         roots.entry(*owner).or_default().push(*ty);
     }
     for (expr, method) in &types.facts.std_intrinsic_calls {
+        if hir.program().is_expr_optimized_out(*expr) {
+            continue;
+        }
         let owner = index
             .expr_item
             .get(expr)

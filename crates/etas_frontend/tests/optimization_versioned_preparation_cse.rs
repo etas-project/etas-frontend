@@ -72,6 +72,28 @@ fn ten_real_versioned_preparations_are_commoned() {
     }
 }
 
+#[test]
+fn commoned_generic_method_calls_reconcile_checked_call_facts() {
+    let checked = compile(
+        r#"
+flow main() -> bool {
+    let first: Range<u64> = Range.closed(0, 18446744073709551615);
+    let same: Range<u64> = Range.closed(0, 18446744073709551615);
+    return first == same;
+}
+"#,
+        true,
+    );
+    assert_eq!(
+        checked
+            .optimization_report
+            .pass("VersionedPreparationCSE")
+            .unwrap()
+            .rewritten,
+        1
+    );
+}
+
 fn compile(source: &str, optimize_hir: bool) -> etas_frontend::CheckedProject {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
     input.options.optimize_hir = optimize_hir;

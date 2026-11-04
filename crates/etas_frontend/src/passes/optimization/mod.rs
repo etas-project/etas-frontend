@@ -1,5 +1,6 @@
 mod agent_effect_legality;
 mod batch_storage_semijoin;
+mod facts;
 mod fuse_projection_scans;
 mod fuse_serialization_boundary;
 mod lower_owned_snapshot_cow;

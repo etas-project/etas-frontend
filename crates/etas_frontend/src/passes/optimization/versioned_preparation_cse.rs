@@ -41,6 +41,12 @@ impl Pass<ProjectContext> for VersionedPreparationCsePass {
             let output = context.hir.take().expect("HIR output should exist");
             let replacements = find_replacements(&output.hir, legality);
             rewritten = replacements.len();
+            if !replacements.is_empty() {
+                super::facts::invalidate_replaced_expressions(
+                    context,
+                    replacements.keys().copied(),
+                );
+            }
             context.hir = Some(if replacements.is_empty() {
                 output
             } else {
