@@ -66,7 +66,18 @@ flow main() -> unit { return; }
     assert_eq!(method.receiver.kind, etas_package_metadata::TypeKind::Var);
     assert_eq!(method.receiver.name, "T");
     assert!(method.generic_arguments.is_empty());
-    assert!(method.callable_arguments.is_empty());
+    assert_eq!(method.callable_arguments.len(), 1);
+    assert_eq!(method.callable_arguments[0].position, 0);
+    assert_eq!(
+        method.callable_arguments[0].sources.sources,
+        [etas_package_metadata::CallableValueSource::Parameter(
+            etas_package_metadata::CallableValueParameter {
+                scope: etas_package_metadata::CallableValueScope::Root,
+                position: 0,
+            },
+        )],
+    );
+    assert!(method.callable_arguments[0].sources.values.is_empty());
     let requests = summary
         .handler_requests
         .as_ref()

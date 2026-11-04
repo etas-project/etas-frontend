@@ -241,6 +241,34 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
+    fn begin_for_body(
+        &mut self,
+        _: HirStmtId,
+        iterable: HirExprId,
+        pattern: HirPatId,
+        mut state: Self::Domain,
+    ) -> Self::Domain {
+        let span = self.hir.exprs[iterable].span(&self.hir.blocks);
+        match self.latent_sources_for_expr(&state, iterable) {
+            Some(sources) => {
+                if let Err(reason) =
+                    self.record_latent_sources_for_pat(&mut state, pattern, sources)
+                {
+                    return self.incomplete_at(span, reason, state);
+                }
+            }
+            None if self.expr_type_contains_flow(iterable) => {
+                return self.incomplete_at(
+                    span,
+                    "iteration element is missing checked value origins",
+                    state,
+                );
+            }
+            None => {}
+        }
+        state
+    }
+
     fn begin_handler_arm(
         &mut self,
         _arm: HirHandlerArmId,

@@ -17,6 +17,39 @@ flow main() -> usize ![Console.stdout_write] {
 "#;
 
 #[test]
+fn heterogeneous_objects_retain_both_method_bodies_through_iteration() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        include_str!("fixtures/method_resolution/existential_sequence.es"),
+    )));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
+    assert!(summary.escaping_effects.effects.is_empty());
+    assert_eq!(summary.requested_actions.effects.len(), 1);
+    assert_eq!(checked.types.existential_packs.len(), 2);
+    let targets = checked
+        .types
+        .existential_packs
+        .values()
+        .flat_map(|pack| &pack.witnesses)
+        .map(|witness| match witness.target {
+            etas_types::method::MethodTarget::Source { callable, .. } => callable,
+            _ => panic!("source witness"),
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(targets.len(), 2);
+    for target in targets {
+        assert!(
+            checked
+                .effects
+                .native_call_targets
+                .values()
+                .any(|targets| targets.contains(&etas_effects::EffectUnit::Item(target)))
+        );
+    }
+}
+
+#[test]
 fn existential_method_invocation_keeps_the_implementation_actions_and_trace() {
     let generic = SOURCE
         .replace(

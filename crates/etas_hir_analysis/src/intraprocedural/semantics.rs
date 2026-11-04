@@ -125,6 +125,17 @@ pub trait HirAnalysisSemantics {
         state
     }
 
+    /// Bind the element pattern after evaluating the iterable and before analyzing its body.
+    fn begin_for_body(
+        &mut self,
+        _stmt: HirStmtId,
+        _iterable: HirExprId,
+        _pattern: HirPatId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        state
+    }
+
     fn after_expr_control(
         &mut self,
         expr: HirExprId,
