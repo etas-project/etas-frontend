@@ -457,6 +457,17 @@ fn returned_method_closures_publish_their_scoped_owner_effects() {
             "{selectors:?}"
         );
         if method.identity.name() == "capture" {
+            let [etas_package_metadata::CallableValueSource::Value(root)] =
+                method.callable.sources.as_slice()
+            else {
+                panic!("owned method root");
+            };
+            assert_eq!(closure.generic_bindings.len(), 1);
+            assert_eq!(
+                closure.generic_bindings[0].scope,
+                etas_package_metadata::CallableValueScope::Value(*root)
+            );
+            assert_eq!(closure.generic_bindings[0].position, 0);
             assert!(
                 selectors
                     .iter()

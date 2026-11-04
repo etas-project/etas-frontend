@@ -112,6 +112,7 @@ pub struct ExternalExistentialMemberMetadata {
 )]
 pub struct ExternalSpecImplementationMetadata {
     pub identity: etas_code::MethodId,
+    pub owner_params: Vec<etas_types::CallableGenericParam>,
     pub graph_key: etas_code::CodeFingerprint,
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub values: Vec<ExternalCallableValueMetadata>,

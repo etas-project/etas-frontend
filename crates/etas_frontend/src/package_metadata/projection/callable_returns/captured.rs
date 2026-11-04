@@ -101,7 +101,7 @@ impl Builder<'_, '_> {
             .filter(|parameter| parameter.kind == CallableGenericParamKind::Effect)
             .map(|parameter| parameter.name.clone())
             .collect::<BTreeSet<_>>();
-        let scope = if owner == self.root {
+        let scope = if owner == self.root && !self.method_root {
             Some(CallableValueScope::Root)
         } else {
             let mut matches = self

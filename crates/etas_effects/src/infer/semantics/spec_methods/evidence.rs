@@ -197,12 +197,18 @@ impl EffectSemantics<'_> {
                 .map(MethodEvidence::Resolved);
         }
         if let etas_types::method::MethodTarget::External { identity } = &fact.target {
+            let owner_bindings = fact
+                .owner_bindings
+                .iter()
+                .map(|(parameter, argument)| Ok((*parameter, substitution.substitute(*argument)?)))
+                .collect::<Result<_, EffectSpecializationError>>()?;
             return self
                 .capture_external_method(
                     identity,
                     &fact.signature,
                     environment,
                     snapshot,
+                    &owner_bindings,
                     (
                         arguments.types,
                         arguments

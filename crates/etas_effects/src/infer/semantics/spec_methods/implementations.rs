@@ -34,6 +34,7 @@ impl EffectSemantics<'_> {
             &implementation.signature,
             invocation,
             snapshot,
+            &Default::default(),
             (
                 arguments.type_bindings,
                 arguments
@@ -51,6 +52,7 @@ impl EffectSemantics<'_> {
         signature: &etas_types::CallableSignature,
         invocation: CallableEnvironmentId,
         snapshot: CallableEnvironment,
+        owner_bindings: &std::collections::HashMap<etas_types::TypeId, etas_types::TypeId>,
         arguments: super::super::callable_generics::GenericSubstitutions,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let graph = self
@@ -66,6 +68,19 @@ impl EffectSemantics<'_> {
         };
         let scope = CallableValueScope::Value(*value);
         let mut generics = std::collections::BTreeMap::new();
+        for (position, parameter) in graph.owner_params.iter().enumerate() {
+            let argument = owner_bindings
+                .get(&parameter.subject)
+                .ok_or_else(|| invalid("external method owner argument is missing"))?;
+            generics.insert(
+                CallableGenericParameter::Graph {
+                    graph: graph.graph_key,
+                    scope: CallableValueScope::Root,
+                    position: position as u32,
+                },
+                CallableGenericValue::Type(*argument),
+            );
+        }
         for (position, parameter) in signature.generic_params.iter().enumerate() {
             let value = match parameter.kind {
                 etas_types::CallableGenericParamKind::Type => CallableGenericValue::Type(

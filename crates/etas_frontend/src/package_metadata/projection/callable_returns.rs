@@ -316,7 +316,7 @@ impl Builder<'_, '_> {
         };
         let generic_scope = if matches!(unit, EffectUnit::Item(_)) {
             Some(CallableValueScope::Value(index))
-        } else if owner == self.root {
+        } else if owner == self.root && !self.method_root {
             Some(CallableValueScope::Root)
         } else {
             self.units

@@ -31,6 +31,48 @@ impl<'a> ScopedGenericArguments<'a> {
 }
 
 impl EffectSemantics<'_> {
+    pub(super) fn metadata_environment_type_parameters(
+        &self,
+        source: crate::MetadataCallableSource,
+    ) -> Result<std::collections::HashMap<TypeId, TypeId>, EffectSpecializationError> {
+        let Some(method) = self
+            .implementation_graphs
+            .get(&source.graph)
+            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
+        else {
+            return Ok(Default::default());
+        };
+        if method.owner_params.is_empty() {
+            return Ok(Default::default());
+        }
+        let snapshot = source
+            .environment
+            .map(|id| self.callable_environment(id))
+            .transpose()?
+            .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                reason: "metadata method owner has no captured type arguments".into(),
+            })?;
+        method
+            .owner_params
+            .iter()
+            .enumerate()
+            .map(|(position, parameter)| {
+                let key = Parameter::Graph {
+                    graph: source.graph,
+                    scope: etas_package_metadata::CallableValueScope::Root,
+                    position: position as u32,
+                };
+                match snapshot.generics.get(&key) {
+                    Some(Value::Type(argument)) => Ok((parameter.subject, *argument)),
+                    _ => Err(EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata method owner has an incomplete type argument binding"
+                            .into(),
+                    }),
+                }
+            })
+            .collect()
+    }
+
     pub(super) fn metadata_environment_generics(
         &self,
         source: crate::MetadataCallableSource,
