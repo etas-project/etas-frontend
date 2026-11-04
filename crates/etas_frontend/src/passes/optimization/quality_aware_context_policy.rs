@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use etas_hir::{
-    HirExpr, HirExprId, HirLiteral, HirPat, HirPatId, HirRevision, HirStmt, HirStmtId,
-    HirTreeChild, ResolveResult, SymbolId,
+    HirArg, HirExpr, HirExprId, HirLiteral, HirPat, HirPatId, HirRevision, HirStmt, HirStmtId,
+    HirTreeChild, ResolveResult,
 };
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -47,6 +47,14 @@ impl Pass<ProjectContext> for QualityAwareContextPolicyPass {
                 .map(|budget| find_budget_rewrites(&output.hir, &removals, budget))
                 .unwrap_or_default();
             rewritten = removals.len() + budget_rewrites.len();
+            if !removals.is_empty() {
+                super::facts::invalidate_replaced_expressions(
+                    context,
+                    removals
+                        .values()
+                        .flat_map(|removal| removal.expressions.iter().copied()),
+                );
+            }
             context.hir = Some(if rewritten == 0 {
                 output
             } else {
@@ -85,19 +93,19 @@ fn find_budget_rewrites(
             let HirStmt::Let { pat, value, .. } = program.stmts[*statement] else {
                 continue;
             };
-            let HirPat::Binding { symbol, .. } = program.pats[pat] else {
+            let HirPat::Binding { .. } = program.pats[pat] else {
                 continue;
             };
-            if !context_candidate(program, symbol) {
+            let Some(context_literal) = context_literal(revision, value) else {
                 continue;
-            }
-            let Some(HirExpr::Literal(HirLiteral::String { value: text, .. })) =
-                program.exprs.get(value)
+            };
+            let HirExpr::Literal(HirLiteral::String { value: text, .. }) =
+                &program.exprs[context_literal]
             else {
                 continue;
             };
             if let Some(suffix) = token_suffix(text, budget) {
-                rewrites.push((value, suffix));
+                rewrites.push((context_literal, suffix));
             }
         }
     }
@@ -163,7 +171,7 @@ fn find_removals(
             let HirPat::Binding { symbol, .. } = program.pats[pat] else {
                 continue;
             };
-            if used_symbols.contains(&symbol) || !context_candidate(program, symbol) {
+            if used_symbols.contains(&symbol) || context_literal(revision, value).is_none() {
                 continue;
             }
             let Some(expressions) = pure_expression_tree(revision, value, legality) else {
@@ -181,16 +189,26 @@ fn find_removals(
     removals
 }
 
-fn context_candidate(program: &etas_hir::HirProgram, symbol: SymbolId) -> bool {
-    let name = &program
-        .symbols
-        .get(symbol)
-        .expect("local binding symbol must exist")
-        .name;
-    name.starts_with("context_")
-        || name.starts_with("history_")
-        || name.starts_with("retrieval_")
-        || name.starts_with("summary_")
+fn context_literal(revision: &HirRevision, expression: HirExprId) -> Option<HirExprId> {
+    let HirExpr::Call {
+        callee,
+        generic_args,
+        args,
+        ..
+    } = &revision.exprs[expression]
+    else {
+        return None;
+    };
+    let [HirArg::Positional(value)] = args.as_slice() else {
+        return None;
+    };
+    (generic_args.is_empty()
+        && super::contracts::called_item_has_marker(revision, *callee, "QualityContext")
+        && matches!(
+            revision.exprs[*value],
+            HirExpr::Literal(HirLiteral::String { .. })
+        ))
+    .then_some(*value)
 }
 
 fn pure_expression_tree(

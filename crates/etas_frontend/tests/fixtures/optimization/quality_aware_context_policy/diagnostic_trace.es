@@ -1,1 +1,1 @@
-flow build_diagnostic_trace(value: string) -> string { return value + value + value; } flow main() -> string { let context_diagnostics = build_diagnostic_trace("parse:type:effect"); return "type"; }
+type QualityContext; @optimization([QualityContext]) flow build_diagnostic_trace(value: string) -> string { return value + value + value; } flow main() -> string { let context_diagnostics = build_diagnostic_trace("parse:type:effect"); return "type"; }

@@ -1,1 +1,1 @@
-flow open_model_client(name: string) -> string { return name + ":client"; } flow main() -> string { var out = ""; for item in ["a", "b", "c", "d", "e"] limit Iterations(5) { let client = open_model_client("m3"); out = out + client + item; } return out; }
+type ReusableResourceFactory; @optimization([ReusableResourceFactory]) flow open_model_client(name: string) -> string { return name + ":client"; } flow main() -> string { var out = ""; for item in ["a", "b", "c", "d", "e"] limit Iterations(5) { let client = open_model_client("m3"); out = out + client + item; } return out; }

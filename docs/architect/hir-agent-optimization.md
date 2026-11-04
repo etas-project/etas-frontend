@@ -6,7 +6,7 @@ The survey examples are used as workload models, not as instructions. The implem
 
 | Pass | Survey workload represented by the Etas fixtures | Exact HIR-local rewrite |
 |---|---|---|
-| `AgentEffectLegality` | authorization, hooks, cancellation, event and tool/model effects | classify only deterministic, local expressions with empty request/action/residual facts as movable |
+| `AgentEffectLegality` | authorization, hooks, cancellation, event and tool/model effects | materialize per-expression owner, symbol-read and mutable-version dependencies, then classify only deterministic, local expressions with empty request/action/residual/order facts as movable |
 | `PrepareVersionedRequest` | mini-swe retry payload preparation, OpenManus tool schemas, cline model/tool mapping | hoist pure loop-invariant leading preparations out of known-nonempty literal loops |
 | `VersionedPreparationCSE` | Codex context delta, aider RepoMap, opencode model snapshot reuse | common structurally equal pure immutable preparation expressions within one block |
 | `SuffixDemandHistory` | latest CWD, recent tool result, retry error and checkpoint demand | replace a complete literal history scan whose only result is the last value with the last value |
@@ -15,11 +15,13 @@ The survey examples are used as workload models, not as instructions. The implem
 | `LowerOwnedSnapshotCOW` | history, prompt, config and manifest snapshots | lower a typed immutable `Array`/`List` extension by an empty collection to the original snapshot, eliminating the owned copy/allocation |
 | `FuseSerializationBoundary` | prompt, schema, trace, checkpoint and RPC encode/decode boundaries | remove the typed standard-library `JsonValue -> stringify -> parse` round trip, including checked `Result.unwrap` nodes, while preserving the original structured value |
 | `BatchStorageSemijoin` | N+1 key validation and batched storage probes | combine adjacent independent membership probes over the same bounded literal snapshot into one scan |
-| `ScheduleBoundedPipeline` | bounded file, model, tool, trace and persistence stages | combine adjacent pure stages over the same literal worklist when their mutable accumulators are disjoint |
-| `LowerResourceRegion` | model clients, connection pools, HTTP sessions and tool hosts | move a pure static resource descriptor acquisition to the outer region of a known-nonempty loop |
-| `QualityAwareContextPolicy` | repo map, chat history, retrieval, memory and policy context candidates | remove an unconsumed pure candidate exactly; when `quality_context_token_budget` is explicitly set, retain only the most recent units of directly bound literal context |
+| `ScheduleBoundedPipeline` | bounded file, model, tool, trace and persistence stages | combine adjacent `BoundedPipelineStage`-marked pure stages over the same literal worklist when their mutable accumulators are disjoint |
+| `LowerResourceRegion` | model clients, connection pools, HTTP sessions and tool hosts | move a pure `ReusableResourceFactory`-marked acquisition with version-stable arguments to the outer region of a known-nonempty loop |
+| `QualityAwareContextPolicy` | repo map, chat history, retrieval, memory and policy context candidates | remove an unconsumed pure `QualityContext`-marked boundary exactly; when `quality_context_token_budget` is explicitly set, retain only the most recent units of its literal context argument |
 
 The default pipeline does not perform an approximate P3 context change. `ProjectCompileOptions::quality_context_token_budget` is a separate opt-in policy input, participates in the canonical compile fingerprint, and is intentionally not presented as a semantics-preserving rewrite. The interpreter and live-model evaluations report token reduction separately from answer/fact retention.
+
+`@optimization` markers are explicit source contracts, not spelling heuristics. A marker only selects the intended workload role; checked type/effect facts, version dependencies, loop bounds, disjoint accumulators, and exact HIR shape still prove whether a rewrite is legal. Renaming a marked factory or stage therefore does not change optimization behavior.
 
 ## Survey provenance
 

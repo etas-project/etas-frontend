@@ -1,1 +1,1 @@
-flow main() -> string { let context_tool_catalog = "disabled legacy search disabled old browser deprecated patch unused upload current available tools are read edit test and git"; return context_tool_catalog; }
+type QualityContext; @optimization([QualityContext]) flow quality_context(value: string) -> string { return value; } flow main() -> string { let context_tool_catalog = quality_context("disabled legacy search disabled old browser deprecated patch unused upload current available tools are read edit test and git"); return context_tool_catalog; }

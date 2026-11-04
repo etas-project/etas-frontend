@@ -1,1 +1,1 @@
-flow main() -> string { let retrieval_documents = "irrelevant alpha irrelevant beta legacy gamma archived delta duplicate epsilon selected fact project language is rust with etas source files"; return retrieval_documents; }
+type QualityContext; @optimization([QualityContext]) flow quality_context(value: string) -> string { return value; } flow main() -> string { let retrieval_documents = quality_context("irrelevant alpha irrelevant beta legacy gamma archived delta duplicate epsilon selected fact project language is rust with etas source files"); return retrieval_documents; }

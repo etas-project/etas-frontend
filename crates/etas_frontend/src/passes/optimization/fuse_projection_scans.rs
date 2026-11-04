@@ -54,6 +54,18 @@ impl Pass<ProjectContext> for FuseProjectionScansPass {
             let output = context.hir.take().expect("HIR output should exist");
             let fusions = find_fusions(&output.hir, legality);
             rewritten = fusions.len();
+            if !fusions.is_empty() {
+                super::facts::invalidate_replaced_expressions(
+                    context,
+                    fusions.values().flatten().flat_map(|fusion| {
+                        expression_tree_from_program(output.hir.program(), fusion.second.iterable)
+                            .into_iter()
+                            .chain(fusion.second.limits.iter().flat_map(|limit| {
+                                expression_tree_from_program(output.hir.program(), *limit)
+                            }))
+                    }),
+                );
+            }
             context.hir = Some(if fusions.is_empty() {
                 output
             } else {

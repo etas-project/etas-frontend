@@ -1,1 +1,1 @@
-flow main() -> string { let retrieval_memory = "weak memory coffee weak memory weather weak memory meeting superseded preference verified preference user chooses concise chinese answers"; return retrieval_memory; }
+type QualityContext; @optimization([QualityContext]) flow quality_context(value: string) -> string { return value; } flow main() -> string { let retrieval_memory = quality_context("weak memory coffee weak memory weather weak memory meeting superseded preference verified preference user chooses concise chinese answers"); return retrieval_memory; }

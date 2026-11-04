@@ -44,7 +44,9 @@ impl Pass<ProjectContext> for VersionedPreparationCsePass {
             if !replacements.is_empty() {
                 super::facts::invalidate_replaced_expressions(
                     context,
-                    replacements.keys().copied(),
+                    replacements.iter().flat_map(|(root, replacement)| {
+                        std::iter::once(*root).chain(replacement.optimized_out.iter().copied())
+                    }),
                 );
             }
             context.hir = Some(if replacements.is_empty() {
@@ -146,7 +148,7 @@ fn reusable_expression(
     let view = revision.view();
     let mut pending = vec![root];
     while let Some(expression) = pending.pop() {
-        if !legality.is_movable(expression) {
+        if !legality.is_version_stable(expression) {
             return false;
         }
         let expression_view = view

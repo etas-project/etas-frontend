@@ -1,1 +1,1 @@
-flow lease_trace_sink(name: string) -> string { return name + ":sink"; } flow main() -> string { var out = ""; for item in ["s1", "s2", "s3", "s4", "s5"] limit Iterations(5) { let sink = lease_trace_sink("otel"); out = out + sink + item; } return out; }
+type ReusableResourceFactory; @optimization([ReusableResourceFactory]) flow lease_trace_sink(name: string) -> string { return name + ":sink"; } flow main() -> string { var out = ""; for item in ["s1", "s2", "s3", "s4", "s5"] limit Iterations(5) { let sink = lease_trace_sink("otel"); out = out + sink + item; } return out; }

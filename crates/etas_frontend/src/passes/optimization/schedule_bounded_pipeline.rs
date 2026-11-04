@@ -54,6 +54,20 @@ impl Pass<ProjectContext> for ScheduleBoundedPipelinePass {
             let output = context.hir.take().expect("HIR output should exist");
             let fusions = find_fusions(&output.hir, legality);
             rewritten = fusions.values().map(Vec::len).sum();
+            if !fusions.is_empty() {
+                super::facts::invalidate_replaced_expressions(
+                    context,
+                    fusions.values().flatten().flat_map(|fusion| {
+                        expression_tree(output.hir.program(), fusion.second.iterable)
+                            .into_iter()
+                            .chain(
+                                fusion.second.limits.iter().flat_map(|limit| {
+                                    expression_tree(output.hir.program(), *limit)
+                                }),
+                            )
+                    }),
+                );
+            }
             context.hir = Some(if fusions.is_empty() {
                 output
             } else {
@@ -86,11 +100,11 @@ fn find_fusions(
         let mut fusions = Vec::new();
         let mut index = 0;
         while index + 1 < block.stmts.len() {
-            let Some(first) = stage_loop(program, block.stmts[index], legality) else {
+            let Some(first) = stage_loop(revision, block.stmts[index], legality) else {
                 index += 1;
                 continue;
             };
-            let Some(second) = stage_loop(program, block.stmts[index + 1], legality) else {
+            let Some(second) = stage_loop(revision, block.stmts[index + 1], legality) else {
                 index += 1;
                 continue;
             };
@@ -117,10 +131,11 @@ fn find_fusions(
 }
 
 fn stage_loop(
-    program: &etas_hir::HirProgram,
+    revision: &etas_hir::HirRevision,
     statement: HirStmtId,
     legality: &crate::AgentEffectLegalityFacts,
 ) -> Option<StageLoop> {
+    let program = revision.program();
     let HirStmt::For {
         pat,
         iter,
@@ -174,17 +189,6 @@ fn stage_loop(
     else {
         return None;
     };
-    let HirExpr::Path(callee_path) = &program.exprs[*callee] else {
-        return None;
-    };
-    let ResolveResult::Resolved(callee_symbol) = callee_path.resolution else {
-        return None;
-    };
-    let callee_name = &program
-        .symbols
-        .get(callee_symbol)
-        .expect("stage symbol must exist")
-        .name;
     let [
         HirArg::Positional(accumulator),
         HirArg::Positional(loop_reference),
@@ -193,12 +197,16 @@ fn stage_loop(
         return None;
     };
     if !generic_args.is_empty()
-        || !(callee_name.starts_with("stage_")
-            || callee_name.starts_with("schedule_")
-            || callee_name.starts_with("pipeline_"))
+        || !super::contracts::called_item_has_marker(revision, *callee, "BoundedPipelineStage")
         || !matches!(&program.exprs[*accumulator], HirExpr::Path(path) if path.resolution == ResolveResult::Resolved(target_symbol))
         || !matches!(&program.exprs[*loop_reference], HirExpr::Path(path) if path.resolution == ResolveResult::Resolved(loop_symbol))
         || !legality.is_movable(value)
+        || !legality
+            .expression(value)
+            .expect("checked stage call must have legality facts")
+            .version_dependencies
+            .iter()
+            .all(|dependency| *dependency == target_symbol)
     {
         return None;
     }

@@ -25,7 +25,8 @@ pub use incremental::{
     TextEdit,
 };
 pub use optimization::{
-    AgentEffectLegalityFacts, HirOptimizationPassReport, HirOptimizationReport,
+    AgentEffectLegalityFacts, AgentExpressionLegalityFact, HirOptimizationPassReport,
+    HirOptimizationReport,
 };
 pub(crate) use output::ValidatedExternalEnvironment;
 pub use output::{

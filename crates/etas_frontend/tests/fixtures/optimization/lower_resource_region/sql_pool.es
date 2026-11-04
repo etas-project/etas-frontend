@@ -1,1 +1,1 @@
-flow acquire_sql_pool(name: string) -> string { return name + ":pool"; } flow main() -> string { var out = ""; for item in ["1", "2", "3", "4", "5"] limit Iterations(5) { let pool = acquire_sql_pool("memory"); out = out + pool + item; } return out; }
+type ReusableResourceFactory; @optimization([ReusableResourceFactory]) flow acquire_sql_pool(name: string) -> string { return name + ":pool"; } flow main() -> string { var out = ""; for item in ["1", "2", "3", "4", "5"] limit Iterations(5) { let pool = acquire_sql_pool("memory"); out = out + pool + item; } return out; }

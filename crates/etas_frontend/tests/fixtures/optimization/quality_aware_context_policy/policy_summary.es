@@ -1,1 +1,1 @@
-flow build_policy_summary(value: string) -> string { return value + value + value; } flow main() -> string { let summary_policy = build_policy_summary("allow:deny:ask"); return "allow"; }
+type QualityContext; @optimization([QualityContext]) flow build_policy_summary(value: string) -> string { return value + value + value; } flow main() -> string { let summary_policy = build_policy_summary("allow:deny:ask"); return "allow"; }

@@ -1,1 +1,1 @@
-flow main() -> string { let summary_policy = "old allow network old deny shell old ask storage superseded policy final policy requires approval before external destructive actions"; return summary_policy; }
+type QualityContext; @optimization([QualityContext]) flow quality_context(value: string) -> string { return value; } flow main() -> string { let summary_policy = quality_context("old allow network old deny shell old ask storage superseded policy final policy requires approval before external destructive actions"); return summary_policy; }

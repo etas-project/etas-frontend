@@ -1,1 +1,1 @@
-flow main() -> string { let history_plan = "draft inspect draft discuss draft postpone old blocked step current plan run full tests then merge main branch"; return history_plan; }
+type QualityContext; @optimization([QualityContext]) flow quality_context(value: string) -> string { return value; } flow main() -> string { let history_plan = quality_context("draft inspect draft discuss draft postpone old blocked step current plan run full tests then merge main branch"); return history_plan; }

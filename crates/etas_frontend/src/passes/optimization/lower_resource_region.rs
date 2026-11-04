@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use etas_hir::{HirArg, HirExpr, HirPat, HirRevision, HirStmt, HirStmtId, ResolveResult};
+use etas_hir::{HirArg, HirExpr, HirPat, HirRevision, HirStmt, HirStmtId};
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
     PreservedArtifacts,
@@ -74,8 +74,8 @@ fn find_hoists(
                     continue;
                 };
                 if !matches!(program.pats[pat], HirPat::Binding { .. })
-                    || !legality.is_movable(value)
-                    || !static_resource_acquisition(program, value)
+                    || !legality.is_version_stable(value)
+                    || !static_resource_acquisition(revision, value, legality)
                 {
                     continue;
                 }
@@ -98,9 +98,11 @@ fn known_nonempty_iterable(expression: &HirExpr) -> bool {
 }
 
 fn static_resource_acquisition(
-    program: &etas_hir::HirProgram,
+    revision: &HirRevision,
     expression: etas_hir::HirExprId,
+    legality: &crate::AgentEffectLegalityFacts,
 ) -> bool {
+    let program = revision.program();
     let HirExpr::Call {
         callee,
         generic_args,
@@ -110,25 +112,11 @@ fn static_resource_acquisition(
     else {
         return false;
     };
-    let HirExpr::Path(path) = &program.exprs[*callee] else {
-        return false;
-    };
-    let ResolveResult::Resolved(symbol) = path.resolution else {
-        return false;
-    };
-    let name = &program
-        .symbols
-        .get(symbol)
-        .expect("callee symbol must exist")
-        .name;
     generic_args.is_empty()
-        && (name.starts_with("open_")
-            || name.starts_with("acquire_")
-            || name.starts_with("lease_")
-            || name.starts_with("connect_"))
+        && super::contracts::called_item_has_marker(revision, *callee, "ReusableResourceFactory")
         && args.iter().all(|argument| match argument {
             HirArg::Positional(value) | HirArg::Named { value, .. } => {
-                matches!(program.exprs[*value], HirExpr::Literal(_))
+                legality.is_version_stable(*value)
             }
         })
 }

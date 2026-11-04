@@ -1,1 +1,1 @@
-flow main() -> string { let history_chat = "old greeting old planning old clarification stale answer retry note tool output current user asks deployment region is hong kong"; return history_chat; }
+type QualityContext; @optimization([QualityContext]) flow quality_context(value: string) -> string { return value; } flow main() -> string { let history_chat = quality_context("old greeting old planning old clarification stale answer retry note tool output current user asks deployment region is hong kong"); return history_chat; }

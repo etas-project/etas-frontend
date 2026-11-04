@@ -136,7 +136,7 @@ fn invariant_expression(
     let view = revision.view();
     let mut pending = vec![root];
     while let Some(expression) = pending.pop() {
-        if !legality.is_movable(expression) {
+        if !legality.is_version_stable(expression) {
             return false;
         }
         let Some(expression_view) = view.expr(expression) else {
