@@ -11,13 +11,14 @@ use crate::passes::{
     ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
     FinalizeTypeFactsPass, FuseProjectionScansPass, FuseSerializationBoundaryPass,
     InferCallableOutputsPass, LowerModuleItemsPass, LowerOwnedSnapshotCowPass,
-    MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
-    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
-    PrepareEffectRegistryPass, PrepareInvocationTypesPass, PrepareVersionedRequestPass,
-    QualityAwareContextPolicyPass, ResolveEntryItemPass, ResolveImportTargetsPass,
-    ResolvePathsPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass,
-    SuffixDemandHistoryPass, SynthesizeScopedIndexPass, TypeCheckBodyPass,
-    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    LowerResourceRegionPass, MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass,
+    ParseSourceFilePass, PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass,
+    PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
+    PrepareVersionedRequestPass, QualityAwareContextPolicyPass, ResolveEntryItemPass,
+    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    ReuseTypeBodyFactsPass, RunEffectPipelinePass, SuffixDemandHistoryPass,
+    SynthesizeScopedIndexPass, TypeCheckBodyPass, ValidateEntryContractPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
     ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
     VerifyInterpreterSupportPass, VersionedPreparationCsePass,
 };
@@ -121,6 +122,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)
         .pass(AgentEffectLegalityPass)
+        .pass(LowerResourceRegionPass)
         .pass(PrepareVersionedRequestPass)
         .pass(VersionedPreparationCsePass)
         .pass(LowerOwnedSnapshotCowPass)

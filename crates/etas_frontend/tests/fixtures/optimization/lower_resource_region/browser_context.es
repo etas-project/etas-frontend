@@ -1,0 +1,1 @@
+flow acquire_browser_context(name: string) -> string { return name + ":browser"; } flow main() -> string { var out = ""; for item in ["u1", "u2", "u3", "u4", "u5"] limit Iterations(5) { let browser = acquire_browser_context("agent"); out = out + browser + item; } return out; }

@@ -1,0 +1,1 @@
+flow lease_http_session(name: string) -> string { return name + ":session"; } flow main() -> string { var out = ""; for item in ["p1", "p2", "p3", "p4", "p5"] limit Iterations(5) { let session = lease_http_session("provider"); out = out + session + item; } return out; }

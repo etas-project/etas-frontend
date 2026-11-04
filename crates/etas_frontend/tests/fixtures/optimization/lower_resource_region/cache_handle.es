@@ -1,0 +1,1 @@
+flow acquire_cache_handle(name: string) -> string { return name + ":cache"; } flow main() -> string { var out = ""; for item in ["k1", "k2", "k3", "k4", "k5"] limit Iterations(5) { let cache = acquire_cache_handle("prompt"); out = out + cache + item; } return out; }
