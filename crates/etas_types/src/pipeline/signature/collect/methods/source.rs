@@ -44,9 +44,7 @@ pub(super) fn collect(
             owner: MethodOwner::Inherent(constructor),
             receiver,
             receiver_type: method.self_type,
-            // The impl subject is already lowered. Constructor parameters belong
-            // to the type declaration, not to this closed implementation.
-            owner_params: Vec::new(),
+            owner_params: method.owner_params.clone(),
             signature: signature.clone(),
             parameter_names: flow
                 .params

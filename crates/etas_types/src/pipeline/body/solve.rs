@@ -43,18 +43,23 @@ pub(super) fn run<E>(
         });
         return Ok(());
     }
+    let mut rigid_type_parameters = state.owner_params.clone();
+    rigid_type_parameters.extend_from_slice(
+        declaration_facts
+            .item_signatures
+            .get(&state.item)
+            .and_then(|signature| match signature {
+                crate::ItemSignature::Flow(signature) | crate::ItemSignature::Tool(signature) => {
+                    Some(signature)
+                }
+                crate::ItemSignature::Agent(signature) => signature.callable(),
+                crate::ItemSignature::TopLevelLet(_) => None,
+            })
+            .map_or(&[], |signature| signature.generic_params.as_slice()),
+    );
     state.solver_report = TypeSolver::solve_with_checkpoint(
         TypeSolveInput {
-            rigid_type_parameters: declaration_facts
-                .item_signatures
-                .get(&state.item)
-                .and_then(|signature| match signature {
-                    crate::ItemSignature::Flow(signature)
-                    | crate::ItemSignature::Tool(signature) => Some(signature),
-                    crate::ItemSignature::Agent(signature) => signature.callable(),
-                    crate::ItemSignature::TopLevelLet(_) => None,
-                })
-                .map_or(&[], |signature| signature.generic_params.as_slice()),
+            rigid_type_parameters: &rigid_type_parameters,
             constraints: &state.constraints,
             spec_obligations: &state.spec_obligations,
             spec_facts,

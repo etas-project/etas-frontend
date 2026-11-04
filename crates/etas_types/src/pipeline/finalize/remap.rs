@@ -597,6 +597,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for method in facts.type_impl_methods.values_mut() {
         method.self_type = remapper.ty(method.self_type);
+        crate::facts::methods::map_parameters(&mut method.owner_params, &mut |ty| {
+            Ok::<_, std::convert::Infallible>(remapper.ty(ty))
+        })
+        .unwrap_or_else(|never| match never {});
     }
     facts.type_generics = std::mem::take(&mut facts.type_generics)
         .into_iter()

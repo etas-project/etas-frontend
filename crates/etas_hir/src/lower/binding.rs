@@ -19,7 +19,7 @@ impl LowerCtx {
         params: &[ast::Param],
         scope: ScopeId,
         item_id: HirItemId,
-        receiver_type: Option<&ast::TypeExpr>,
+        receiver_type: Option<HirTypeId>,
     ) -> Vec<SymbolId> {
         params
             .iter()
@@ -28,7 +28,6 @@ impl LowerCtx {
                 let ty = match &param.ty {
                     ast::ParamType::Explicit(ty) => self.lower_type(ty, scope, item_id),
                     ast::ParamType::SelfReceiver { span } if param_index == 0 => receiver_type
-                        .map(|ty| self.lower_type(ty, scope, item_id))
                         .unwrap_or_else(|| {
                             self.diagnostics.push(etas_core::Diagnostic::type_check(
                                 etas_core::TypeDiagnosticCode::InvalidImplTargetKind,

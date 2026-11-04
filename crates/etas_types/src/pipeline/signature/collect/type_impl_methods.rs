@@ -48,9 +48,6 @@ pub fn collect_type_impl_methods(
                 Some((*item, flow.symbol, name))
             })
             .collect::<Vec<_>>();
-        if methods.is_empty() {
-            continue;
-        }
         let (self_type, inherent) = match &declaration.target {
             HirImplTarget::SpecSatisfaction { self_type, .. } => {
                 let Some(ty) = lower_type_ref(ctx, *self_type) else {
@@ -63,6 +60,9 @@ pub fn collect_type_impl_methods(
             }
             HirImplTarget::Agent { .. } | HirImplTarget::Error => continue,
         };
+        let mut owner_params =
+            super::callables::callable_generic_params(ctx, state, &declaration.type_params);
+        inherit_owner_bounds(ctx, state, self_type, &mut owner_params, declaration.span);
         for (body, symbol, name) in methods {
             state.type_impl_methods.insert(
                 symbol,
@@ -72,9 +72,118 @@ pub fn collect_type_impl_methods(
                     implementation,
                     body,
                     self_type,
+                    owner_params: owner_params.clone(),
                     inherent,
                 },
             );
+        }
+    }
+}
+
+fn inherit_owner_bounds(
+    ctx: &mut TypePipelineContext<'_>,
+    state: &mut SignaturePipelineState,
+    subject: crate::TypeId,
+    parameters: &mut [crate::CallableGenericParam],
+    span: etas_core::Span,
+) {
+    let Some(crate::Type::Applied { constructor, args }) = ctx.interner.store().get(subject) else {
+        return;
+    };
+    let arguments = args.clone();
+    let Some(declared) = ctx
+        .signature_facts
+        .type_generics
+        .get(&crate::TypeId(constructor.0))
+        .cloned()
+    else {
+        return;
+    };
+    let bindings = declared
+        .iter()
+        .zip(&arguments)
+        .map(|(parameter, argument)| (parameter.subject, *argument))
+        .collect();
+    let symbols = parameters
+        .iter()
+        .filter_map(
+            |parameter| match ctx.interner.store().get(parameter.subject) {
+                Some(crate::Type::Named(crate::NamedTypeRef {
+                    source_parameter: Some(symbol),
+                    ..
+                })) => Some((parameter.subject, *symbol)),
+                _ => None,
+            },
+        )
+        .collect::<std::collections::HashMap<_, _>>();
+    let names = std::collections::HashMap::new();
+    let mut substitution =
+        crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &names, None)
+            .with_type_parameters(&bindings);
+    for (declared, argument) in declared.iter().zip(arguments) {
+        let Some(parameter) = parameters
+            .iter_mut()
+            .find(|parameter| parameter.subject == argument)
+        else {
+            continue;
+        };
+        let Some(symbol) = symbols.get(&argument).copied() else {
+            continue;
+        };
+        for bound in &declared.bounds {
+            let args = match bound
+                .args
+                .iter()
+                .map(|arg| substitution.substitute(*arg))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(args) => args,
+                Err(error) => {
+                    ctx.diagnostics.push(etas_core::Diagnostic::type_check(
+                        etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        span,
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+            let spec_symbol = match &bound.spec {
+                crate::CheckedSpecRef::Source(symbol) => Some(*symbol),
+                crate::CheckedSpecRef::External(identity) => ctx
+                    .signature_facts
+                    .external_specs
+                    .aliases
+                    .iter()
+                    .find_map(|(symbol, candidate)| (candidate == identity).then_some(*symbol)),
+                crate::CheckedSpecRef::Std(path) => ctx
+                    .signature_facts
+                    .std_spec_aliases
+                    .iter()
+                    .find_map(|(symbol, candidate)| (candidate == path).then_some(*symbol)),
+                crate::CheckedSpecRef::Canonical(_) => None,
+            };
+            let Some(spec_symbol) = spec_symbol else {
+                ctx.diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span,
+                    "impl owner bound has no checked spec binding",
+                ));
+                continue;
+            };
+            parameter.bounds.push(crate::CheckedSpecBound {
+                spec: bound.spec.clone(),
+                args: args.clone(),
+            });
+            state
+                .type_param_bounds
+                .entry(symbol)
+                .or_default()
+                .push(crate::TypeParamBoundFact {
+                    param: symbol,
+                    param_name: parameter.name.clone(),
+                    spec_symbol,
+                    args,
+                });
         }
     }
 }

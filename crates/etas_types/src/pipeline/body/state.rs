@@ -10,6 +10,7 @@ use crate::{
 pub struct BodyPipelineState {
     pub item: HirItemId,
     pub expected_return: Option<TypeId>,
+    pub owner_params: Vec<crate::CallableGenericParam>,
     pub inferred_returns: Option<Vec<(TypeId, crate::ConstraintOrigin)>>,
     pub provisional: ProvisionalFacts,
     pub constraints: Vec<TypeConstraint>,
@@ -29,6 +30,7 @@ impl BodyPipelineState {
         Self {
             item,
             expected_return: None,
+            owner_params: Vec::new(),
             inferred_returns: None,
             provisional: ProvisionalFacts::default(),
             constraints: Vec::new(),

@@ -17,6 +17,9 @@ pub fn collect_body_item<E>(
     let item = ctx.hir.items[state.item].clone();
     match item {
         HirItem::Flow(flow) => {
+            if let Some(method) = ctx.signature_facts.type_impl_methods.get(&flow.symbol) {
+                state.owner_params = method.owner_params.clone();
+            }
             state.expected_return =
                 ctx.item_signature(state.item)
                     .and_then(|signature| match signature {
