@@ -3,6 +3,7 @@ pub mod constraint;
 pub mod diagnostic;
 pub mod facts;
 pub mod lower;
+pub mod method;
 pub mod pipeline;
 pub mod solver;
 pub mod ty;
@@ -14,11 +15,11 @@ pub use api::{
     ExternalAgentSignatureInput, ExternalCallableGenericParamInput,
     ExternalCallableGenericParamKindInput, ExternalCallableSpecSatisfactionInput,
     ExternalEffectArgInput, ExternalEffectRefInput, ExternalEffectRowInput,
-    ExternalFlowSignatureInput, ExternalNamedSignatureInput, ExternalPackageKey,
-    ExternalPublicMetadataInput, ExternalRecordFieldInput, ExternalSignatureInput,
-    ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecImplMethodInput,
-    ExternalSpecKindInput, ExternalSpecMethodInput, ExternalSpecSignatureInput,
-    ExternalSymbolBindingInput, ExternalToolSignatureInput, ExternalTraceSpecConformanceInput,
+    ExternalFlowSignatureInput, ExternalMethodInput, ExternalNamedSignatureInput,
+    ExternalPackageKey, ExternalPublicMetadataInput, ExternalRecordFieldInput,
+    ExternalSignatureInput, ExternalSpecBoundInput, ExternalSpecImplInput, ExternalSpecKindInput,
+    ExternalSpecMethodInput, ExternalSpecSignatureInput, ExternalSymbolBindingInput,
+    ExternalToolSignatureInput, ExternalTraceSpecConformanceInput,
     ExternalTraceSpecConformanceTargetInput, ExternalTypeInput, ExternalTypeSpecSatisfactionInput,
     InstantiatedBodyOutput, ReflectionSignatureInput, SignatureBaseExtensionError,
     SignatureEnvironment, SignaturePipelineInput, SourceSignatureInput, SourceSymbolBindingInput,

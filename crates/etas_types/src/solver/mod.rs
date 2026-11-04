@@ -7,6 +7,7 @@ mod construction;
 pub mod effect_row;
 #[cfg(test)]
 mod execution_tests;
+mod existential;
 pub mod field;
 mod handler;
 pub mod index;
@@ -73,6 +74,7 @@ impl TypeSolver {
     ) -> Result<SolverReport, E> {
         checkpoint()?;
         let mut report = SolverReport::default();
+        let mut existential_packs = Vec::new();
         let mut pending_access_constraints = Vec::new();
         let mut pending_method_constraints = Vec::new();
         let mut checked_method_constraints = Vec::new();
@@ -88,6 +90,7 @@ impl TypeSolver {
         for constraint in input.constraints {
             checkpoint()?;
             match constraint {
+                TypeConstraint::ExistentialPack { .. } => existential_packs.push(constraint),
                 TypeConstraint::HandlerOverloadInstantiation {
                     candidates,
                     requests,
@@ -297,7 +300,13 @@ impl TypeSolver {
                 } => {
                     let from = resolve_known_substitutions(input.store, &report, *from);
                     let to = resolve_known_substitutions(input.store, &report, *to);
-                    if !is_assignable_for_reason(input.store, from, to, reason) {
+                    if !is_assignable_for_reason(
+                        input.store,
+                        from,
+                        to,
+                        reason,
+                        &report.substitutions,
+                    ) {
                         report.push(SolverFailure {
                             code: assignability_failure_code(reason),
                             span: origin.span,
@@ -391,6 +400,9 @@ impl TypeSolver {
                 TypeConstraint::MethodCall {
                     expr,
                     method,
+                    selection,
+                    argument_names,
+                    probes,
                     access_module,
                     candidates,
                     generic_args,
@@ -402,6 +414,9 @@ impl TypeSolver {
                     let invocation = method::Input {
                         expr,
                         method,
+                        selection,
+                        argument_names,
+                        probes,
                         access_module,
                         candidates,
                         generic_args,
@@ -637,6 +652,10 @@ impl TypeSolver {
             &callable_references,
             checkpoint,
         )?;
+        for constraint in existential_packs {
+            checkpoint()?;
+            existential::pack(&input, &mut report, constraint);
+        }
         checkpoint()?;
         Ok(report)
     }
@@ -777,12 +796,21 @@ fn solve_callable_constraint(
             .keys()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
+        let lexical_rows = input
+            .rigid_type_parameters
+            .iter()
+            .filter(|param| param.kind == crate::CallableGenericParamKind::Effect)
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>();
         let inferences = effect_row::infer_bindings_from_type_pairs(
             store,
             &pairs,
             &report.named_substitutions,
             &report.substitutions,
-            &effect_param_names,
+            effect_row::EffectRowParameterScopes {
+                inferred: &effect_param_names,
+                lexical: &lexical_rows,
+            },
             &mut effect_row_bindings,
         );
         let deferred_names = inferences
@@ -1225,7 +1253,13 @@ fn solve_access_constraint(
             }
             let output = resolve_known_substitutions(store, report, *output);
             AccessConstraintOutcome::Solved(Box::new(field::solve_field_access(
-                store, known, base, field, output, *origin,
+                store,
+                known,
+                base,
+                field,
+                output,
+                *origin,
+                &report.substitutions,
             )))
         }
         TypeConstraint::IndexAccess {
@@ -1380,36 +1414,47 @@ fn is_assignable_for_reason(
     from: crate::TypeId,
     to: crate::TypeId,
     reason: &crate::AssignabilityReason,
+    substitutions: &Substitution,
 ) -> bool {
-    if assignability::is_assignable(store, from, to) {
+    if assignability::is_assignable_with_substitution(store, from, to, substitutions) {
         return true;
     }
-    if record_exact_assignable(store, from, to) {
+    if record_exact_assignable(store, from, to, substitutions) {
         return true;
     }
     if matches!(reason, crate::AssignabilityReason::Pattern)
         && let Some(crate::Type::Nominal(nominal)) = store.get(from)
         && let Some(representation) = nominal.representation
     {
-        return record_subset_assignable(store, representation, to)
-            || assignability::is_assignable(store, representation, to);
+        return record_subset_assignable(store, representation, to, substitutions)
+            || assignability::is_assignable_with_substitution(
+                store,
+                representation,
+                to,
+                substitutions,
+            );
     }
     if matches!(reason, crate::AssignabilityReason::Pattern)
         && matches!(store.get(from), Some(crate::Type::Applied { .. }))
         && let Ok(Some(from_record)) = crate::record_fields_with_applied_params(store, from)
         && let Some(to_record) = record_fields(store, to)
     {
-        return record_fields_subset_assignable(store, &from_record, &to_record);
+        return record_fields_subset_assignable(store, &from_record, &to_record, substitutions);
     }
     if matches!(reason, crate::AssignabilityReason::Pattern)
-        && record_subset_assignable(store, from, to)
+        && record_subset_assignable(store, from, to, substitutions)
     {
         return true;
     }
     if matches!(reason, crate::AssignabilityReason::Constructor)
         && let Some(representation) = nominal_representation(store, to)
     {
-        return assignability::is_assignable(store, from, representation);
+        return assignability::is_assignable_with_substitution(
+            store,
+            from,
+            representation,
+            substitutions,
+        );
     }
     false
 }
@@ -1462,147 +1507,6 @@ fn assignability_failure_message(reason: &crate::AssignabilityReason) -> String 
     }
 }
 
-fn method_call_failure_message(method: &str, store: &TypeStore, args: &[TypeId]) -> String {
-    let method_name = match method {
-        "system" | "user" | "assistant" | "data" => format!("Prompt.{method}"),
-        "cast" => "Message.cast".to_owned(),
-        _ => method.to_owned(),
-    };
-    if args.iter().any(|arg| contains_secret_wrapper(store, *arg)) {
-        return format!(
-            "{method_name} does not accept Secret[T] without explicit declassification"
-        );
-    }
-    format!("{method_name} receiver or arguments do not match any standard method signature")
-}
-
-fn is_checked_message_cast_candidate(store: &TypeStore, candidate: TypeId) -> bool {
-    let Some(Type::Function(flow)) = store.get(candidate) else {
-        return false;
-    };
-    if flow.input.len() != 1 {
-        return false;
-    }
-    matches!(store.get(flow.input[0]), Some(Type::Message(_)))
-        && matches!(
-            store.get(flow.output),
-            Some(Type::Option(inner)) if matches!(store.get(*inner), Some(Type::Message(_)))
-        )
-}
-
-fn solve_checked_message_cast(
-    store: &TypeStore,
-    generic_args: &[crate::CallableGenericArg],
-    args: &[TypeId],
-    output: TypeId,
-    origin: ConstraintOrigin,
-) -> SolverReport {
-    let mut report = SolverReport::default();
-    if generic_args.len() != 1 {
-        report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::ArityMismatch,
-            span: origin.span,
-            message: format!(
-                "Message.cast expects 1 type argument, got {}",
-                generic_args.len()
-            ),
-        });
-        return report;
-    }
-    if args.len() != 1 {
-        report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::ArityMismatch,
-            span: origin.span,
-            message: format!(
-                "Message.cast expects 0 argument(s), got {}",
-                args.len().saturating_sub(1)
-            ),
-        });
-        return report;
-    }
-    if message_inner_type(store, args[0]).is_none() {
-        report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-            span: origin.span,
-            message:
-                "Message.cast receiver or arguments do not match any standard method signature"
-                    .to_owned(),
-        });
-        return report;
-    }
-    let crate::CallableGenericArg::Type(payload) = generic_args[0] else {
-        report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-            span: origin.span,
-            message: "Message.cast requires a type generic argument".to_owned(),
-        });
-        return report;
-    };
-    if !is_option_message_of(store, output, payload) {
-        report.push(SolverFailure {
-            code: etas_core::TypeDiagnosticCode::TypeMismatch,
-            span: origin.span,
-            message: "Message.cast result type does not match requested payload type".to_owned(),
-        });
-    }
-    report
-}
-
-fn message_inner_type(store: &TypeStore, ty: TypeId) -> Option<TypeId> {
-    match store.get(ty) {
-        Some(Type::Message(inner)) => Some(*inner),
-        Some(Type::Applied { constructor, args }) if args.len() == 1 => matches!(
-            store.get(TypeId(constructor.0)),
-            Some(Type::Nominal(nominal)) if nominal.name == "std.agent.message.Message"
-        )
-        .then_some(args[0]),
-        _ => None,
-    }
-}
-
-fn is_option_message_of(store: &TypeStore, ty: TypeId, payload: TypeId) -> bool {
-    let Some(Type::Option(inner)) = store.get(ty) else {
-        return false;
-    };
-    message_inner_type(store, *inner).is_some_and(|actual| actual == payload)
-}
-
-fn contains_secret_wrapper(store: &TypeStore, ty: TypeId) -> bool {
-    match store.get(ty) {
-        Some(Type::Trust {
-            wrapper: crate::TrustWrapper::Secret,
-            ..
-        }) => true,
-        Some(Type::Array(inner))
-        | Some(Type::List(inner))
-        | Some(Type::Set(inner))
-        | Some(Type::Slice(inner))
-        | Some(Type::Option(inner))
-        | Some(Type::Message(inner))
-        | Some(Type::Schema(inner))
-        | Some(Type::MemorySelection(inner))
-        | Some(Type::MemoryRegion(inner))
-        | Some(Type::Range { index: inner })
-        | Some(Type::Trust { inner, .. }) => contains_secret_wrapper(store, *inner),
-        Some(Type::Map { key, value }) | Some(Type::Store { key, value }) => {
-            contains_secret_wrapper(store, *key) || contains_secret_wrapper(store, *value)
-        }
-        Some(Type::Result { ok, err }) => {
-            contains_secret_wrapper(store, *ok) || contains_secret_wrapper(store, *err)
-        }
-        Some(Type::Tuple(elements)) => elements
-            .iter()
-            .any(|element| contains_secret_wrapper(store, *element)),
-        Some(Type::Function(flow)) => {
-            flow.input
-                .iter()
-                .any(|input| contains_secret_wrapper(store, *input))
-                || contains_secret_wrapper(store, flow.output)
-        }
-        _ => false,
-    }
-}
-
 fn resolve_substitution(store: &TypeStore, substitutions: &Substitution, ty: TypeId) -> TypeId {
     let mut current = ty;
     let mut seen = 0usize;
@@ -1638,30 +1542,42 @@ fn resolve_known_substitutions(store: &TypeStore, report: &SolverReport, ty: Typ
     current
 }
 
-fn record_exact_assignable(store: &TypeStore, from: crate::TypeId, to: crate::TypeId) -> bool {
+fn record_exact_assignable(
+    store: &TypeStore,
+    from: crate::TypeId,
+    to: crate::TypeId,
+    substitutions: &Substitution,
+) -> bool {
     let Some(from_record) = record_fields(store, from) else {
         return false;
     };
     let Some(to_record) = record_fields(store, to) else {
         return false;
     };
-    from_record.fields.len() == to_record.fields.len() && record_subset_assignable(store, from, to)
+    from_record.fields.len() == to_record.fields.len()
+        && record_subset_assignable(store, from, to, substitutions)
 }
 
-fn record_subset_assignable(store: &TypeStore, from: crate::TypeId, to: crate::TypeId) -> bool {
+fn record_subset_assignable(
+    store: &TypeStore,
+    from: crate::TypeId,
+    to: crate::TypeId,
+    substitutions: &Substitution,
+) -> bool {
     let Some(from_record) = record_fields(store, from) else {
         return false;
     };
     let Some(to_record) = record_fields(store, to) else {
         return false;
     };
-    record_fields_subset_assignable(store, &from_record, &to_record)
+    record_fields_subset_assignable(store, &from_record, &to_record, substitutions)
 }
 
 fn record_fields_subset_assignable(
     store: &TypeStore,
     from_record: &crate::RecordType,
     to_record: &crate::RecordType,
+    substitutions: &Substitution,
 ) -> bool {
     to_record.fields.iter().all(|expected| {
         from_record
@@ -1674,6 +1590,7 @@ fn record_fields_subset_assignable(
                     actual.ty,
                     expected.ty,
                     &crate::AssignabilityReason::Pattern,
+                    substitutions,
                 )
             })
     })

@@ -75,6 +75,40 @@ fn selected_callable_follows_grouped_alias_imports_not_all_checked_bodies() {
 }
 
 #[test]
+fn default_generic_method_keeps_its_checked_implementation_in_runtime_reachability() {
+    let program = checked(&[(
+        "src/app/main.es",
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+spec Read { flow read(self) -> i32; }
+type First = i32;
+type Second = i32;
+impl First ~ Read { flow read(self) -> i32 { checkpoint("selected"); return 7; } }
+impl Second ~ Read { flow read(self) -> i32 { return 9; } }
+flow invoke<T ~ Read>(value: T) -> i32 { return value.read(); }
+flow main(value: First) -> i32 { return invoke(value); }
+"#,
+    )]);
+    let main = flow(&program, "main");
+    let selected = program
+        .types
+        .type_impl_methods
+        .values()
+        .find(|method| {
+            method.name == "read"
+                && matches!(program.type_store.get(method.self_type),
+            Some(etas_types::Type::Nominal(owner)) if owner.name.rsplit('.').next() == Some("First"))
+        })
+        .unwrap()
+        .body;
+    assert_eq!(
+        program.checked_call_reachability(main).unwrap(),
+        BTreeSet::from([main, flow(&program, "invoke"), selected,])
+    );
+}
+
+#[test]
 fn selected_agent_method_does_not_make_its_sibling_reachable() {
     let program = checked(&[(
         "src/app/main.es",

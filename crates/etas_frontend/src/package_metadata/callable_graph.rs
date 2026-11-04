@@ -98,8 +98,9 @@ pub(crate) fn checked_callable_graph(
     checked: &CheckedProject,
     item: etas_hir::HirItemId,
     summary: &etas_effects::EffectSummary,
+    identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
 ) -> Result<Option<CheckedCallableGraph>, PackageMetadataError> {
-    ProjectMetadataProjection::new(checked).returned_callable_projection(item, summary)
+    ProjectMetadataProjection::new(checked).returned_callable_projection(item, summary, identities)
 }
 
 pub(crate) fn checked_request_template(

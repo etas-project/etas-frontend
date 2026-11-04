@@ -70,14 +70,12 @@ fn lower_std_decl_with_kind(
                 }
                 let ty =
                     lower_std_type_decl_with_name(ctx, registry, decl, qualified_name.as_deref());
-                let parameters = lower_std_generic_params(ctx, registry, &decl.params);
                 if decl.canonical_type.is_some() {
                     return SymbolTypeFact::TypeAlias {
                         target: ty,
-                        params: parameters,
+                        params: lower_std_generic_params(ctx, registry, &decl.params),
                     };
                 }
-                ctx.signature_facts.type_generics.insert(ty, parameters);
                 match ctx.interner.store().get(ty) {
                     Some(Type::Nominal(nominal)) => SymbolTypeFact::NominalType {
                         constructor: TypeConstructorId(ty.0),
@@ -182,7 +180,7 @@ pub fn lower_std_spec_impls(
         .collect()
 }
 
-fn lower_std_generic_params(
+pub(super) fn lower_std_generic_params(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
     params: &[etas_std::StdGenericParam],
@@ -389,6 +387,42 @@ pub fn lower_std_type(
     ty: &StdType,
 ) -> TypeId {
     lower_std_type_with_scope(ctx, registry, ty, None)
+}
+
+pub fn lower_std_method_owner(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    receiver: &StdType,
+    scope: Option<&[String]>,
+) -> Option<TypeId> {
+    let name = match receiver {
+        StdType::Array(_) => "Array",
+        StdType::List(_) => "List",
+        StdType::Map { .. } => "Map",
+        StdType::Set(_) => "Set",
+        StdType::Range(_) => "Range",
+        StdType::Slice(_) => "Slice",
+        StdType::Option(_) => "Option",
+        StdType::Result { .. } => "Result",
+        StdType::Schema(_) => "Schema",
+        StdType::Prompt => "Prompt",
+        StdType::PromptPart => "PromptPart",
+        StdType::Message(_) => "Message",
+        StdType::MemorySelection(_) => "MemorySelection",
+        StdType::Store { .. } => "Store",
+        StdType::MemoryRegion(_) | StdType::ResourceHandleMemoryRegion(_) => "MemoryRegion",
+        StdType::Named(name) | StdType::NamedApplied { name, .. } => name,
+        _ => return None,
+    };
+    let (identity, declaration) = scope
+        .and_then(|scope| lookup_scoped_std_type_decl(registry, scope, name))
+        .or_else(|| lookup_std_type_decl(registry, name))?;
+    Some(lower_std_type_decl_with_name(
+        ctx,
+        registry,
+        declaration,
+        Some(&identity),
+    ))
 }
 
 fn lower_std_type_with_scope(
@@ -709,6 +743,12 @@ fn lower_std_type_constructor(
         }
     };
     if kind != TypeDeclKind::Spec {
+        if !ctx.signature_facts.type_generics.contains_key(&ty) {
+            // Transitive signature types own the same binders as direct imports.
+            ctx.signature_facts.type_generics.insert(ty, Vec::new());
+            let parameters = lower_std_generic_params(ctx, registry, params);
+            ctx.signature_facts.type_generics.insert(ty, parameters);
+        }
         let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
         if let Some(identity) = ctx.reflection_declaration_identity(&path).cloned()
             && identity.kind() == etas_code::DefinitionKind::Type

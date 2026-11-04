@@ -93,6 +93,9 @@ fn references(root: &Ty) -> BTreeSet<Vec<String>> {
     let mut pending = vec![root];
     while let Some(ty) = pending.pop() {
         match ty {
+            Ty::Existential { bounds } => {
+                pending.extend(bounds.iter().flat_map(|bound| &bound.args))
+            }
             Ty::Named(path) => {
                 result.insert(path.clone());
             }

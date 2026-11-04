@@ -68,6 +68,18 @@ impl SignatureEnvironment {
         Arc::ptr_eq(&self.facts, facts)
     }
 
+    pub fn with_method_index(&self, methods: Arc<crate::method::MethodIndex>) -> Self {
+        let mut result = self.clone();
+        let mut facts = (*self.facts).clone();
+        facts.methods = methods;
+        result.facts = Arc::new(facts);
+        result
+    }
+
+    pub fn signature_facts(&self) -> &Arc<TypeFacts> {
+        &self.facts
+    }
+
     /// Freeze appended types from this exact base with cooperative cancellation
     /// and a type-count limit. Byte and node budgets remain the caller's responsibility.
     pub fn extend_type_base_controlled(

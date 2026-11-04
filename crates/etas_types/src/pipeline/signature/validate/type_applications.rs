@@ -122,48 +122,8 @@ fn source_spec_parameters(
     ctx: &TypePipelineContext<'_>,
     spec: etas_hir::SymbolId,
 ) -> Option<Vec<crate::CallableGenericParam>> {
-    let signature = ctx.signature_facts.spec_signatures.get(&spec)?;
-    if signature.params.len() != signature.param_names.len() {
-        return None;
-    }
-    signature
-        .params
-        .iter()
-        .zip(&signature.param_names)
-        .map(|(symbol, name)| {
-            let declaration = ctx.hir.symbols.get(*symbol)?;
-            let etas_hir::SymbolDef::TypeParam {
-                bounds: declared, ..
-            } = &declaration.def
-            else {
-                return None;
-            };
-            let crate::SymbolTypeFact::Param { ty } =
-                ctx.signature_facts.symbol_types.get(symbol)?
-            else {
-                return None;
-            };
-            let bounds = ctx
-                .signature_facts
-                .type_param_bounds
-                .get(symbol)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            if declaration.name != *name || declared.len() != bounds.len() {
-                return None;
-            }
-            Some(crate::CallableGenericParam {
-                name: name.clone(),
-                kind: crate::CallableGenericParamKind::Type,
-                subject: *ty,
-                bounds: bounds
-                    .iter()
-                    .map(|bound| crate::CheckedSpecBound {
-                        spec: crate::CheckedSpecRef::Source(bound.spec_symbol),
-                        args: bound.args.clone(),
-                    })
-                    .collect(),
-            })
-        })
-        .collect()
+    ctx.signature_facts
+        .spec_signatures
+        .get(&spec)?
+        .generic_parameters_in(&ctx.signature_facts, ctx.hir)
 }

@@ -65,6 +65,10 @@ pub enum ReturnObservation {
     etas_core::RetainedSize,
 )]
 pub enum CallableReturnSource {
+    Existential {
+        pack: HirExprId,
+        environment: crate::facts::CallableEnvironmentId,
+    },
     /// A checked metadata-backed reflection and its frozen callable contract.
     ExternalFrozen {
         reflection: HirExprId,
@@ -80,6 +84,7 @@ pub enum CallableReturnSource {
         environment: Option<crate::facts::CallableEnvironmentId>,
     },
     Metadata(MetadataCallableSource),
+    MetadataObject(MetadataObjectSource),
     Parameter(etas_hir::SymbolId),
     Reference(CallableReturnReference),
     SourceItem(etas_hir::HirItemId),
@@ -108,6 +113,25 @@ pub struct MetadataCallableSource {
     pub value: u32,
     pub environment: Option<crate::facts::CallableEnvironmentId>,
     pub analysis: CallableAnalysisKind,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub struct MetadataObjectSource {
+    pub graph: etas_code::CodeFingerprint,
+    pub object: u32,
+    pub environment: Option<crate::facts::CallableEnvironmentId>,
 }
 
 #[derive(

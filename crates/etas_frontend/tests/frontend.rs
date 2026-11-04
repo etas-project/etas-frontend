@@ -426,6 +426,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             trace_specs: Vec::new(),
             spec_signatures: Vec::new(),
             spec_impls: Vec::new(),
+            methods: Vec::new(),
             type_spec_satisfactions: Vec::new(),
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
@@ -4936,6 +4937,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             trace_specs: Vec::new(),
             spec_signatures: Vec::new(),
             spec_impls: Vec::new(),
+            methods: Vec::new(),
             type_spec_satisfactions: Vec::new(),
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
@@ -5529,6 +5531,7 @@ fn empty_external_public_metadata(
         trace_specs: Vec::new(),
         spec_signatures: Vec::new(),
         spec_impls: Vec::new(),
+        methods: Vec::new(),
         type_spec_satisfactions: Vec::new(),
         callable_spec_satisfactions: Vec::new(),
         trace_spec_conformances: Vec::new(),
@@ -10530,7 +10533,9 @@ fn package_metadata_rejects_unrepresentable_residual_obligations() {
     let build = |checked: &etas_frontend::CheckedProgram| {
         build_package_metadata_artifact_from_checked(
             PackageMetadataBuildInput {
-                definition_origin: None,
+                definition_origin: Some(
+                    etas_code::PackageKey::from_name_and_version("storage", "0.1.0").unwrap(),
+                ),
                 package_id: "storage".into(),
                 package_version: "0.1.0".into(),
                 package_edition: "2026".into(),
@@ -11096,7 +11101,9 @@ flow main() -> unit {
     );
     let artifact = build_package_metadata_artifact_from_checked(
         PackageMetadataBuildInput {
-            definition_origin: None,
+            definition_origin: Some(
+                etas_code::PackageKey::from_name_and_version("annotated-agent", "0.1.0").unwrap(),
+            ),
             package_id: "annotated-agent".to_owned(),
             package_version: "0.1.0".to_owned(),
             package_edition: "2026".to_owned(),
@@ -11117,6 +11124,15 @@ flow main() -> unit {
 
     let review_item = vec!["app".to_owned(), "main".to_owned(), "Review".to_owned()];
     let reviewer_item = vec!["app".to_owned(), "main".to_owned(), "Reviewer".to_owned()];
+    let entry = metadata
+        .public_metadata
+        .methods
+        .iter()
+        .find(|method| method.identity.name() == "run")
+        .unwrap();
+    assert!(entry.requirements.limits.iter().any(|limit| limit.kind
+        == etas_package_metadata::MethodLimitKind::Tokens
+        && limit.value == Some(etas_package_metadata::MethodLimitValue::Count(128))));
     assert!(
         metadata
             .public_metadata

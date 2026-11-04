@@ -80,7 +80,13 @@ fn solve_one(
         return false;
     }
     let result = if diverges { value } else { request.unit };
-    if !super::is_assignable_for_reason(store, result, output, &AssignabilityReason::Other) {
+    if !super::is_assignable_for_reason(
+        store,
+        result,
+        output,
+        &AssignabilityReason::Other,
+        &report.substitutions,
+    ) {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span: request.origin.span,

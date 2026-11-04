@@ -57,6 +57,10 @@ pub enum CallableGenericValue {
     etas_core::RetainedSize,
 )]
 pub enum CallableValueOrigin {
+    Existential {
+        pack: HirExprId,
+        environment: CallableEnvironmentId,
+    },
     /// The caller-visible transformer of a definition, not an edited body's analysis.
     FrozenContract {
         unit: EffectUnit,
@@ -81,6 +85,7 @@ pub enum CallableValueOrigin {
         environment: CallableEnvironmentId,
     },
     Metadata(MetadataCallableSource),
+    MetadataObject(crate::MetadataObjectSource),
     Unit(EffectUnit),
     Captured {
         unit: EffectUnit,
@@ -191,8 +196,10 @@ pub struct MetadataCallableTypeFact {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct MetadataCallableGraphFact {
+    pub implementation: Option<etas_code::MethodId>,
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub signatures: Vec<MetadataCallableTypeFact>,
+    pub objects: Vec<crate::ExternalExistentialValueMetadata>,
 }
 
 #[derive(

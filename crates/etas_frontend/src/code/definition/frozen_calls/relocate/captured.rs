@@ -43,6 +43,9 @@ impl Relocation<'_> {
             {
                 for source in sources {
                     match source {
+                        CallableReturnSource::Existential { environment, .. } => {
+                            pending.push(*environment);
+                        }
                         CallableReturnSource::FrozenContract { environment, .. } => {
                             pending.extend(environment)
                         }
@@ -90,6 +93,13 @@ impl Relocation<'_> {
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
                     let origin = match *origin {
+                        CallableValueOrigin::Existential { pack, environment } => {
+                            pending.push(environment);
+                            CallableValueOrigin::Existential {
+                                pack: self.captured_expr(pack)?,
+                                environment,
+                            }
+                        }
                         CallableValueOrigin::ExternalReference { .. } => {
                             return Err(invalid(
                                 "captured external callable reference lacks checked relocation facts",
@@ -174,6 +184,10 @@ impl Relocation<'_> {
                         CallableValueOrigin::Metadata(source) => {
                             pending.extend(source.environment);
                             CallableValueOrigin::Metadata(source)
+                        }
+                        CallableValueOrigin::MetadataObject(source) => {
+                            pending.extend(source.environment);
+                            CallableValueOrigin::MetadataObject(source)
                         }
                         CallableValueOrigin::Parameter { owner, symbol } => {
                             CallableValueOrigin::Parameter {

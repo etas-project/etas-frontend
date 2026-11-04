@@ -339,6 +339,16 @@ where
         )
     }
 
+    fn begin_for_body(
+        &mut self,
+        stmt: HirStmtId,
+        iterable: HirExprId,
+        pattern: etas_hir::HirPatId,
+        state: Self::Domain,
+    ) -> Self::Domain {
+        <S as HirAnalysisSemantics>::begin_for_body(self.semantics, stmt, iterable, pattern, state)
+    }
+
     fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
         <S as HirAnalysisSemantics>::after_expr(self.semantics, expr, state)
     }

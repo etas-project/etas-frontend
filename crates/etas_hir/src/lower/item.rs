@@ -383,12 +383,6 @@ impl LowerCtx {
                     *self.hir.items.get_mut(body).expect("reserved method body") =
                         HirItem::Flow(callable);
                     self.map_item(body, flow.span);
-                    self.hir
-                        .modules_arena
-                        .get_mut(self.current_module)
-                        .expect("current module shell")
-                        .items
-                        .push(body);
                     HirImplItem::Callable { item: body }
                 }
                 (item_index, ImplItem::Action(action)) => {
@@ -873,7 +867,7 @@ impl LowerCtx {
             self.alloc_symbol_with_def(SymbolData {
                 name: format!("{}.{}", owner_qualifier, decl.name.text),
                 kind: SymbolKind::Flow,
-                visibility: crate::Visibility::Public,
+                visibility: hir_visibility(decl.visibility),
                 defining_module: self.current_module,
                 defining_item: Some(item_id),
                 def: SymbolDef::Item { item: item_id },

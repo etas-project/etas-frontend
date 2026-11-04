@@ -23,6 +23,30 @@ flow main() -> unit ![Console.stdout_write] { invoke(Packet { id = 7 }); }
     )));
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let checked = output.checked.expect("checked inferred method callback");
+    let invocation = checked
+        .types
+        .checked_method_calls
+        .values()
+        .find(|fact| {
+            matches!(
+                fact.target,
+                etas_types::method::MethodTarget::BoundSpec { .. }
+            )
+        })
+        .unwrap();
+    assert!(
+        invocation
+            .instantiation
+            .deferred_effect_row_obligations
+            .is_empty()
+    );
+    assert_eq!(invocation.instantiation.effect_row_bindings.len(), 1);
+    assert!(
+        invocation.instantiation.effect_row_bindings[0]
+            .1
+            .tail
+            .is_none()
+    );
     let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
     assert_eq!(summary.escaping_effects.effects.iter().count(), 1);
     assert!(summary.escaping_effects.open.is_none());

@@ -29,11 +29,18 @@ where
                 self.expr_control(expr, state)?
             }
             HirStmt::For {
-                iter, limits, body, ..
+                pat,
+                iter,
+                limits,
+                body,
+                ..
             } => {
                 let control = self.exprs_control(limits, Control::normal(state))?;
                 let control =
                     control.try_with_normal_processed(|state| self.expr_control(iter, state))?;
+                let control = control.with_normal_processed(|state| {
+                    Control::normal(self.semantics.begin_for_body(stmt, iter, pat, state))
+                });
                 match self.semantics.bounded_for_iterations(stmt) {
                     Some(bound) => control.try_with_normal_processed(|state| {
                         let (result, complete) =

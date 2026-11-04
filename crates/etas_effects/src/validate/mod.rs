@@ -1022,6 +1022,7 @@ fn effect_label(
 
 fn type_label(types: &etas_types::TypeStore, ty: etas_types::TypeId) -> String {
     match types.get(ty).cloned() {
+        Some(etas_types::Type::Existential { .. }) => etas_types::ty::display_type(types, ty),
         Some(etas_types::Type::Primitive(primitive)) => primitive.source_name().to_owned(),
         Some(etas_types::Type::IntegerLiteral { .. }) => "i32".to_owned(),
         Some(etas_types::Type::Var(var)) => format!("T{}", var.0),

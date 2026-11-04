@@ -70,6 +70,7 @@ fn with_binding(
             trace_specs: Vec::new(),
             spec_signatures: specs,
             spec_impls: Vec::new(),
+            methods: Vec::new(),
             type_spec_satisfactions: Vec::new(),
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
@@ -104,6 +105,7 @@ fn imported_spec_alias_reuses_checked_external_method_signature() {
             signature: Some(crate::ExternalFlowSignatureInput {
                 path: method_path,
                 generic_params: vec![],
+                param_names: vec!["self".into()],
                 params: vec![Ty::Primitive("i32".into())],
                 output: Ty::Primitive("string".into()),
                 effects: None,
@@ -192,6 +194,7 @@ fn external_spec_methods_are_checked_without_importing_the_spec_name() {
             path: method_path.clone(),
             signature: Some(crate::ExternalFlowSignatureInput {
                 path: method_path.clone(),
+                param_names: vec!["self".into(), "value".into()],
                 generic_params: vec![
                     crate::ExternalCallableGenericParamInput {
                         name: "T".into(),

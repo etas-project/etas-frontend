@@ -33,6 +33,7 @@ mod tests {
 
     fn graph() -> etas_package_metadata::CallableValueGraph {
         etas_package_metadata::CallableValueGraph {
+            objects: Vec::new(),
             sources: vec![CallableValueSource::Parameter(
                 etas_package_metadata::CallableValueParameter {
                     scope: CallableValueScope::Root,

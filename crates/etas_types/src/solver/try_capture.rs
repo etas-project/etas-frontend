@@ -27,7 +27,13 @@ pub(super) fn solve<E>(
         };
         let operand = resolve_known_substitutions(store, report, *operand);
         let output = resolve_known_substitutions(store, report, *output);
-        if !super::is_assignable_for_reason(store, operand, output, &AssignabilityReason::Other) {
+        if !super::is_assignable_for_reason(
+            store,
+            operand,
+            output,
+            &AssignabilityReason::Other,
+            &report.substitutions,
+        ) {
             fail(
                 report,
                 *origin,

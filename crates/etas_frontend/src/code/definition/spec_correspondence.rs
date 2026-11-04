@@ -7,6 +7,24 @@ use etas_utils::PipelineExecutionControl;
 
 use crate::{CheckedProgramData, code::descriptor::ProjectionError};
 
+fn type_spec_bounds(
+    source: &CheckedProgramData,
+    ty: TypeId,
+) -> impl Iterator<Item = &CheckedSpecBound> {
+    let object_bounds = match source.type_store.get(ty) {
+        Some(etas_types::Type::Existential { bounds }) => bounds.as_slice(),
+        _ => &[],
+    };
+    source
+        .types
+        .type_generics
+        .get(&ty)
+        .into_iter()
+        .flatten()
+        .flat_map(|parameter| &parameter.bounds)
+        .chain(object_bounds)
+}
+
 /// Map standard spec references only after both checked registries agree on
 /// their canonical declarations. User and package specs need their own proof.
 pub(crate) fn checked_std_spec_correspondence(
@@ -18,64 +36,60 @@ pub(crate) fn checked_std_spec_correspondence(
     let mut mapped = HashMap::new();
     for ty in reachable {
         checkpoint(control)?;
-        for parameter in source.types.type_generics.get(ty).into_iter().flatten() {
+        for bound in type_spec_bounds(source, *ty) {
             checkpoint(control)?;
-            for bound in &parameter.bounds {
-                checkpoint(control)?;
-                let path = match &bound.spec {
-                    CheckedSpecRef::Std(path) => Some(path),
-                    CheckedSpecRef::Source(symbol) => source.types.std_spec_aliases.get(symbol),
-                    CheckedSpecRef::External(_) => None,
-                    CheckedSpecRef::Canonical(identity) => {
-                        if identity.kind() != etas_code::DefinitionKind::Spec
-                            || !source
-                                .types
-                                .canonical_specs
-                                .signatures
-                                .contains_key(identity)
-                        {
-                            return Err(ProjectionError::MissingIdentity(
-                                "canonical checked spec declaration".into(),
-                            ));
-                        }
-                        mapped.insert(bound.spec.clone(), bound.spec.clone());
-                        continue;
+            let path = match &bound.spec {
+                CheckedSpecRef::Std(path) => Some(path),
+                CheckedSpecRef::Source(symbol) => source.types.std_spec_aliases.get(symbol),
+                CheckedSpecRef::External(_) => None,
+                CheckedSpecRef::Canonical(identity) => {
+                    if identity.kind() != etas_code::DefinitionKind::Spec
+                        || !source
+                            .types
+                            .canonical_specs
+                            .signatures
+                            .contains_key(identity)
+                    {
+                        return Err(ProjectionError::MissingIdentity(
+                            "canonical checked spec declaration".into(),
+                        ));
                     }
-                };
-                let Some(path) = path else { continue };
-                if source.std_registry.version() != target.version() {
-                    return Err(ProjectionError::Invalid(
-                        "standard registry versions differ".into(),
-                    ));
+                    mapped.insert(bound.spec.clone(), bound.spec.clone());
+                    continue;
                 }
-                let source_symbol =
-                    source.std_registry.lookup_qualified(path).ok_or_else(|| {
-                        ProjectionError::Invalid(
-                            "checked standard spec is absent in source registry".into(),
-                        )
-                    })?;
-                let target_symbol = target.lookup_qualified(path).ok_or_else(|| {
-                    ProjectionError::Invalid(
-                        "checked standard spec is absent in target registry".into(),
-                    )
-                })?;
-                if source_symbol.qualified_path != target_symbol.qualified_path
-                    || source_symbol.decl != target_symbol.decl
-                    || !matches!(&source_symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec)
-                {
-                    return Err(ProjectionError::Invalid(
-                        "standard spec declarations differ".into(),
-                    ));
-                }
-                let replacement = CheckedSpecRef::Std(target_symbol.qualified_path.clone());
-                if mapped
-                    .insert(bound.spec.clone(), replacement.clone())
-                    .is_some_and(|old| old != replacement)
-                {
-                    return Err(ProjectionError::Invalid(
-                        "conflicting standard spec correspondence".into(),
-                    ));
-                }
+            };
+            let Some(path) = path else { continue };
+            if source.std_registry.version() != target.version() {
+                return Err(ProjectionError::Invalid(
+                    "standard registry versions differ".into(),
+                ));
+            }
+            let source_symbol = source.std_registry.lookup_qualified(path).ok_or_else(|| {
+                ProjectionError::Invalid(
+                    "checked standard spec is absent in source registry".into(),
+                )
+            })?;
+            let target_symbol = target.lookup_qualified(path).ok_or_else(|| {
+                ProjectionError::Invalid(
+                    "checked standard spec is absent in target registry".into(),
+                )
+            })?;
+            if source_symbol.qualified_path != target_symbol.qualified_path
+                || source_symbol.decl != target_symbol.decl
+                || !matches!(&source_symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec)
+            {
+                return Err(ProjectionError::Invalid(
+                    "standard spec declarations differ".into(),
+                ));
+            }
+            let replacement = CheckedSpecRef::Std(target_symbol.qualified_path.clone());
+            if mapped
+                .insert(bound.spec.clone(), replacement.clone())
+                .is_some_and(|old| old != replacement)
+            {
+                return Err(ProjectionError::Invalid(
+                    "conflicting standard spec correspondence".into(),
+                ));
             }
         }
     }
@@ -228,6 +242,7 @@ impl CheckedSpecPlan {
                 },
                 &scoped,
             )
+            .with_spec_identities(&self.mapping)
             .with_expansion_depth(max_depth)
             .with_budget(budget);
             let mut parameter_bounds = Vec::new();
@@ -285,6 +300,7 @@ impl CheckedSpecPlan {
                 effect_names,
             },
         )
+        .with_spec_identities(&self.mapping)
         .with_expansion_depth(max_depth)
         .with_budget(budget);
         for implementation in &self.implementations {
@@ -454,11 +470,9 @@ pub(crate) fn checked_spec_plan(
     let mut implementations = Vec::new();
     for ty in reachable {
         charge_node(budget)?;
-        for parameter in source.types.type_generics.get(ty).into_iter().flatten() {
-            for bound in &parameter.bounds {
-                charge_edges(budget, 1)?;
-                pending.push_back(bound.spec.clone());
-            }
+        for bound in type_spec_bounds(source, *ty) {
+            charge_edges(budget, 1)?;
+            pending.push_back(bound.spec.clone());
         }
     }
     let mut add_impl =
@@ -823,6 +837,91 @@ fn spec_budget_error(error: etas_types::TypeSubstitutionError) -> ProjectionErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existential_bounds_relocate_through_the_checked_spec_plan() {
+        struct Control;
+        impl PipelineExecutionControl for Control {
+            fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+                Ok(())
+            }
+        }
+        let mut input = crate::ProjectInput::single_source(crate::SourceInput::anonymous(
+            "module app; spec Marker; flow read(value: ? ~ Marker) -> unit ![] { return; }",
+        ));
+        input.options.entry_policy = crate::EntryPolicy::Optional;
+        let output = crate::Frontend.check_project(input);
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        let checked = output.checked.unwrap();
+        let package = etas_code::PackageKey::from_name_and_version("app", "1.0.0").unwrap();
+        let origins = crate::code::identity::DefinitionOrigins {
+            source_modules: crate::code::identity::DefinitionOrigins::declared_source_modules(
+                &checked, package,
+            )
+            .unwrap(),
+            standard_package: crate::code::identity::standard_package_key(&checked.std_registry)
+                .unwrap(),
+            external_definitions: Default::default(),
+        };
+        let catalog = crate::code::definition::DefinitionCatalog::build(
+            checked.clone(),
+            &origins,
+            Default::default(),
+        )
+        .unwrap();
+        let (object, bound) = checked
+            .type_store
+            .iter()
+            .find_map(|(ty, node)| match node {
+                etas_types::Type::Existential { bounds } => Some((ty, bounds[0].clone())),
+                _ => None,
+            })
+            .unwrap();
+        let budget = TypeSubstitutionBudget::new(1024, 1024, None);
+        let (reachable, plan) = checked_type_and_spec_plan(CheckedTypeAndSpecPlanInput {
+            source: &checked,
+            target: &checked.std_registry,
+            roots: &[object],
+            rows: &[],
+            declarations: &HashMap::new(),
+            identity: &|spec| catalog.native_spec_identity(spec).cloned(),
+            max_depth: 32,
+            control: &Control,
+            budget: &budget,
+        })
+        .unwrap();
+        let expected =
+            CheckedSpecRef::Canonical(catalog.native_spec_identity(&bound.spec).unwrap().clone());
+        assert_eq!(plan.mapping[&bound.spec], expected);
+        let mut target = etas_types::TypeInterner::new();
+        let facts = plan
+            .materialize(SpecMaterializationInput {
+                source: &checked.type_store,
+                target: &mut target,
+                declarations: &HashMap::new(),
+                effect_names: &HashMap::new(),
+                reachable: &reachable,
+                max_depth: 32,
+                budget: &budget,
+            })
+            .unwrap();
+        assert_eq!(facts.canonical.signatures.len(), 1);
+        let mapped = TypeSubstitutionEngine::relocating_materialized(
+            etas_types::ty::TypeRelocationMaterializationInput {
+                source: &checked.type_store,
+                target: &mut target,
+                declaration_types: &HashMap::new(),
+                effect_names: &HashMap::new(),
+            },
+        )
+        .with_spec_identities(&plan.mapping)
+        .substitute(object)
+        .unwrap();
+        let Some(etas_types::Type::Existential { bounds }) = target.store().get(mapped) else {
+            panic!("existential type")
+        };
+        assert_eq!(bounds[0].spec, expected);
+    }
 
     #[test]
     fn materializing_specs_does_not_copy_the_shared_declaration_map() {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::facts::specs::{ExternalSpecIdentity, ExternalSpecSignatureFact};
 
-pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatureInput) {
+pub(super) fn declare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatureInput) {
     for metadata in &input.metadata {
         if package_binding_span(input, metadata.package).is_none() {
             continue;
@@ -27,6 +27,9 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
             );
         }
     }
+}
+
+pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatureInput) {
     for metadata in &input.metadata {
         let Some(span) = package_binding_span(input, metadata.package) else {
             continue;

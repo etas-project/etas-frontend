@@ -7,28 +7,35 @@ mod tests;
 pub(super) fn metadata_type(
     ty: TypeId,
     store: &TypeStore,
+    spec_path: &SpecPathResolver<'_>,
 ) -> Result<MetadataType, PackageMetadataError> {
-    TypeProjection::new(store).ty(ty)
+    TypeProjection::new(store, spec_path).ty(ty)
 }
 
 pub(super) fn metadata_effect_row_ref(
     row: &EffectRowRef,
     store: &TypeStore,
+    spec_path: &SpecPathResolver<'_>,
 ) -> Result<MetadataEffectRow, PackageMetadataError> {
-    TypeProjection::new(store).row(row)
+    TypeProjection::new(store, spec_path).row(row)
 }
 
 pub(super) fn metadata_effect_arg(
     arg: &EffectArgRef,
     store: &TypeStore,
+    spec_path: &SpecPathResolver<'_>,
 ) -> Result<MetadataEffectArg, PackageMetadataError> {
-    TypeProjection::new(store).arg(arg)
+    TypeProjection::new(store, spec_path).arg(arg)
 }
+
+type SpecPathResolver<'a> =
+    dyn Fn(&etas_types::CheckedSpecRef) -> Result<Vec<String>, PackageMetadataError> + 'a;
 
 /// Nominal recursion is encoded through canonical references, not repeated
 /// representations. Structural cycles still require a nominal boundary.
 struct TypeProjection<'a> {
     store: &'a TypeStore,
+    spec_path: &'a SpecPathResolver<'a>,
     nominals: BTreeSet<TypeId>,
     structural: BTreeSet<(TypeId, Option<TypeId>)>,
     anchor: Option<TypeId>,
@@ -37,9 +44,10 @@ struct TypeProjection<'a> {
 }
 
 impl<'a> TypeProjection<'a> {
-    fn new(store: &'a TypeStore) -> Self {
+    fn new(store: &'a TypeStore, spec_path: &'a SpecPathResolver<'a>) -> Self {
         Self {
             store,
+            spec_path,
             nominals: BTreeSet::new(),
             structural: BTreeSet::new(),
             anchor: None,
@@ -85,6 +93,22 @@ impl<'a> TypeProjection<'a> {
         self.depth += 1;
         let mut metadata = MetadataType::default();
         match ty_value {
+            Type::Existential { bounds } => {
+                metadata.kind = MetadataTypeKind::Existential;
+                for bound in bounds {
+                    metadata.bounds.push(MetadataSpecBound {
+                        spec: (self.spec_path)(&bound.spec)?,
+                        args: bound
+                            .args
+                            .iter()
+                            .map(|arg| self.ty(*arg))
+                            .collect::<Result<_, _>>()?,
+                    });
+                }
+                metadata
+                    .bounds
+                    .sort_by(|left, right| left.spec.cmp(&right.spec));
+            }
             Type::Primitive(primitive) => {
                 metadata.kind = MetadataTypeKind::Primitive;
                 metadata.name = primitive_name(*primitive).to_owned();

@@ -1546,7 +1546,8 @@ flow main(message: Message<string>) -> unit {
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let dump = dump_ast(&parsed.value, DumpOptions::default());
     assert!(dump.contains("CallExpr"), "{dump}");
-    assert!(dump.contains("PathExpr path=message.cast"), "{dump}");
+    assert!(dump.contains("MethodCallExpr method=cast"), "{dump}");
+    assert!(dump.contains("PathExpr path=message"), "{dump}");
     assert!(dump.contains("TypeArg"), "{dump}");
 }
 

@@ -65,6 +65,14 @@ pub fn checked_type_graph(
             }
         }
         match ty {
+            Type::Existential { bounds } => {
+                for bound in bounds {
+                    budget.edges(1)?;
+                    for arg in &bound.args {
+                        walker.edge(*arg, child_depth)?;
+                    }
+                }
+            }
             Type::Array(inner)
             | Type::List(inner)
             | Type::Set(inner)

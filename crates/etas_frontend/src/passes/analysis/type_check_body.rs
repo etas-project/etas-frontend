@@ -4,7 +4,7 @@ use etas_utils::{
 };
 
 use crate::passes::artifacts::{
-    HIR_OUTPUT, TYPE_ENVIRONMENT, TYPE_OUTPUT, unit_kind_with_diagnostics,
+    BOUND_METHOD_ORIGINS, HIR_OUTPUT, TYPE_ENVIRONMENT, TYPE_OUTPUT, unit_kind_with_diagnostics,
 };
 use crate::{BODY_UNIT_KIND, ProjectContext};
 
@@ -16,7 +16,11 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("TypeCheckBodyPass", PassKind::Transform)
             .scope(etas_utils::PassScope::Unit(BODY_UNIT_KIND))
-            .requires(ArtifactSet::from([HIR_OUTPUT, TYPE_ENVIRONMENT]))
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                TYPE_ENVIRONMENT,
+                BOUND_METHOD_ORIGINS,
+            ]))
             .produces(unit_kind_with_diagnostics(TYPE_OUTPUT, BODY_UNIT_KIND))
     }
 

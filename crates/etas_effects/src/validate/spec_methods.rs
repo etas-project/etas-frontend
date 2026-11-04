@@ -6,96 +6,104 @@ impl ContractValidator<'_, '_> {
     pub(super) fn validate_external_spec_method_effects(
         &mut self,
     ) -> Result<(), EffectPipelineError> {
-        for implementation in &self.types.facts.external_specs.methods {
-            let declaration = match &implementation.spec {
-                etas_types::CheckedSpecRef::Source(symbol) => self
-                    .types
-                    .facts
-                    .spec_signatures
-                    .get(symbol)
-                    .map(|spec| (&spec.param_names, &spec.methods)),
-                etas_types::CheckedSpecRef::External(identity) => self
-                    .types
-                    .facts
-                    .external_specs
-                    .signatures
-                    .get(identity)
-                    .map(|spec| (&spec.param_names, &spec.methods)),
-                etas_types::CheckedSpecRef::Std(_) | etas_types::CheckedSpecRef::Canonical(_) => {
-                    None
+        for implementation in &self.types.facts.external_methods {
+            for evidence in &implementation.implementations {
+                let spec = &evidence.spec;
+                let args = &evidence.args;
+                let declaration = match spec {
+                    etas_types::CheckedSpecRef::Source(symbol) => self
+                        .types
+                        .facts
+                        .spec_signatures
+                        .get(symbol)
+                        .map(|spec| (&spec.param_names, &spec.methods)),
+                    etas_types::CheckedSpecRef::External(identity) => self
+                        .types
+                        .facts
+                        .external_specs
+                        .signatures
+                        .get(identity)
+                        .map(|spec| (&spec.param_names, &spec.methods)),
+                    etas_types::CheckedSpecRef::Std(_)
+                    | etas_types::CheckedSpecRef::Canonical(_) => None,
                 }
-            }
-            .ok_or_else(|| invalid("external method has no checked spec declaration"))?;
-            let method = declaration
-                .1
-                .iter()
-                .find(|method| method.name == implementation.identity.name())
-                .ok_or_else(|| invalid("external method has no checked member declaration"))?;
-            let expected = method
-                .signature_in(&self.types.facts)
-                .ok_or_else(|| invalid("external spec method signature is missing"))?;
-            let Some(bound) = &expected.effects else {
-                continue;
-            };
-            let mut bindings = declaration
-                .0
-                .iter()
-                .cloned()
-                .zip(implementation.args.iter().copied())
-                .collect::<HashMap<_, _>>();
-            if let Some(position) = method.receiver_param {
-                let receiver = expected
-                    .generic_params
-                    .get(position as usize)
-                    .ok_or_else(|| invalid("external spec method receiver binder is missing"))?;
-                bindings.insert(receiver.name.clone(), implementation.self_type);
-            }
-            let mut rows = HashMap::new();
-            for (declared, actual) in method
-                .implementation_generic_parameters(expected, &implementation.signature)
-                .map_err(|_| invalid("external method generic signature disagrees with its spec"))?
-            {
-                match declared.kind {
-                    etas_types::CallableGenericParamKind::Type => {
-                        bindings.insert(declared.name.clone(), actual.subject);
-                    }
-                    etas_types::CallableGenericParamKind::Effect => {
-                        rows.insert(
-                            declared.name.clone(),
-                            etas_types::EffectRowRef {
-                                effects: Vec::new(),
-                                tail: Some(actual.name.clone()),
-                            },
-                        );
+                .ok_or_else(|| invalid("external method has no checked spec declaration"))?;
+                let method = declaration
+                    .1
+                    .iter()
+                    .find(|method| method.name == implementation.identity.name())
+                    .ok_or_else(|| invalid("external method has no checked member declaration"))?;
+                let expected = method
+                    .signature_in(&self.types.facts)
+                    .ok_or_else(|| invalid("external spec method signature is missing"))?;
+                let Some(bound) = &expected.effects else {
+                    continue;
+                };
+                let mut bindings = declaration
+                    .0
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().copied())
+                    .collect::<HashMap<_, _>>();
+                if let Some(position) = method.receiver_param {
+                    let receiver =
+                        expected
+                            .generic_params
+                            .get(position as usize)
+                            .ok_or_else(|| {
+                                invalid("external spec method receiver binder is missing")
+                            })?;
+                    bindings.insert(receiver.name.clone(), implementation.self_type);
+                }
+                let mut rows = HashMap::new();
+                for (declared, actual) in method
+                    .implementation_generic_parameters(expected, &implementation.signature)
+                    .map_err(|_| {
+                        invalid("external method generic signature disagrees with its spec")
+                    })?
+                {
+                    match declared.kind {
+                        etas_types::CallableGenericParamKind::Type => {
+                            bindings.insert(declared.name.clone(), actual.subject);
+                        }
+                        etas_types::CallableGenericParamKind::Effect => {
+                            rows.insert(
+                                declared.name.clone(),
+                                etas_types::EffectRowRef {
+                                    effects: Vec::new(),
+                                    tail: Some(actual.name.clone()),
+                                },
+                            );
+                        }
                     }
                 }
-            }
-            let bound = etas_types::TypeSubstitutionEngine::existing(&self.types.store, &bindings)
-                .with_effect_arguments(&rows)
-                .substitute_effect_row(bound.clone())
-                .map_err(|_| invalid("external spec method bound cannot be specialized"))?;
-            let actual =
-                implementation.signature.effects.as_ref().ok_or_else(|| {
+                let bound =
+                    etas_types::TypeSubstitutionEngine::existing(&self.types.store, &bindings)
+                        .with_effect_arguments(&rows)
+                        .substitute_effect_row(bound.clone())
+                        .map_err(|_| invalid("external spec method bound cannot be specialized"))?;
+                let actual = implementation.signature.effects.as_ref().ok_or_else(|| {
                     invalid("external method behavior lacks a solved escaping row")
                 })?;
-            let bound = resolve_checked_type_row(&self.types.store, self.registry, &bound)
-                .map_err(|_| {
-                    invalid("external spec method bound has no checked effect identity")
-                })?;
-            let actual = resolve_checked_type_row(&self.types.store, self.registry, actual)
-                .map_err(|_| {
-                    invalid("external method escaping row has no checked effect identity")
-                })?;
-            if !(crate::EffectCoverage {
-                registry: self.registry,
-                types: &self.types.store,
-            })
-            .row_covers(&declared_public_boundary(&bound), &actual)
-            {
-                self.effects.diagnostics.push(etas_core::Diagnostic::effect_check(
+                let bound = resolve_checked_type_row(&self.types.store, self.registry, &bound)
+                    .map_err(|_| {
+                        invalid("external spec method bound has no checked effect identity")
+                    })?;
+                let actual = resolve_checked_type_row(&self.types.store, self.registry, actual)
+                    .map_err(|_| {
+                        invalid("external method escaping row has no checked effect identity")
+                    })?;
+                if !(crate::EffectCoverage {
+                    registry: self.registry,
+                    types: &self.types.store,
+                })
+                .row_covers(&declared_public_boundary(&bound), &actual)
+                {
+                    self.effects.diagnostics.push(etas_core::Diagnostic::effect_check(
                     EffectDiagnosticCode::EffectOutsideDeclaredRow, implementation.span,
                     "external implementation escaping effects exceed the behavioral spec method bound",
                 ));
+                }
             }
         }
         Ok(())

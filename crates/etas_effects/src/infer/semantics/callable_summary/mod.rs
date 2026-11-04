@@ -60,6 +60,7 @@ impl CallableSummaryCache {
 
 pub(super) enum CallableSummaryPlan {
     Leaf(EffectSummary),
+    Alternatives(BTreeSet<CallableSummaryKey>),
     Captured(CallableSummaryInstantiation),
 }
 
@@ -75,6 +76,9 @@ impl CallableSummaryPlan {
         &self,
         mode: CallableSummaryMode,
     ) -> Result<BTreeSet<CallableSummaryKey>, EffectSpecializationError> {
+        if let Self::Alternatives(keys) = self {
+            return Ok(keys.clone());
+        }
         let Self::Captured(plan) = self else {
             return Ok(BTreeSet::new());
         };

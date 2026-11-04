@@ -13,7 +13,11 @@ fn projected(source: &str, name: &str) -> MetadataType {
             matches!(ty, Type::Nominal(nominal) if nominal.name == name).then_some(id)
         })
         .unwrap();
-    metadata_type(ty, &checked.type_store).unwrap()
+    let projection = super::super::ProjectMetadataProjection::new(&checked);
+    metadata_type(ty, &checked.type_store, &|spec| {
+        projection.checked_spec_path(spec)
+    })
+    .unwrap()
 }
 
 #[test]
@@ -72,11 +76,26 @@ fn recursive_effect_type_arguments_use_the_same_projection_context() {
 }
 
 #[test]
+fn existential_fields_export_spec_identity_and_type_arguments() {
+    let metadata = projected(
+        "module app; spec Named<T> { flow name(self) -> T ![]; } type Holder = { value: ? ~ Named<string> }; flow main() -> unit { return; }",
+        "app.Holder",
+    );
+    let value = &metadata.children[0].fields[0].ty;
+    assert_eq!(value.kind, MetadataTypeKind::Existential);
+    assert_eq!(value.bounds.len(), 1);
+    assert_eq!(value.bounds[0].spec, ["app", "Named"]);
+    assert_eq!(value.bounds[0].args[0].kind, MetadataTypeKind::Primitive);
+    assert_eq!(value.bounds[0].args[0].name, "string");
+}
+
+#[test]
 fn structural_cycles_without_nominal_identity_fail_closed() {
     let mut store = TypeStore::new();
     let root = store.intern(Type::Option(TypeId(0)));
     assert_eq!(root, TypeId(0));
-    let error = metadata_type(root, &store).unwrap_err();
+    let error =
+        metadata_type(root, &store, &|_| Err(invalid("missing spec declaration"))).unwrap_err();
     assert!(error.to_string().contains("nominal identity boundary"));
 }
 
@@ -87,6 +106,7 @@ fn deep_acyclic_types_reach_the_explicit_metadata_budget() {
     for _ in 0..etas_package_metadata::MAX_METADATA_GRAPH_DEPTH + 2 {
         root = store.intern(Type::Option(root));
     }
-    let error = metadata_type(root, &store).unwrap_err();
+    let error =
+        metadata_type(root, &store, &|_| Err(invalid("missing spec declaration"))).unwrap_err();
     assert!(error.to_string().contains("metadata graph budget"));
 }

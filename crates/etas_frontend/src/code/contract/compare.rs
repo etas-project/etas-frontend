@@ -335,6 +335,9 @@ pub(crate) fn analyze(
                     expected_root,
                     expected_has_latent,
                     preserved,
+                    frozen
+                        .proof_catalog()
+                        .map(|catalog| catalog.identity_index()),
                 )
             })
             .transpose()?
@@ -351,6 +354,7 @@ pub(crate) fn analyze(
                         root,
                         expected_has_latent,
                         preserved,
+                        Some(completed_catalog.identity_index()),
                     )?;
                 }
             }
@@ -359,7 +363,14 @@ pub(crate) fn analyze(
             C::ResidualChecks,
             residual_relation(
                 expected_presence,
-                residual_requirements(candidate, item, actual_root, actual_has_latent, preserved)?,
+                residual_requirements(
+                    candidate,
+                    item,
+                    actual_root,
+                    actual_has_latent,
+                    preserved,
+                    Some(catalog.identity_index()),
+                )?,
                 candidate,
                 frozen.checked(),
                 completed_baseline.map(|baseline| baseline.catalog().checked_program()),
@@ -407,6 +418,7 @@ fn residual_requirements(
     root: Option<&etas_effects::EffectSummary>,
     has_latent: bool,
     preserved: bool,
+    identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
 ) -> Result<Option<BTreeSet<ResidualObligationRef>>, ProjectionError> {
     let Some(root) = root else {
         return Ok(None);
@@ -499,8 +511,9 @@ fn residual_requirements(
         }
     }
     if has_latent {
-        let Some(graph) = crate::package_metadata::checked_callable_graph(checked, item, root)
-            .map_err(|error| ProjectionError::Invalid(error.to_string()))?
+        let Some(graph) =
+            crate::package_metadata::checked_callable_graph(checked, item, root, identities)
+                .map_err(|error| ProjectionError::Invalid(error.to_string()))?
         else {
             return Ok(if preserved {
                 reachable_residual_requirements(checked, item).map(|reachable| {

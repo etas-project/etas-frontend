@@ -25,7 +25,7 @@ fn missing_public_or_latent_facts_are_not_empty_residuals() {
         .unwrap();
     let root = &original.effects.item_effects[&owner];
     assert_eq!(
-        residual_requirements(&original, owner, Some(root), true, false).unwrap(),
+        residual_requirements(&original, owner, Some(root), true, false, None).unwrap(),
         Some(BTreeSet::new())
     );
     for remove_contract in [false, true] {
@@ -44,7 +44,7 @@ fn missing_public_or_latent_facts_are_not_empty_residuals() {
         }
         let root = &checked.effects.item_effects[&owner];
         assert_eq!(
-            residual_requirements(&checked, owner, Some(root), true, false).unwrap(),
+            residual_requirements(&checked, owner, Some(root), true, false, None).unwrap(),
             None
         );
     }
@@ -146,7 +146,7 @@ fn preserved_generic_output_requires_reachable_residual_evidence() {
         .unwrap();
     let root = &original.effects.item_effects[&owner];
     assert_eq!(
-        residual_requirements(&original, owner, Some(root), true, true).unwrap(),
+        residual_requirements(&original, owner, Some(root), true, true, None).unwrap(),
         Some(BTreeSet::new())
     );
     let value = *original.effects.latent_effects.keys().next().unwrap();
@@ -166,7 +166,7 @@ fn preserved_generic_output_requires_reachable_residual_evidence() {
         );
     let root = &with_residual.effects.item_effects[&owner];
     assert_eq!(
-        residual_requirements(&with_residual, owner, Some(root), true, true)
+        residual_requirements(&with_residual, owner, Some(root), true, true, None)
             .unwrap()
             .map(|refs| refs.len()),
         Some(1)
@@ -177,7 +177,7 @@ fn preserved_generic_output_requires_reachable_residual_evidence() {
         .remove(&value);
     let root = &missing.effects.item_effects[&owner];
     assert_eq!(
-        residual_requirements(&missing, owner, Some(root), true, true).unwrap(),
+        residual_requirements(&missing, owner, Some(root), true, true, None).unwrap(),
         None
     );
 }

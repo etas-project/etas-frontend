@@ -228,6 +228,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         trace_specs: vec![],
         spec_signatures: vec![],
         spec_impls: vec![],
+        methods: Vec::new(),
         type_spec_satisfactions: vec![],
         callable_spec_satisfactions: vec![],
         trace_spec_conformances: vec![],
@@ -273,6 +274,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             latent_flows: vec![],
             action_trace: ProjectExternalActionTraceInput::Empty,
             returned_callables: Some(metadata::CallableValueGraph {
+                objects: Vec::new(),
                 sources: vec![metadata::CallableValueSource::Value(0)],
                 values: vec![node],
             }),

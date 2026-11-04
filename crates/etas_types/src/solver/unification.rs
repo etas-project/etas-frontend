@@ -86,6 +86,22 @@ impl<'a> TypeUnifier<'a> {
             return Ok(());
         }
         match (self.store.get(lhs), self.store.get(rhs)) {
+            (
+                Some(Type::Existential { bounds: left }),
+                Some(Type::Existential { bounds: right }),
+            ) if left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(a, b)| a.spec == b.spec && a.args.len() == b.args.len()) =>
+            {
+                for (left, right) in left.iter().zip(right) {
+                    for (left, right) in left.args.iter().zip(&right.args) {
+                        self.unify(*left, *right)?;
+                    }
+                }
+                Ok(())
+            }
             (Some(Type::Var(var)), _) => self.bind(*var, rhs),
             (_, Some(Type::Var(var))) => self.bind(*var, lhs),
             (Some(Type::Primitive(a)), Some(Type::Primitive(b))) if a == b => Ok(()),
@@ -296,6 +312,10 @@ impl<'a> TypeUnifier<'a> {
             return true;
         };
         match self.store.get(ty) {
+            Some(Type::Existential { bounds }) => bounds
+                .iter()
+                .flat_map(|bound| &bound.args)
+                .any(|arg| self.occurs(needle, *arg)),
             Some(Type::Var(var)) => *var == needle,
             Some(Type::Array(inner))
             | Some(Type::List(inner))

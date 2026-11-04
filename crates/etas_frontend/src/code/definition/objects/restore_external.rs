@@ -175,6 +175,7 @@ impl NativeDefinitionStore {
                 effect_names: correspondence.effect_names(),
             },
         )
+        .with_spec_identities(&spec_plan.mapping)
         .with_expansion_depth(limits.max_expansion_depth)
         .with_budget(&budget);
         let mut types = Vec::new();

@@ -397,6 +397,11 @@ impl Encoder {
                 Task::Type(ty) => {
                     self.byte(4);
                     match ty {
+                        Type::Existential { bounds } => {
+                            self.byte(27);
+                            self.number(bounds.len());
+                            tasks.extend(bounds.iter().rev().map(Task::Bound));
+                        }
                         Type::Primitive(name) => {
                             self.byte(0);
                             self.text(name);
@@ -717,11 +722,7 @@ pub(crate) fn external_spec_impl(value: &crate::ProjectExternalSpecImplInput) ->
     encoder.path(&value.spec);
     encoder.number(value.methods.len());
     for method in &value.methods {
-        encoder.0.update(method.identity.fingerprint().as_bytes());
-        encoder.0.update(
-            etas_package_metadata::callable_value_graph_input_fingerprint(&method.callable)
-                .as_bytes(),
-        );
+        encoder.0.update(method.fingerprint().as_bytes());
     }
     encoder.number(value.args.len());
     encoder.encode(Task::Type(&value.self_type));

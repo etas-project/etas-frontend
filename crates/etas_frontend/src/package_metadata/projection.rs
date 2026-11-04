@@ -41,6 +41,7 @@ use crate::{AstItemKind, CheckedProject, ModuleOrigin};
 use super::{PackageMetadataBuildInput, PackageMetadataError, PackageMetadataHeader};
 
 mod callable_returns;
+mod methods;
 mod re_exports;
 mod request_templates;
 mod spec_projection;
@@ -50,16 +51,30 @@ use type_projection::{metadata_effect_arg, metadata_effect_row_ref, metadata_typ
 
 pub(crate) struct ProjectMetadataProjection<'a> {
     pub(super) checked: &'a CheckedProject,
-    canonical_type_paths: BTreeMap<String, Option<Vec<String>>>,
+    canonical_type_paths: std::sync::Arc<BTreeMap<String, Option<Vec<String>>>>,
     effect_registry: &'a EffectRegistry,
+    identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
     pub(crate) fn new(checked: &'a CheckedProject) -> Self {
         Self {
             checked,
-            canonical_type_paths: build_canonical_type_paths(checked),
+            canonical_type_paths: std::sync::Arc::new(build_canonical_type_paths(checked)),
             effect_registry: &checked.effect_registry,
+            identities: None,
+        }
+    }
+
+    fn with_identities<'b>(
+        &'b self,
+        identities: Option<&'b crate::code::identity::DefinitionIdentityIndex>,
+    ) -> ProjectMetadataProjection<'b> {
+        ProjectMetadataProjection {
+            checked: self.checked,
+            canonical_type_paths: self.canonical_type_paths.clone(),
+            effect_registry: self.effect_registry,
+            identities,
         }
     }
 
@@ -68,23 +83,13 @@ impl<'a> ProjectMetadataProjection<'a> {
         input: &PackageMetadataBuildInput,
         header: &PackageMetadataHeader,
     ) -> Result<Vec<EncodedMetadataSection>, PackageMetadataError> {
-        if input.definition_origin.is_none()
-            && self.checked.types.agent_methods.values().any(|method| {
-                method.private_to.is_none()
-                    && matches!(self.checked.items.get(method.body), Some(HirItem::Flow(_)))
-            })
-        {
-            return Err(PackageMetadataError::InvalidMetadataType {
-                reason: "agent method metadata requires a canonical package definition origin"
-                    .into(),
-            });
-        }
         let external_modules = self.external_modules()?;
         let identity_input = input
             .definition_origin
             .map(|package| self.definition_identity_input(package))
             .transpose()?;
-        let mut public_metadata = self.public_metadata(
+        let scoped = self.with_identities(identity_input.as_ref().map(|(_, index)| index));
+        let mut public_metadata = scoped.public_metadata(
             &external_modules,
             identity_input.as_ref().map(|(_, index)| index),
         )?;
@@ -262,11 +267,12 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
         metadata.actions = self.action_signatures()?;
         metadata.spec_signatures = self.spec_signatures()?;
-        metadata.spec_impls = self.spec_impls(identities)?;
+        metadata.methods = self.methods(identities)?;
+        metadata.spec_impls = self.spec_impls(identities, &metadata.methods)?;
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
         metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
         metadata.trace_spec_conformances = self.trace_spec_conformances(identities)?;
-        metadata.effect_summaries = self.effect_summaries()?;
+        metadata.effect_summaries = self.effect_summaries(identities)?;
         metadata.trace_spec_summaries = self.trace_spec_summaries(identities)?;
         for (_, module) in self.checked.module_index.modules.iter() {
             if !matches!(module.origin, ModuleOrigin::Source) {
@@ -574,7 +580,21 @@ impl<'a> ProjectMetadataProjection<'a> {
         bound: &etas_types::CheckedSpecBound,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataSpecBound, PackageMetadataError> {
-        let spec = match &bound.spec {
+        Ok(MetadataSpecBound {
+            spec: self.checked_spec_path(&bound.spec)?,
+            args: bound
+                .args
+                .iter()
+                .map(|arg| self.metadata_type_in_generic_scope(*arg, generic_names))
+                .collect::<Result<_, _>>()?,
+        })
+    }
+
+    fn checked_spec_path(
+        &self,
+        spec: &etas_types::CheckedSpecRef,
+    ) -> Result<Vec<String>, PackageMetadataError> {
+        Ok(match spec {
             etas_types::CheckedSpecRef::Source(symbol) => self
                 .symbol_canonical_path(*symbol)
                 .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
@@ -609,14 +629,6 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &|key| self.checked.foreign_type_bindings.verifies_marker_spec(key),
                 )?
             }
-        };
-        Ok(MetadataSpecBound {
-            spec,
-            args: bound
-                .args
-                .iter()
-                .map(|arg| self.metadata_type_in_generic_scope(*arg, generic_names))
-                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
@@ -800,6 +812,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                         path.clone(),
                         visibility,
                         callable,
+                        &[],
                         &generic_names,
                     )
                 })
@@ -820,7 +833,12 @@ impl<'a> ProjectMetadataProjection<'a> {
     fn spec_impls(
         &self,
         identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+        methods: &[etas_package_metadata::PublishedMethod],
     ) -> Result<Vec<MetadataSpecImpl>, PackageMetadataError> {
+        let published = methods
+            .iter()
+            .map(|method| &method.identity)
+            .collect::<BTreeSet<_>>();
         self.checked
             .types
             .spec_impls
@@ -829,6 +847,8 @@ impl<'a> ProjectMetadataProjection<'a> {
                 self.checked.types.agent_methods.get(&method.symbol)
                     .is_some_and(|method| method.private_to.is_some())
             }))
+            .filter(|implementation| implementation.methods.iter().all(|method| identities
+                .and_then(|index| index.method(method.symbol)).is_some_and(|identity| published.contains(identity))))
             .map(|implementation| {
                 let spec = self
                     .symbol_canonical_path(implementation.spec_symbol)
@@ -849,12 +869,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .map(|method| {
                             let identity = identities.and_then(|index| index.method(method.symbol)).cloned()
                                 .ok_or_else(|| invalid("spec implementation metadata requires a canonical method identity"))?;
-                            let body = self.checked.types.type_impl_methods.get(&method.symbol).map(|method| method.body)
-                                .or_else(|| self.checked.types.agent_methods.get(&method.symbol).map(|method| method.body))
-                                .ok_or_else(|| invalid("spec implementation method has no checked body ownership"))?;
-                            Ok(etas_package_metadata::SpecImplMethod {
-                                identity, callable: self.implementation_callable_graph(body)?,
-                            })
+                            Ok(identity)
                         })
                         .collect::<Result<Vec<_>, PackageMetadataError>>()?,
                 })
@@ -1051,6 +1066,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 path,
                 visibility,
                 callable,
+                &method.parameter_names,
                 generic_names,
             )?),
         })
@@ -1075,6 +1091,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         path: Vec<String>,
         visibility: MetadataVisibility,
         signature: &etas_types::CallableSignature,
+        param_names: &[String],
         outer_names: &BTreeSet<String>,
     ) -> Result<MetadataCallableSignature, PackageMetadataError> {
         let mut generic_names = outer_names.clone();
@@ -1088,7 +1105,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             path,
             generic_params: self
                 .callable_generic_params_in_scope(&signature.generic_params, outer_names)?,
-            param_names: Vec::new(),
+            param_names: param_names.to_vec(),
             input: signature
                 .params
                 .iter()
@@ -1122,7 +1139,9 @@ impl<'a> ProjectMetadataProjection<'a> {
     }
 
     fn metadata_type(&self, ty: TypeId) -> Result<MetadataType, PackageMetadataError> {
-        let mut metadata = metadata_type(ty, &self.checked.type_store)?;
+        let mut metadata = metadata_type(ty, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         self.canonicalize_metadata_type(&mut metadata)?;
         Ok(metadata)
     }
@@ -1132,7 +1151,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         ty: TypeId,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataType, PackageMetadataError> {
-        let mut metadata = metadata_type(ty, &self.checked.type_store)?;
+        let mut metadata = metadata_type(ty, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         normalize_generic_type(&mut metadata, generic_names);
         self.canonicalize_metadata_type(&mut metadata)?;
         Ok(metadata)
@@ -1143,7 +1164,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         row: &EffectRowRef,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
-        let mut metadata = metadata_effect_row_ref(row, &self.checked.type_store)?;
+        let mut metadata = metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         normalize_generic_effect_row(&mut metadata, generic_names);
         self.canonicalize_effect_row_types(&mut metadata)?;
         Ok(metadata)
@@ -1154,7 +1177,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         arg: &EffectArgRef,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectArg, PackageMetadataError> {
-        let mut metadata = metadata_effect_arg(arg, &self.checked.type_store)?;
+        let mut metadata = metadata_effect_arg(arg, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         if let Some(ty) = &mut metadata.ty {
             normalize_generic_type(ty, generic_names);
             self.canonicalize_metadata_type(ty)?;
@@ -1187,6 +1212,11 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
         for field in &mut metadata.fields {
             self.canonicalize_metadata_type(&mut field.ty)?;
+        }
+        for bound in &mut metadata.bounds {
+            for argument in &mut bound.args {
+                self.canonicalize_metadata_type(argument)?;
+            }
         }
         if let Some(effects) = &mut metadata.effects {
             self.canonicalize_effect_row_types(effects)?;
@@ -1236,7 +1266,10 @@ impl<'a> ProjectMetadataProjection<'a> {
         })
     }
 
-    fn effect_summaries(&self) -> Result<Vec<MetadataEffectSummary>, PackageMetadataError> {
+    fn effect_summaries(
+        &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<Vec<MetadataEffectSummary>, PackageMetadataError> {
         let mut summaries = Vec::new();
         for (item, signature) in &self.checked.types.item_signatures {
             let callable = match signature {
@@ -1371,7 +1404,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &type_generic_names,
                     &self.trace_parameter_labels(*item)?,
                 )?,
-                returned_callables: self.returned_callables(*item, summary)?,
+                returned_callables: self.returned_callables(*item, summary, identities)?,
                 default_handler_effects: Some(etas_package_metadata::DefaultHandlerEffects {
                     direct_effects: self.public_direct_effect_metadata(
                         summary,
@@ -1569,7 +1602,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 args: action
                     .args
                     .iter()
-                    .map(|arg| metadata_effect_arg(arg, &self.checked.type_store))
+                    .map(|arg| {
+                        metadata_effect_arg(arg, &self.checked.type_store, &|spec| {
+                            self.checked_spec_path(spec)
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             Effect::Applied { tag, args } => Ok(MetadataEffectRef {
@@ -1579,7 +1616,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|arg| {
                         Ok(MetadataEffectArg {
                             kind: MetadataEffectArgKind::Type,
-                            ty: Some(metadata_type(*arg, &self.checked.type_store)?),
+                            ty: Some(metadata_type(*arg, &self.checked.type_store, &|spec| {
+                                self.checked_spec_path(spec)
+                            })?),
                             path: Vec::new(),
                             value: String::new(),
                         })
@@ -1590,7 +1629,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                 path: vec!["Error".to_owned()],
                 args: vec![MetadataEffectArg {
                     kind: MetadataEffectArgKind::Type,
-                    ty: Some(metadata_type(*ty, &self.checked.type_store)?),
+                    ty: Some(metadata_type(*ty, &self.checked.type_store, &|spec| {
+                        self.checked_spec_path(spec)
+                    })?),
                     path: Vec::new(),
                     value: String::new(),
                 }],
@@ -2628,6 +2669,11 @@ fn normalize_generic_type(ty: &mut MetadataType, names: &BTreeSet<String>) {
     }
     for child in &mut ty.children {
         normalize_generic_type(child, names);
+    }
+    for bound in &mut ty.bounds {
+        for argument in &mut bound.args {
+            normalize_generic_type(argument, names);
+        }
     }
     for field in &mut ty.fields {
         normalize_generic_type(&mut field.ty, names);

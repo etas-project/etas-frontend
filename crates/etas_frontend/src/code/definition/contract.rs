@@ -177,9 +177,13 @@ impl FrozenDefinitionContract {
             // their lexical graph paired with the sealed root application;
             // changing reference keys would sever the checked provenance.
             if let Some(summary) = catalog.checked.effects.item_effects.get(&item)
-                && let Some(graph) =
-                    crate::package_metadata::checked_callable_graph(&catalog.checked, item, summary)
-                        .map_err(|error| ProjectionError::Invalid(error.to_string()))?
+                && let Some(graph) = crate::package_metadata::checked_callable_graph(
+                    &catalog.checked,
+                    item,
+                    summary,
+                    Some(&catalog.identities),
+                )
+                .map_err(|error| ProjectionError::Invalid(error.to_string()))?
             {
                 latent_graphs.insert(id.clone(), Arc::new(graph));
             }

@@ -143,6 +143,19 @@ impl EffectSemantics<'_> {
                         pending.extend(origins);
                     }
                 }
+                LatentSource::Existential { environment, .. }
+                | LatentSource::MetadataObject(crate::MetadataObjectSource {
+                    environment: Some(environment),
+                    ..
+                }) => {
+                    for origins in self
+                        .callable_environment(environment)?
+                        .parameters
+                        .into_values()
+                    {
+                        pending.extend(origins);
+                    }
+                }
                 _ => {}
             }
         }

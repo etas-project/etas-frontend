@@ -574,6 +574,7 @@ mod tests {
                 },
             ],
             spec_impls: vec![],
+            methods: Vec::new(),
             type_spec_satisfactions: vec![],
             callable_spec_satisfactions: vec![],
             trace_spec_conformances: vec![],
@@ -743,6 +744,7 @@ mod tests {
                     path: vec!["dep".into(), "Family".into(), "method".into()],
                 },
                 name: "method".into(),
+                parameter_names: vec![],
                 signature: None,
             });
         assert!(

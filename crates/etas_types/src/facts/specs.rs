@@ -7,7 +7,6 @@ pub struct SpecFacts {
     pub external_signatures:
         std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub external_impls: Vec<ExternalSpecImplFact>,
-    pub external_methods: Vec<ExternalSpecImplMethodFact>,
     pub external_aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
     pub signatures: std::collections::HashMap<etas_hir::SymbolId, SpecSignature>,
     pub impls: Vec<SpecImplFact>,
@@ -22,7 +21,16 @@ pub struct SpecFacts {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum CheckedSpecRef {
     Source(etas_hir::SymbolId),
@@ -206,7 +214,16 @@ impl RelocatedSpecFacts {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub struct ExternalSpecIdentity {
     pub package: u32,
@@ -229,26 +246,15 @@ pub struct ExternalSpecImplFact {
     pub args: Vec<TypeId>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
-pub struct ExternalSpecImplMethodFact {
-    pub span: etas_core::Span,
-    pub identity: etas_code::MethodId,
-    pub self_type: TypeId,
-    pub spec: CheckedSpecRef,
-    pub args: Vec<TypeId>,
-    pub signature: CallableSignature,
-}
-
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecFacts {
     pub signatures: std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub impls: Vec<ExternalSpecImplFact>,
-    pub methods: Vec<ExternalSpecImplMethodFact>,
     pub aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct CheckedSpecBound {
     pub spec: CheckedSpecRef,
@@ -373,12 +379,15 @@ pub enum TraceSpecConformanceTarget {
 pub struct SpecMethodFact {
     pub identity: SpecMethodIdentity,
     pub name: String,
+    pub parameter_names: Vec<String>,
     pub receiver_param: Option<u32>,
     #[serde(default)]
     pub signature: Option<CallableSignature>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum SpecMethodIdentity {
     Source(etas_hir::SymbolId),
     External { package: u32, path: Vec<String> },

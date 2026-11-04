@@ -3020,6 +3020,36 @@ flow main(input: string) -> Option<Message<string>> {
 }
 
 #[test]
+fn message_constructor_chain_keeps_inferred_payload_for_methods_and_fields() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "module app.main; import std.agent.message.Message; flow main() -> string { let message = Message.new(\"payload\"); return message.body; }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    let (call, _) = hir.exprs.iter().find(|(_, expr)| matches!(expr, etas_hir::HirExpr::MethodCall { method, .. } if method == "new")).unwrap();
+    let ty = output.facts.expr_types[&call];
+    assert!(
+        matches!(output.store.get(ty), Some(Type::Message(_))),
+        "{:?}",
+        output.store.get(ty)
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
+fn method_payload_projection_preserves_existing_generic_substitutions() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "module app.main; import std.agent.message.Message; type Inner<T> = { value: T }; type Outer<T> = { inner: Inner<T> }; flow main() -> string { let row = Outer<string> { inner = Inner<string> { value = \"kept\" } }; return Message.new(row).body.inner.value; }",
+    ));
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
 fn check_program_types_message_body_as_payload() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),

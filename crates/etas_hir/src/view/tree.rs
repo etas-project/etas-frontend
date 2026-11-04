@@ -58,6 +58,21 @@ impl<'hir> HirTreeView<'hir> {
             .filter_map(move |id| self.module(id))
     }
 
+    pub fn items(&self) -> impl Iterator<Item = ItemView<'_, 'hir>> + '_ {
+        let mut pending = self
+            .modules()
+            .flat_map(|module| module.items().map(|item| item.id()))
+            .collect::<Vec<_>>();
+        pending.reverse();
+        std::iter::from_fn(move || {
+            let item = pending.pop()?;
+            if let Some(children) = self.index.item_children.get(&item) {
+                pending.extend(children.iter().rev().copied());
+            }
+            self.item(item)
+        })
+    }
+
     pub fn module(&self, id: HirModuleId) -> Option<ModuleView<'_, 'hir>> {
         self.program
             .modules_arena
@@ -74,9 +89,8 @@ impl<'hir> HirTreeView<'hir> {
 
     pub fn body(&self, id: HirBodyRef) -> Option<BodyView<'_, 'hir>> {
         self.index
-            .item_bodies
-            .get(&id.item)
-            .is_some_and(|bodies| bodies.contains(&id))
+            .body_owner
+            .contains_key(&id)
             .then_some(BodyView { view: self, id })
     }
 
@@ -260,6 +274,15 @@ pub struct ItemView<'view, 'hir> {
 }
 
 impl<'view, 'hir> ItemView<'view, 'hir> {
+    pub fn children(self) -> impl Iterator<Item = ItemView<'view, 'hir>> + 'view {
+        self.view
+            .index
+            .item_children
+            .get(&self.id)
+            .into_iter()
+            .flatten()
+            .filter_map(move |item| self.view.item(*item))
+    }
     pub fn id(self) -> HirItemId {
         self.id
     }
@@ -314,8 +337,18 @@ impl<'view, 'hir> BodyView<'view, 'hir> {
     }
 
     pub fn item(self) -> ItemView<'view, 'hir> {
+        let item = match self.id.kind {
+            super::HirBodyKind::ImplFlow(index) => match &self.view.program.items[self.id.item] {
+                HirItem::Impl(implementation) => match &implementation.items[index as usize] {
+                    crate::HirImplItem::Callable { item } => *item,
+                    _ => self.id.item,
+                },
+                _ => self.id.item,
+            },
+            _ => self.id.item,
+        };
         self.view
-            .item(self.id.item)
+            .item(item)
             .expect("body item should exist in view")
     }
 

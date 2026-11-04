@@ -1,11 +1,14 @@
 pub mod effects;
 pub mod enums;
+pub mod existentials;
 pub mod expressions;
 pub mod inference;
 pub mod method_specs;
+pub mod methods;
 pub mod reflection;
 pub mod signatures;
 mod spec_method;
+mod spec_signature;
 pub mod specs;
 pub mod symbols;
 
@@ -26,6 +29,7 @@ pub use expressions::{
 };
 pub use impl_methods::TypeImplMethodFact;
 pub use inference::CheckedAgentInferenceFact;
+pub use methods::CheckedMethodCallFact;
 pub use reflection::{CheckedReflectionFact, CheckedReflectionTarget};
 pub use signatures::{
     AgentEntrySignature, AgentSignature, CallableGenericParam, CallableGenericParamKind,
@@ -47,9 +51,16 @@ use crate::TypeId;
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
     #[serde(default)]
+    pub existential_packs: HashMap<HirExprId, existentials::CheckedExistentialPackFact>,
+    #[serde(default)]
+    pub methods: std::sync::Arc<crate::method::MethodIndex>,
+    #[serde(default)]
+    pub checked_method_calls: HashMap<HirExprId, CheckedMethodCallFact>,
+    #[serde(default)]
     pub canonical_specs: CanonicalSpecFacts,
     pub type_impl_methods: HashMap<SymbolId, TypeImplMethodFact>,
     pub external_specs: specs::ExternalSpecFacts,
+    pub external_methods: Vec<methods::ExternalMethodFact>,
     pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, TypeId)>,
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
     pub reflection_type_identities: HashMap<TypeId, etas_code::DefinitionKey>,
@@ -105,6 +116,14 @@ pub struct TypeFacts {
 }
 
 impl TypeFacts {
+    /// The producer ABI before an implicit, checked existential pack.
+    pub fn expression_producer_type(&self, expression: HirExprId) -> Option<TypeId> {
+        self.existential_packs
+            .get(&expression)
+            .map(|pack| pack.source_type)
+            .or_else(|| self.expr_types.get(&expression).copied())
+    }
+
     pub fn enum_constructor<'a>(
         &'a self,
         store: &crate::TypeStore,
@@ -146,7 +165,6 @@ impl From<&TypeFacts> for SpecFacts {
             canonical: facts.canonical_specs.clone(),
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
-            external_methods: facts.external_specs.methods.clone(),
             external_aliases: facts.external_specs.aliases.clone(),
             signatures: facts.spec_signatures.clone(),
             impls: facts.spec_impls.clone(),

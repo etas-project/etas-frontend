@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 mod enums;
 mod implementation_methods;
+mod methods;
 mod specs;
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ pub fn apply_external_signature_input(
     ctx: &mut TypePipelineContext<'_>,
     input: &ExternalSignatureInput,
 ) {
+    specs::declare(ctx, input);
     if !types::prepare(ctx, input) {
         return;
     }
@@ -366,6 +368,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
         let Some(package_span) = package_binding_span(input, metadata.package) else {
             continue;
         };
+        methods::apply(ctx, metadata, package_span);
         for implementation in &metadata.spec_impls {
             let spec = match resolve_external_spec(
                 ctx,
@@ -757,6 +760,11 @@ fn lower_external_spec_methods(
                 path: method.path.clone(),
             },
             name: method.name.clone(),
+            parameter_names: method
+                .signature
+                .as_ref()
+                .map(|signature| signature.param_names.clone())
+                .unwrap_or_default(),
             receiver_param: method.receiver_param,
             signature: callable,
         });

@@ -145,7 +145,10 @@ impl FrozenCalls<'_> {
                         let graph = match frozen.contract().latent_graph(id) {
                             Some(graph) => Some(graph.clone()),
                             None => crate::package_metadata::checked_callable_graph(
-                                original, *source, summary,
+                                original,
+                                *source,
+                                summary,
+                                Some(&from.identities),
                             )
                             .map_err(|error| invalid(&error.to_string()))?
                             .map(std::sync::Arc::new),
@@ -184,6 +187,13 @@ impl FrozenCalls<'_> {
                         )
                         .map_err(|error| invalid(&error))?;
                         let values = relocation.graph_values(values, &scope)?;
+                        let objects = crate::project::lower_callable_objects_in_scope(
+                            graph,
+                            &source_types,
+                            &signature.generic_params,
+                        )
+                        .map_err(|error| invalid(&error))?;
+                        let objects = relocation.graph_objects(objects, &scope)?;
                         let exits = relocation.graph_exits(&proof.origins, &scope)?;
                         let returned = relocation.graph_roots(graph, key, *source)?;
                         let anchor = original
@@ -200,6 +210,7 @@ impl FrozenCalls<'_> {
                                 identity,
                                 graph: graph.clone(),
                                 values,
+                                objects,
                                 exits,
                                 anchor,
                             }),

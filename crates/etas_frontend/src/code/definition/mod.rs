@@ -2,7 +2,7 @@ mod actions;
 mod applications;
 mod collect;
 pub use actions::NativeActionSignature;
-pub(crate) use collect::{callable_signature, callable_source_header};
+pub(crate) use collect::{callable_signature, callable_source_header, selected_callable};
 mod frozen_calls;
 pub(crate) use frozen_calls::FrozenCalls;
 pub(crate) use frozen_calls::{ReferenceBindings, relocate_reference_bindings};

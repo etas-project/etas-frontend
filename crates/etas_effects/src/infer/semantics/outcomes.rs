@@ -158,6 +158,15 @@ impl EffectSemantics<'_> {
         let mut returned = std::collections::BTreeSet::new();
         for source in sources {
             let source = match source {
+                super::state::LatentSource::MetadataObject(source) => {
+                    crate::CallableReturnSource::MetadataObject(*source)
+                }
+                super::state::LatentSource::Existential { pack, environment } => {
+                    crate::CallableReturnSource::Existential {
+                        pack: *pack,
+                        environment: *environment,
+                    }
+                }
                 super::state::LatentSource::FrozenContract {
                     unit,
                     reference,
@@ -627,7 +636,17 @@ impl EffectSemantics<'_> {
                 }
             }
             Some(HirExpr::MethodCall { .. })
-                if !self.types.facts.agent_method_calls.contains_key(&expr) =>
+                if self
+                    .types
+                    .facts
+                    .checked_method_calls
+                    .get(&expr)
+                    .is_none_or(|fact| {
+                        matches!(
+                            fact.target,
+                            etas_types::method::MethodTarget::Standard { .. }
+                        )
+                    }) =>
             {
                 self.note_external_outcomes(expr, state)
             }

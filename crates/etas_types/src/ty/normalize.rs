@@ -104,7 +104,11 @@ pub fn type_contains_named_param(
     ty: TypeId,
     name: &str,
 ) -> Result<bool, TypeSubstitutionError> {
-    type_contains_named_where(store, ty, |named| named.name == name)
+    type_contains_where(
+        store,
+        ty,
+        |_, data| matches!(data, Type::Named(named) if named.name == name),
+    )
 }
 
 pub fn type_contains_source_parameter(
@@ -112,13 +116,25 @@ pub fn type_contains_source_parameter(
     ty: TypeId,
     parameter: etas_hir::SymbolId,
 ) -> Result<bool, TypeSubstitutionError> {
-    type_contains_named_where(store, ty, |named| named.source_parameter == Some(parameter))
+    type_contains_where(
+        store,
+        ty,
+        |_, data| matches!(data, Type::Named(named) if named.source_parameter == Some(parameter)),
+    )
 }
 
-fn type_contains_named_where(
+pub(crate) fn type_contains_id(
     store: &TypeStore,
     ty: TypeId,
-    predicate: impl Fn(&super::NamedTypeRef) -> bool,
+    expected: TypeId,
+) -> Result<bool, TypeSubstitutionError> {
+    type_contains_where(store, ty, |id, _| id == expected)
+}
+
+fn type_contains_where(
+    store: &TypeStore,
+    ty: TypeId,
+    predicate: impl Fn(TypeId, &Type) -> bool,
 ) -> Result<bool, TypeSubstitutionError> {
     let mut pending = vec![ty];
     let mut visited = HashSet::new();
@@ -126,11 +142,16 @@ fn type_contains_named_where(
         if !visited.insert(ty) {
             continue;
         }
-        match store
+        let data = store
             .get(ty)
-            .ok_or(TypeSubstitutionError::MissingType(ty))?
-        {
-            Type::Named(named) if predicate(named) => return Ok(true),
+            .ok_or(TypeSubstitutionError::MissingType(ty))?;
+        if predicate(ty, data) {
+            return Ok(true);
+        }
+        match data {
+            Type::Existential { bounds } => {
+                pending.extend(bounds.iter().flat_map(|bound| bound.args.iter().copied()))
+            }
             Type::Array(inner)
             | Type::List(inner)
             | Type::Set(inner)

@@ -96,13 +96,20 @@ pub fn solve_callable_with_named_substitutions(
         infer_type_substitution(store, expected, actual, &mut type_substitutions);
     }
     for (actual, expected) in args.iter().copied().zip(flow.input.iter().copied()) {
-        if !is_assignable_to_schematic(
+        let mut arg_unifier = TypeUnifier::with_substitution(store, report.substitutions.clone());
+        let unified = unify_schematic_type(
             store,
-            actual,
             expected,
-            &mut type_substitutions,
-            &report.substitutions,
-        ) {
+            actual,
+            &type_substitutions,
+            &mut arg_unifier,
+        );
+        let solved = if unified {
+            arg_unifier.substitution()
+        } else {
+            &report.substitutions
+        };
+        if !is_assignable_to_schematic(store, actual, expected, &mut type_substitutions, solved) {
             report.push(SolverFailure {
                 code: etas_core::TypeDiagnosticCode::TypeMismatch,
                 span: origin.span,
@@ -112,23 +119,8 @@ pub fn solve_callable_with_named_substitutions(
                     display_type(store, expected)
                 ),
             });
-        } else {
-            let mut arg_unifier =
-                TypeUnifier::with_substitution(store, report.substitutions.clone());
-            if unify_schematic_type(
-                store,
-                expected,
-                actual,
-                &type_substitutions,
-                &mut arg_unifier,
-            ) {
-                merge_substitution_or_report(
-                    store,
-                    &mut report,
-                    arg_unifier.substitution(),
-                    origin,
-                );
-            }
+        } else if unified {
+            merge_substitution_or_report(store, &mut report, arg_unifier.substitution(), origin);
         }
     }
     infer_type_substitution(store, flow.output, output, &mut type_substitutions);

@@ -628,6 +628,18 @@ impl TypeInterner {
 
 fn canonical_type(ty: Type) -> Type {
     match ty {
+        Type::Existential { mut bounds } => {
+            bounds.sort_by(|left, right| {
+                left.spec.cmp(&right.spec).then_with(|| {
+                    left.args
+                        .iter()
+                        .map(|ty| ty.0)
+                        .cmp(right.args.iter().map(|ty| ty.0))
+                })
+            });
+            bounds.dedup();
+            Type::Existential { bounds }
+        }
         Type::Tuple(elements) if elements.is_empty() => Type::Primitive(PrimitiveType::Unit),
         ty => ty,
     }

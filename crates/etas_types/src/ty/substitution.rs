@@ -217,6 +217,7 @@ pub struct TypeSubstitutionEngine<'a> {
     canonical_parameters: Option<&'a HashMap<super::CanonicalTypeParameterIdentity, TypeId>>,
     variables: Option<&'a Substitution>,
     type_parameters: Option<&'a HashMap<TypeId, TypeId>>,
+    spec_identities: Option<&'a HashMap<crate::CheckedSpecRef, crate::CheckedSpecRef>>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
@@ -235,6 +236,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             && self.named.is_none_or(HashMap::is_empty)
             && self.parameters.is_none_or(HashMap::is_empty)
             && self.type_parameters.is_none_or(HashMap::is_empty)
+            && self.spec_identities.is_none_or(HashMap::is_empty)
             && self.canonical_parameters.is_none_or(HashMap::is_empty)
             && self
                 .variables
@@ -259,6 +261,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             canonical_parameters: None,
             variables,
             type_parameters: None,
+            spec_identities: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -280,6 +283,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             canonical_parameters: None,
             variables: None,
             type_parameters: None,
+            spec_identities: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -332,6 +336,16 @@ impl<'a> TypeSubstitutionEngine<'a> {
         self
     }
 
+    pub fn with_spec_identities(
+        mut self,
+        identities: &'a HashMap<crate::CheckedSpecRef, crate::CheckedSpecRef>,
+    ) -> Self {
+        self.spec_identities = Some(identities);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
+    }
+
     pub fn with_execution_control(
         mut self,
         control: Option<&'a dyn etas_utils::PipelineExecutionControl>,
@@ -374,6 +388,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             canonical_parameters: None,
             variables: None,
             type_parameters: None,
+            spec_identities: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -395,6 +410,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             canonical_parameters: None,
             variables: None,
             type_parameters: None,
+            spec_identities: None,
             effect_rows: None,
             closed_named_types: None,
             active: HashSet::new(),
@@ -601,6 +617,9 @@ impl<'a> TypeSubstitutionEngine<'a> {
         }
         let mut dependencies = Vec::new();
         match data {
+            Type::Existential { bounds } => {
+                dependencies.extend(bounds.into_iter().flat_map(|bound| bound.args));
+            }
             Type::Array(inner)
             | Type::List(inner)
             | Type::Set(inner)
@@ -718,6 +737,29 @@ impl<'a> TypeSubstitutionEngine<'a> {
             return self.substitute(replacement);
         }
         let specialized = match ty_data {
+            Type::Existential { mut bounds } => {
+                for bound in &mut bounds {
+                    if let Some(identity) = self
+                        .spec_identities
+                        .and_then(|identities| identities.get(&bound.spec))
+                    {
+                        bound.spec = identity.clone();
+                    } else if self.is_relocation()
+                        && matches!(
+                            bound.spec,
+                            crate::CheckedSpecRef::Source(_) | crate::CheckedSpecRef::External(_)
+                        )
+                    {
+                        return Err(TypeSubstitutionError::MissingSpecIdentity(
+                            bound.spec.clone(),
+                        ));
+                    }
+                    for arg in &mut bound.args {
+                        *arg = self.substitute(*arg)?;
+                    }
+                }
+                Type::Existential { bounds }
+            }
             Type::Array(inner) => Type::Array(self.substitute(inner)?),
             Type::List(inner) => Type::List(self.substitute(inner)?),
             Type::Map { key, value } => Type::Map {
@@ -1795,6 +1837,58 @@ mod tests {
         assert_eq!(
             interner.store().get(result),
             Some(&Type::Tuple(vec![concrete, caller]))
+        );
+    }
+
+    #[test]
+    fn existential_relocation_maps_spec_identity_and_type_arguments_together() {
+        let mut source = TypeInterner::new();
+        let argument = source.primitive(PrimitiveType::I32);
+        let before = crate::CheckedSpecRef::Source(etas_hir::SymbolId(3));
+        let after = crate::CheckedSpecRef::Source(etas_hir::SymbolId(9));
+        let package = source.intern(Type::Existential {
+            bounds: vec![crate::CheckedSpecBound {
+                spec: before.clone(),
+                args: vec![argument],
+            }],
+        });
+        let mut target = TypeInterner::new();
+        target.primitive(PrimitiveType::Bool);
+        let expected = target.primitive(PrimitiveType::I32);
+        let names = HashMap::new();
+        let declarations = HashMap::new();
+        let identities = HashMap::from([(before.clone(), after.clone())]);
+        let relocated = TypeSubstitutionEngine::relocating_materialized(
+            super::TypeRelocationMaterializationInput {
+                source: source.store(),
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &names,
+            },
+        )
+        .with_spec_identities(&identities)
+        .substitute(package)
+        .unwrap();
+        assert_eq!(
+            target.store().get(relocated),
+            Some(&Type::Existential {
+                bounds: vec![crate::CheckedSpecBound {
+                    spec: after,
+                    args: vec![expected]
+                }],
+            })
+        );
+        assert_eq!(
+            TypeSubstitutionEngine::relocating_materialized(
+                super::TypeRelocationMaterializationInput {
+                    source: source.store(),
+                    target: &mut target,
+                    declaration_types: &declarations,
+                    effect_names: &names,
+                }
+            )
+            .substitute(package),
+            Err(TypeSubstitutionError::MissingSpecIdentity(before))
         );
     }
 }

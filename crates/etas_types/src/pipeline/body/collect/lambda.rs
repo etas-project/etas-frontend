@@ -1,7 +1,7 @@
 use etas_hir::{HirLambdaBody, SymbolDef};
 
 use crate::{
-    FlowType, PrimitiveType, SymbolTypeFact, Type, TypeId,
+    FlowType, SymbolTypeFact, Type, TypeId,
     lower::type_ref::lower_type_ref,
     pipeline::{
         body::collect::{block::collect_block, expr::collect_expr},
@@ -32,8 +32,9 @@ pub fn collect_lambda<E>(
                     .and_then(|flow| flow.input.get(index).copied())
             })
             .unwrap_or_else(|| {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::UnknownType,
+                let ty = ctx.fresh_type_var();
+                ctx.validate(crate::ValidationRequest::LambdaParameter {
+                    ty,
                     span: ctx
                         .ctx
                         .hir
@@ -41,11 +42,8 @@ pub fn collect_lambda<E>(
                         .get(param)
                         .map(|symbol| symbol.definition_span)
                         .unwrap_or(span),
-                    message:
-                        "lambda parameter requires a type annotation or contextual function type"
-                            .to_owned(),
                 });
-                ctx.primitive(PrimitiveType::Never)
+                ty
             });
         ctx.record_symbol_type(param, SymbolTypeFact::Param { ty });
         input.push(ty);

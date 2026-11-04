@@ -187,6 +187,18 @@ impl EffectSemantics<'_> {
                 let mut resolved = BTreeSet::new();
                 for source in sources {
                     match source {
+                        LatentSource::MetadataObject(mut object) => {
+                            pending.extend(object.environment);
+                            object.environment = object.environment.map(mapped);
+                            resolved.insert(LatentSource::MetadataObject(object));
+                        }
+                        LatentSource::Existential { pack, environment } => {
+                            pending.push(environment);
+                            resolved.insert(LatentSource::Existential {
+                                pack,
+                                environment: mapped(environment),
+                            });
+                        }
                         LatentSource::FrozenContract {
                             unit,
                             reference,

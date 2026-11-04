@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+pub(crate) mod bound_evidence;
 mod external;
+pub(crate) mod object_safety;
 
 use crate::{
     CheckedSpecRef, NamedTypeRef, SpecFacts, SpecObligation, Type, TypeId, TypeStore, TypeUnifier,

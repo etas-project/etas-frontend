@@ -191,7 +191,32 @@ impl EffectSemantics<'_> {
         span: Span,
         mut state: EffectState,
     ) -> EffectState {
-        if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr) {
+        if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr).cloned() {
+            if self
+                .types
+                .facts
+                .checked_method_calls
+                .get(&expr)
+                .is_some_and(|method| {
+                    matches!(
+                        method.target,
+                        etas_types::method::MethodTarget::Standard {
+                            operation: etas_std::FlowSourceMethodOperation::CheckedIndex,
+                            ..
+                        }
+                    )
+                })
+            {
+                return if self.types.facts.index_facts.contains_key(&expr) {
+                    state
+                } else {
+                    self.reject_effect_state(
+                        span,
+                        "checked index method has no index operation fact",
+                        state,
+                    )
+                };
+            }
             if self.method_receiver_type_missing(expr) {
                 return self.reject_effect_state(
                     span,
@@ -228,19 +253,73 @@ impl EffectSemantics<'_> {
                     state,
                 );
             }
-            let valid = self.std_registry.lookup_qualified(&fact.qualified_path).is_some_and(|symbol| {
-                matches!(&symbol.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty() && flow.source_method.as_ref().is_some_and(|method| method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
-                    || (method.kind == etas_std::FlowSourceMethodKind::TypeMember && symbol.intrinsic.as_ref().is_some_and(|descriptor| matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))))))
-                    && symbol.intrinsic.as_ref().is_some_and(|descriptor| descriptor.id.0 == fact.intrinsic && descriptor.purity == etas_std::IntrinsicPurity::Pure)
-            });
-            if valid {
-                return state;
+            let Some(symbol) = self.std_registry.lookup_qualified(&fact.qualified_path) else {
+                return self.reject_effect_state(
+                    span,
+                    "checked method has no standard descriptor",
+                    state,
+                );
+            };
+            let Some(descriptor) = symbol
+                .intrinsic
+                .as_ref()
+                .filter(|descriptor| descriptor.id.0 == fact.intrinsic)
+            else {
+                return self.reject_effect_state(
+                    span,
+                    "checked method differs from its standard intrinsic identity",
+                    state,
+                );
+            };
+            let Some(flow) = self
+                .std_registry
+                .flow_declarations(symbol.id)
+                .nth(fact.overload)
+            else {
+                return self.reject_effect_state(
+                    span,
+                    "checked method has no standard overload",
+                    state,
+                );
+            };
+            let actions = match descriptor.memory_access {
+                IntrinsicMemoryAccess::None => None,
+                IntrinsicMemoryAccess::ReadFirstArgStore => Some(&[MEMORY_READ_ACTION][..]),
+                IntrinsicMemoryAccess::WriteFirstArgStore
+                | IntrinsicMemoryAccess::WriteFirstArgIntent => Some(&[MEMORY_WRITE_ACTION][..]),
+                IntrinsicMemoryAccess::ReadWriteFirstArgStore => {
+                    Some(&[MEMORY_READ_ACTION, MEMORY_WRITE_ACTION][..])
+                }
+            };
+            let mut signature = fact.signature;
+            if let Some(actions) = actions {
+                let receiver = match self
+                    .checked_method_arguments(expr)
+                    .ok()
+                    .and_then(|args| args.first().copied())
+                {
+                    Some(receiver) => receiver,
+                    None => {
+                        return self.reject_effect_state(
+                            span,
+                            "checked memory method has no receiver ABI",
+                            state,
+                        );
+                    }
+                };
+                let summary = match self.memory_action_alternatives(receiver, actions, span) {
+                    Ok(summary) => summary,
+                    Err(reason) => return self.reject_effect_state(span, reason, state),
+                };
+                state.summary.seq_assign(&summary);
+                signature.requested_actions = Some(etas_types::EffectRowRef {
+                    effects: Vec::new(),
+                    tail: None,
+                });
             }
-            return self.reject_effect_state(
-                span,
-                "checked intrinsic method has no matching pure registry contract",
-                state,
-            );
+            let summary = self.summary_from_std_signature(expr, flow, &signature, span);
+            state.summary.seq_assign(&summary);
+            return state;
         }
         if let Some(state) = self.std_conversation_method_call(expr, span, state.clone()) {
             return state;
@@ -661,14 +740,12 @@ impl EffectSemantics<'_> {
     }
 
     fn method_receiver_type_missing(&self, expr: HirExprId) -> bool {
-        let Some(HirExpr::MethodCall {
-            receiver, method, ..
-        }) = self.hir.exprs.get(expr)
+        let Some(HirExpr::MethodCall { receiver, .. } | HirExpr::SpecMethodCall { receiver, .. }) =
+            self.hir.exprs.get(expr)
         else {
             return false;
         };
-        matches!(method.as_str(), "len" | "is_empty" | "unwrap" | "run")
-            && !self.types.facts.expr_types.contains_key(receiver)
+        !self.types.facts.expr_types.contains_key(receiver)
     }
 
     fn is_agent_run_call(&self, expr: HirExprId) -> bool {
@@ -906,7 +983,6 @@ impl EffectSemantics<'_> {
         flow: &etas_std::FlowDecl,
         span: Span,
     ) -> crate::EffectSummary {
-        let mut summary = crate::EffectSummary::local();
         let Some(signature) = self.checked_std_flow_signature(call, symbol) else {
             self.diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
@@ -916,8 +992,19 @@ impl EffectSemantics<'_> {
                     flow.name
                 ),
             ));
-            return summary;
+            return crate::EffectSummary::local();
         };
+        self.summary_from_std_signature(call, flow, &signature, span)
+    }
+
+    fn summary_from_std_signature(
+        &mut self,
+        call: HirExprId,
+        flow: &etas_std::FlowDecl,
+        signature: &etas_types::CallableSignature,
+        span: Span,
+    ) -> crate::EffectSummary {
+        let mut summary = crate::EffectSummary::local();
         if let Some(row) = &signature.effects {
             let Some(row) = self.specialize_std_effect_row(call, flow, row, span) else {
                 return summary;

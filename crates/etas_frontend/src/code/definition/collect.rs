@@ -352,7 +352,7 @@ fn build_selected(
     ))
 }
 
-fn selected_callable(
+pub(crate) fn selected_callable(
     checked: &CheckedProgram,
     identities: &DefinitionIdentityIndex,
     symbol: etas_hir::SymbolId,
@@ -385,20 +385,17 @@ fn selected_callable(
                 .get(symbol)
                 .is_some_and(|symbol| symbol.visibility == etas_hir::Visibility::Public));
         }
-        let Some(HirItem::Impl(decl)) = checked.items.get(method.implementation) else {
-            return Err(ProjectionError::MissingCallable(symbol));
-        };
-        let etas_hir::HirImplTarget::SpecSatisfaction { specs, .. } = &decl.target else {
-            return Err(ProjectionError::Invalid(
-                "type method has no checked spec implementation".into(),
-            ));
-        };
-        return Ok(specs.iter().any(|spec| match spec.spec_path.resolution {
-            etas_hir::ResolveResult::Resolved(symbol) => {
-                identities.symbol(symbol).is_some_and(exported)
-            }
-            _ => false,
-        }));
+        return Ok(checked
+            .types
+            .methods
+            .applicable(&checked.type_store, method.self_type, &method.name)
+            .into_iter()
+            .map(|index| checked.types.methods.get(index))
+            .any(|entry| {
+                entry.public
+                    && matches!(entry.target,
+                etas_types::method::MethodTarget::Source { symbol: target, .. } if target == symbol)
+            }));
     }
     let Some(method) = checked.types.agent_methods.get(&symbol) else {
         return Ok(selection.contains(&item));

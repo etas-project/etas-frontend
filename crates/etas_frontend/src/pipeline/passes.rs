@@ -2,13 +2,14 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
-    AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass, BuildCheckedProjectPass,
-    BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass, BuildSignatureFactsPass,
-    BuildSourceSetPass, BuildUnitTreePass, CompleteEffectRuntimeReachabilityPass,
-    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
-    ComputeAffectedModulesPass, ComputeDefinitionAnalysisReachabilityPass,
-    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
-    FinalizeProjectHirPass, FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass, BindMethodOriginsPass,
+    BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass,
+    BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
+    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
+    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
+    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
+    FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
     PrepareEffectRegistryPass, PrepareInvocationTypesPass, ResolveEntryItemPass,
@@ -91,7 +92,8 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(RetainDefinitionSourcesPass)
         .pass(ComputeDefinitionAnalysisReachabilityPass)
         .pass(PrepareBodyTypeEnvironmentPass)
-        .pass(PrepareEffectRegistryPass);
+        .pass(PrepareEffectRegistryPass)
+        .pass(BindMethodOriginsPass);
     if candidate {
         pipeline.push_pass(crate::code::pipeline::passes::PrepareCandidateApplicationPass);
     }

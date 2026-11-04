@@ -4,6 +4,7 @@ pub mod collect {
     pub mod callables;
     pub mod effect_actions;
     pub mod imports;
+    pub mod methods;
     pub mod nominal_types;
     pub mod resource_handles;
     pub mod specs;
@@ -34,10 +35,11 @@ pub fn run_for_hir(ctx: &mut TypePipelineContext<'_>) {
     run(ctx);
 }
 
-pub fn run_from_input(
-    ctx: &mut TypePipelineContext<'_>,
-    input: &crate::SignaturePipelineInput<'_>,
+pub fn run_from_input<'a>(
+    ctx: &mut TypePipelineContext<'a>,
+    input: &crate::SignaturePipelineInput<'a>,
 ) {
+    ctx.hir_view = input.view.clone();
     imports::reflection::initialize(ctx, &input.reflection);
     imports::std::apply_hir_std_prelude(ctx);
     imports::std::apply_std_signature_input(ctx, &input.std);
@@ -77,6 +79,7 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     validate::spec_impls::validate_spec_impls(ctx, &state);
     validate::flow_spec_satisfaction::validate_flow_spec_satisfaction(ctx, &mut state);
     validate::exported_contracts::validate_exported_contracts(ctx, &state);
+    collect::methods::collect(ctx, &mut state);
     materialize::materialize_signature_facts(ctx, state);
     validate::type_applications::run(ctx);
     if mode == crate::AnnotationValidationMode::Immediate {

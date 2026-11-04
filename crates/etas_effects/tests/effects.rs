@@ -22,6 +22,8 @@ mod callback_completion;
 mod callback_identity;
 #[path = "effects/completion.rs"]
 mod completion;
+#[path = "effects/method_resolution.rs"]
+mod method_resolution;
 #[path = "effects/parameter_exit.rs"]
 mod parameter_exit;
 #[path = "effects/parameter_inference.rs"]
@@ -3630,9 +3632,9 @@ flow main() -> unit ![Memory.read<ProjectMemory>]
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
-                && diagnostic.message.contains(
-                    "std store method effect solving requires a checked receiver type fact",
-                )
+                && diagnostic
+                    .message
+                    .contains("method effect propagation requires a checked receiver type fact")
         }),
         "{:?}",
         output.diagnostics

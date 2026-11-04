@@ -60,6 +60,7 @@ pub(super) fn collect(
             }
         }
         if let Some(graph) = &summary.returned_callables {
+            collect_parts(&mut types, vec![Part::Graph(graph)])?;
             for node in &graph.values {
                 for ty in node.params.iter().chain(std::iter::once(&node.output)) {
                     add(&mut types, ty)?;
@@ -99,9 +100,30 @@ pub(super) fn collect(
             }
         }
     }
-    for implementation in &metadata.spec_impls {
-        for method in &implementation.methods {
-            collect_parts(&mut types, vec![Part::Graph(&method.callable)])?;
+    for method in &metadata.methods {
+        add(&mut types, &method.self_type)?;
+        collect_parts(&mut types, vec![Part::Graph(&method.callable)])?;
+        for requirement in method
+            .requirements
+            .trace_requirements
+            .iter()
+            .chain(&method.requirements.trace_obligations)
+        {
+            if let etas_package_metadata::MethodTraceRequirement::Clause(clause) = requirement {
+                collect_parts(
+                    &mut types,
+                    [
+                        &clause.pattern,
+                        &clause.guard,
+                        &clause.target,
+                        &clause.obligation,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(Part::Row)
+                    .collect(),
+                )?;
+            }
         }
     }
     Ok(types)
@@ -148,6 +170,15 @@ fn collect_parts(
                 );
             }
             Part::Graph(graph) => {
+                for object in &graph.objects {
+                    add(types, &object.object_type)?;
+                    add(types, &object.source_type)?;
+                    for witness in &object.witnesses {
+                        for ty in &witness.bound.args {
+                            add(types, ty)?;
+                        }
+                    }
+                }
                 for node in &graph.values {
                     for ty in node.params.iter().chain(std::iter::once(&node.output)) {
                         add(types, ty)?;

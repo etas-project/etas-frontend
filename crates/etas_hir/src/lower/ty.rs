@@ -10,6 +10,13 @@ impl LowerCtx {
         item_id: HirItemId,
     ) -> HirTypeId {
         let hir_type = match ty {
+            TypeExpr::Existential { bounds, span } => HirType::Existential {
+                bounds: bounds
+                    .iter()
+                    .map(|bound| self.lower_type_param_bound(bound, scope, item_id))
+                    .collect(),
+                span: *span,
+            },
             TypeExpr::Handler(handler) => {
                 let handled = self.lower_effect_row(&handler.handled, scope, item_id);
                 let produced = match &handler.produced {

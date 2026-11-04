@@ -4,6 +4,18 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    LambdaParameter {
+        ty: TypeId,
+        span: Span,
+    },
+    EmptySequence {
+        ty: TypeId,
+        span: Span,
+    },
+    EmptyBrace {
+        ty: TypeId,
+        span: Span,
+    },
     HandlerNeverCompletion {
         ty: TypeId,
         span: Span,

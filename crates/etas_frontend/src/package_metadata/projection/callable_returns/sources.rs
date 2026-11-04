@@ -25,6 +25,25 @@ impl Builder<'_, '_> {
                 ));
             }
             let instance = match source {
+                CallableReturnSource::MetadataObject(source) => {
+                    output.insert(CallableValueSource::Existential(
+                        self.reserve_foreign_object(ForeignObjectInstance {
+                            source,
+                            root: scope,
+                        })?,
+                    ));
+                    continue;
+                }
+                CallableReturnSource::Existential { pack, environment } => {
+                    output.insert(CallableValueSource::Existential(self.reserve_object(
+                        NativeObjectInstance {
+                            pack,
+                            environment,
+                            scope,
+                        },
+                    )?));
+                    continue;
+                }
                 CallableReturnSource::ExternalFrozen { reflection } => {
                     let reference = self.external_reference(reflection, true)?;
                     output.insert(CallableValueSource::FrozenContract(
@@ -150,7 +169,7 @@ impl Builder<'_, '_> {
         Ok(Some(output.into_iter().collect()))
     }
 
-    fn reserve(
+    pub(super) fn reserve(
         &mut self,
         instance: Instance,
         scope: CallableValueScope,
@@ -206,6 +225,14 @@ impl Builder<'_, '_> {
     ) -> Result<Option<(CallableReturnSource, Option<CallableEnvironmentId>)>, PackageMetadataError>
     {
         Ok(Some(match origin {
+            CallableValueOrigin::MetadataObject(source) => (
+                CallableReturnSource::MetadataObject(source),
+                source.environment,
+            ),
+            CallableValueOrigin::Existential { pack, environment } => (
+                CallableReturnSource::Existential { pack, environment },
+                Some(environment),
+            ),
             CallableValueOrigin::ExternalFrozen { reflection } => {
                 (CallableReturnSource::ExternalFrozen { reflection }, None)
             }

@@ -90,6 +90,7 @@ impl EffectSemantics<'_> {
     ) -> Option<(
         &etas_package_metadata::CallableValueGraph,
         &[crate::ExternalCallableValueMetadata],
+        &[crate::ExternalExistentialValueMetadata],
         Span,
     )> {
         if let Some(index) = self.implementation_graphs.get(&key) {
@@ -100,35 +101,40 @@ impl EffectSemantics<'_> {
                 return None;
             }
             let method = self.external_implementations.get((*index)?)?;
-            return (method.graph.values.len() == method.values.len()).then_some((
-                &method.graph,
-                &method.values,
-                method.span,
-            ));
+            return (method.graph.values.len() == method.values.len()
+                && method.graph.objects.len() == method.objects.len())
+            .then_some((&method.graph, &method.values, &method.objects, method.span));
         }
         if let Some(graph) = self.frozen_graphs.get(&key) {
             if self.metadata_callables.contains_key(&key) {
                 return None;
             }
             return (graph.graph.values.len() == graph.values.len()
+                && graph.graph.objects.len() == graph.objects.len()
                 && graph.values.len() == graph.exits.len())
-            .then_some((&graph.graph, &graph.values, graph.anchor));
+            .then_some((&graph.graph, &graph.values, &graph.objects, graph.anchor));
         }
         if let Some(graph) = self.method_callback_graphs.get(&key) {
             let graph = graph.as_ref()?;
             let argument = graph.argument()?;
-            return (argument.sources.values.len() == argument.values.len()).then_some((
+            return (argument.sources.values.len() == argument.values.len()
+                && argument.sources.objects.len() == argument.objects.len())
+            .then_some((
                 &argument.sources,
                 &argument.values,
+                &argument.objects,
                 graph.span,
             ));
         }
         let index = self.metadata_callables.get(&key).copied().flatten()?;
         let metadata = self.external_summaries.get(index)?;
         let graph = metadata.returned_callables.as_ref()?;
-        (graph.values.len() == metadata.callable_values.len()).then_some((
+        (graph.values.len() == metadata.callable_values.len()
+            && graph.objects.len() == metadata.object_values.len())
+        .then_some((
             graph,
             &metadata.callable_values,
+            &metadata.object_values,
             metadata.span,
         ))
     }
@@ -141,7 +147,7 @@ impl EffectSemantics<'_> {
         &etas_package_metadata::CallableValueNode,
         &crate::ExternalCallableValueMetadata,
     )> {
-        let (graph, values, _) = self.callable_graph(source.graph)?;
+        let (graph, values, _, _) = self.callable_graph(source.graph)?;
         Some((
             graph,
             graph.values.get(source.value as usize)?,
@@ -236,22 +242,26 @@ impl EffectSemantics<'_> {
             .get(&source.graph)
             .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)]
-            && let Some(contract) = &method.callable_contract
         {
-            summary.exits = self.external_callback_outcomes(
-                contract,
-                &summary,
-                &etas_types::FlowType {
-                    input: checked.params.clone(),
-                    output: checked.output,
-                    effects: None,
-                },
-                span,
-                &types,
-                &self
-                    .metadata_evidence_generics(source)
-                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
-            )?;
+            let (requirements, obligations) = self.method_requirements(&method.requirements)?;
+            summary.requirements.union_assign(&requirements);
+            summary.trace_spec_obligations.union_assign(&obligations);
+            if let Some(contract) = &method.callable_contract {
+                summary.exits = self.external_callback_outcomes(
+                    contract,
+                    &summary,
+                    &etas_types::FlowType {
+                        input: checked.params.clone(),
+                        output: checked.output,
+                        effects: None,
+                    },
+                    span,
+                    &types,
+                    &self
+                        .metadata_evidence_generics(source)
+                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?,
+                )?;
+            }
         }
         summary = self
             .specialize_summary_with_bindings(&summary, &[], &types, &rows)
@@ -382,6 +392,16 @@ impl EffectSemantics<'_> {
         let mut found = BTreeSet::new();
         for source in sources {
             match source {
+                CallableValueSource::Existential(object) => {
+                    self.callable_graph(key)
+                        .and_then(|(graph, _, _, _)| graph.objects.get(*object as usize))
+                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                    found.insert(LatentSource::MetadataObject(crate::MetadataObjectSource {
+                        graph: key,
+                        object: *object,
+                        environment: environment_id,
+                    }));
+                }
                 CallableValueSource::Value(value) | CallableValueSource::FrozenContract(value) => {
                     let source = crate::MetadataCallableSource {
                         graph: key,
@@ -478,21 +498,20 @@ impl EffectSemantics<'_> {
             );
         }
         for (position, expr) in context.arguments.iter().enumerate() {
-            if self.expr_type_contains_flow(*expr) {
-                let origins = self
-                    .latent_sources_for_expr(state, *expr)
-                    .unwrap_or_else(|| vec![LatentSource::Unavailable { expr: *expr }]);
-                environment.parameters.insert(
-                    crate::ParameterCallTarget::Graph {
-                        graph: key,
-                        parameter: etas_package_metadata::CallableValueParameter {
-                            scope: context.scope,
-                            position: position as u32,
-                        },
+            let origins = self.trace_argument_origins(
+                &super::specialize::TraceArgumentBinding::Expression(*expr),
+                state,
+            )?;
+            environment.parameters.insert(
+                crate::ParameterCallTarget::Graph {
+                    graph: key,
+                    parameter: etas_package_metadata::CallableValueParameter {
+                        scope: context.scope,
+                        position: position as u32,
                     },
-                    origins.into_iter().collect(),
-                );
-            }
+                },
+                origins,
+            );
         }
         let environment_id = if environment.parameters.is_empty() && environment.generics.is_empty()
         {

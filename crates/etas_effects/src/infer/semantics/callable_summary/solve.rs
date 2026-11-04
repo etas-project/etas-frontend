@@ -170,6 +170,22 @@ impl EffectSemantics<'_> {
         mode: CallableSummaryMode,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         let plan = match plan {
+            CallableSummaryPlan::Alternatives(keys) => {
+                let mut keys = keys.iter();
+                let first = keys
+                    .next()
+                    .and_then(|key| summaries.get(key))
+                    .ok_or_else(|| {
+                        invalid("existential method has no solved implementation alternatives")
+                    })?;
+                let mut result = first.clone();
+                for key in keys {
+                    result.join_branch(summaries.get(key).ok_or_else(|| {
+                        invalid("existential method implementation summary is missing")
+                    })?);
+                }
+                return Ok(result);
+            }
             CallableSummaryPlan::Captured(plan) => plan,
             CallableSummaryPlan::Leaf(summary) => return Ok(summary.clone()),
         };

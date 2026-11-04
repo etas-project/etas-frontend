@@ -379,6 +379,13 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn call_generic_bindings(&self, call: HirExprId) -> CheckedGenericBindings {
+        if let Some(fact) = self.types.facts.checked_method_calls.get(&call) {
+            return CheckedGenericBindings {
+                types: fact.instantiation.type_bindings.clone(),
+                effect_rows: fact.instantiation.effect_row_bindings.clone(),
+                deferred_effect_rows: fact.instantiation.deferred_effect_row_obligations.clone(),
+            };
+        }
         self.types
             .facts
             .generic_instantiations

@@ -117,7 +117,7 @@ impl Builder<'_, '_> {
         let mut trace_labels = BTreeMap::new();
         let mut parameter_bindings = vec![];
         let mut bound = BTreeSet::new();
-        for target in trace_parameters(&summary.action_trace) {
+        for target in self.projection.callable_trace_parameters(summary)? {
             if matches!(
                 target,
                 etas_effects::ParameterCallTarget::SpecMethod { .. }
@@ -165,6 +165,7 @@ impl Builder<'_, '_> {
             &projection.type_names,
             &projection.effect_names,
             &trace_labels,
+            false,
         )?
         else {
             return Ok(None);

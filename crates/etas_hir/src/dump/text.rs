@@ -1224,6 +1224,18 @@ impl<'a> Dump<'a> {
                 self.type_id("Base", *base);
                 self.expr_id("Predicate", *predicate);
             }
+            HirType::Existential { bounds, .. } => {
+                self.line("ExistentialType", None);
+                for bound in bounds {
+                    self.line(
+                        &format!("SpecBound {}", path_ref(&bound.path)),
+                        Some(bound.span),
+                    );
+                    for arg in &bound.args {
+                        self.type_id("TypeArg", *arg);
+                    }
+                }
+            }
             HirType::Error { .. } => self.line("ErrorType", None),
         }
     }

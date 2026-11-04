@@ -36,6 +36,14 @@ pub fn collect_expr<E>(
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
         return Ok(ty);
     }
+    let object = expected.filter(|ty| {
+        matches!(
+            ctx.ctx.interner.store().get(*ty),
+            Some(Type::Existential { .. })
+        )
+    });
+    let expected = if object.is_some() { None } else { expected };
+    collect_method_receivers(ctx, expr)?;
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
         HirExpr::Reflect(reflection) => {
@@ -55,6 +63,7 @@ pub fn collect_expr<E>(
         }
         HirExpr::Record(record) => collect_record(ctx, &record, expected)?,
         HirExpr::EmptyRecordOrMap { span } => expected
+            .filter(|ty| !matches!(ctx.ctx.interner.store().get(*ty), Some(Type::Var(_))))
             .map(|ty| {
                 if matches!(ctx.ctx.interner.store().get(ty), Some(Type::Map { .. })) {
                     ty
@@ -65,13 +74,9 @@ pub fn collect_expr<E>(
                 }
             })
             .unwrap_or_else(|| {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span,
-                    message: "empty brace literal requires an expected record or Map[K, V] type"
-                        .to_owned(),
-                });
-                ctx.primitive(PrimitiveType::Never)
+                let ty = ctx.fresh_type_var();
+                ctx.validate(crate::ValidationRequest::EmptyBrace { ty, span });
+                ty
             }),
         HirExpr::Array { elems, span } => {
             collect_sequence(ctx, elems, span, SequenceKind::Array, expected)?
@@ -87,13 +92,9 @@ pub fn collect_expr<E>(
                 )
             })
             .unwrap_or_else(|| {
-                ctx.validate(crate::ValidationRequest::Diagnostic {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span,
-                    message: "empty sequence literal requires an expected Array[T] or List[T] type"
-                        .to_owned(),
-                });
-                ctx.primitive(PrimitiveType::Never)
+                let ty = ctx.fresh_type_var();
+                ctx.validate(crate::ValidationRequest::EmptySequence { ty, span });
+                ty
             }),
         HirExpr::Map { entries, span: _ } => {
             let expected_entries = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
@@ -453,7 +454,48 @@ pub fn collect_expr<E>(
             ctx.primitive(PrimitiveType::Never)
         }
     };
-    Ok(ctx.record_expr_type(expr, ty))
+    let result = if let Some(object) = object.filter(|object| *object != ty) {
+        ctx.emit(TypeConstraint::ExistentialPack {
+            expr,
+            from: ty,
+            to: object,
+            origin: ConstraintOrigin {
+                span: ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks),
+            },
+        });
+        object
+    } else {
+        ty
+    };
+    Ok(ctx.record_expr_type(expr, result))
+}
+
+fn collect_method_receivers<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    expr: etas_hir::HirExprId,
+) -> Result<(), E> {
+    let mut cursor = expr;
+    let mut receivers = Vec::new();
+    while let HirExpr::MethodCall { receiver, .. } | HirExpr::SpecMethodCall { receiver, .. } =
+        &ctx.ctx.hir.exprs[cursor]
+    {
+        ctx.checkpoint()?;
+        if ctx.state.provisional.expr_types.contains_key(receiver)
+            || !matches!(
+                ctx.ctx.hir.exprs[*receiver],
+                HirExpr::MethodCall { .. } | HirExpr::SpecMethodCall { .. }
+            )
+        {
+            break;
+        }
+        cursor = *receiver;
+        receivers.push(cursor);
+    }
+    // Inner results become provisional constraints, not recursive Rust frames.
+    for receiver in receivers.into_iter().rev() {
+        collect_expr(ctx, receiver, None)?;
+    }
+    Ok(())
 }
 
 pub fn collect_if_statement<E>(

@@ -15,6 +15,43 @@ pub struct CheckedExternalTypeResolver<'a> {
 }
 
 impl<'a> CheckedExternalTypeResolver<'a> {
+    pub fn method_witness(
+        &self,
+        receiver: TypeId,
+        args: &[TypeId],
+        member: &crate::SpecMethodIdentity,
+    ) -> Option<&crate::method::MethodSignatureFact> {
+        self.types.facts.methods.witness(receiver, args, member)
+    }
+
+    pub fn method_identity<'b>(
+        &'b self,
+        target: &'b crate::method::MethodTarget,
+    ) -> Option<&'b etas_code::MethodId> {
+        self.types.facts.methods.target_identity(target)
+    }
+    pub fn spec_member_identity(
+        &self,
+        spec: &crate::ExternalSpecIdentity,
+        member: &str,
+    ) -> Result<crate::SpecMethodIdentity, ExternalMetadataLoweringError> {
+        self.types
+            .facts
+            .external_specs
+            .signatures
+            .get(spec)
+            .and_then(|signature| {
+                signature
+                    .methods
+                    .iter()
+                    .find(|method| method.name == member)
+            })
+            .map(|method| method.identity.clone())
+            .ok_or_else(|| ExternalMetadataLoweringError {
+                message: format!("external object witness has no checked spec member `{member}`"),
+            })
+    }
+
     pub fn spec_identity(
         &self,
         path: &[String],
@@ -166,6 +203,32 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         ty: &crate::ExternalTypeInput,
     ) -> Result<Type, ExternalMetadataLoweringError> {
         match ty {
+            crate::ExternalTypeInput::Existential { bounds } => Ok(Type::Existential {
+                bounds: bounds
+                    .iter()
+                    .map(|bound| {
+                        let spec = if self
+                            .types
+                            .facts
+                            .std_spec_aliases
+                            .values()
+                            .any(|path| path == &bound.spec)
+                        {
+                            crate::CheckedSpecRef::Std(bound.spec.clone())
+                        } else {
+                            crate::CheckedSpecRef::External(self.spec_identity(&bound.spec)?)
+                        };
+                        Ok(crate::CheckedSpecBound {
+                            spec,
+                            args: bound
+                                .args
+                                .iter()
+                                .map(|arg| self.type_id(arg))
+                                .collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<_, ExternalMetadataLoweringError>>()?,
+            }),
             crate::ExternalTypeInput::Primitive(name) => Ok(Type::Primitive(
                 primitive_from_external_name(name).ok_or_else(|| {
                     ExternalMetadataLoweringError {

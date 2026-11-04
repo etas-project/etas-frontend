@@ -106,6 +106,13 @@ impl<'a> Graph<'a> {
 
     fn ty(&mut self, mut ty: Type) -> Result<Type, String> {
         match &mut ty {
+            Type::Existential { bounds } => {
+                for bound in bounds {
+                    for argument in &mut bound.args {
+                        *argument = self.reference(*argument)?;
+                    }
+                }
+            }
             Type::Array(inner)
             | Type::List(inner)
             | Type::Set(inner)

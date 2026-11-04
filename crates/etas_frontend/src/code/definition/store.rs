@@ -72,6 +72,9 @@ impl DefinitionCatalog {
     pub fn checked_program(&self) -> &crate::CheckedProgram {
         &self.checked
     }
+    pub(crate) fn identity_index(&self) -> &DefinitionIdentityIndex {
+        &self.identities
+    }
     pub fn freeze_agent(
         &self,
         expression: HirExprId,

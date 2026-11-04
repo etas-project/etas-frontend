@@ -51,6 +51,7 @@ pub struct FrozenCallableGraph {
     pub identity: FrozenCallableGraphIdentity,
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub values: Vec<crate::ExternalCallableValueMetadata>,
+    pub objects: Vec<crate::ExternalExistentialValueMetadata>,
     pub exits: Vec<Option<crate::CallableExitSummary>>,
     pub anchor: etas_core::Span,
 }

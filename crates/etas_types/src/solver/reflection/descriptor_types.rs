@@ -188,6 +188,33 @@ fn matches_scoped(
             .ok_or("selected spec argument has no checked type")?;
         let mut children = Vec::new();
         match (ty, node) {
+            (Type::Existential { bounds }, TypeInfo::Existential { bounds: expected }) => {
+                if bounds.len() != expected.len() {
+                    return Ok(false);
+                }
+                let mut used = BTreeSet::new();
+                for bound in bounds {
+                    let identity = spec_definition(input.facts, &bound.spec)?;
+                    let Some((index, described)) =
+                        expected.iter().enumerate().find(|(index, item)| {
+                            !used.contains(index) && &item.definition == identity
+                        })
+                    else {
+                        return Ok(false);
+                    };
+                    if bound.args.len() != described.arguments.len() {
+                        return Ok(false);
+                    }
+                    used.insert(index);
+                    children.extend(
+                        bound
+                            .args
+                            .iter()
+                            .copied()
+                            .zip(described.arguments.iter().copied()),
+                    );
+                }
+            }
             (Type::Primitive(native), TypeInfo::Primitive(described))
                 if primitive(*native) == *described => {}
             (
@@ -332,6 +359,33 @@ fn matches_scoped(
         );
     }
     Ok(true)
+}
+
+fn spec_definition<'a>(
+    facts: &'a crate::TypeFacts,
+    spec: &'a crate::CheckedSpecRef,
+) -> Result<&'a etas_code::DefinitionKey, &'static str> {
+    match spec {
+        crate::CheckedSpecRef::Canonical(key) => Ok(key),
+        crate::CheckedSpecRef::Std(path) => facts
+            .reflection_declaration_identities
+            .get(path)
+            .ok_or("standard spec has no checked descriptor identity"),
+        crate::CheckedSpecRef::External(identity) => facts
+            .reflection_declaration_identities
+            .get(&identity.path)
+            .ok_or("external spec has no checked descriptor identity"),
+        crate::CheckedSpecRef::Source(symbol) => facts
+            .external_definition_bindings
+            .get(symbol)
+            .or_else(|| {
+                facts
+                    .std_spec_aliases
+                    .get(symbol)
+                    .and_then(|path| facts.reflection_declaration_identities.get(path))
+            })
+            .ok_or("source spec has no checked descriptor identity"),
+    }
 }
 
 fn rows_match(

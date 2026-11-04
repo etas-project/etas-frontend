@@ -26,6 +26,8 @@ pub(crate) struct EffectSemantics<'a> {
         &'a [crate::AnchoredExternalMetadata<crate::ExternalSpecImplementationMetadata>],
     pub(crate) implementation_graphs:
         std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
+    pub(crate) implementation_identities:
+        std::collections::BTreeMap<etas_code::MethodId, Option<usize>>,
     pub(crate) method_evidence: std::cell::RefCell<
         std::sync::Arc<
             std::collections::BTreeMap<
@@ -71,7 +73,8 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) call_results: std::sync::Arc<super::state::LatentEnv>,
     pub(crate) discovered_call_results: std::cell::RefCell<super::state::LatentEnv>,
     pub(crate) discovered_global_values: super::state::LatentEnv,
-    pub(crate) flow_type_presence: std::cell::RefCell<std::collections::HashMap<TypeId, bool>>,
+    pub(crate) latent_type_shapes:
+        std::sync::Arc<std::sync::OnceLock<super::latent_shape::LatentTypeShapes>>,
     pub(crate) lambda_capture_symbols: std::cell::RefCell<
         std::collections::HashMap<HirExprId, std::collections::BTreeSet<etas_hir::SymbolId>>,
     >,
@@ -188,6 +191,7 @@ impl<'a> EffectSemantics<'a> {
             discovered_external_method_sources: Default::default(),
             external_implementations,
             implementation_graphs: Default::default(),
+            implementation_identities: Default::default(),
             method_evidence: std::cell::RefCell::new(method_evidence),
             method_callback_graphs: Default::default(),
             frozen_graphs,
@@ -230,7 +234,7 @@ impl<'a> EffectSemantics<'a> {
             call_results,
             discovered_call_results: Default::default(),
             discovered_global_values: Default::default(),
-            flow_type_presence: Default::default(),
+            latent_type_shapes: Default::default(),
             lambda_capture_symbols: Default::default(),
             captured_values,
             discovered_value_captures: Default::default(),
@@ -254,6 +258,11 @@ impl<'a> EffectSemantics<'a> {
         };
         semantics.collect_std_callable_values();
         for (index, method) in semantics.external_implementations.iter().enumerate() {
+            semantics
+                .implementation_identities
+                .entry(method.identity.clone())
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(index));
             semantics
                 .implementation_graphs
                 .entry(method.graph_key)
@@ -814,6 +823,7 @@ mod tests {
             returned_callables: None,
             callable_graph_key: None,
             callable_values: vec![],
+            object_values: vec![],
             default_handler_effects: None,
             package: Some("company-agents@1.0.0#company.agents".to_owned()),
             import_root: Some("company.agents".to_owned()),

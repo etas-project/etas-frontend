@@ -112,7 +112,9 @@ impl ProjectMetadataProjection<'_> {
                         }
                         etas_effects::ExternalSpecMethodGenericArgument::EffectRow(row) => {
                             SpecMethodGenericArgument::EffectRow(captured.effect_row(
-                                metadata_effect_row_ref(row, &self.checked.type_store)?,
+                                metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
+                                    self.checked_spec_path(spec)
+                                })?,
                             )?)
                         }
                     })
@@ -127,40 +129,58 @@ impl ProjectMetadataProjection<'_> {
         call: etas_hir::HirExprId,
         environment: CallableEnvironmentId,
     ) -> Result<SpecMethodInvocation, PackageMetadataError> {
-        let Some(etas_hir::HirExpr::SpecMethodCall {
-            receiver,
-            spec_path,
-            spec_args,
-            method,
-            args,
-            ..
-        }) = self.checked.hir.exprs.get(call)
-        else {
-            return Err(invalid(
-                "method evidence has no checked selection expression",
-            ));
-        };
-        let etas_hir::ResolveResult::Resolved(symbol) = spec_path.resolution else {
-            return Err(invalid("method evidence has no resolved spec identity"));
-        };
-        let symbol = self
-            .checked
-            .hir
-            .canonical_source_symbol(symbol)
-            .ok_or_else(|| invalid("method evidence has no canonical spec symbol"))?;
-        let spec = self
-            .symbol_canonical_path(symbol)
-            .ok_or_else(|| invalid("method evidence spec has no exportable identity"))?;
-        let declaration = self
+        let fact = self
             .checked
             .types
-            .spec_signatures
-            .get(&symbol)
-            .and_then(|spec| {
-                spec.methods
-                    .iter()
-                    .find(|candidate| candidate.name == *method)
-            })
+            .checked_method_calls
+            .get(&call)
+            .ok_or_else(|| invalid("method evidence has no checked call fact"))?;
+        let etas_types::method::MethodTarget::BoundSpec { spec, member, .. } = &fact.target else {
+            return Err(invalid(
+                "method evidence has no checked bound witness recipe",
+            ));
+        };
+        let etas_types::method::MethodEvidence::Bound {
+            args: spec_args, ..
+        } = &fact.evidence
+        else {
+            return Err(invalid("method evidence has no checked spec arguments"));
+        };
+        let (spec, methods) = match spec {
+            etas_types::CheckedSpecRef::Source(symbol) => {
+                let symbol = self
+                    .checked
+                    .hir
+                    .canonical_source_symbol(*symbol)
+                    .ok_or_else(|| invalid("method evidence has no canonical spec symbol"))?;
+                let path = self
+                    .symbol_canonical_path(symbol)
+                    .ok_or_else(|| invalid("method evidence spec has no exportable identity"))?;
+                let declaration = self
+                    .checked
+                    .types
+                    .spec_signatures
+                    .get(&symbol)
+                    .ok_or_else(|| invalid("method evidence spec declaration is missing"))?;
+                (path, &declaration.methods)
+            }
+            etas_types::CheckedSpecRef::External(identity) => {
+                let declaration = self
+                    .checked
+                    .types
+                    .external_specs
+                    .signatures
+                    .get(identity)
+                    .ok_or_else(|| {
+                        invalid("method evidence external spec declaration is missing")
+                    })?;
+                (identity.path.clone(), &declaration.methods)
+            }
+            _ => return Err(invalid("method evidence has no portable spec identity")),
+        };
+        let declaration = methods
+            .iter()
+            .find(|candidate| candidate.identity == *member)
             .ok_or_else(|| invalid("method evidence has no checked method declaration"))?;
         let signature = declaration
             .signature_in(&self.checked.types)
@@ -196,30 +216,17 @@ impl ProjectMetadataProjection<'_> {
             .ok_or_else(|| invalid("method evidence has no checked binding environment"))?;
         let builder = Builder::new(self, snapshot.owner);
         let captured = builder.captured_projection(lexical_owner, parameters, environment)?;
-        let receiver = *self
-            .checked
-            .types
-            .expr_types
-            .get(receiver)
-            .ok_or_else(|| invalid("method evidence receiver has no checked type"))?;
+        let receiver = fact.receiver_type;
         let spec_args = spec_args
             .iter()
-            .map(|ty| {
-                let ty =
-                    *self.checked.types.type_refs.get(ty).ok_or_else(|| {
-                        invalid("method evidence spec argument has no checked type")
-                    })?;
-                captured.metadata_type(self, ty)
-            })
+            .map(|ty| captured.metadata_type(self, *ty))
             .collect::<Result<_, _>>()?;
-        let arguments = self.checked.types.generic_instantiations.get(&call);
+        let arguments = &fact.instantiation;
         let mut generic_arguments = Vec::new();
         for (position, parameter) in signature.generic_params.iter().enumerate() {
             if Some(position as u32) == declaration.receiver_param {
                 continue;
             }
-            let arguments = arguments
-                .ok_or_else(|| invalid("method evidence generic arguments are missing"))?;
             generic_arguments.push(match parameter.kind {
                 etas_types::CallableGenericParamKind::Type => {
                     let ty = *arguments
@@ -237,7 +244,9 @@ impl ProjectMetadataProjection<'_> {
                         .find(|(name, _)| name == &parameter.name)
                         .map(|(_, row)| row)
                         .ok_or_else(|| invalid("method evidence effect argument is not solved"))?;
-                    let row = metadata_effect_row_ref(row, &self.checked.type_store)?;
+                    let row = metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
+                        self.checked_spec_path(spec)
+                    })?;
                     SpecMethodGenericArgument::EffectRow(captured.effect_row(row)?)
                 }
             });
@@ -247,8 +256,8 @@ impl ProjectMetadataProjection<'_> {
             receiver: captured.metadata_type(self, receiver)?,
             spec,
             spec_args,
-            method: method.clone(),
-            arity: u32::try_from(args.len() + 1)
+            method: declaration.name.clone(),
+            arity: u32::try_from(fact.signature.params.len())
                 .map_err(|_| invalid("method arity exceeds u32"))?,
             generic_arguments,
             callable_arguments,

@@ -38,6 +38,9 @@ pub(super) fn validate_bindings<E>(
                 continue;
             }
             match store.get(ty) {
+                Some(crate::Type::Existential { bounds }) => {
+                    pending.extend(bounds.iter().flat_map(|bound| bound.args.iter().copied()));
+                }
                 Some(crate::Type::Var(var)) => {
                     let mut current = *var;
                     let mut chain = std::collections::HashSet::new();

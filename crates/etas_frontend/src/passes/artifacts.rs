@@ -26,6 +26,8 @@ pub(crate) const CALLABLE_OUTPUT_FACTS: ArtifactKey =
 pub(crate) const TYPE_ENVIRONMENT: ArtifactKey = ArtifactKey::new("frontend", "type_environment");
 pub(crate) const PREPARED_EFFECT_REGISTRY: ArtifactKey =
     ArtifactKey::new("frontend", "prepared_effect_registry");
+pub(crate) const BOUND_METHOD_ORIGINS: ArtifactKey =
+    ArtifactKey::new("frontend", "bound_method_origins");
 pub(crate) const TOP_LEVEL_LET_FACTS: ArtifactKey =
     ArtifactKey::new("frontend", "top_level_let_facts");
 pub(crate) const VALIDATED_ITEM_ANNOTATIONS: ArtifactKey =

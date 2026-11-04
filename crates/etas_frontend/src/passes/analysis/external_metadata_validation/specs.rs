@@ -140,6 +140,7 @@ mod tests {
             trace_specs: vec![],
             spec_signatures: specs,
             spec_impls: vec![],
+            methods: Vec::new(),
             type_spec_satisfactions: vec![],
             callable_spec_satisfactions: vec![],
             trace_spec_conformances: vec![],

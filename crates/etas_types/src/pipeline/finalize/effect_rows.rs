@@ -88,6 +88,8 @@ pub fn materialize_effect_row_instantiations(
     }
     let mut interner = crate::TypeInterner::from_store(output.store.as_ref().clone());
     let mut source_types = HashMap::new();
+    let mut method_calls = HashMap::new();
+    let mut std_calls = HashMap::new();
     let names = HashMap::new();
     for patch in patches {
         let rows = patch.bindings.iter().cloned().collect::<HashMap<_, _>>();
@@ -121,11 +123,56 @@ pub fn materialize_effect_row_instantiations(
                 ));
             }
         }
+        if let Some(method) = output.facts.checked_method_calls.get(&patch.call) {
+            let mut method = method.clone();
+            for (name, row) in &patch.bindings {
+                if !method
+                    .instantiation
+                    .effect_row_bindings
+                    .iter()
+                    .any(|(existing, _)| existing == name)
+                {
+                    method
+                        .instantiation
+                        .effect_row_bindings
+                        .push((name.clone(), row.clone()));
+                }
+            }
+            method.instantiation.deferred_effect_row_obligations.clear();
+            let declaration = output
+                .facts
+                .methods
+                .declaration(&method.target, &method.evidence)
+                .ok_or(EffectRowMaterializationError {
+                    call: patch.call,
+                    reason: "checked method has no unique declaration for its solved rows",
+                })?;
+            method.signature =
+                crate::method::instantiate::signature(&mut interner, declaration, &method)
+                    .map_err(|_| EffectRowMaterializationError {
+                        call: patch.call,
+                        reason: "checked method ABI could not materialize its solved effect rows",
+                    })?;
+            source_types.insert(patch.call, method.signature.output);
+            if let Some(fact) = output.facts.std_intrinsic_calls.get(&patch.call) {
+                let mut fact = fact.clone();
+                fact.signature = method.signature.clone();
+                fact.callable_type = interner.intern(crate::Type::Function(crate::FlowType {
+                    input: fact.signature.params.clone(),
+                    output: fact.signature.output,
+                    effects: fact.signature.effects.clone(),
+                }));
+                std_calls.insert(patch.call, fact);
+            }
+            method_calls.insert(patch.call, method);
+        }
     }
     // Validate the whole batch before publishing any completed checked facts.
     output.store = Arc::new(interner.into_store());
     let facts = Arc::make_mut(&mut output.facts);
     facts.expr_types.extend(source_types);
+    facts.checked_method_calls.extend(method_calls);
+    facts.std_intrinsic_calls.extend(std_calls);
     for patch in patches {
         let fact = facts.generic_instantiations.get_mut(&patch.call).ok_or(
             EffectRowMaterializationError {

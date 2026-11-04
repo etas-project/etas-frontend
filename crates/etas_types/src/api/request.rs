@@ -20,6 +20,7 @@ pub struct CheckBodyRequest<'a> {
 
 pub struct SignaturePipelineInput<'a> {
     pub program: &'a HirProgram,
+    pub view: Option<etas_hir::HirTreeView<'a>>,
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub source: SourceSignatureInput,
     pub std: StdSignatureInput,
@@ -39,6 +40,7 @@ impl<'a> SignaturePipelineInput<'a> {
     pub fn new(program: &'a HirProgram) -> Self {
         Self {
             program,
+            view: None,
             std_registry: Arc::new(etas_std::standard_registry()),
             source: SourceSignatureInput::default(),
             std: StdSignatureInput::default(),
@@ -126,6 +128,7 @@ pub struct ExternalPublicMetadataInput {
     pub trace_specs: Vec<ExternalNamedSignatureInput>,
     pub spec_signatures: Vec<ExternalSpecSignatureInput>,
     pub spec_impls: Vec<ExternalSpecImplInput>,
+    pub methods: Vec<ExternalMethodInput>,
     pub type_spec_satisfactions: Vec<ExternalTypeSpecSatisfactionInput>,
     pub callable_spec_satisfactions: Vec<ExternalCallableSpecSatisfactionInput>,
     pub trace_spec_conformances: Vec<ExternalTraceSpecConformanceInput>,
@@ -143,6 +146,7 @@ pub struct ExternalNamedSignatureInput {
 pub struct ExternalFlowSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
+    pub param_names: Vec<String>,
     pub params: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: Option<ExternalEffectRowInput>,
@@ -230,13 +234,17 @@ pub struct ExternalSpecImplInput {
     pub self_type: ExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
-    pub methods: Vec<ExternalSpecImplMethodInput>,
+    pub methods: Vec<etas_code::MethodId>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ExternalSpecImplMethodInput {
+pub struct ExternalMethodInput {
     pub identity: etas_code::MethodId,
+    pub self_type: ExternalTypeInput,
+    pub receiver: crate::method::MethodReceiver,
+    pub owner_params: Vec<ExternalCallableGenericParamInput>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
+    pub parameter_names: Vec<Option<String>>,
     pub params: Vec<ExternalTypeInput>,
     pub output: ExternalTypeInput,
     pub effects: ExternalEffectRowInput,
@@ -309,6 +317,9 @@ pub struct ExternalRecordFieldInput {
 
 #[derive(Clone, Debug)]
 pub enum ExternalTypeInput {
+    Existential {
+        bounds: Vec<ExternalSpecBoundInput>,
+    },
     Primitive(String),
     Var(String),
     Named(Vec<String>),

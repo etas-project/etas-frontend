@@ -16,50 +16,47 @@ impl HirSemanticUnitCollector {
         let view = context.view();
         let mut units = Vec::new();
 
-        for module in view.modules() {
-            for item in module.items() {
-                match item.data() {
-                    HirItem::Flow(_) => {
-                        units.push(HirSemanticUnit::Item(item.id()));
+        for item in view.items() {
+            match item.data() {
+                HirItem::Flow(_) => {
+                    units.push(HirSemanticUnit::Item(item.id()));
+                }
+                HirItem::Agent(agent) => {
+                    if !matches!(agent.body, etas_hir::HirAgentBody::Source { .. }) {
+                        continue;
                     }
-                    HirItem::Agent(agent) => {
-                        if !matches!(agent.body, etas_hir::HirAgentBody::Source { .. }) {
-                            continue;
+                    units.push(HirSemanticUnit::Item(item.id()));
+                }
+                HirItem::Tool(tool) => {
+                    units.push(HirSemanticUnit::Item(item.id()));
+                    if !matches!(tool.body, HirToolBody::Source(_)) {
+                        continue;
+                    }
+                }
+                HirItem::TopLevelLet(_) => {
+                    units.push(HirSemanticUnit::TopLevelLet(item.id()));
+                }
+                _ => {}
+            }
+
+            for body in item.bodies() {
+                match body.id().kind {
+                    HirBodyKind::Lambda(expr) => {
+                        if let Some(body) = anonymous_flow_body(body) {
+                            units.push(HirSemanticUnit::AnonymousFlow {
+                                owner: item.id(),
+                                expr,
+                                body,
+                            });
                         }
-                        units.push(HirSemanticUnit::Item(item.id()));
                     }
-                    HirItem::Tool(tool) => {
-                        units.push(HirSemanticUnit::Item(item.id()));
-                        if !matches!(tool.body, HirToolBody::Source(_)) {
-                            continue;
-                        }
-                    }
-                    HirItem::TopLevelLet(_) => {
-                        units.push(HirSemanticUnit::TopLevelLet(item.id()));
+                    HirBodyKind::HandlerArm(arm) => {
+                        units.push(HirSemanticUnit::HandlerArm(arm));
                     }
                     _ => {}
                 }
-
-                for body in item.bodies() {
-                    match body.id().kind {
-                        HirBodyKind::Lambda(expr) => {
-                            if let Some(body) = anonymous_flow_body(body) {
-                                units.push(HirSemanticUnit::AnonymousFlow {
-                                    owner: item.id(),
-                                    expr,
-                                    body,
-                                });
-                            }
-                        }
-                        HirBodyKind::HandlerArm(arm) => {
-                            units.push(HirSemanticUnit::HandlerArm(arm));
-                        }
-                        _ => {}
-                    }
-                }
             }
         }
-
         units.sort();
         units.dedup();
         units

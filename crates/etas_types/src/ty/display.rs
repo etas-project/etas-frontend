@@ -2,6 +2,34 @@ use super::{PrimitiveType, Type, TypeId, TypeStore};
 
 pub fn display_type(store: &TypeStore, ty: TypeId) -> String {
     match store.get(ty) {
+        Some(Type::Existential { bounds }) => {
+            let bounds = bounds
+                .iter()
+                .map(|bound| {
+                    let name = match &bound.spec {
+                        crate::CheckedSpecRef::Source(symbol) => format!("spec#{}", symbol.0),
+                        crate::CheckedSpecRef::Std(path) => path.join("."),
+                        crate::CheckedSpecRef::External(identity) => identity.path.join("."),
+                        crate::CheckedSpecRef::Canonical(identity) => {
+                            identity.declaration().join(".")
+                        }
+                    };
+                    if bound.args.is_empty() {
+                        name
+                    } else {
+                        let args = bound
+                            .args
+                            .iter()
+                            .map(|arg| display_type(store, *arg))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{name}<{args}>")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" + ");
+            format!("? ~ {bounds}")
+        }
         Some(Type::Primitive(primitive)) => primitive.source_name().to_owned(),
         Some(Type::IntegerLiteral { .. }) => "i32".to_owned(),
         Some(Type::Var(var)) => format!("T{}", var.0),

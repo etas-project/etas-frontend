@@ -177,6 +177,14 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
 
     fn type_data(&mut self, ty: Type) -> Type {
         match ty {
+            Type::Existential { mut bounds } => {
+                for bound in &mut bounds {
+                    for arg in &mut bound.args {
+                        *arg = self.ty(*arg);
+                    }
+                }
+                Type::Existential { bounds }
+            }
             Type::Array(inner) => Type::Array(self.ty(inner)),
             Type::List(inner) => Type::List(self.ty(inner)),
             Type::Map { key, value } => Type::Map {
@@ -563,6 +571,27 @@ pub(crate) fn project_signature_facts(
 }
 
 fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '_>) {
+    let mut methods = facts.methods.entries().cloned().collect::<Vec<_>>();
+    if !methods.is_empty() {
+        for method in &mut methods {
+            method
+                .try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
+                .unwrap_or_else(|never| match never {});
+        }
+        facts.methods = std::sync::Arc::new(
+            facts
+                .methods
+                .with_remapped_types(remapper.target.store(), methods),
+        );
+    }
+    for fact in facts.checked_method_calls.values_mut() {
+        fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
+            .unwrap_or_else(|never| match never {});
+    }
+    for fact in facts.existential_packs.values_mut() {
+        fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
+            .unwrap_or_else(|never| match never {});
+    }
     for (_, target) in facts.external_type_aliases.values_mut() {
         *target = remapper.ty(*target);
     }
@@ -715,6 +744,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .filesystem_io_error
         .map(|ty| remapper.ty(ty));
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.message = facts.known_std_types.message.map(|ty| remapper.ty(ty));
     for ty in facts.known_std_types.runtime_types.values_mut() {
         *ty = remapper.ty(*ty);
     }
@@ -851,10 +881,20 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             *ty = remapper.ty(*ty);
         }
     }
-    for method in &mut facts.external_specs.methods {
+    for method in &mut facts.external_methods {
         method.self_type = remapper.ty(method.self_type);
-        for ty in &mut method.args {
-            *ty = remapper.ty(*ty);
+        for implementation in &mut method.implementations {
+            for ty in &mut implementation.args {
+                *ty = remapper.ty(*ty);
+            }
+        }
+        for parameter in &mut method.owner_params {
+            parameter.subject = remapper.ty(parameter.subject);
+            for bound in &mut parameter.bounds {
+                for ty in &mut bound.args {
+                    *ty = remapper.ty(*ty);
+                }
+            }
         }
         remapper.callable(&mut method.signature);
     }
@@ -959,6 +999,7 @@ mod tests {
                         path: vec!["dep".into(), "Show".into(), "show".into()],
                     },
                     name: "show".into(),
+                    parameter_names: vec!["self".into()],
                     signature: Some(CallableSignature {
                         generic_params: vec![],
                         params: vec![input],

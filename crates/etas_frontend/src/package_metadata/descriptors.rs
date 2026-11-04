@@ -11,17 +11,9 @@ use crate::{
 use etas_code::descriptor::{DefinitionDescriptorSet, DescriptorLimits};
 
 impl ProjectMetadataProjection<'_> {
-    pub(super) fn definition_descriptors(
+    pub(super) fn exported_definition_items(
         &self,
-        origins: &DefinitionOrigins,
-        identities: DefinitionIdentityIndex,
-    ) -> Result<DefinitionDescriptorSet, PackageMetadataError> {
-        let limits = DescriptorLimits {
-            max_nodes: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
-            max_edges: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
-            max_expansion_depth: etas_package_metadata::MAX_METADATA_GRAPH_DEPTH,
-            max_text_bytes: etas_package_metadata::MAX_METADATA_UNCOMPRESSED_SECTION_SIZE,
-        };
+    ) -> Result<BTreeSet<etas_hir::HirItemId>, PackageMetadataError> {
         let mut selection = BTreeSet::new();
         for (_, module) in self.checked.module_index.modules.iter() {
             if !matches!(module.origin, ModuleOrigin::Source) {
@@ -33,6 +25,21 @@ impl ProjectMetadataProjection<'_> {
                 }
             }
         }
+        Ok(selection)
+    }
+
+    pub(super) fn definition_descriptors(
+        &self,
+        origins: &DefinitionOrigins,
+        identities: DefinitionIdentityIndex,
+    ) -> Result<DefinitionDescriptorSet, PackageMetadataError> {
+        let limits = DescriptorLimits {
+            max_nodes: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+            max_edges: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+            max_expansion_depth: etas_package_metadata::MAX_METADATA_GRAPH_DEPTH,
+            max_text_bytes: etas_package_metadata::MAX_METADATA_UNCOMPRESSED_SECTION_SIZE,
+        };
+        let selection = self.exported_definition_items()?;
         let set = DefinitionCatalog::exported_descriptors(
             self.checked.clone(),
             origins,

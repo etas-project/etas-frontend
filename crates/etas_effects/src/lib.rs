@@ -41,9 +41,9 @@ pub use infer::{
     EffectSummary, EffectUnit, ExitTraceFact, FrontendRejectionReason, FrozenSourceLocation,
     HandlerGapEvidence, HostRequirementKind, HostRequirementSet, InterpreterFeatureKind,
     InterpreterOrchestrationRequirementSet, InterpreterSupport, MetadataCallableSource,
-    OutcomeAnalysisGap, ParameterArgumentValue, ParameterCallTarget, ParameterExitArgument,
-    ParameterExitFact, ParameterHandlerScopeRef, ParameterRequest, RequestInstantiationSummary,
-    ResidualCheckSet, ReturnObservation, RuntimeRequirementReason,
+    MetadataObjectSource, OutcomeAnalysisGap, ParameterArgumentValue, ParameterCallTarget,
+    ParameterExitArgument, ParameterExitFact, ParameterHandlerScopeRef, ParameterRequest,
+    RequestInstantiationSummary, ResidualCheckSet, ReturnObservation, RuntimeRequirementReason,
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
@@ -52,13 +52,14 @@ pub use pipeline::{
     ExternalCallableRequestTarget, ExternalCallableValueMetadata,
     ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
     ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
-    ExternalLatentFlowSummaryMetadata, ExternalParameterRequestMetadata,
-    ExternalRequestInstantiationMetadata, ExternalSpecImplementationMetadata,
-    ExternalSpecMethodCallableArgument, ExternalSpecMethodGenericArgument,
-    ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata,
-    ExternalTraceSpecEffectMetadata, ExternalTraceSpecEffectRowMetadata,
-    ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry, RunEffectPipeline,
-    TraceSpecPipelineAnalysis,
+    ExternalExistentialMemberMetadata, ExternalExistentialValueMetadata,
+    ExternalLatentFlowSummaryMetadata, ExternalMethodRequirements, ExternalMethodTraceRequirement,
+    ExternalParameterRequestMetadata, ExternalRequestInstantiationMetadata,
+    ExternalSpecImplementationMetadata, ExternalSpecMethodCallableArgument,
+    ExternalSpecMethodGenericArgument, ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind,
+    ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
+    ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry,
+    RunEffectPipeline, TraceSpecPipelineAnalysis,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{

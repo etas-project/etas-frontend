@@ -14,6 +14,7 @@ pub fn solve_field_access(
     field: &str,
     output: TypeId,
     origin: ConstraintOrigin,
+    substitutions: &crate::solver::Substitution,
 ) -> SolverReport {
     let mut report = SolverReport::default();
     let projected = projected_fields(store, known, base);
@@ -50,7 +51,7 @@ pub fn solve_field_access(
         });
         return report;
     };
-    let mut unifier = TypeUnifier::new(store);
+    let mut unifier = TypeUnifier::with_substitution(store, substitutions.clone());
     if unifier.unify(found.ty, output).is_ok() {
         report.substitutions.extend(unifier.substitution());
     } else if !is_assignable(store, found.ty, output) {
@@ -68,6 +69,22 @@ fn projected_fields(
     known: &crate::KnownStdTypes,
     base: TypeId,
 ) -> Result<Option<crate::RecordType>, crate::TypeSubstitutionError> {
+    if let Some(Type::Message(payload)) = store.get(base) {
+        let Some(owner) = known.message else {
+            return Ok(None);
+        };
+        let Some(Type::Nominal(declaration)) = store.get(owner) else {
+            return Err(crate::TypeSubstitutionError::InvalidApplication(owner));
+        };
+        let Some(mut fields) = record_fields(store, owner)? else {
+            return Ok(None);
+        };
+        let substitutions = declaration.params.iter().cloned().zip([*payload]).collect();
+        for field in &mut fields.fields {
+            field.ty = crate::substitute_named_params_in_store(store, field.ty, &substitutions)?;
+        }
+        return Ok(Some(fields));
+    }
     let Some(fields) = known.projected_field_templates(store, base) else {
         return Ok(None);
     };

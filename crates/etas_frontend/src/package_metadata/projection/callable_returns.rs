@@ -6,11 +6,63 @@ use etas_package_metadata::{
 };
 
 impl ProjectMetadataProjection<'_> {
+    fn callable_trace_parameters(
+        &self,
+        summary: &EffectSummary,
+    ) -> Result<BTreeSet<etas_effects::ParameterCallTarget>, PackageMetadataError> {
+        use etas_effects::{ParameterCallTarget as Target, facts::CallableValueOrigin as Origin};
+        let mut parameters = trace_parameters(&summary.action_trace);
+        let mut pending = parameters
+            .iter()
+            .filter_map(|parameter| match parameter {
+                Target::SpecMethod { environment, .. }
+                | Target::MetadataSpecMethod {
+                    environment: Some(environment),
+                    ..
+                } => Some(*environment),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(environment) = pending.pop() {
+            if !visited.insert(environment) {
+                continue;
+            }
+            let snapshot = self
+                .checked
+                .effects
+                .callable_environments
+                .get(&environment)
+                .ok_or_else(|| invalid("method capture has no checked parameter environment"))?;
+            for origin in snapshot.parameters.values().flatten() {
+                match origin {
+                    Origin::Parameter { symbol, .. } => {
+                        parameters.insert(Target::Native(*symbol));
+                    }
+                    Origin::Captured { environment, .. }
+                    | Origin::SpecMethod { environment, .. }
+                    | Origin::MetadataSpecMethod { environment, .. }
+                    | Origin::Existential { environment, .. } => pending.push(*environment),
+                    Origin::Metadata(source) => pending.extend(source.environment),
+                    Origin::MetadataObject(source) => pending.extend(source.environment),
+                    Origin::FrozenContract { environment, .. }
+                    | Origin::Reference { environment, .. }
+                    | Origin::StdReference { environment, .. } => pending.extend(environment),
+                    _ => {}
+                }
+            }
+        }
+        Ok(parameters)
+    }
+
     pub(in crate::package_metadata) fn implementation_callable_graph(
         &self,
         item: HirItemId,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<CallableValueGraph, PackageMetadataError> {
-        let mut builder = Builder::new(self, item);
+        let scoped = self.with_identities(identities);
+        let mut builder = Builder::new(&scoped, item);
+        builder.method_root = true;
         let roots = builder
             .sources(
                 &[CallableReturnSource::SourceItem(item)].into(),
@@ -28,9 +80,10 @@ impl ProjectMetadataProjection<'_> {
         &self,
         item: HirItemId,
         summary: &EffectSummary,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Option<CallableValueGraph>, PackageMetadataError> {
         Ok(self
-            .returned_callable_projection(item, summary)?
+            .returned_callable_projection(item, summary, identities)?
             .map(|projection| std::sync::Arc::unwrap_or_clone(projection.graph)))
     }
 
@@ -38,11 +91,13 @@ impl ProjectMetadataProjection<'_> {
         &self,
         item: HirItemId,
         summary: &EffectSummary,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Option<crate::package_metadata::CheckedCallableGraph>, PackageMetadataError> {
         let Some(sources) = sources(summary) else {
             return Ok(None);
         };
-        let mut builder = Builder::new(self, item);
+        let scoped = self.with_identities(identities);
+        let mut builder = Builder::new(&scoped, item);
         let Some(roots) = builder.sources(&sources, CallableValueScope::Root, None)? else {
             return Ok(None);
         };
@@ -55,7 +110,11 @@ impl<'a, 'b> Builder<'a, 'b> {
         Self {
             projection,
             root,
+            identities: projection.identities,
             values: vec![],
+            objects: vec![],
+            native_objects: BTreeMap::new(),
+            foreign_objects: BTreeMap::new(),
             origins: vec![],
             units: BTreeMap::new(),
             foreign: BTreeMap::new(),
@@ -72,6 +131,7 @@ impl<'a, 'b> Builder<'a, 'b> {
             )]
             .into(),
             parents: BTreeMap::new(),
+            method_root: false,
         }
     }
 
@@ -81,6 +141,20 @@ impl<'a, 'b> Builder<'a, 'b> {
     ) -> Result<Option<crate::package_metadata::CheckedCallableGraph>, PackageMetadataError> {
         while let Some(pending) = self.pending.pop() {
             let (index, node) = match pending {
+                Pending::ForeignObject(index, instance) => {
+                    let Some(object) = self.foreign_object_node(instance)? else {
+                        return Ok(None);
+                    };
+                    self.objects[index as usize] = Some(object);
+                    continue;
+                }
+                Pending::Object(index, instance) => {
+                    let Some(object) = self.object_node(instance)? else {
+                        return Ok(None);
+                    };
+                    self.objects[index as usize] = Some(object);
+                    continue;
+                }
                 Pending::Native(index, unit) => (index, self.node(index, unit)?),
                 Pending::Metadata(index, instance) => (index, self.foreign_node(index, instance)?),
                 Pending::Reference(index, reference) => {
@@ -95,6 +169,11 @@ impl<'a, 'b> Builder<'a, 'b> {
             self.values[index as usize] = Some(node);
         }
         let graph = CallableValueGraph {
+            objects: self
+                .objects
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| invalid("value evidence contains an unmaterialized object"))?,
             sources: roots,
             values: self
                 .values
@@ -122,7 +201,22 @@ struct ForeignInstance {
     root: CallableValueScope,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeObjectInstance {
+    pack: etas_hir::HirExprId,
+    environment: etas_effects::facts::CallableEnvironmentId,
+    scope: CallableValueScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ForeignObjectInstance {
+    source: etas_effects::MetadataObjectSource,
+    root: CallableValueScope,
+}
+
 enum Pending {
+    ForeignObject(u32, ForeignObjectInstance),
+    Object(u32, NativeObjectInstance),
     Native(u32, Instance),
     Metadata(u32, ForeignInstance),
     Reference(u32, etas_effects::CallableReturnReference),
@@ -131,7 +225,11 @@ enum Pending {
 struct Builder<'a, 'b> {
     projection: &'a ProjectMetadataProjection<'b>,
     root: HirItemId,
+    identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
     values: Vec<Option<CallableValueNode>>,
+    objects: Vec<Option<etas_package_metadata::ExistentialValueNode>>,
+    native_objects: BTreeMap<NativeObjectInstance, u32>,
+    foreign_objects: BTreeMap<ForeignObjectInstance, u32>,
     origins: Vec<crate::package_metadata::CallableGraphOrigin>,
     units: BTreeMap<Instance, u32>,
     foreign: BTreeMap<ForeignInstance, u32>,
@@ -139,6 +237,7 @@ struct Builder<'a, 'b> {
     pending: Vec<Pending>,
     parameters: BTreeMap<CallableValueScope, BTreeMap<etas_hir::SymbolId, u32>>,
     parents: BTreeMap<u32, CallableValueScope>,
+    method_root: bool,
 }
 
 impl Builder<'_, '_> {
@@ -271,6 +370,11 @@ impl Builder<'_, '_> {
                     Some(ItemSignature::Flow(signature) | ItemSignature::Tool(signature)) => {
                         signature
                     }
+                    Some(ItemSignature::Agent(signature)) => {
+                        signature.callable().ok_or_else(|| {
+                            invalid("published agent method has no checked callable signature")
+                        })?
+                    }
                     _ => return Ok(None),
                 };
                 (
@@ -335,7 +439,7 @@ impl Builder<'_, '_> {
             }
             None => None,
         };
-        let trace_parameters = trace_parameters(&summary.action_trace);
+        let trace_parameters = self.projection.callable_trace_parameters(summary)?;
         let mut parameter_bindings = vec![];
         let mut bound_parameters = BTreeSet::new();
         let mut trace_labels = BTreeMap::new();
@@ -379,6 +483,7 @@ impl Builder<'_, '_> {
             &type_names,
             &effect_names,
             &trace_labels,
+            self.method_root && index == 0,
         )?
         else {
             return Ok(None);
@@ -459,7 +564,9 @@ mod behavior;
 mod captured;
 mod evidence;
 mod foreign;
+mod foreign_objects;
 mod generics;
+mod objects;
 mod references;
 mod sources;
 mod summary;

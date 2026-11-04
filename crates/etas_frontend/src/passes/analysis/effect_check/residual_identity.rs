@@ -30,7 +30,7 @@ fn descriptor_error(error: etas_code::descriptor::DescriptorError) -> ResidualId
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct CheckedResidualIdentityInput<'a> {
+pub(in crate::passes::analysis) struct CheckedResidualIdentityInput<'a> {
     pub hir: &'a etas_hir::HirRevision,
     pub types: &'a etas_types::TypeOutput,
     pub std_registry: &'a etas_std::StdRegistry,
@@ -46,7 +46,7 @@ pub(super) struct CheckedResidualIdentityInput<'a> {
 }
 
 /// Session-local projection from checked facts, not installation evidence.
-pub(super) struct CheckedResidualIdentities<'a> {
+pub(in crate::passes::analysis) struct CheckedResidualIdentities<'a> {
     hir: &'a etas_hir::HirRevision,
     types: &'a etas_types::TypeOutput,
     std_registry: &'a etas_std::StdRegistry,
@@ -117,7 +117,7 @@ impl<'a> CheckedResidualIdentities<'a> {
         }
     }
 
-    fn index(
+    pub(in crate::passes::analysis) fn index(
         &self,
         registry: &etas_effects::EffectRegistry,
     ) -> Result<&DefinitionIdentityIndex, ResidualIdentityError> {

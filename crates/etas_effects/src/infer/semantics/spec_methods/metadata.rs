@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use etas_code::CodeFingerprint;
 use etas_core::Span;
 use etas_types::{
-    CallableGenericParamKind, GenericInstantiationFact, TypeId, TypeSubstitutionEngine, TypeUnifier,
+    CallableGenericParamKind, GenericInstantiationFact, TypeId, TypeSubstitutionEngine,
 };
 
 use crate::{
@@ -258,6 +258,20 @@ impl EffectSemantics<'_> {
         let mut origins = std::collections::BTreeSet::new();
         for source in &argument.sources.sources {
             match source {
+                CallableValueSource::Existential(object) => {
+                    argument
+                        .sources
+                        .objects
+                        .get(*object as usize)
+                        .ok_or_else(|| {
+                            invalid("metadata object argument has no checked value node")
+                        })?;
+                    origins.insert(LatentSource::MetadataObject(crate::MetadataObjectSource {
+                        graph,
+                        object: *object,
+                        environment: Some(id),
+                    }));
+                }
                 CallableValueSource::Parameter(parameter) => {
                     let values = captured
                         .parameters
@@ -266,7 +280,10 @@ impl EffectSemantics<'_> {
                             parameter: *parameter,
                         })
                         .ok_or_else(|| {
-                            invalid("metadata method callback has no checked argument binding")
+                            invalid(format!(
+                                "metadata method callback has no checked argument binding for {parameter:?}; available parameters: {:?}",
+                                bindings.keys().collect::<Vec<_>>()
+                            ))
                         })?;
                     origins.extend(values);
                 }
@@ -284,11 +301,8 @@ impl EffectSemantics<'_> {
                 }
             }
         }
-        if origins.is_empty() {
-            return Err(invalid(
-                "metadata method callback has no checked value sources",
-            ));
-        }
+        // A checked generic receiver may specialize to a non-callable value.
+        // Its explicit empty binding is distinct from a missing parameter above.
         Ok(origins)
     }
 
@@ -388,46 +402,16 @@ impl EffectSemantics<'_> {
         if actual.next().is_some() {
             return Err(invalid("metadata method has extra generic arguments"));
         }
-        let same = |left, right| {
-            let mut unifier = TypeUnifier::new(&self.types.store);
-            unifier.unify(left, right).is_ok() && unifier.substitution().iter().next().is_none()
-        };
-        let mut targets = self
+        let implementation = self
             .types
             .facts
-            .spec_impls
-            .iter()
-            .filter(|implementation| {
-                self.types
-                    .facts
-                    .external_specs
-                    .aliases
-                    .get(&implementation.spec_symbol)
-                    == Some(&method.spec)
-                    && same(implementation.self_type, receiver)
-                    && implementation.args.len() == spec_args.len()
-                    && implementation
-                        .args
-                        .iter()
-                        .zip(&spec_args)
-                        .all(|(left, right)| same(*left, *right))
-            })
-            .flat_map(|implementation| &implementation.methods)
-            .filter(|candidate| candidate.name == method.method)
-            .filter_map(
-                |candidate| match self.hir.symbols.get(candidate.symbol)?.def {
-                    etas_hir::SymbolDef::Item { item }
-                        if matches!(self.hir.items.get(item), Some(etas_hir::HirItem::Flow(_))) =>
-                    {
-                        Some(item)
-                    }
-                    _ => None,
-                },
-            )
-            .collect::<Vec<_>>();
-        targets.sort();
-        targets.dedup();
-        if let [item] = targets.as_slice() {
+            .methods
+            .witness(receiver, &spec_args, &fact.identity);
+        if let Some(etas_types::method::MethodSignatureFact {
+            target: etas_types::method::MethodTarget::Source { callable: item, .. },
+            ..
+        }) = implementation
+        {
             return self
                 .capture_spec_implementation(
                     *item,
@@ -439,14 +423,12 @@ impl EffectSemantics<'_> {
                 )
                 .map(super::MethodEvidence::Resolved);
         }
-        if targets.is_empty()
-            && let Some(implementation) = self.external_spec_method(
-                &etas_types::CheckedSpecRef::External(method.spec.clone()),
-                receiver,
-                &spec_args,
-                &method.method,
-            )?
-        {
+        if let Some(implementation) = implementation.filter(|method| {
+            matches!(
+                method.target,
+                etas_types::method::MethodTarget::External { .. }
+            )
+        }) {
             return self
                 .capture_external_spec_implementation(
                     implementation,
@@ -458,9 +440,7 @@ impl EffectSemantics<'_> {
                 )
                 .map(super::MethodEvidence::Resolved);
         }
-        if !targets.is_empty()
-            || !self.spec_method_has_lexical_parameter(snapshot.owner, receiver, &spec_args)?
-        {
+        if !self.spec_method_has_lexical_parameter(snapshot.owner, receiver, &spec_args)? {
             return Err(invalid(
                 "metadata method has no unique checked implementation",
             ));

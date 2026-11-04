@@ -18,7 +18,7 @@ use crate::{
 };
 
 pub(super) fn build_signature_pipeline_input<'a>(
-    context: &ProjectContext,
+    context: &'a ProjectContext,
     program: &'a etas_hir::HirProgram,
 ) -> Result<
     (etas_types::SignaturePipelineInput<'a>, Vec<Diagnostic>),
@@ -32,6 +32,7 @@ pub(super) fn build_signature_pipeline_input<'a>(
     let mut diagnostics = Vec::new();
     let input = etas_types::SignaturePipelineInput {
         program,
+        view: Some(hir.view()),
         std_registry: context.std_registry.clone(),
         source: source_signature_input(hir),
         std: std_signature_input(context, hir),
@@ -412,6 +413,11 @@ fn convert_external_metadata(
             .iter()
             .map(convert_external_spec_impl)
             .collect::<Result<_, _>>()?,
+        methods: metadata
+            .methods
+            .iter()
+            .map(impl_methods::signature)
+            .collect::<Result<_, _>>()?,
         type_spec_satisfactions: metadata
             .type_spec_satisfactions
             .iter()
@@ -492,11 +498,7 @@ fn convert_external_spec_impl(
             .iter()
             .map(convert_external_type)
             .collect(),
-        methods: implementation
-            .methods
-            .iter()
-            .map(impl_methods::signature)
-            .collect::<Result<_, _>>()?,
+        methods: implementation.methods.clone(),
     })
 }
 
@@ -558,6 +560,7 @@ fn convert_external_flow_signature(
     etas_types::ExternalFlowSignatureInput {
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
+        param_names: signature.param_names.clone(),
         params: signature.params.iter().map(convert_external_type).collect(),
         output: convert_external_type(&signature.output),
         effects: signature.effects.as_ref().map(convert_external_effect_row),
@@ -705,6 +708,17 @@ pub(super) fn convert_external_type(
     ty: &ProjectExternalTypeInput,
 ) -> etas_types::ExternalTypeInput {
     match ty {
+        ProjectExternalTypeInput::Existential { bounds } => {
+            etas_types::ExternalTypeInput::Existential {
+                bounds: bounds
+                    .iter()
+                    .map(|bound| etas_types::ExternalSpecBoundInput {
+                        spec: bound.spec.clone(),
+                        args: bound.args.iter().map(convert_external_type).collect(),
+                    })
+                    .collect(),
+            }
+        }
         ProjectExternalTypeInput::Primitive(name) => {
             etas_types::ExternalTypeInput::Primitive(name.clone())
         }

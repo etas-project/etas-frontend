@@ -153,6 +153,11 @@ fn walk_with_mode<'view, 'hir, V>(
                 stack.push(WalkFrame::ExitItem(item_id));
                 push_reversed(
                     &mut stack,
+                    item.children()
+                        .map(|child| WalkFrame::EnterItem(child.id())),
+                );
+                push_reversed(
+                    &mut stack,
                     item.bodies().map(|body| WalkFrame::EnterBody(body.id())),
                 );
             }

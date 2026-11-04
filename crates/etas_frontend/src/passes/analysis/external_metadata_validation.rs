@@ -24,6 +24,7 @@ mod scope_tests;
 mod source_origin_tests;
 
 mod dependencies;
+mod method_table;
 mod origins;
 mod requests;
 mod specs;
@@ -500,6 +501,7 @@ fn validate_external_environment(
     )?;
     validate_trace_spec_identities(environment, &packages)?;
     specs::validate(environment)?;
+    method_table::validate(environment)?;
     validate_dependency_effect_metadata(environment, &packages, &effect_paths, &action_paths)?;
     validate_tool_bindings(environment, &packages, &tool_paths)?;
     if let Some(metadata) = environment
@@ -1430,29 +1432,27 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
             }
         }
     }
-    let mut methods =
-        std::collections::BTreeMap::<_, &etas_package_metadata::SpecImplMethod>::new();
+    let mut methods = std::collections::BTreeMap::new();
+    for method in &metadata.methods {
+        if methods.insert(&method.identity, method).is_some() {
+            return Err("published method identity is duplicated".into());
+        }
+        method.validate().map_err(|error| error.to_string())?;
+        etas_package_metadata::validate_callable_value_graph(&method.callable)
+            .map_err(|error| error.to_string())?;
+    }
     for implementation in &metadata.spec_impls {
         validate_path(&implementation.spec, "spec implementation path")?;
         validate_type(&implementation.self_type, &GenericScope::default(), true)?;
         validate_types(&implementation.args, &GenericScope::default(), true)?;
         let mut identities = BTreeSet::new();
-        for method in &implementation.methods {
-            if !identities.insert(&method.identity) {
+        for identity in &implementation.methods {
+            if !identities.insert(identity) {
                 return Err("spec implementation contains duplicate method identities".into());
             }
-            if let Some(previous) = methods.insert(&method.identity, method)
-                && previous.callable != method.callable
-            {
-                return Err("method identity has conflicting published behavior graphs".into());
+            if !methods.contains_key(identity) {
+                return Err("spec implementation refers to an unpublished method".into());
             }
-            method.root().map_err(|error| error.to_string())?;
-            etas_package_metadata::validate_callable_value_graph(&method.callable)
-                .map_err(|error| error.to_string())?;
-            method
-                .callable
-                .validate_references(Some((0, &[])))
-                .map_err(|error| error.to_string())?;
         }
     }
     for satisfaction in &metadata.type_spec_satisfactions {
@@ -1481,7 +1481,7 @@ fn validate_contract_target(
     target: &etas_package_metadata::CallableContractTarget,
     methods: &std::collections::BTreeMap<
         &etas_code::MethodId,
-        &etas_package_metadata::SpecImplMethod,
+        &etas_package_metadata::PublishedMethod,
     >,
 ) -> Result<(), String> {
     match target {
@@ -1978,6 +1978,16 @@ fn validate_type_semantics(
     allow_unbound_vars: bool,
 ) -> Result<(), String> {
     match ty {
+        ProjectExternalTypeInput::Existential { bounds } => {
+            if bounds.is_empty() {
+                return Err("existential type requires at least one spec bound".into());
+            }
+            for bound in bounds {
+                validate_path(&bound.spec, "existential spec path")?;
+                validate_types_semantics(&bound.args, scope, allow_unbound_vars)?;
+            }
+            Ok(())
+        }
         ProjectExternalTypeInput::Primitive(name) => {
             validate_name(name, "primitive name")?;
             if !etas_types::lower::external::is_valid_external_primitive(name) {
@@ -2220,6 +2230,26 @@ fn validate_type_resource_bounds_with_budget(
         let next = depth + 1;
         match node {
             TypeGraphNode::Type(ty) => match ty {
+                ProjectExternalTypeInput::Existential { bounds } => {
+                    for bound in bounds {
+                        *nodes = nodes
+                            .checked_add(1)
+                            .ok_or("external metadata node count overflow")?;
+                        if *nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+                            return Err(
+                                "external metadata type graph exceeds maximum node count".into()
+                            );
+                        }
+                        for arg in &bound.args {
+                            push_type_graph_node(
+                                &mut stack,
+                                TypeGraphNode::Type(arg),
+                                next + 1,
+                                *nodes,
+                            )?;
+                        }
+                    }
+                }
                 ProjectExternalTypeInput::Applied { args, .. }
                 | ProjectExternalTypeInput::Tuple(args)
                 | ProjectExternalTypeInput::ResourceHandle { args, .. } => {

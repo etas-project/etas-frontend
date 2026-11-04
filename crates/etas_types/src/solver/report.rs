@@ -7,12 +7,15 @@ use crate::{CheckedIndexKind, CheckedSliceKind, TypeId, solver::unification::Sub
 
 #[derive(Clone, Debug, Default)]
 pub struct SolverReport {
+    pub existential_packs:
+        HashMap<HirExprId, crate::facts::existentials::CheckedExistentialPackFact>,
     pub substitutions: Substitution,
     pub named_substitutions: HashMap<String, TypeId>,
     pub inferred_expr_types: HashMap<HirExprId, TypeId>,
     pub reflections: HashMap<HirExprId, crate::CheckedReflectionFact>,
     pub agent_inferences: HashMap<HirExprId, crate::CheckedAgentInferenceFact>,
     pub agent_method_calls: HashMap<HirExprId, etas_hir::SymbolId>,
+    pub checked_method_calls: HashMap<HirExprId, crate::facts::CheckedMethodCallFact>,
     pub std_intrinsic_calls: HashMap<HirExprId, crate::facts::CheckedStdCallFact>,
     pub action_calls: HashMap<HirExprId, crate::facts::CheckedActionCallFact>,
     pub generic_instantiations: HashMap<HirExprId, crate::GenericInstantiationFact>,
@@ -32,6 +35,7 @@ impl SolverReport {
     }
 
     pub fn append(&mut self, other: SolverReport) {
+        self.existential_packs.extend(other.existential_packs);
         self.substitutions.extend(&other.substitutions);
         self.named_substitutions.extend(other.named_substitutions);
         for (expr, ty) in other.inferred_expr_types {
@@ -45,6 +49,7 @@ impl SolverReport {
         self.reflections.extend(other.reflections);
         self.agent_inferences.extend(other.agent_inferences);
         self.agent_method_calls.extend(other.agent_method_calls);
+        self.checked_method_calls.extend(other.checked_method_calls);
         self.std_intrinsic_calls.extend(other.std_intrinsic_calls);
         self.action_calls.extend(other.action_calls);
         self.index_facts.extend(other.index_facts);

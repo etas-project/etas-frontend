@@ -11,7 +11,7 @@ mod resolution;
 mod source;
 
 pub use analysis::{
-    AnalyzeLoopProgressPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
+    AnalyzeLoopProgressPass, BindMethodOriginsPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
     InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
     PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
     RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,

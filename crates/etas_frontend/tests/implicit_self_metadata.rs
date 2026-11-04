@@ -5,8 +5,14 @@ fn source_generic_spec_method_evidence_survives_real_metadata_projection_and_bin
     let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
         r#"
 module api;
-public spec Encoder { flow encode(self) -> i32; }
+public spec Encoder {
+    flow encode(self) -> i32;
+    flow encode_with(self, amount: i32) -> i32;
+}
 public flow encode<T ~ Encoder>(value: T) -> i32 { return value::Encoder.encode(); }
+public flow captured<T ~ Encoder>(value: T) -> (() -> i32 ![]) ![] {
+    return () => value::Encoder.encode();
+}
 flow main() -> unit { return; }
 "#,
     )));
@@ -26,6 +32,21 @@ flow main() -> unit { return; }
         &artifact.bytes,
     )
     .expect("binary evidence replay");
+    let declaration = &metadata.public_metadata.spec_signatures[0];
+    for (name, parameters) in [
+        ("encode", vec!["self"]),
+        ("encode_with", vec!["self", "amount"]),
+    ] {
+        let signature = declaration
+            .methods
+            .iter()
+            .find(|method| method.name == name)
+            .unwrap()
+            .signature
+            .as_ref()
+            .unwrap();
+        assert_eq!(signature.param_names, parameters);
+    }
     let summary = metadata
         .public_metadata
         .effect_summaries
@@ -48,7 +69,18 @@ flow main() -> unit { return; }
     assert_eq!(method.receiver.kind, etas_package_metadata::TypeKind::Var);
     assert_eq!(method.receiver.name, "T");
     assert!(method.generic_arguments.is_empty());
-    assert!(method.callable_arguments.is_empty());
+    assert_eq!(method.callable_arguments.len(), 1);
+    assert_eq!(method.callable_arguments[0].position, 0);
+    assert_eq!(
+        method.callable_arguments[0].sources.sources,
+        [etas_package_metadata::CallableValueSource::Parameter(
+            etas_package_metadata::CallableValueParameter {
+                scope: etas_package_metadata::CallableValueScope::Root,
+                position: 0,
+            },
+        )],
+    );
+    assert!(method.callable_arguments[0].sources.values.is_empty());
     let requests = summary
         .handler_requests
         .as_ref()
@@ -56,4 +88,25 @@ flow main() -> unit { return; }
     assert!(requests.actions.is_empty());
     assert_eq!(requests.parameters.len(), 1);
     assert_eq!(&requests.parameters[0].parameter, parameter);
+    let graph = metadata
+        .public_metadata
+        .effect_summaries
+        .iter()
+        .find(|summary| summary.item == ["api", "captured"])
+        .and_then(|summary| summary.returned_callables.as_ref())
+        .expect("returned method keeps its lexical receiver binding");
+    assert!(
+        graph
+            .values
+            .iter()
+            .any(|node| node
+                .parameter_bindings
+                .iter()
+                .any(|binding| binding.parameter
+                    == etas_package_metadata::CallableValueParameter {
+                        scope: etas_package_metadata::CallableValueScope::Root,
+                        position: 0,
+                    })),
+        "method receiver capture was omitted from the lexical interface: {graph:?}"
+    );
 }

@@ -811,6 +811,22 @@ impl AstDump for ast::Param {
 impl AstDump for TypeExpr {
     fn dump(&self, f: &mut AstDumpWriter) {
         match self {
+            Self::Existential { bounds, span } => {
+                f.node("ExistentialType", *span, Vec::new(), |f| {
+                    for bound in bounds {
+                        f.node(
+                            "SpecBound",
+                            bound.span,
+                            vec![format!("path={}", path_text(&bound.path))],
+                            |f| {
+                                for arg in &bound.args {
+                                    arg.dump(f);
+                                }
+                            },
+                        );
+                    }
+                });
+            }
             Self::Handler(handler) => handler.dump(f),
             Self::Arrow {
                 effect,

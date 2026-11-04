@@ -257,6 +257,35 @@ pub fn lower_external_type(
     ty: &crate::ExternalTypeInput,
 ) -> TypeId {
     match ty {
+        crate::ExternalTypeInput::Existential { bounds } => {
+            let bounds = bounds
+                .iter()
+                .map(|bound| {
+                    let spec =
+                        spec_ref::resolve_external_spec_path(ctx, &bound.spec, bound.args.len());
+                    match spec {
+                        Ok(spec) => Some(crate::CheckedSpecBound {
+                            spec,
+                            args: bound
+                                .args
+                                .iter()
+                                .map(|arg| lower_external_type(ctx, span, arg))
+                                .collect(),
+                        }),
+                        Err(reason) => {
+                            invalid_external_metadata(ctx, span, reason);
+                            None
+                        }
+                    }
+                })
+                .collect::<Option<Vec<_>>>();
+            let Some(bounds) = bounds else {
+                return ctx.interner.primitive(PrimitiveType::Never);
+            };
+            let ty = ctx.interner.intern(Type::Existential { bounds });
+            ctx.existential_annotations.push((ty, span));
+            ty
+        }
         crate::ExternalTypeInput::Primitive(name) => primitive_from_name(ctx, span, name),
         crate::ExternalTypeInput::Var(name) => ctx.interner.intern(Type::Named(NamedTypeRef {
             source_parameter: None,

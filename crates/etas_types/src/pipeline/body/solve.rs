@@ -21,7 +21,20 @@ pub(super) fn run<E>(
             .values()
             .copied()
             .chain(state.provisional.stmt_types.values().copied())
-            .chain(state.provisional.pat_types.values().copied()),
+            .chain(state.provisional.pat_types.values().copied())
+            .chain(
+                state
+                    .constraints
+                    .iter()
+                    .flat_map(|constraint| match constraint {
+                        crate::TypeConstraint::MethodCall { candidates, .. }
+                        | crate::TypeConstraint::OverloadedCall { candidates, .. } => {
+                            candidates.as_slice()
+                        }
+                        _ => &[],
+                    })
+                    .map(|candidate| candidate.ty),
+            ),
     ) {
         state.solver_report.push(crate::solver::SolverFailure {
             code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,

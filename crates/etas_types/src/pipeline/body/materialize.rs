@@ -26,6 +26,14 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
+    if let Err(error) = methods::materialize(ctx, &mut state) {
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            ctx.hir.items[state.item].span(),
+            format!("checked method ABI instantiation failed: {error}"),
+        ));
+        return;
+    }
     let definition_operations = match reflection::materialize(ctx, &state) {
         Ok(facts) => facts,
         Err(error) => {
@@ -41,6 +49,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .provisional
         .expr_types
         .extend(state.solver_report.inferred_expr_types.clone());
+    for (expr, pack) in &state.solver_report.existential_packs {
+        state.provisional.expr_types.insert(*expr, pack.object_type);
+    }
     if let Err(error) = crate::ty::materialize_representations(
         &mut ctx.interner,
         state
@@ -79,6 +90,12 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .agent_method_calls
         .extend(state.solver_report.agent_method_calls);
+    ctx.signature_facts
+        .checked_method_calls
+        .extend(state.solver_report.checked_method_calls);
+    ctx.signature_facts
+        .existential_packs
+        .extend(state.solver_report.existential_packs);
     ctx.signature_facts
         .reflections
         .extend(state.solver_report.reflections);
@@ -138,6 +155,7 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .extend(state.provisional.item_signatures);
 }
 
+mod methods;
 mod reflection;
 
 fn materialize_callable_references(
@@ -353,6 +371,12 @@ fn apply_solver_substitutions(
                 )?;
             }
         }
+    }
+    for fact in state.solver_report.checked_method_calls.values_mut() {
+        fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
+    }
+    for fact in state.solver_report.existential_packs.values_mut() {
+        fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
     }
     Ok(())
 }

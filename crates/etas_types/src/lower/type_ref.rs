@@ -30,6 +30,12 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
         };
     }
     let lowered = match ctx.hir.types[ty].clone() {
+        HirType::Existential { bounds, span } => {
+            let bounds = super::existential::bounds(ctx, &bounds)?;
+            let ty = ctx.interner.intern(Type::Existential { bounds });
+            ctx.existential_annotations.push((ty, span));
+            ty
+        }
         HirType::Primitive { kind, .. } => ctx.interner.primitive(PrimitiveType::from_hir(kind)),
         HirType::Tuple { elems, .. } => {
             let elems = elems

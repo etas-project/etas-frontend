@@ -5,7 +5,7 @@ use crate::facts::{
     CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
 };
 use etas_package_metadata::{CallableValueScope, CallableValueSource};
-use etas_types::{CheckedSpecRef, GenericInstantiationFact, SpecMethodFact, TypeId, TypeUnifier};
+use etas_types::{GenericInstantiationFact, SpecMethodFact};
 
 fn invalid(reason: &str) -> EffectSpecializationError {
     EffectSpecializationError::InvalidCallableEnvironment {
@@ -14,106 +14,75 @@ fn invalid(reason: &str) -> EffectSpecializationError {
 }
 
 impl EffectSemantics<'_> {
-    pub(super) fn external_spec_method(
-        &self,
-        spec: &CheckedSpecRef,
-        receiver: TypeId,
-        args: &[TypeId],
-        name: &str,
-    ) -> Result<
-        Option<&etas_types::facts::specs::ExternalSpecImplMethodFact>,
-        EffectSpecializationError,
-    > {
-        let normalize = |spec: &CheckedSpecRef| match spec {
-            CheckedSpecRef::Source(symbol) => self
-                .types
-                .facts
-                .external_specs
-                .aliases
-                .get(symbol)
-                .cloned()
-                .map_or_else(|| spec.clone(), CheckedSpecRef::External),
-            _ => spec.clone(),
-        };
-        let spec = normalize(spec);
-        let same = |left, right| {
-            let mut unifier = TypeUnifier::new(&self.types.store);
-            unifier.unify(left, right).is_ok() && unifier.substitution().iter().next().is_none()
-        };
-        let mut methods = self
-            .types
-            .facts
-            .external_specs
-            .methods
-            .iter()
-            .filter(|method| {
-                normalize(&method.spec) == spec
-                    && method.identity.name() == name
-                    && same(method.self_type, receiver)
-                    && method.args.len() == args.len()
-                    && method
-                        .args
-                        .iter()
-                        .zip(args)
-                        .all(|(left, right)| same(*left, *right))
-            });
-        match (methods.next(), methods.next()) {
-            (None, _) => Ok(None),
-            (Some(method), None) => Ok(Some(method)),
-            _ => Err(invalid(
-                "external spec invocation has ambiguous checked implementation evidence",
-            )),
-        }
-    }
-
     pub(super) fn capture_external_spec_implementation(
         &self,
-        implementation: &etas_types::facts::specs::ExternalSpecImplMethodFact,
+        implementation: &etas_types::method::MethodSignatureFact,
         invocation: CallableEnvironmentId,
         snapshot: CallableEnvironment,
         declaration: &etas_types::CallableSignature,
         method: &SpecMethodFact,
         arguments: GenericInstantiationFact,
     ) -> Result<LatentSource, EffectSpecializationError> {
-        let mut graphs = self
-            .external_implementations
-            .iter()
-            .filter(|graph| graph.identity == implementation.identity);
-        let (Some(graph), None) = (graphs.next(), graphs.next()) else {
-            return Err(invalid(
-                "external method has no unique checked behavior graph",
-            ));
+        let etas_types::method::MethodTarget::External { identity } = &implementation.target else {
+            return Err(invalid("external method witness does not target metadata"));
         };
+        let arguments = method
+            .implementation_instantiation(declaration, &implementation.signature, &arguments)
+            .map_err(|reason| invalid(&reason))?;
+        self.capture_external_method(
+            identity,
+            &implementation.signature,
+            invocation,
+            snapshot,
+            (
+                arguments.type_bindings,
+                arguments
+                    .effect_row_bindings
+                    .iter()
+                    .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+                    .collect(),
+            ),
+        )
+    }
+
+    pub(super) fn capture_external_method(
+        &self,
+        identity: &etas_code::MethodId,
+        signature: &etas_types::CallableSignature,
+        invocation: CallableEnvironmentId,
+        snapshot: CallableEnvironment,
+        arguments: super::super::callable_generics::GenericSubstitutions,
+    ) -> Result<LatentSource, EffectSpecializationError> {
+        let graph = self
+            .implementation_identities
+            .get(identity)
+            .and_then(|index| *index)
+            .and_then(|index| self.external_implementations.get(index))
+            .ok_or_else(|| invalid("external method has no unique checked behavior graph"))?;
         let [CallableValueSource::Value(value)] = graph.graph.sources.as_slice() else {
             return Err(invalid(
                 "external implementation does not own its callable root",
             ));
         };
-        let signature = &implementation.signature;
-        let arguments = method
-            .implementation_instantiation(declaration, signature, &arguments)
-            .map_err(|reason| EffectSpecializationError::InvalidCallableEnvironment { reason })?;
         let scope = CallableValueScope::Value(*value);
         let mut generics = std::collections::BTreeMap::new();
         for (position, parameter) in signature.generic_params.iter().enumerate() {
             let value = match parameter.kind {
                 etas_types::CallableGenericParamKind::Type => CallableGenericValue::Type(
                     arguments
-                        .type_bindings
+                        .0
                         .iter()
                         .find(|(name, _)| name == &parameter.name)
                         .map(|(_, ty)| *ty)
                         .ok_or_else(|| invalid("external method type argument is missing"))?,
                 ),
                 etas_types::CallableGenericParamKind::Effect => CallableGenericValue::EffectRow(
-                    self.row_from_type_ref(
-                        arguments
-                            .effect_row_bindings
-                            .iter()
-                            .find(|(name, _)| name == &parameter.name)
-                            .map(|(_, row)| row)
-                            .ok_or_else(|| invalid("external method effect argument is missing"))?,
-                    ),
+                    arguments
+                        .1
+                        .iter()
+                        .find(|(name, _)| name == &parameter.name)
+                        .map(|(_, row)| row.clone())
+                        .ok_or_else(|| invalid("external method effect argument is missing"))?,
                 ),
             };
             generics.insert(

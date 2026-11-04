@@ -39,6 +39,7 @@ pub fn check_top_level_items(
 ) -> crate::TypeOutput {
     let mut ctx = TypePipelineContext {
         hir,
+        hir_view: None,
         std_registry,
         interner: crate::TypeInterner::from_store(std::sync::Arc::unwrap_or_clone(seed.store)),
         signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),
@@ -48,6 +49,7 @@ pub fn check_top_level_items(
         diagnostics: Vec::new(),
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
+        existential_annotations: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
         external_type_aliases: std::collections::HashMap::new(),
     };
@@ -138,6 +140,7 @@ fn infer_outputs_with_checkpoint<E>(
     checkpoint()?;
     let mut ctx = TypePipelineContext {
         hir,
+        hir_view: None,
         std_registry,
         interner: crate::TypeInterner::from_store(std::sync::Arc::unwrap_or_clone(seed.store)),
         signature_facts: std::sync::Arc::unwrap_or_clone(seed.facts),
@@ -147,6 +150,7 @@ fn infer_outputs_with_checkpoint<E>(
         diagnostics: seed.diagnostics,
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
+        existential_annotations: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
         external_type_aliases: std::collections::HashMap::new(),
     };
