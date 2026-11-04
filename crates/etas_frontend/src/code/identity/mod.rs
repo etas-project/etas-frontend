@@ -135,6 +135,67 @@ impl SourceModuleOrigin {
 }
 
 impl DefinitionOrigins {
+    fn virtual_std_module_origin(
+        hir: &etas_hir::HirProgram,
+        index: &crate::ModuleIndex,
+        module: HirModuleId,
+        standard_package: PackageKey,
+    ) -> Result<Option<SourceModuleOrigin>, ProjectionError> {
+        let data = hir
+            .modules_arena
+            .get(module)
+            .ok_or(ProjectionError::MissingModule(module))?;
+        let info = index
+            .by_source
+            .get(&data.span.source)
+            .and_then(|module| index.modules.get(*module))
+            .ok_or_else(|| {
+                ProjectionError::Invalid("checked source module has no project origin".into())
+            })?;
+        let crate::ModuleOrigin::VirtualStd {
+            module: declared,
+            source,
+        } = &info.origin
+        else {
+            return Ok(None);
+        };
+        let asset = etas_std::standard_library_source(*source);
+        if declared != &info.path
+            || !asset
+                .module_path
+                .iter()
+                .copied()
+                .eq(declared.segments.iter().map(String::as_str))
+            || module_path_in(hir, module)? != declared.segments
+        {
+            return Err(ProjectionError::Invalid(
+                "virtual standard source module differs from its typed catalog identity".into(),
+            ));
+        }
+        Ok(Some(SourceModuleOrigin::new(
+            standard_package,
+            declared.segments.clone(),
+        )?))
+    }
+
+    pub(crate) fn canonicalized_for_checked(
+        &self,
+        checked: &CheckedProgramData,
+    ) -> Result<Self, ProjectionError> {
+        let mut canonical = self.clone();
+        for module in &checked.hir.modules {
+            if let Some(origin) = Self::virtual_std_module_origin(
+                &checked.hir,
+                &checked.module_index,
+                *module,
+                self.standard_package,
+            )? {
+                canonical.source_modules.insert(*module, origin);
+            }
+        }
+        Ok(canonical)
+    }
+
     /// Derives source module identities from the validated owner bindings and
     /// immutable parsed sources, never from import aliases or filesystem paths.
     pub fn checked_source_modules(
@@ -146,6 +207,7 @@ impl DefinitionOrigins {
             checked.definition_sources.source_set(),
             checked.definition_sources.parsed_sources(),
             &checked.definition_environment,
+            standard_package_key(&checked.std_registry)?,
         )
     }
 
@@ -155,6 +217,7 @@ impl DefinitionOrigins {
         sources: &crate::SourceSet,
         parsed: &[crate::ParsedSource],
         validated: &crate::ValidatedExternalEnvironment,
+        standard_package: PackageKey,
     ) -> Result<HashMap<HirModuleId, SourceModuleOrigin>, ProjectionError> {
         let environment = validated.environment();
         let files: HashMap<_, _> = sources
@@ -173,6 +236,12 @@ impl DefinitionOrigins {
         }
         let mut modules = HashMap::new();
         for module in &hir.modules {
+            if let Some(origin) =
+                Self::virtual_std_module_origin(hir, index, *module, standard_package)?
+            {
+                modules.insert(*module, origin);
+                continue;
+            }
             let data = hir
                 .modules_arena
                 .get(*module)
@@ -291,11 +360,20 @@ impl DefinitionOrigins {
         checked: &CheckedProgramData,
         package: PackageKey,
     ) -> Result<HashMap<HirModuleId, SourceModuleOrigin>, ProjectionError> {
+        let standard_package = standard_package_key(&checked.std_registry)?;
         checked
             .hir
             .modules
             .iter()
             .map(|module| {
+                if let Some(origin) = Self::virtual_std_module_origin(
+                    &checked.hir,
+                    &checked.module_index,
+                    *module,
+                    standard_package,
+                )? {
+                    return Ok((*module, origin));
+                }
                 let data = checked
                     .modules_arena
                     .get(*module)
@@ -560,7 +638,8 @@ impl DefinitionIdentityIndex {
         origins: &DefinitionOrigins,
         limits: etas_code::descriptor::DescriptorLimits,
     ) -> Result<Self, ProjectionError> {
-        Self::from_input_with_limits(checked.into(), origins, limits)
+        let origins = origins.canonicalized_for_checked(checked)?;
+        Self::from_input_with_limits(checked.into(), &origins, limits)
     }
 
     pub(crate) fn from_input_with_limits(
@@ -1273,6 +1352,7 @@ mod source_identity_tests {
                 sources,
                 parsed,
                 &checked.definition_environment,
+                standard_package_key(&checked.std_registry).unwrap(),
             )
         };
         assert!(derive(sources, parsed).is_ok());

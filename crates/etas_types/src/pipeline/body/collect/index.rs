@@ -22,9 +22,6 @@ pub fn collect_index<E>(
         Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
             Some(inner)
         }
-        Some(Type::Primitive(crate::PrimitiveType::String)) => {
-            Some(ctx.primitive(crate::PrimitiveType::Char))
-        }
         Some(Type::Primitive(crate::PrimitiveType::Bytes)) => {
             Some(ctx.primitive(crate::PrimitiveType::U8))
         }

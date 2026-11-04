@@ -27,6 +27,8 @@ pub enum StaticStringCallSemantics {
 
 pub trait StaticStringOracle {
     fn call_semantics(&self, callee: HirExprId) -> Option<StaticStringCallSemantics>;
+
+    fn apply_transform(&self, value: String, transform: StaticStringTransform) -> String;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,7 +213,7 @@ impl<'a, O: StaticStringOracle> StaticStringEvaluator<'a, O> {
                                 })
                             });
                             let result =
-                                result.map(|value| apply_string_transform(value, transform));
+                                result.map(|value| self.oracle.apply_transform(value, transform));
                             (query, result)
                         }
                     };
@@ -436,13 +438,5 @@ enum QueryExpansion {
 fn arg_expr(arg: &HirArg) -> HirExprId {
     match arg {
         HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,
-    }
-}
-
-fn apply_string_transform(value: String, transform: StaticStringTransform) -> String {
-    match transform {
-        StaticStringTransform::Trim => value.trim().to_owned(),
-        StaticStringTransform::Lowercase => value.to_lowercase(),
-        StaticStringTransform::Uppercase => value.to_uppercase(),
     }
 }

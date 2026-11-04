@@ -760,6 +760,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .filesystem_io_error
         .map(|ty| remapper.ty(ty));
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.text_error = facts.known_std_types.text_error.map(|ty| remapper.ty(ty));
     facts.known_std_types.message = facts.known_std_types.message.map(|ty| remapper.ty(ty));
     for ty in facts.known_std_types.runtime_types.values_mut() {
         *ty = remapper.ty(*ty);
@@ -849,6 +850,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     for signature in facts.item_signatures.values_mut() {
         remapper.item_signature(signature);
+    }
+    for signature in facts.std_callable_signatures.values_mut() {
+        remapper.callable(signature);
     }
     for signature in facts.spec_signatures.values_mut() {
         remapper.spec_signature(signature);

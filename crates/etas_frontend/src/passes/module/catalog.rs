@@ -60,6 +60,10 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
                         module: module_id,
                     }
                 }
+                ModuleOrigin::VirtualStd { source, .. } => CatalogModuleOrigin::StdSource {
+                    module: module_id,
+                    source: *source,
+                },
                 _ => CatalogModuleOrigin::ProjectSource { module: module_id },
             };
             catalog.insert(module.path.clone(), origin, exports);

@@ -158,6 +158,9 @@ fn external_definition_origin_must_match_package_name_and_version() {
         version: "1.2.3".into(),
         edition: "2026".into(),
         import_root: "dep".into(),
+        std_compatibility: etas_std::standard_registry()
+            .version()
+            .compatibility_identity(),
     };
     let mut environment = ProjectEnvironmentInput::default();
     environment

@@ -21,6 +21,27 @@ impl StaticStringOracle for EffectStaticStringOracle<'_, '_> {
         }
         self.source_flow_semantics(callee)
     }
+
+    fn apply_transform(&self, value: String, transform: StaticStringTransform) -> String {
+        let transform = match transform {
+            StaticStringTransform::Trim => etas_builtin::text::transform::TextTransform::Trim,
+            StaticStringTransform::Lowercase => {
+                etas_builtin::text::transform::TextTransform::Lowercase
+            }
+            StaticStringTransform::Uppercase => {
+                etas_builtin::text::transform::TextTransform::Uppercase
+            }
+        };
+        match transform
+            .evaluate(&[value.as_str()])
+            .expect("checked unary static text transform")
+        {
+            etas_builtin::text::transform::TextOutput::String(value) => value.into_owned(),
+            etas_builtin::text::transform::TextOutput::Array(_) => {
+                unreachable!("unary static text transform returned a sequence")
+            }
+        }
+    }
 }
 
 impl EffectStaticStringOracle<'_, '_> {

@@ -138,6 +138,7 @@ impl<'a> CheckedResidualIdentities<'a> {
                             self.sources,
                             self.parsed,
                             self.environment,
+                            standard_package_key(self.std_registry).map_err(projection_error)?,
                         )
                         .map_err(projection_error)?,
                         standard_package: standard_package_key(self.std_registry)

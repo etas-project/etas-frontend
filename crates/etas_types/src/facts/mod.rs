@@ -95,6 +95,8 @@ pub struct TypeFacts {
     pub enum_layouts: HashMap<TypeId, EnumLayoutFact>,
     pub resource_handles: HashMap<SymbolId, ResourceHandleFact>,
     pub item_signatures: HashMap<HirItemId, ItemSignature>,
+    #[serde(default)]
+    pub std_callable_signatures: HashMap<etas_std::StdSymbolId, signatures::CallableSignature>,
     pub action_signatures: HashMap<SymbolId, EffectActionSignature>,
     #[serde(default)]
     pub qualified_action_signatures: HashMap<String, EffectActionSignature>,

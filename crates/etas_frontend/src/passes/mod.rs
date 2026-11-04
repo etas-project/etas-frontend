@@ -10,9 +10,11 @@ mod output;
 mod resolution;
 mod source;
 
+pub(crate) use analysis::CheckedStandardLibraryImplementations;
 pub use analysis::{
-    AnalyzeLoopProgressPass, BindMethodOriginsPass, BuildSignatureFactsPass, FinalizeTypeFactsPass,
-    InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
+    AnalyzeLoopProgressPass, BindMethodOriginsPass, BuildSignatureFactsPass,
+    CheckStandardLibraryImplementationsPass, FinalizeTypeFactsPass, InferCallableOutputsPass,
+    MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
     PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
     RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
@@ -39,4 +41,8 @@ pub use resolution::{
     ModuleResolution, ProjectModuleResolver, ProviderExport, ProviderExportTarget,
     ResolveImportTargetsPass, ResolvePathsPass,
 };
-pub use source::{BuildSourceSetPass, ParseSourceFilePass};
+pub(crate) use source::AdmittedStandardLibrarySource;
+pub use source::{
+    AdmitStandardLibrarySourcesPass, AdmittedStandardLibrarySources, BuildSourceSetPass,
+    ParseSourceFilePass,
+};

@@ -31,7 +31,10 @@ pub enum ModuleOrigin {
         package: ExternalPackageId,
         import_root: String,
     },
-    VirtualStd(ModulePath),
+    VirtualStd {
+        module: ModulePath,
+        source: etas_std::StdLibrarySourceId,
+    },
     External {
         module: ExternalModuleId,
         path: ModulePath,

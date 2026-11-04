@@ -169,6 +169,9 @@ fn source_package_identity_is_explicit_and_never_guessed_from_paths() {
         version: "1".into(),
         edition: "2026".into(),
         import_root: "dep".into(),
+        std_compatibility: etas_std::standard_registry()
+            .version()
+            .compatibility_identity(),
     });
     env.external_definition_origins
         .push(etas_frontend::ProjectExternalDefinitionOriginsInput {
@@ -371,6 +374,9 @@ fn external_environment() -> ProjectEnvironmentInput {
             version: "1.0.0".to_owned(),
             edition: "2026".to_owned(),
             import_root: "dep".to_owned(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         }],
         external_modules: vec![ProjectExternalModuleInput {
             package: Some(ExternalPackageId(0)),
@@ -2995,19 +3001,18 @@ flow main() -> i64 {
 #[test]
 fn frontend_disk_store_records_std_and_compiler_option_metadata() {
     let cache_root = unique_temp_path("etas_frontend_disk_metadata");
+    let source = SourceInput {
+        id: etas_core::SourceId(208),
+        path: None,
+        text: "flow main() -> unit { return; }".to_owned(),
+        kind: SourceKind::SingleFileInput,
+    };
     let store =
         FrontendDiskArtifactStore::open(&cache_root).expect("frontend disk store should open");
     let mut session =
         FrontendSession::<FrontendDiskArtifactStore>::with_store_factory(unused_disk_store_factory);
-    let project = session.open_project_with_store(
-        ProjectInput::single_source(SourceInput {
-            id: etas_core::SourceId(208),
-            path: None,
-            text: "flow main() -> unit { return; }".to_owned(),
-            kind: SourceKind::SingleFileInput,
-        }),
-        store,
-    );
+    let project =
+        session.open_project_with_store(ProjectInput::single_source(source.clone()), store);
 
     let response = session
         .check(project, CheckRequest::default())
@@ -3019,7 +3024,7 @@ fn frontend_disk_store_records_std_and_compiler_option_metadata() {
     );
     drop(session);
 
-    let store = FrontendDiskArtifactStore::open(&cache_root)
+    let mut store = FrontendDiskArtifactStore::open(&cache_root)
         .expect("frontend disk store should reopen for metadata inspection");
     let manifest_key =
         FrontendArtifactKey::project(FrontendArtifactKind::ArtifactManifest).to_cache_key();
@@ -3028,9 +3033,15 @@ fn frontend_disk_store_records_std_and_compiler_option_metadata() {
         .expect("artifact manifest metadata lookup should not fail")
         .expect("artifact manifest metadata should be persisted");
 
+    let expected_std_version = format!(
+        "etas_std:{}",
+        etas_std::standard_registry()
+            .version()
+            .compatibility_identity()
+    );
     assert_eq!(
         manifest_meta.std_version.as_deref(),
-        Some("etas_std:phase1")
+        Some(expected_std_version.as_str())
     );
     assert!(
         manifest_meta
@@ -3038,6 +3049,35 @@ fn frontend_disk_store_records_std_and_compiler_option_metadata() {
             .as_ref()
             .is_some_and(|hash| hash.len() == 64),
         "frontend artifact metadata should carry a concrete compiler option hash"
+    );
+
+    let mut stale_manifest = store
+        .get::<FrontendArtifactManifest>(&manifest_key)
+        .expect("artifact manifest lookup should succeed")
+        .expect("artifact manifest should be persisted");
+    stale_manifest.meta.std_version = Some("etas_std:phase1|old-text-contract".to_owned());
+    store
+        .put(stale_manifest)
+        .expect("stale compatibility fixture should be written");
+    drop(store);
+
+    let store =
+        FrontendDiskArtifactStore::open(&cache_root).expect("frontend disk store should reopen");
+    let mut session =
+        FrontendSession::<FrontendDiskArtifactStore>::with_store_factory(unused_disk_store_factory);
+    let project = session.open_project_with_store(ProjectInput::single_source(source), store);
+    let recompiled = session
+        .check(project, CheckRequest::default())
+        .expect("stale text compatibility should produce a clean cache miss");
+    assert!(
+        recompiled.output.checked.is_some(),
+        "{:?}",
+        recompiled.diagnostics.diagnostics
+    );
+    assert!(
+        recompiled.cache.reused_artifacts.is_empty(),
+        "stale text ABI artifacts must not be hydrated: {:?}",
+        recompiled.cache.reused_artifacts
     );
 
     std::fs::remove_dir_all(&cache_root).expect("disk cache temp directory should be removable");
@@ -3598,9 +3638,15 @@ fn frontend_disk_store_persists_item_signature_facts_but_not_project_signature_o
 
     assert_eq!(item_signature.value, original_signature);
     assert!(matches!(item_signature.value, ItemSignature::Flow(_)));
+    let expected_std_version = format!(
+        "etas_std:{}",
+        etas_std::standard_registry()
+            .version()
+            .compatibility_identity()
+    );
     assert_eq!(
         item_signature.meta.std_version.as_deref(),
-        Some("etas_std:phase1")
+        Some(expected_std_version.as_str())
     );
 
     std::fs::remove_dir_all(&cache_root).expect("disk cache temp directory should be removable");
@@ -4902,6 +4948,9 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             version: "1.0.0".to_owned(),
             edition: "2026".to_owned(),
             import_root: "dep".to_owned(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         }],
         external_modules: vec![ProjectExternalModuleInput {
             package: Some(ExternalPackageId(0)),
@@ -5507,6 +5556,9 @@ fn runtime_dep_package() -> ProjectExternalPackageInput {
         version: "1.0.0".to_owned(),
         edition: "2026".to_owned(),
         import_root: "dep".to_owned(),
+        std_compatibility: etas_std::standard_registry()
+            .version()
+            .compatibility_identity(),
     }
 }
 

@@ -14,6 +14,7 @@ mod loop_progress;
 mod top_level_let;
 pub use annotations::ValidateItemAnnotationsPass;
 mod method_origins;
+mod standard_library;
 mod type_check;
 mod type_check_body;
 mod type_check_bridge;
@@ -22,6 +23,8 @@ mod type_check_finalize;
 mod type_environment;
 pub use infer_callable_outputs::InferCallableOutputsPass;
 pub use method_origins::BindMethodOriginsPass;
+pub use standard_library::CheckStandardLibraryImplementationsPass;
+pub(crate) use standard_library::CheckedStandardLibraryImplementations;
 mod type_reuse;
 pub use type_environment::PrepareBodyTypeEnvironmentPass;
 

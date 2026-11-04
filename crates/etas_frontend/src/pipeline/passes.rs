@@ -2,14 +2,14 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
-    AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass, BindMethodOriginsPass,
-    BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass,
-    BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
-    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
-    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
-    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
-    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
-    FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    AdmitStandardLibrarySourcesPass, AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass,
+    BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass,
+    BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
+    CheckStandardLibraryImplementationsPass, CompleteEffectRuntimeReachabilityPass,
+    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
+    ComputeAffectedModulesPass, ComputeDefinitionAnalysisReachabilityPass,
+    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
+    FinalizeProjectHirPass, FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
     PrepareEffectRegistryPass, PrepareInvocationTypesPass, ResolveEntryItemPass,
@@ -33,6 +33,12 @@ pub fn project_pipeline() -> Pipeline<ProjectContext> {
                     UnitSelector::Kind(SOURCE_FILE_UNIT_KIND),
                     UnitOrder::SourceOrder,
                     Pipeline::new("frontend.source").pass(ParseSourceFilePass),
+                )
+                .pass(AdmitStandardLibrarySourcesPass)
+                .for_each(
+                    UnitSelector::Kind(SOURCE_FILE_UNIT_KIND),
+                    UnitOrder::SourceOrder,
+                    Pipeline::new("frontend.standard_library_source").pass(ParseSourceFilePass),
                 ),
         )
         .group(semantic_pipeline(false))
@@ -116,6 +122,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(ValidateResidualBackendSupportPass)
         .pass(CompleteEffectRuntimeReachabilityPass)
         .pass(MaterializeGenericEffectRowsPass)
+        .pass(CheckStandardLibraryImplementationsPass)
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)
         .pass(VerifyInterpreterSupportPass);
