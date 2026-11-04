@@ -10,14 +10,14 @@ use crate::passes::{
     ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
     ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
     FinalizeTypeFactsPass, FuseProjectionScansPass, FuseSerializationBoundaryPass,
-    InferCallableOutputsPass, LowerModuleItemsPass, MaterializeGenericEffectRowsPass,
-    NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
-    PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
-    PrepareInvocationTypesPass, PrepareVersionedRequestPass, QualityAwareContextPolicyPass,
-    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
-    ReuseTypeBodyFactsPass, RunEffectPipelinePass, SuffixDemandHistoryPass,
-    SynthesizeScopedIndexPass, TypeCheckBodyPass, ValidateEntryContractPass,
-    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    InferCallableOutputsPass, LowerModuleItemsPass, LowerOwnedSnapshotCowPass,
+    MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
+    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
+    PrepareEffectRegistryPass, PrepareInvocationTypesPass, PrepareVersionedRequestPass,
+    QualityAwareContextPolicyPass, ResolveEntryItemPass, ResolveImportTargetsPass,
+    ResolvePathsPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass,
+    SuffixDemandHistoryPass, SynthesizeScopedIndexPass, TypeCheckBodyPass,
+    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
     ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
     VerifyInterpreterSupportPass, VersionedPreparationCsePass,
 };
@@ -123,6 +123,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(AgentEffectLegalityPass)
         .pass(PrepareVersionedRequestPass)
         .pass(VersionedPreparationCsePass)
+        .pass(LowerOwnedSnapshotCowPass)
         .pass(FuseSerializationBoundaryPass)
         .pass(FuseProjectionScansPass)
         .pass(SynthesizeScopedIndexPass)

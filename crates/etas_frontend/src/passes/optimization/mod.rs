@@ -1,6 +1,7 @@
 mod agent_effect_legality;
 mod fuse_projection_scans;
 mod fuse_serialization_boundary;
+mod lower_owned_snapshot_cow;
 mod prepare_versioned_request;
 mod quality_aware_context_policy;
 mod suffix_demand_history;
@@ -10,6 +11,7 @@ mod versioned_preparation_cse;
 pub use agent_effect_legality::AgentEffectLegalityPass;
 pub use fuse_projection_scans::FuseProjectionScansPass;
 pub use fuse_serialization_boundary::FuseSerializationBoundaryPass;
+pub use lower_owned_snapshot_cow::LowerOwnedSnapshotCowPass;
 pub use prepare_versioned_request::PrepareVersionedRequestPass;
 pub use quality_aware_context_policy::QualityAwareContextPolicyPass;
 pub use suffix_demand_history::SuffixDemandHistoryPass;
