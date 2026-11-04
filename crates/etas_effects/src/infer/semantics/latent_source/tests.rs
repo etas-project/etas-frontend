@@ -16,6 +16,10 @@ flow numbers(value: Tree<i32>) -> unit { return; }
 flow callbacks(value: Tree<Callbacks>) -> unit { return; }
 flow tagged(value: Tagged<Token>) -> unit { return; }
 flow phantom<T ~ Allowed>(value: Phantom<T>) -> unit { return; }
+flow http(value: bytes) -> unit {
+    let decoded = std.http.codec.decode_response_head_prefix(value, 64);
+    return;
+}
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -58,6 +62,20 @@ flow phantom<T ~ Allowed>(value: Phantom<T>) -> unit { return; }
             "{name}"
         );
     }
+    let decoded = hir
+        .exprs
+        .iter()
+        .find_map(|(expr, value)| {
+            let HirExpr::Call { callee, .. } = value else {
+                return None;
+            };
+            let HirExpr::Path(path) = hir.exprs.get(*callee)? else {
+                return None;
+            };
+            (path.segments.last()?.name == "decode_response_head_prefix").then_some(expr)
+        })
+        .unwrap();
+    assert!(!semantics.expr_type_contains_flow(decoded));
 }
 
 #[test]

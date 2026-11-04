@@ -70,14 +70,12 @@ fn lower_std_decl_with_kind(
                 }
                 let ty =
                     lower_std_type_decl_with_name(ctx, registry, decl, qualified_name.as_deref());
-                let parameters = lower_std_generic_params(ctx, registry, &decl.params);
                 if decl.canonical_type.is_some() {
                     return SymbolTypeFact::TypeAlias {
                         target: ty,
-                        params: parameters,
+                        params: lower_std_generic_params(ctx, registry, &decl.params),
                     };
                 }
-                ctx.signature_facts.type_generics.insert(ty, parameters);
                 match ctx.interner.store().get(ty) {
                     Some(Type::Nominal(nominal)) => SymbolTypeFact::NominalType {
                         constructor: TypeConstructorId(ty.0),
@@ -745,6 +743,12 @@ fn lower_std_type_constructor(
         }
     };
     if kind != TypeDeclKind::Spec {
+        if !ctx.signature_facts.type_generics.contains_key(&ty) {
+            // Transitive signature types own the same binders as direct imports.
+            ctx.signature_facts.type_generics.insert(ty, Vec::new());
+            let parameters = lower_std_generic_params(ctx, registry, params);
+            ctx.signature_facts.type_generics.insert(ty, parameters);
+        }
         let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
         if let Some(identity) = ctx.reflection_declaration_identity(&path).cloned()
             && identity.kind() == etas_code::DefinitionKind::Type
