@@ -1,4 +1,5 @@
 mod agent_effect_legality;
+mod batch_storage_semijoin;
 mod fuse_projection_scans;
 mod fuse_serialization_boundary;
 mod lower_owned_snapshot_cow;
@@ -10,6 +11,7 @@ mod synthesize_scoped_index;
 mod versioned_preparation_cse;
 
 pub use agent_effect_legality::AgentEffectLegalityPass;
+pub use batch_storage_semijoin::BatchStorageSemijoinPass;
 pub use fuse_projection_scans::FuseProjectionScansPass;
 pub use fuse_serialization_boundary::FuseSerializationBoundaryPass;
 pub use lower_owned_snapshot_cow::LowerOwnedSnapshotCowPass;

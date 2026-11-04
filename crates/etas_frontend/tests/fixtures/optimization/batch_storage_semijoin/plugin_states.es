@@ -1,0 +1,1 @@
+flow main() -> bool { var first = false; var second = false; for key_a in ["installed", "enabled", "connected", "healthy", "ready"] limit Iterations(5) { if key_a == "enabled" { first = true; } } for key_b in ["installed", "enabled", "connected", "healthy", "ready"] limit Iterations(5) { if key_b == "ready" { second = true; } } if first { return second; } return false; }

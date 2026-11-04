@@ -1,0 +1,1 @@
+flow main() -> bool { var first = false; var second = false; for key_a in ["endpoint", "model", "timeout", "retry", "region"] limit Iterations(5) { if key_a == "model" { first = true; } } for key_b in ["endpoint", "model", "timeout", "retry", "region"] limit Iterations(5) { if key_b == "region" { second = true; } } if first { return second; } return false; }

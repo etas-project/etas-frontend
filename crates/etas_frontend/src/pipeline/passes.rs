@@ -3,19 +3,19 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
     AgentEffectLegalityPass, AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass,
-    BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass,
-    BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
-    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
-    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
-    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
-    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
-    FinalizeTypeFactsPass, FuseProjectionScansPass, FuseSerializationBoundaryPass,
-    InferCallableOutputsPass, LowerModuleItemsPass, LowerOwnedSnapshotCowPass,
-    LowerResourceRegionPass, MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass,
-    ParseSourceFilePass, PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass,
-    PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
-    PrepareVersionedRequestPass, QualityAwareContextPolicyPass, ResolveEntryItemPass,
-    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    BatchStorageSemijoinPass, BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass,
+    BuildModuleCatalogPass, BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass,
+    BuildUnitTreePass, CompleteEffectRuntimeReachabilityPass,
+    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
+    ComputeAffectedModulesPass, ComputeDefinitionAnalysisReachabilityPass,
+    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
+    FinalizeProjectHirPass, FinalizeTypeFactsPass, FuseProjectionScansPass,
+    FuseSerializationBoundaryPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    LowerOwnedSnapshotCowPass, LowerResourceRegionPass, MaterializeGenericEffectRowsPass,
+    NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
+    PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
+    PrepareInvocationTypesPass, PrepareVersionedRequestPass, QualityAwareContextPolicyPass,
+    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, SuffixDemandHistoryPass,
     SynthesizeScopedIndexPass, TypeCheckBodyPass, ValidateEntryContractPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
@@ -128,6 +128,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(LowerOwnedSnapshotCowPass)
         .pass(FuseSerializationBoundaryPass)
         .pass(FuseProjectionScansPass)
+        .pass(BatchStorageSemijoinPass)
         .pass(SynthesizeScopedIndexPass)
         .pass(SuffixDemandHistoryPass)
         .pass(QualityAwareContextPolicyPass)

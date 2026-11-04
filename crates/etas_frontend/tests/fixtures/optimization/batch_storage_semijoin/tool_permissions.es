@@ -1,0 +1,1 @@
+flow main() -> bool { var first = false; var second = false; for key_a in ["read", "write", "shell", "git", "web"] limit Iterations(5) { if key_a == "read" { first = true; } } for key_b in ["read", "write", "shell", "git", "web"] limit Iterations(5) { if key_b == "git" { second = true; } } if first { return second; } return false; }
