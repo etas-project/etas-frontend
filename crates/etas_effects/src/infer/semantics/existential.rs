@@ -18,11 +18,10 @@ impl EffectSemantics<'_> {
         owner: etas_hir::HirItemId,
     ) -> Result<BTreeMap<CallableGenericParameter, CallableGenericValue>, EffectSpecializationError>
     {
-        self.native_generic_params(owner)
+        self.native_generic_interface(owner)
             .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?
-            .iter()
-            .enumerate()
-            .map(|(position, parameter)| {
+            .into_iter()
+            .map(|(key, parameter)| {
                 let value = match parameter.kind {
                     etas_types::CallableGenericParamKind::Type => {
                         CallableGenericValue::Type(parameter.subject)
@@ -34,13 +33,7 @@ impl EffectSemantics<'_> {
                         })
                     }
                 };
-                Ok((
-                    CallableGenericParameter::Native {
-                        owner,
-                        position: position as u32,
-                    },
-                    value,
-                ))
+                Ok((key, value))
             })
             .collect()
     }

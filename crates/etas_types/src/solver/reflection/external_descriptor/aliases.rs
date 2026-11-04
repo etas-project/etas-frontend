@@ -115,7 +115,11 @@ impl ExternalDescriptorMatcher<'_> {
                     self.substitute_alias_type(ty, substitutions, depth + 1)?;
                 }
             }
-            Ty::Primitive(_) | Ty::Named(_) | Ty::Prompt | Ty::PromptPart => {}
+            Ty::Primitive(_)
+            | Ty::Named(_)
+            | Ty::Parameter { .. }
+            | Ty::Prompt
+            | Ty::PromptPart => {}
         }
         Ok(())
     }
@@ -232,7 +236,12 @@ impl ExternalDescriptorMatcher<'_> {
                         pending.push((ty, next));
                     }
                 }
-                Ty::Primitive(_) | Ty::Var(_) | Ty::Named(_) | Ty::Prompt | Ty::PromptPart => {}
+                Ty::Primitive(_)
+                | Ty::Var(_)
+                | Ty::Named(_)
+                | Ty::Parameter { .. }
+                | Ty::Prompt
+                | Ty::PromptPart => {}
             }
         }
         Ok(())

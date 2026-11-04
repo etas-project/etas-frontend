@@ -9,8 +9,8 @@ use etas_utils::{
 use crate::{
     BODY_UNIT_KIND, CheckScope, ProjectContext,
     passes::artifacts::{
-        ANALYSIS_REACHABILITY_FACTS, HIR_OUTPUT, RESOLVED_PATHS, SIGNATURE_FACTS, TYPE_ENVIRONMENT,
-        TYPE_OUTPUT,
+        ANALYSIS_REACHABILITY_FACTS, DIAGNOSTICS, HIR_OUTPUT, RESOLVED_PATHS, SIGNATURE_FACTS,
+        TYPE_ENVIRONMENT, TYPE_OUTPUT,
     },
     passes::{FinalizeTypeFactsPass, TypeCheckBodyPass},
 };
@@ -27,10 +27,12 @@ impl Pass<ProjectContext> for CompleteTypedAnalysisReachabilityPass {
                 SIGNATURE_FACTS,
                 TYPE_ENVIRONMENT,
                 TYPE_OUTPUT,
+                DIAGNOSTICS,
             ]))
             .produces(ArtifactSet::from([
                 ANALYSIS_REACHABILITY_FACTS,
                 TYPE_OUTPUT,
+                DIAGNOSTICS,
             ]))
     }
 
@@ -43,6 +45,13 @@ impl Pass<ProjectContext> for CompleteTypedAnalysisReachabilityPass {
         if context.check_scope != CheckScope::EntryReachable {
             return PassResult::unchanged();
         }
+        if context
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+        {
+            return PassResult::unchanged();
+        }
         let mut changed = false;
         loop {
             if let Some(control) = manager.execution_control()
@@ -50,9 +59,43 @@ impl Pass<ProjectContext> for CompleteTypedAnalysisReachabilityPass {
             {
                 return PassResult::interrupted(interruption);
             }
-            let roots = match checked_targets(context) {
+            let roots = match checked_targets(context, manager.execution_control()) {
                 Ok(roots) => roots,
-                Err(reason) => return PassResult::failed(reason),
+                Err(crate::project::instantiation::InstantiationError::Invalid(reason)) => {
+                    return PassResult::failed(reason);
+                }
+                Err(crate::project::instantiation::InstantiationError::Interrupted(
+                    interruption,
+                )) => return PassResult::interrupted(interruption),
+                Err(crate::project::instantiation::InstantiationError::Resource {
+                    owner,
+                    reason,
+                }) => {
+                    if context.candidate.is_some() || manager.execution_control().is_some() {
+                        return PassResult::interrupted(etas_utils::PipelineInterruption {
+                            kind: etas_utils::PipelineInterruptionKind::ResourceLimit,
+                            reason,
+                        });
+                    }
+                    let Some(item) = context
+                        .hir
+                        .as_ref()
+                        .and_then(|hir| hir.hir.items.get(owner))
+                    else {
+                        return PassResult::failed(
+                            "resource diagnostic has no checked callable owner",
+                        );
+                    };
+                    context.diagnostics.push(etas_core::Diagnostic::type_check(
+                        etas_core::TypeDiagnosticCode::CompilerResourceLimit,
+                        item.span(),
+                        reason,
+                    ));
+                    return PassResult::changed(
+                        PreservedArtifacts::All,
+                        self.descriptor().produces,
+                    );
+                }
             };
             let (items, bodies) =
                 match super::runtime_requirements::source_analysis_closure(context, roots) {
@@ -108,62 +151,21 @@ impl Pass<ProjectContext> for CompleteTypedAnalysisReachabilityPass {
     }
 }
 
-fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static str> {
+fn checked_targets(
+    context: &ProjectContext,
+    control: Option<&dyn etas_utils::PipelineExecutionControl>,
+) -> Result<Vec<HirItemId>, crate::project::instantiation::InstantiationError> {
     let (Some(hir), Some(types), Some(reachability)) =
         (&context.hir, &context.types, &context.reachability)
     else {
-        return Err("typed analysis requires HIR, type and reachability facts");
+        return Err("typed analysis requires HIR, type and reachability facts".into());
     };
     struct Targets<'a> {
         facts: &'a etas_types::TypeFacts,
         hir: &'a etas_hir::HirProgram,
         store: &'a etas_types::TypeStore,
-        symbols: etas_types::pipeline::symbols::TypeSymbolIndex,
         items: BTreeSet<HirItemId>,
         missing: bool,
-    }
-    impl Targets<'_> {
-        fn signature(&mut self, signature: &etas_types::CallableSignature) {
-            for parameter in &signature.generic_params {
-                for bound in &parameter.bounds {
-                    self.spec_methods(&bound.spec, None);
-                }
-            }
-        }
-
-        fn spec_methods(
-            &mut self,
-            spec: &etas_types::CheckedSpecRef,
-            member: Option<&etas_types::SpecMethodIdentity>,
-        ) {
-            let spec = match spec {
-                etas_types::CheckedSpecRef::Source(symbol) => {
-                    let Some(symbol) = self.symbols.canonical_symbol(self.hir, *symbol) else {
-                        self.missing = true;
-                        return;
-                    };
-                    match self.facts.external_specs.aliases.get(&symbol) {
-                        Some(identity) => etas_types::CheckedSpecRef::External(identity.clone()),
-                        None => etas_types::CheckedSpecRef::Source(symbol),
-                    }
-                }
-                spec => spec.clone(),
-            };
-            for implementation in self.facts.methods.implementations_for_spec(&spec) {
-                if member.is_some_and(|member| implementation.spec_member.as_ref() != Some(member))
-                {
-                    continue;
-                }
-                match implementation.target {
-                    etas_types::method::MethodTarget::Source { callable, .. }
-                    | etas_types::method::MethodTarget::Agent { callable, .. } => {
-                        self.items.insert(callable);
-                    }
-                    etas_types::method::MethodTarget::External { .. } => {}
-                    _ => self.missing = true,
-                }
-            }
-        }
     }
     impl<'view, 'hir> HirVisitor<'view, 'hir> for Targets<'_> {
         fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
@@ -174,9 +176,6 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
                         | etas_types::method::MethodTarget::Agent { callable, .. } => {
                             self.items.insert(*callable);
                         }
-                        etas_types::method::MethodTarget::BoundSpec { spec, member, .. } => {
-                            self.spec_methods(spec, Some(member))
-                        }
                         _ => {}
                     }
                 }
@@ -186,10 +185,6 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
                     etas_types::method::MethodTarget::Source { callable, .. }
                     | etas_types::method::MethodTarget::Agent { callable, .. } => {
                         self.items.insert(*callable);
-                        return;
-                    }
-                    etas_types::method::MethodTarget::BoundSpec { spec, member, .. } => {
-                        self.spec_methods(spec, Some(member));
                         return;
                     }
                     _ => {}
@@ -205,11 +200,6 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
                         return;
                     }
                     symbol = *target;
-                }
-                if let Some(etas_types::SymbolTypeFact::Flow { signature }) =
-                    self.symbols.symbol_fact(self.hir, self.facts, symbol)
-                {
-                    self.signature(signature);
                 }
                 match self.hir.symbols.get(symbol).map(|symbol| &symbol.def) {
                     Some(etas_hir::SymbolDef::TopLevelLet {
@@ -264,32 +254,36 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
         facts: &types.facts,
         hir: &hir.hir,
         store: &types.store,
-        symbols: etas_types::pipeline::symbols::TypeSymbolIndex::build(&hir.hir),
         items: reachability.analysis_items.clone(),
         missing: false,
     };
     for item in &reachability.analysis_items {
-        match types.facts.item_signatures.get(item) {
-            Some(
-                etas_types::ItemSignature::Flow(signature)
-                | etas_types::ItemSignature::Tool(signature),
-            ) => targets.signature(signature),
-            Some(etas_types::ItemSignature::Agent(signature)) => {
-                if let Some(signature) = signature.callable() {
-                    targets.signature(signature);
-                }
-            }
-            _ => {}
-        }
         walk_item(&view, *item, &mut targets);
     }
+    let calls = crate::project::instantiation::direct_targets(&hir.hir, types)?;
+    let prepared = crate::project::instantiation::prepare_from_targets(
+        crate::project::instantiation::InvocationInput {
+            hir: &hir.hir,
+            types,
+            targets: &calls,
+            limits: context.candidate.as_ref().map_or_else(
+                etas_code::descriptor::DescriptorLimits::default,
+                |candidate| candidate.descriptor_limits,
+            ),
+            control,
+            phase: crate::project::instantiation::PreparationPhase::Types,
+        },
+        &[],
+        None,
+    )?;
+    targets.items.extend(prepared.method_bodies);
     if targets.missing
         || targets
             .items
             .iter()
             .any(|item| hir.hir.items.get(*item).is_none())
     {
-        return Err("typed invocation has no checked source method body");
+        return Err("typed invocation has no checked source method body".into());
     }
     Ok(targets.items.into_iter().collect())
 }

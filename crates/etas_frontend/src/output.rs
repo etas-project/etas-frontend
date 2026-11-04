@@ -827,6 +827,10 @@ pub enum ProjectExternalTypeInput {
     },
     Primitive(String),
     Var(String),
+    Parameter {
+        owner: etas_code::descriptor::GenericOwner,
+        position: u32,
+    },
     Named(Vec<String>),
     Enum {
         path: Vec<String>,

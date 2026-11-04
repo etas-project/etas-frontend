@@ -1,7 +1,3 @@
-use super::engine::EffectSemantics;
-use crate::infer::unit::EffectUnit;
-
-mod dependencies;
 mod evidence;
 mod implementations;
 mod metadata;
@@ -11,6 +7,11 @@ mod objects;
 mod rows;
 pub(super) use evidence::MethodEvidence;
 pub(crate) use metadata_graphs::MethodCallbackGraph;
+
+pub(super) struct MethodInstantiation {
+    pub generics: etas_types::GenericInstantiationFact,
+    pub owner_bindings: std::collections::HashMap<etas_types::TypeId, etas_types::TypeId>,
+}
 
 fn deferred_completion(
     summary: &mut crate::EffectSummary,
@@ -33,27 +34,4 @@ fn deferred_completion(
         source: span.into(),
     });
     summary.exits = Some(exits);
-}
-
-impl EffectSemantics<'_> {
-    pub(super) fn checked_method_witness_target(
-        &self,
-        receiver: etas_types::TypeId,
-        args: &[etas_types::TypeId],
-        member: &etas_types::SpecMethodIdentity,
-    ) -> Option<EffectUnit> {
-        match &self
-            .types
-            .facts
-            .methods
-            .witness(receiver, args, member)?
-            .target
-        {
-            etas_types::method::MethodTarget::Source { callable, .. }
-            | etas_types::method::MethodTarget::Agent { callable, .. } => {
-                Some(EffectUnit::Item(*callable))
-            }
-            _ => None,
-        }
-    }
 }

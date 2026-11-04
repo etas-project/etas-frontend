@@ -13,7 +13,66 @@ use crate::{
 pub(super) type GenericValues = BTreeMap<Parameter, Value>;
 pub(super) type GenericSubstitutions = (Vec<(String, TypeId)>, Vec<(String, EffectRow)>);
 
+#[derive(Clone, Copy)]
+pub(super) struct ScopedGenericArguments<'a> {
+    pub types: &'a [(String, TypeId)],
+    pub parameters: Option<&'a std::collections::HashMap<TypeId, TypeId>>,
+    pub rows: &'a [(String, EffectRow)],
+}
+
+impl<'a> ScopedGenericArguments<'a> {
+    pub fn named(types: &'a [(String, TypeId)], rows: &'a [(String, EffectRow)]) -> Self {
+        Self {
+            types,
+            parameters: None,
+            rows,
+        }
+    }
+}
+
 impl EffectSemantics<'_> {
+    pub(super) fn metadata_environment_type_parameters(
+        &self,
+        source: crate::MetadataCallableSource,
+    ) -> Result<std::collections::HashMap<TypeId, TypeId>, EffectSpecializationError> {
+        let Some(method) = self
+            .implementation_graphs
+            .get(&source.graph)
+            .and_then(|index| index.and_then(|index| self.external_implementations.get(index)))
+        else {
+            return Ok(Default::default());
+        };
+        if method.owner_params.is_empty() {
+            return Ok(Default::default());
+        }
+        let snapshot = source
+            .environment
+            .map(|id| self.callable_environment(id))
+            .transpose()?
+            .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                reason: "metadata method owner has no captured type arguments".into(),
+            })?;
+        method
+            .owner_params
+            .iter()
+            .enumerate()
+            .map(|(position, parameter)| {
+                let key = Parameter::Graph {
+                    graph: source.graph,
+                    scope: etas_package_metadata::CallableValueScope::Root,
+                    position: position as u32,
+                };
+                match snapshot.generics.get(&key) {
+                    Some(Value::Type(argument)) => Ok((parameter.subject, *argument)),
+                    _ => Err(EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "metadata method owner has an incomplete type argument binding"
+                            .into(),
+                    }),
+                }
+            })
+            .collect()
+    }
+
     pub(super) fn metadata_environment_generics(
         &self,
         source: crate::MetadataCallableSource,
@@ -84,6 +143,67 @@ impl EffectSemantics<'_> {
         }
     }
 
+    pub(super) fn native_impl_method(
+        &self,
+        owner: HirItemId,
+    ) -> Option<&etas_types::facts::TypeImplMethodFact> {
+        let symbol = self.hir.items.get(owner)?.symbol()?;
+        self.types.facts.type_impl_methods.get(&symbol)
+    }
+
+    pub(super) fn native_generic_interface(
+        &self,
+        owner: HirItemId,
+    ) -> Option<Vec<(Parameter, &CallableGenericParam)>> {
+        let local = self.native_generic_params(owner)?;
+        let mut parameters = Vec::new();
+        if let Some(method) = self.native_impl_method(owner) {
+            parameters.extend(
+                method
+                    .owner_params
+                    .iter()
+                    .enumerate()
+                    .map(|(position, param)| {
+                        (
+                            Parameter::Native {
+                                owner: method.implementation,
+                                position: position as u32,
+                            },
+                            param,
+                        )
+                    }),
+            );
+        }
+        parameters.extend(local.iter().enumerate().map(|(position, param)| {
+            (
+                Parameter::Native {
+                    owner,
+                    position: position as u32,
+                },
+                param,
+            )
+        }));
+        Some(parameters)
+    }
+
+    pub(super) fn native_environment_type_parameters(
+        &self,
+        owner: HirItemId,
+        values: &GenericValues,
+    ) -> Result<std::collections::HashMap<TypeId, TypeId>, EffectSpecializationError> {
+        self.native_generic_interface(owner)
+            .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?
+            .into_iter()
+            .filter(|(_, parameter)| parameter.kind == etas_types::CallableGenericParamKind::Type)
+            .map(|(key, parameter)| match values.get(&key) {
+                Some(Value::Type(ty)) => Ok((parameter.subject, *ty)),
+                _ => Err(EffectSpecializationError::InvalidCallableEnvironment {
+                    reason: "captured generic has no checked type argument".into(),
+                }),
+            })
+            .collect()
+    }
+
     pub(super) fn checked_call_generic_values(
         &self,
         call: HirExprId,
@@ -120,27 +240,51 @@ impl EffectSemantics<'_> {
         environment: Option<crate::facts::CallableEnvironmentId>,
     ) -> Result<GenericValues, EffectSpecializationError> {
         let params = self
-            .native_generic_params(owner)
+            .native_generic_interface(owner)
             .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
         if params.is_empty() {
             return Ok(BTreeMap::new());
         }
-        if let Some(environment) = environment {
-            let snapshot = self.callable_environment(environment)?;
+        let snapshot = environment
+            .map(|environment| self.callable_environment(environment))
+            .transpose()?;
+        if let Some(snapshot) = &snapshot {
             // An invoked closure already carries its lexical owner's arguments.
             // They are not generic arguments of the monomorphic closure call.
-            if params.iter().enumerate().all(|(position, _)| {
-                snapshot.generics.contains_key(&Parameter::Native {
-                    owner,
-                    position: position as u32,
-                })
-            }) {
-                return Ok(snapshot.generics.into_iter().filter(|(parameter, _)| matches!(parameter, Parameter::Native { owner: actual, .. } if *actual == owner)).collect());
+            if params
+                .iter()
+                .all(|(key, _)| snapshot.generics.contains_key(key))
+            {
+                return Ok(params
+                    .iter()
+                    .map(|(key, _)| (*key, snapshot.generics[key].clone()))
+                    .collect());
             }
         }
         let (types, rows) = self.checked_call_generic_values(call, state)?;
+        let method_arguments = self.types.facts.checked_method_calls.get(&call);
         let mut values = BTreeMap::new();
-        for (position, parameter) in params.iter().enumerate() {
+        for (key, parameter) in params {
+            if let Some(value) = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.generics.get(&key))
+            {
+                values.insert(key, value.clone());
+                continue;
+            }
+            if matches!(key, Parameter::Native { owner: declaration, .. } if declaration != owner) {
+                let value = method_arguments
+                    .and_then(|fact| {
+                        fact.owner_bindings.iter().find_map(|(subject, argument)| {
+                            (*subject == parameter.subject).then_some(Value::Type(*argument))
+                        })
+                    })
+                    .ok_or_else(|| EffectSpecializationError::MissingTypeBinding {
+                        param: format!("impl {}", parameter.name),
+                    })?;
+                values.insert(key, value);
+                continue;
+            }
             let value = match parameter.kind {
                 etas_types::CallableGenericParamKind::Type => Value::Type(
                     types
@@ -166,13 +310,7 @@ impl EffectSemantics<'_> {
                     }
                 }
             };
-            values.insert(
-                Parameter::Native {
-                    owner,
-                    position: position as u32,
-                },
-                value,
-            );
+            values.insert(key, value);
         }
         Ok(values)
     }
@@ -213,24 +351,27 @@ impl EffectSemantics<'_> {
     pub(super) fn substitute_generic_values(
         &self,
         values: GenericValues,
-        types: &[(String, TypeId)],
-        rows: &[(String, EffectRow)],
+        arguments: ScopedGenericArguments<'_>,
         owner: Option<HirItemId>,
     ) -> Result<GenericValues, EffectSpecializationError> {
+        let ScopedGenericArguments {
+            types,
+            parameters,
+            rows,
+        } = arguments;
         let substitution = types.iter().cloned().collect();
         let row_arguments = self.type_row_arguments(rows, owner)?;
+        let mut engine =
+            etas_types::TypeSubstitutionEngine::existing(&self.types.store, &substitution)
+                .with_effect_arguments(&row_arguments);
+        if let Some(parameters) = parameters {
+            engine = engine.with_type_parameters(parameters);
+        }
         values
             .into_iter()
             .map(|(parameter, value)| {
                 let value = match value {
-                    Value::Type(ty) => Value::Type(
-                        etas_types::TypeSubstitutionEngine::existing(
-                            &self.types.store,
-                            &substitution,
-                        )
-                        .with_effect_arguments(&row_arguments)
-                        .substitute(ty)?,
-                    ),
+                    Value::Type(ty) => Value::Type(engine.substitute(ty)?),
                     Value::EffectRow(row) => {
                         Value::EffectRow(self.specialize_effect_row(&row, &[], types, rows)?)
                     }

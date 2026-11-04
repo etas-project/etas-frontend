@@ -6,5 +6,5 @@ pub mod model;
 mod origins;
 
 pub use evidence::MethodEvidence;
-pub use index::MethodIndex;
+pub use index::{MethodIndex, MethodWitness};
 pub use model::{MethodOwner, MethodReceiver, MethodSelection, MethodSignatureFact, MethodTarget};

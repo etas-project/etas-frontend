@@ -61,7 +61,15 @@ impl EffectSemantics<'_> {
             }
         };
         let (types, rows) = self.reference_environment_bindings(&reference)?;
-        self.specialize_summary_with_bindings(&summary, &[], &types, &rows)
+        let parameters = self.reference_environment_type_parameters(&reference)?;
+        self.specialize_summary_with_residual_bindings(
+            &summary,
+            &[],
+            &types,
+            &parameters,
+            &rows,
+            None,
+        )
     }
 }
 

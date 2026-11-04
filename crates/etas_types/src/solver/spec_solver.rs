@@ -1,6 +1,17 @@
 use std::collections::{HashMap, HashSet};
 pub(crate) mod bound_evidence;
 mod external;
+pub(crate) mod implementation;
+pub use implementation::match_subject as match_implementation_subject;
+
+pub fn implementation_bounds_satisfied(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    parameters: &[crate::CallableGenericParam],
+    bindings: &HashMap<TypeId, TypeId>,
+) -> bool {
+    external::checked_implementation_bounds(store, facts, parameters, bindings)
+}
 pub(crate) mod object_safety;
 
 use crate::{
@@ -332,6 +343,7 @@ mod canonical_parameter_tests {
             },
         );
         facts.canonical.impls.push(CanonicalSpecImplFact {
+            generic_params: Vec::new(),
             self_type: actual,
             spec: derived,
             args: vec![],
@@ -431,6 +443,7 @@ mod canonical_parameter_tests {
             ),
         );
         facts.canonical.impls.push(CanonicalSpecImplFact {
+            generic_params: Vec::new(),
             self_type: subject,
             spec: derived,
             args: vec![argument],
@@ -452,6 +465,7 @@ mod canonical_parameter_tests {
             .is_empty()
         );
         facts.canonical.impls.push(CanonicalSpecImplFact {
+            generic_params: Vec::new(),
             self_type: argument,
             spec: marker,
             args: vec![],
@@ -595,6 +609,7 @@ mod canonical_parameter_tests {
             },
         );
         facts.canonical.impls.push(CanonicalSpecImplFact {
+            generic_params: Vec::new(),
             self_type: subject,
             spec: derived,
             args: vec![],

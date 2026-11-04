@@ -272,7 +272,16 @@ pub(super) fn prepare(
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(InstantiationError::from)?;
-        seeds.push(NativeInstantiation { owner, arguments });
+        let owner_bindings = instance.relocate_owner_bindings(
+            instantiation::owner_parameters(&candidate.hir, &candidate.types, instance.owner),
+            instantiation::owner_parameters(&original.hir, &original.types, owner),
+            &mut relocation,
+        )?;
+        seeds.push(NativeInstantiation {
+            owner,
+            arguments,
+            owner_bindings,
+        });
     }
     let types = TypeOutput {
         facts: original.types.clone(),

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use etas_code::{DefinitionKey, descriptor::*};
 use etas_types::{CallableSignature, EffectRowRef, Type, TypeId};
 
-use super::ProjectionError;
+use super::{ProjectionError, scope::Scope};
 use crate::{
     CheckedProgramData,
     code::identity::{DefinitionIdentityIndex, GenericDeclaration, TypeDeclaration},
@@ -25,12 +25,6 @@ pub struct NativeTypeOrigin {
 pub struct NativeDescriptorProjection {
     pub graph: DescriptorGraph,
     pub type_origins: Vec<NativeTypeOrigin>,
-}
-
-pub(super) struct Scope {
-    pub owner: GenericOwner,
-    pub binders: HashMap<String, GenericParameterRef>,
-    parameters: Vec<GenericDeclaration>,
 }
 
 pub(super) enum Work {
@@ -134,18 +128,9 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         let generics = signature
             .generic_params
             .iter()
-            .map(|parameter| GenericDeclaration {
-                name: parameter.name.clone(),
-                effect: parameter.kind == etas_types::CallableGenericParamKind::Effect,
-                bounds: parameter
-                    .bounds
-                    .iter()
-                    .cloned()
-                    .map(crate::code::identity::BoundDeclaration::Checked)
-                    .collect(),
-            })
+            .map(GenericDeclaration::from)
             .collect::<Vec<_>>();
-        let scope = self.scope(owner, &generics)?;
+        let scope = self.callable_scope(owner, &generics)?;
         let info = self.signature(signature, parameter_names, declared_output, scope)?;
         let ty = self.reserve_type()?;
         self.types[ty.0 as usize] = Some(TypeInfo::Function(info));
@@ -172,6 +157,24 @@ impl<'a> DefinitionDescriptorProjector<'a> {
     ) -> Result<Vec<TypeInfoRef>, ProjectionError> {
         self.ensure_edges(types.len())?;
         let scope = self.scope(owner, &[])?;
+        types.iter().map(|ty| self.type_ref(*ty, scope)).collect()
+    }
+
+    pub(crate) fn project_implementation_pattern(
+        &mut self,
+        subject: &DefinitionKey,
+        parameters: &[etas_types::CallableGenericParam],
+        types: &[TypeId],
+    ) -> Result<Vec<TypeInfoRef>, ProjectionError> {
+        self.ensure_edges(types.len())?;
+        let parameters = parameters
+            .iter()
+            .map(GenericDeclaration::from)
+            .collect::<Vec<_>>();
+        let scope = self.scope(
+            GenericOwner::ImplementationPattern(subject.clone()),
+            &parameters,
+        )?;
         types.iter().map(|ty| self.type_ref(*ty, scope)).collect()
     }
 
@@ -342,12 +345,7 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 ty: self.type_ref(*ty, scope)?,
             });
         }
-        let mut generics = self.scopes[scope]
-            .binders
-            .values()
-            .copied()
-            .collect::<Vec<_>>();
-        generics.sort_by_key(|parameter| self.binders[parameter.0 as usize].position);
+        let generics = self.scopes[scope].own_binders.clone();
         Ok(SignatureInfo {
             generics,
             parameters,
@@ -359,64 +357,6 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 .map(|row| self.row_ref(row.clone(), scope))
                 .transpose()?,
         })
-    }
-
-    pub(super) fn scope(
-        &mut self,
-        owner: GenericOwner,
-        parameters: &[GenericDeclaration],
-    ) -> Result<usize, ProjectionError> {
-        if let Some((scope, _)) = self
-            .scopes
-            .iter()
-            .enumerate()
-            .find(|(_, scope)| scope.owner == owner)
-        {
-            if self.scopes[scope].parameters != parameters {
-                return Err(ProjectionError::Invalid(
-                    "one definition identity has conflicting generic binders".into(),
-                ));
-            }
-            return Ok(scope);
-        }
-        self.ensure_nodes(parameters.len())?;
-        let scope = self.scopes.len();
-        self.scopes.push(Scope {
-            owner: owner.clone(),
-            binders: HashMap::new(),
-            parameters: parameters.to_vec(),
-        });
-        for (position, parameter) in parameters.iter().enumerate() {
-            self.node()?;
-            self.text(&parameter.name)?;
-            let target = GenericParameterRef(self.binders.len() as u32);
-            if self.scopes[scope]
-                .binders
-                .insert(parameter.name.clone(), target)
-                .is_some()
-            {
-                return Err(ProjectionError::Invalid(
-                    "duplicate checked generic binder name".into(),
-                ));
-            }
-            self.binders.push(GenericParameterInfo {
-                owner: owner.clone(),
-                position: position as u32,
-                name: parameter.name.clone(),
-                kind: if parameter.effect {
-                    GenericParameterKind::EffectRow
-                } else {
-                    GenericParameterKind::Type
-                },
-                bounds: Vec::new(),
-            });
-            self.work.push(Work::Bounds {
-                declaration: parameter.clone(),
-                scope,
-                target,
-            });
-        }
-        Ok(scope)
     }
 
     pub(super) fn type_ref(
@@ -444,7 +384,12 @@ impl<'a> DefinitionDescriptorProjector<'a> {
                 .types
                 .get(&source)
                 .or_else(|| self.identities.type_names.get(&data.name)),
-            Type::Named(data) if !self.scopes[scope].binders.contains_key(&data.name) => {
+            Type::Named(data)
+                if !self.scopes[scope].type_parameters.contains_key(&source)
+                    && data.source_parameter.is_none()
+                    && self.checked.type_store.parameter_identity(source).is_none()
+                    && !self.scopes[scope].binders.contains_key(&data.name) =>
+            {
                 self.identities.type_names.get(&data.name)
             }
             _ => None,

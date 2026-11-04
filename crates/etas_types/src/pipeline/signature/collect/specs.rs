@@ -142,6 +142,15 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                     let Some(self_type) = lower_type_ref(ctx, self_type) else {
                         continue;
                     };
+                    let mut generic_params =
+                        super::callables::callable_generic_params(ctx, state, &decl.type_params);
+                    super::type_impl_methods::inherit_owner_bounds(
+                        ctx,
+                        state,
+                        self_type,
+                        &mut generic_params,
+                        decl.span,
+                    );
                     for spec_ref in specs {
                         if let ResolveResult::Resolved(spec_symbol) = spec_ref.spec_path.resolution
                         {
@@ -157,6 +166,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 Vec::new()
                             };
                             state.spec_impls.push(SpecImplFact {
+                                generic_params: generic_params.clone(),
                                 self_type,
                                 spec_symbol,
                                 args: spec_ref

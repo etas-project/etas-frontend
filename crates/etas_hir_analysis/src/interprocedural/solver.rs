@@ -162,6 +162,9 @@ impl SummarySolver {
 
         for unit in units {
             checkpoint()?;
+            for dependency in semantics.unit_dependencies(*unit) {
+                graph.add_call(*unit, dependency);
+            }
             let body = semantics.body_of(*unit);
             if !body.is_traversable() {
                 continue;

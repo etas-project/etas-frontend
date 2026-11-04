@@ -134,3 +134,43 @@ fn entry_reachability_follows_only_the_selected_method_bodies() {
     }
     assert_eq!(checked.reachability.reachable_items.len(), 3);
 }
+
+#[test]
+fn entry_reachability_does_not_check_unselected_implementations_of_a_generic_bound() {
+    let mut session = FrontendSession::new();
+    let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(
+        include_str!("fixtures/method_resolution/reachable_bound.es"),
+    )));
+    let output = session
+        .check(
+            project,
+            CheckRequest::full_project().with_scope(CheckScope::EntryReachable),
+        )
+        .unwrap()
+        .output;
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let token = checked
+        .types
+        .symbol_types
+        .iter()
+        .find_map(|(symbol, fact)| {
+            if checked.hir.symbols.get(*symbol)?.name != "Token" {
+                return None;
+            }
+            match fact {
+                etas_types::SymbolTypeFact::NominalType { constructor, .. } => {
+                    Some(etas_types::TypeId(constructor.0))
+                }
+                _ => None,
+            }
+        })
+        .unwrap();
+    assert!(
+        checked
+            .type_store
+            .iter()
+            .any(|(_, ty)| *ty == etas_types::Type::Array(token)),
+        "the hidden generic owner must have a closed standard-method ABI"
+    );
+}

@@ -215,6 +215,7 @@ pub struct HirFlowSignature {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct HirImplDecl {
+    pub type_params: Vec<SymbolId>,
     pub target: HirImplTarget,
     pub items: Vec<HirImplItem>,
     pub scope: ScopeId,

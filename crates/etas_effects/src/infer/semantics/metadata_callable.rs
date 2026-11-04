@@ -237,6 +237,7 @@ impl EffectSemantics<'_> {
             });
         }
         let (types, rows) = self.metadata_environment_generics_in_mode(source, mode)?;
+        let type_parameters = self.metadata_environment_type_parameters(source)?;
         if let Some(method) = self
             .implementation_graphs
             .get(&source.graph)
@@ -264,7 +265,14 @@ impl EffectSemantics<'_> {
             }
         }
         summary = self
-            .specialize_summary_with_bindings(&summary, &[], &types, &rows)
+            .specialize_summary_with_residual_bindings(
+                &summary,
+                &[],
+                &types,
+                &type_parameters,
+                &rows,
+                None,
+            )
             .map_err(|error| match error {
                 EffectSpecializationError::InvalidCallableReturnSources => {
                     EffectSpecializationError::InvalidCallableEnvironment {
@@ -327,8 +335,11 @@ impl EffectSemantics<'_> {
                 .environment
                 .map_or(source.graph, |environment| environment.application),
             &invocation_state,
-            &types,
-            &rows,
+            super::callable_generics::ScopedGenericArguments {
+                types: &types,
+                parameters: Some(&type_parameters),
+                rows: &rows,
+            },
         )?;
         let bindings = bindings
             .into_iter()
@@ -432,6 +443,38 @@ impl EffectSemantics<'_> {
         state
             .local_latent_values
             .record_value_sources(output, found);
+        Ok(())
+    }
+
+    pub(super) fn record_applied_metadata_method_returns(
+        &self,
+        source: crate::MetadataCallableSource,
+        call: HirExprId,
+        state: &mut EffectState,
+    ) -> Result<(), EffectSpecializationError> {
+        let (_, node, _) = self
+            .metadata_callable(source)
+            .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+        if let Some(returned) = &node.returned_sources {
+            // Receiver, callback and generic arguments are already captured by
+            // the checked method application, not a second invocation here.
+            self.record_metadata_sources(
+                MetadataCallBindings {
+                    key: Some(source.graph),
+                    scope: CallableValueScope::Value(source.value),
+                    environment: source.environment,
+                    arguments: &[],
+                    generics: &[],
+                    type_bindings: &[],
+                    effect_row_bindings: &[],
+                },
+                returned,
+                state,
+                call,
+            )?;
+        } else if self.expr_type_contains_flow(call) {
+            return Err(EffectSpecializationError::InvalidCallableReturnSources);
+        }
         Ok(())
     }
 
@@ -585,20 +628,20 @@ impl EffectSemantics<'_> {
         let signature = self
             .flow_type_for_expr(site.callee_expr)
             .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
-        let (types, _) = self.metadata_environment_generics(source)?;
+        let (types, rows) = self.metadata_environment_generics(source)?;
+        let type_parameters = self.metadata_environment_type_parameters(source)?;
         let substitutions = types.iter().cloned().collect();
+        let type_rows = self.type_row_arguments(&rows, state.owner)?;
+        let mut substitution =
+            etas_types::TypeSubstitutionEngine::existing(&self.types.store, &substitutions)
+                .with_type_parameters(&type_parameters)
+                .with_effect_arguments(&type_rows);
         let params = checked
             .params
             .iter()
-            .map(|ty| {
-                etas_types::substitute_named_params_in_store(&self.types.store, *ty, &substitutions)
-            })
+            .map(|ty| substitution.substitute(*ty))
             .collect::<Result<Vec<_>, _>>()?;
-        let output = etas_types::substitute_named_params_in_store(
-            &self.types.store,
-            checked.output,
-            &substitutions,
-        )?;
+        let output = substitution.substitute(checked.output)?;
         let relation = TypeRelation::new(&self.types.store);
         let equivalent = |left, right| {
             relation.assignable(left, right).is_ok() && relation.assignable(right, left).is_ok()

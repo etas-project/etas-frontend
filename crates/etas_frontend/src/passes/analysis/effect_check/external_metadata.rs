@@ -71,6 +71,7 @@ pub(super) fn external_implementations(
                     );
                     Ok(Some(etas_effects::ExternalSpecImplementationMetadata {
                         identity: method.identity.clone(),
+                        owner_params: signature.owner_params.clone(),
                         graph_key,
                         graph: std::sync::Arc::new(method.callable.clone()),
                         values: crate::project::lower_callable_graph(&method.callable, types)?,

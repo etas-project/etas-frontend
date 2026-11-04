@@ -149,24 +149,34 @@ impl EffectSemantics<'_> {
         state: &EffectState,
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
         let (types, rows) = self.checked_call_generic_values(application, state)?;
+        let parameters = self
+            .types
+            .facts
+            .checked_method_calls
+            .get(&application)
+            .into_iter()
+            .flat_map(|fact| fact.owner_bindings.iter().copied())
+            .collect();
         self.instantiate_callable_environment_with_values(
             root,
             self.callable_environment_site(application)?,
             bindings,
             state,
-            &types,
-            &rows,
+            super::callable_generics::ScopedGenericArguments {
+                types: &types,
+                parameters: Some(&parameters),
+                rows: &rows,
+            },
         )
     }
 
-    pub(crate) fn instantiate_callable_environment_with_values(
+    pub(super) fn instantiate_callable_environment_with_values(
         &self,
         root: CallableEnvironmentId,
         application: CodeFingerprint,
         bindings: &TraceArgumentBindings,
         state: &EffectState,
-        types: &[(String, etas_types::TypeId)],
-        rows: &[(String, crate::EffectRow)],
+        arguments: super::callable_generics::ScopedGenericArguments<'_>,
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
         let mapped = |id: CallableEnvironmentId| CallableEnvironmentId {
             origin: id.origin,
@@ -283,8 +293,7 @@ impl EffectSemantics<'_> {
                     parameters,
                     generics: self.substitute_generic_values(
                         original.generics,
-                        types,
-                        rows,
+                        arguments,
                         state.owner,
                     )?,
                 },

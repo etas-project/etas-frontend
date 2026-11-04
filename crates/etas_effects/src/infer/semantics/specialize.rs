@@ -253,12 +253,22 @@ impl EffectSemantics<'_> {
         }
         let (mut type_bindings, mut effect_row_bindings) =
             self.checked_call_generic_values(site.call, state)?;
+        let mut type_parameters = self
+            .types
+            .facts
+            .checked_method_calls
+            .get(&site.call)
+            .into_iter()
+            .flat_map(|fact| fact.owner_bindings.iter().copied())
+            .collect::<std::collections::HashMap<_, _>>();
         if let Some(environment) = environment {
             let snapshot = self.callable_environment(environment)?;
             let owner = callee
                 .owner()
                 .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
             let (types, rows) = self.native_environment_generics(owner, &snapshot.generics)?;
+            type_parameters
+                .extend(self.native_environment_type_parameters(owner, &snapshot.generics)?);
             type_bindings.extend(types);
             effect_row_bindings.extend(rows);
         }
@@ -267,21 +277,27 @@ impl EffectSemantics<'_> {
             &mut trace_bindings,
             self.callable_environment_site(site.call)?,
             state,
-            &type_bindings,
-            &effect_row_bindings,
+            super::callable_generics::ScopedGenericArguments {
+                types: &type_bindings,
+                parameters: Some(&type_parameters),
+                rows: &effect_row_bindings,
+            },
         )?;
         self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
         if bindings.is_empty()
             && trace_bindings.is_empty()
             && type_bindings.is_empty()
+            && type_parameters.is_empty()
             && effect_row_bindings.is_empty()
         {
             return Ok(summary.clone());
         }
 
         let residual_bindings = if !summary.residual_checks.is_empty()
-            && (!type_bindings.is_empty() || !effect_row_bindings.is_empty())
+            && (!type_bindings.is_empty()
+                || !type_parameters.is_empty()
+                || !effect_row_bindings.is_empty())
         {
             let EffectUnit::Item(owner) = callee else {
                 return Err(EffectSpecializationError::UnsupportedResidualSubstitution);
@@ -301,6 +317,7 @@ impl EffectSemantics<'_> {
             summary,
             &bindings,
             &type_bindings,
+            &type_parameters,
             &effect_row_bindings,
             residual_bindings.as_ref(),
         )?;
@@ -423,16 +440,18 @@ impl EffectSemantics<'_> {
             summary,
             bindings,
             type_bindings,
+            &std::collections::HashMap::new(),
             effect_row_bindings,
             None,
         )
     }
 
-    fn specialize_summary_with_residual_bindings(
+    pub(super) fn specialize_summary_with_residual_bindings(
         &self,
         summary: &EffectSummary,
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
+        type_parameters: &std::collections::HashMap<TypeId, TypeId>,
         effect_row_bindings: &[(String, EffectRow)],
         residual_bindings: Option<
             &BTreeMap<
@@ -441,7 +460,11 @@ impl EffectSemantics<'_> {
             >,
         >,
     ) -> Result<EffectSummary, EffectSpecializationError> {
-        if bindings.is_empty() && type_bindings.is_empty() && effect_row_bindings.is_empty() {
+        if bindings.is_empty()
+            && type_bindings.is_empty()
+            && type_parameters.is_empty()
+            && effect_row_bindings.is_empty()
+        {
             return Ok(summary.clone());
         }
         let names = type_bindings.iter().cloned().collect();
@@ -450,10 +473,12 @@ impl EffectSemantics<'_> {
                 semantics: self,
                 bindings,
                 type_bindings,
+                type_parameters,
                 rows: effect_row_bindings,
                 residual_bindings,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
-                types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names),
+                types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
+                    .with_type_parameters(type_parameters),
             },
             summary,
         )
@@ -490,21 +515,13 @@ impl EffectSemantics<'_> {
             .cloned()
             .map(|effect| self.specialize_effect(effect, bindings, type_bindings))
             .collect::<Result<Vec<_>, _>>()?;
-        let mut specialized = EffectRow {
-            effects: EffectSet::from_iter(effects),
-            open: row.open,
-        };
-        if let Some(open) = row.open {
-            for (name, binding) in effect_row_bindings {
-                if effect_var_id_from_name(name) != open {
-                    continue;
-                }
-                specialized.effects.union_assign(&binding.effects);
-                specialized.open = binding.open;
-                break;
-            }
-        }
-        Ok(specialized)
+        Ok(bind_effect_row_tail(
+            EffectRow {
+                effects: EffectSet::from_iter(effects),
+                open: row.open,
+            },
+            effect_row_bindings,
+        ))
     }
 
     pub(crate) fn specialize_effect(
@@ -769,6 +786,19 @@ impl EffectSemantics<'_> {
             }
         }
     }
+}
+
+fn bind_effect_row_tail(mut row: EffectRow, bindings: &[(String, EffectRow)]) -> EffectRow {
+    if let Some(open) = row.open {
+        for (name, binding) in bindings {
+            if effect_var_id_from_name(name) == open {
+                row.effects.union_assign(&binding.effects);
+                row.open = binding.open;
+                break;
+            }
+        }
+    }
+    row
 }
 
 fn summary_contains_effect_row(summary: &EffectSummary, name: &str) -> bool {

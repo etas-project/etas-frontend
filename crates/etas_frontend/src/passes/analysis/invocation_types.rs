@@ -46,38 +46,10 @@ impl Pass<ProjectContext> for PrepareDirectInvocationTypesPass {
                 "direct invocation preparation requires checked HIR and types",
             );
         };
-        let mut targets = std::collections::HashMap::new();
-        for (expr, fact) in &types.facts.generic_instantiations {
-            if !fact.deferred_effect_row_obligations.is_empty() {
-                continue;
-            }
-            let path = match hir.hir.exprs.get(*expr) {
-                Some(etas_hir::HirExpr::Call { callee, .. }) => match hir.hir.exprs.get(*callee) {
-                    Some(etas_hir::HirExpr::Path(path)) => path,
-                    _ => continue,
-                },
-                Some(etas_hir::HirExpr::Path(path)) => path,
-                _ => continue,
-            };
-            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-                continue;
-            };
-            let Some(symbol) = hir.hir.canonical_source_symbol(symbol) else {
-                return PassResult::failed("direct generic call has an invalid source binding");
-            };
-            let Some(etas_hir::SymbolDef::Item { item }) =
-                hir.hir.symbols.get(symbol).map(|symbol| &symbol.def)
-            else {
-                continue;
-            };
-            if instantiation::signature(&types.facts, *item).is_none() {
-                continue;
-            }
-            targets
-                .entry(*expr)
-                .or_insert_with(std::collections::BTreeSet::new)
-                .insert(*item);
-        }
+        let targets = match instantiation::direct_targets(&hir.hir, types) {
+            Ok(targets) => targets,
+            Err(reason) => return PassResult::failed(reason),
+        };
         if targets.is_empty() {
             return PassResult::unchanged();
         }
@@ -86,11 +58,14 @@ impl Pass<ProjectContext> for PrepareDirectInvocationTypesPass {
             |candidate| candidate.descriptor_limits,
         );
         let prepared = match instantiation::prepare_from_targets(
-            &hir.hir,
-            types,
-            &targets,
-            limits,
-            manager.execution_control(),
+            instantiation::InvocationInput {
+                hir: &hir.hir,
+                types,
+                targets: &targets,
+                limits,
+                control: manager.execution_control(),
+                phase: instantiation::PreparationPhase::Types,
+            },
             &[],
             None,
         ) {

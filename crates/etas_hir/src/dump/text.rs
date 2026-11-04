@@ -469,6 +469,9 @@ impl<'a> Dump<'a> {
                     &format!("i{} Impl scope=sc{} {}", id.0, item.scope.0, target),
                     item.span,
                     |this| {
+                        for param in &item.type_params {
+                            this.line(&format!("TypeParam s{}", param.0), None);
+                        }
                         for item in &item.items {
                             this.line(
                                 &format!("ImplItem {:?}", std::mem::discriminant(item)),

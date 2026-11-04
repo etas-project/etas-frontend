@@ -10,6 +10,15 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         unit.analysis_body_with_context(&self.context)
     }
 
+    fn unit_dependencies(&self, unit: Self::Unit) -> Vec<Self::Unit> {
+        unit.owner()
+            .and_then(|owner| self.spec_unit_targets.get(&owner))
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect()
+    }
+
     fn begin_unit(&mut self, context: UnitContext<Self::Unit>) -> Self::Domain {
         let mut state = EffectState::for_unit(context.unit);
         if let Some(captures) = self.captured_values.get(&context.unit) {
@@ -283,12 +292,6 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                         {
                             return vec![unit];
                         }
-                    }
-                    Some(SymbolDef::ImportAlias {
-                        path,
-                        origin: etas_hir::ImportAliasOrigin::SourceImport,
-                    }) => {
-                        return self.external_method_dependencies(path);
                     }
                     _ => {}
                 }

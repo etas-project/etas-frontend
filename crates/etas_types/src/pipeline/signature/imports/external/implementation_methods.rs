@@ -1,5 +1,30 @@
 use super::*;
 
+pub(super) fn owner_parameters(
+    ctx: &TypePipelineContext<'_>,
+    methods: &[etas_code::MethodId],
+) -> Result<Vec<crate::CallableGenericParam>, String> {
+    let mut parameters = None;
+    for identity in methods {
+        let method = ctx
+            .signature_facts
+            .external_methods
+            .iter()
+            .find(|method| &method.identity == identity)
+            .ok_or("external implementation has no checked owner binder")?;
+        if let Some(previous) = &parameters {
+            if previous != &method.owner_params {
+                return Err(
+                    "external implementation methods have inconsistent owner binders".into(),
+                );
+            }
+        } else {
+            parameters = Some(method.owner_params.clone());
+        }
+    }
+    Ok(parameters.unwrap_or_default())
+}
+
 pub(super) fn apply(
     ctx: &mut TypePipelineContext<'_>,
     _package: ExternalPackageKey,

@@ -1,6 +1,9 @@
 use crate::code::descriptor::ProjectionError;
 use etas_types::lower::external::{package_effect_row_input, package_type_input};
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn signature(
     method: &etas_package_metadata::PublishedMethod,
 ) -> Result<etas_types::ExternalMethodInput, ProjectionError> {

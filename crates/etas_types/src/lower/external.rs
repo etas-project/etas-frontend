@@ -79,6 +79,17 @@ pub(crate) fn lower_external_generic_params(
     callable_label: &str,
     params: &[crate::ExternalCallableGenericParamInput],
 ) -> Option<Vec<crate::CallableGenericParam>> {
+    lower_external_scoped_generic_params(ctx, span, package, callable_label, params, None)
+}
+
+pub(crate) fn lower_external_scoped_generic_params(
+    ctx: &mut TypePipelineContext<'_>,
+    span: Span,
+    package: crate::ExternalPackageKey,
+    callable_label: &str,
+    params: &[crate::ExternalCallableGenericParamInput],
+    owner: Option<etas_code::descriptor::GenericOwner>,
+) -> Option<Vec<crate::CallableGenericParam>> {
     let unique_names = params
         .iter()
         .map(|param| param.name.as_str())
@@ -94,8 +105,16 @@ pub(crate) fn lower_external_generic_params(
         );
         return None;
     }
+    let subjects = reserve_external_generic_parameters(ctx, params, owner.as_ref());
+    let subjects = match subjects {
+        Ok(subjects) => subjects,
+        Err(reason) => {
+            invalid_external_metadata(ctx, span, reason.into());
+            return None;
+        }
+    };
     let mut generic_params = Vec::with_capacity(params.len());
-    for param in params {
+    for (param, subject) in params.iter().zip(subjects) {
         let mut bounds = Vec::with_capacity(param.bounds.len());
         for bound in &param.bounds {
             let spec = match resolve_external_spec(ctx, package, &bound.spec, bound.args.len()) {
@@ -133,14 +152,39 @@ pub(crate) fn lower_external_generic_params(
                 }
             },
             name: param.name.clone(),
-            subject: ctx.interner.intern(Type::Named(NamedTypeRef {
-                source_parameter: None,
-                name: param.name.clone(),
-            })),
+            subject,
             bounds,
         });
     }
     Some(generic_params)
+}
+
+pub(crate) fn reserve_external_generic_parameters(
+    ctx: &mut TypePipelineContext<'_>,
+    params: &[crate::ExternalCallableGenericParamInput],
+    owner: Option<&etas_code::descriptor::GenericOwner>,
+) -> Result<Vec<TypeId>, &'static str> {
+    params
+        .iter()
+        .enumerate()
+        .map(|(position, param)| {
+            if let Some(owner) = owner {
+                crate::ty::CanonicalTypeParameterIdentity::new_scoped(
+                    owner.clone(),
+                    position as u32,
+                )
+                .and_then(|identity| {
+                    ctx.interner
+                        .intern_canonical_parameter(identity, param.name.clone())
+                })
+            } else {
+                Ok(ctx.interner.intern(Type::Named(NamedTypeRef {
+                    source_parameter: None,
+                    name: param.name.clone(),
+                })))
+            }
+        })
+        .collect()
 }
 
 fn validate_external_action_selector_metadata(
@@ -291,6 +335,21 @@ pub fn lower_external_type(
             source_parameter: None,
             name: name.clone(),
         })),
+        crate::ExternalTypeInput::Parameter { owner, position } => {
+            let identity =
+                crate::ty::CanonicalTypeParameterIdentity::new_scoped(owner.clone(), *position);
+            if let Ok(identity) = identity
+                && let Some(ty) = ctx.interner.canonical_parameter(&identity)
+            {
+                return ty;
+            }
+            invalid_external_metadata(
+                ctx,
+                span,
+                "type parameter has no registered checked owner binding".into(),
+            );
+            ctx.interner.primitive(PrimitiveType::Never)
+        }
         crate::ExternalTypeInput::Enum { path, .. } => {
             let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
                 name: path.join("."),

@@ -70,6 +70,7 @@ impl DefinitionIdentityIndex {
                     .iter()
                     .map(|parameter| GenericDeclaration {
                         name: parameter.name.clone(),
+                        subject: Some(parameter.subject),
                         effect: parameter.kind == etas_types::CallableGenericParamKind::Effect,
                         bounds: parameter
                             .bounds
@@ -135,6 +136,7 @@ impl DefinitionIdentityIndex {
                     .iter()
                     .map(|parameter| GenericDeclaration {
                         name: parameter.name.clone(),
+                        subject: Some(parameter.subject),
                         effect: parameter.kind == etas_types::CallableGenericParamKind::Effect,
                         bounds: parameter
                             .bounds

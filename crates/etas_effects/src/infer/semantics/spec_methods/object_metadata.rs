@@ -106,7 +106,14 @@ impl EffectSemantics<'_> {
             .types
             .facts
             .methods
-            .witness(source_type, input.spec_args, &input.method.identity)
+            .resolve_witness(
+                &self.types.store,
+                &self.spec_facts,
+                source_type,
+                input.spec_args,
+                &input.method.identity,
+            )
+            .map_err(|reason| invalid(&reason))?
             .ok_or_else(|| {
                 invalid("metadata object generic recipe has no checked implementation")
             })?;
@@ -115,19 +122,22 @@ impl EffectSemantics<'_> {
                 .types
                 .facts
                 .methods
-                .target_identity(&implementation.target)
+                .target_identity(&implementation.declaration.target)
                 != Some(method)
         {
             return Err(invalid(
                 "metadata object target differs from its checked member witness",
             ));
         }
-        let arguments = etas_types::GenericInstantiationFact {
-            type_bindings: input.arguments.types.clone(),
-            effect_row_bindings: input.arguments.effect_rows.clone(),
-            deferred_effect_row_obligations: vec![],
+        let arguments = super::MethodInstantiation {
+            owner_bindings: implementation.owner_bindings,
+            generics: etas_types::GenericInstantiationFact {
+                type_bindings: input.arguments.types.clone(),
+                effect_row_bindings: input.arguments.effect_rows.clone(),
+                deferred_effect_row_obligations: vec![],
+            },
         };
-        let source = match &implementation.target {
+        let source = match &implementation.declaration.target {
             MethodTarget::Source { callable, .. } => {
                 self.discovered_spec_targets
                     .borrow_mut()
@@ -144,7 +154,7 @@ impl EffectSemantics<'_> {
                 )?
             }
             MethodTarget::External { .. } => self.capture_external_spec_implementation(
-                implementation,
+                implementation.declaration,
                 input.invocation,
                 actual,
                 input.declaration,

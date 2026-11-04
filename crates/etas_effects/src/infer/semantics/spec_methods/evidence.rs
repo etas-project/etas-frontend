@@ -4,7 +4,7 @@ use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
 
 use crate::{
-    ActionTraceDomain, EffectRow, EffectSet, EffectSummary, ParameterCallTarget,
+    ActionTraceDomain, EffectSummary, ParameterCallTarget,
     facts::{
         CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
     },
@@ -29,14 +29,13 @@ pub(crate) enum MethodEvidence {
 }
 
 impl EffectSemantics<'_> {
-    pub(crate) fn bind_spec_method_arguments(
+    pub(in crate::infer::semantics) fn bind_spec_method_arguments(
         &self,
         summary: &EffectSummary,
         bindings: &mut TraceArgumentBindings,
         application: etas_code::CodeFingerprint,
         state: &EffectState,
-        types: &[(String, TypeId)],
-        rows: &[(String, EffectRow)],
+        generics: super::super::callable_generics::ScopedGenericArguments<'_>,
     ) -> Result<(), EffectSpecializationError> {
         let mut calls = BTreeMap::new();
         summary.action_trace.collect_parameter_calls(&mut calls);
@@ -75,7 +74,7 @@ impl EffectSemantics<'_> {
                     application,
                     bindings,
                     state,
-                    (types, rows),
+                    generics,
                 )?;
                 bindings.insert(
                     reference.target,
@@ -97,8 +96,7 @@ impl EffectSemantics<'_> {
                 application,
                 bindings,
                 state,
-                types,
-                rows,
+                generics,
             )?;
             bindings.insert(
                 reference.target,
@@ -118,31 +116,7 @@ impl EffectSemantics<'_> {
         let owner = state
             .owner
             .ok_or_else(|| invalid("spec invocation has no checked owner"))?;
-        let parameters = self
-            .native_generic_params(owner)
-            .ok_or_else(|| invalid("spec invocation has no checked generic scope"))?;
-        let generics = parameters
-            .iter()
-            .enumerate()
-            .map(|(position, parameter)| {
-                let value = match parameter.kind {
-                    CallableGenericParamKind::Type => CallableGenericValue::Type(parameter.subject),
-                    CallableGenericParamKind::Effect => {
-                        CallableGenericValue::EffectRow(EffectRow {
-                            effects: EffectSet::new(),
-                            open: Some(crate::effect_var_id_from_name(&parameter.name)),
-                        })
-                    }
-                };
-                (
-                    CallableGenericParameter::Native {
-                        owner,
-                        position: position as u32,
-                    },
-                    value,
-                )
-            })
-            .collect();
+        let generics = self.lexical_generic_values(owner)?;
         let arguments = self.checked_method_arguments(call)?;
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
@@ -193,9 +167,12 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| invalid("method evidence has no checked lexical owner"))?;
         let snapshot = self.callable_environment(environment)?;
         let (types, rows) = self.native_environment_generics(lexical_owner, &snapshot.generics)?;
+        let type_parameters =
+            self.native_environment_type_parameters(lexical_owner, &snapshot.generics)?;
         let names = types.iter().cloned().collect::<HashMap<_, _>>();
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
         let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
+            .with_type_parameters(&type_parameters)
             .with_effect_arguments(&type_rows);
         let mut arguments = self.call_generic_bindings(call);
         for (_, ty) in &mut arguments.types {
@@ -206,26 +183,40 @@ impl EffectSemantics<'_> {
         }
         self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
         if let etas_types::method::MethodTarget::Source { callable, .. } = fact.target {
+            let owner_bindings = fact
+                .owner_bindings
+                .iter()
+                .map(|(parameter, argument)| Ok((*parameter, substitution.substitute(*argument)?)))
+                .collect::<Result<_, EffectSpecializationError>>()?;
             return self
                 .capture_source_method_implementation(
                     callable,
                     environment,
                     snapshot,
-                    etas_types::GenericInstantiationFact {
-                        type_bindings: arguments.types,
-                        effect_row_bindings: arguments.effect_rows,
-                        deferred_effect_row_obligations: Vec::new(),
+                    super::MethodInstantiation {
+                        owner_bindings,
+                        generics: etas_types::GenericInstantiationFact {
+                            type_bindings: arguments.types,
+                            effect_row_bindings: arguments.effect_rows,
+                            deferred_effect_row_obligations: Vec::new(),
+                        },
                     },
                 )
                 .map(MethodEvidence::Resolved);
         }
         if let etas_types::method::MethodTarget::External { identity } = &fact.target {
+            let owner_bindings = fact
+                .owner_bindings
+                .iter()
+                .map(|(parameter, argument)| Ok((*parameter, substitution.substitute(*argument)?)))
+                .collect::<Result<_, EffectSpecializationError>>()?;
             return self
                 .capture_external_method(
                     identity,
                     &fact.signature,
                     environment,
                     snapshot,
+                    &owner_bindings,
                     (
                         arguments.types,
                         arguments
@@ -296,8 +287,15 @@ impl EffectSemantics<'_> {
         {
             return Ok(MethodEvidence::Alternatives(sources));
         }
-        if let Some(EffectUnit::Item(item)) =
-            self.checked_method_witness_target(receiver, &args, member)
+        let witness = self
+            .types
+            .facts
+            .methods
+            .resolve_witness(&self.types.store, &self.spec_facts, receiver, &args, member)
+            .map_err(|reason| invalid(&reason))?;
+        if let Some(witness) = witness.as_ref()
+            && let etas_types::method::MethodTarget::Source { callable: item, .. } =
+                witness.declaration.target
         {
             self.discovered_spec_targets
                 .borrow_mut()
@@ -311,37 +309,37 @@ impl EffectSemantics<'_> {
                     snapshot,
                     declaration,
                     method_fact,
-                    etas_types::GenericInstantiationFact {
-                        type_bindings: arguments.types,
-                        effect_row_bindings: arguments.effect_rows,
-                        deferred_effect_row_obligations: Vec::new(),
+                    super::MethodInstantiation {
+                        owner_bindings: witness.owner_bindings.clone(),
+                        generics: etas_types::GenericInstantiationFact {
+                            type_bindings: arguments.types,
+                            effect_row_bindings: arguments.effect_rows,
+                            deferred_effect_row_obligations: Vec::new(),
+                        },
                     },
                 )
                 .map(MethodEvidence::Resolved);
         }
-        if let Some(implementation) = self
-            .types
-            .facts
-            .methods
-            .witness(receiver, &args, member)
-            .filter(|method| {
-                matches!(
-                    method.target,
-                    etas_types::method::MethodTarget::External { .. }
-                )
-            })
-        {
+        if let Some(witness) = witness.filter(|witness| {
+            matches!(
+                witness.declaration.target,
+                etas_types::method::MethodTarget::External { .. }
+            )
+        }) {
             return self
                 .capture_external_spec_implementation(
-                    implementation,
+                    witness.declaration,
                     environment,
                     snapshot,
                     declaration,
                     method_fact,
-                    etas_types::GenericInstantiationFact {
-                        type_bindings: arguments.types,
-                        effect_row_bindings: arguments.effect_rows,
-                        deferred_effect_row_obligations: Vec::new(),
+                    super::MethodInstantiation {
+                        owner_bindings: witness.owner_bindings,
+                        generics: etas_types::GenericInstantiationFact {
+                            type_bindings: arguments.types,
+                            effect_row_bindings: arguments.effect_rows,
+                            deferred_effect_row_obligations: Vec::new(),
+                        },
                     },
                 )
                 .map(MethodEvidence::Resolved);
@@ -364,6 +362,7 @@ impl EffectSemantics<'_> {
             bound_bindings.insert(parameter.name.clone(), receiver);
         }
         let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &bound_bindings)
+            .with_type_parameters(&type_parameters)
             .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &declaration.effects {
@@ -402,8 +401,8 @@ impl EffectSemantics<'_> {
         ) {
             return Ok(true);
         }
-        for parameter in self
-            .native_generic_params(owner)
+        for (_, parameter) in self
+            .native_generic_interface(owner)
             .ok_or_else(|| invalid("method evidence lexical scope is missing"))?
         {
             if let Some(etas_types::Type::Named(named)) = self.types.store.get(parameter.subject)
@@ -426,17 +425,26 @@ impl EffectSemantics<'_> {
         snapshot: CallableEnvironment,
         declaration: &etas_types::CallableSignature,
         method: &etas_types::SpecMethodFact,
-        arguments: etas_types::GenericInstantiationFact,
+        arguments: super::MethodInstantiation,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let Some(etas_types::ItemSignature::Flow(implementation)) =
             self.types.facts.item_signatures.get(&item)
         else {
             return Err(invalid("method implementation has no checked signature"));
         };
+        let arguments_owner = arguments.owner_bindings;
         let arguments = method
-            .implementation_instantiation(declaration, implementation, &arguments)
+            .implementation_instantiation(declaration, implementation, &arguments.generics)
             .map_err(|reason| invalid(&reason))?;
-        self.capture_source_method_implementation(item, invocation, snapshot, arguments)
+        self.capture_source_method_implementation(
+            item,
+            invocation,
+            snapshot,
+            super::MethodInstantiation {
+                generics: arguments,
+                owner_bindings: arguments_owner,
+            },
+        )
     }
 
     pub(super) fn capture_source_method_implementation(
@@ -444,7 +452,7 @@ impl EffectSemantics<'_> {
         item: HirItemId,
         invocation: CallableEnvironmentId,
         snapshot: CallableEnvironment,
-        arguments: etas_types::GenericInstantiationFact,
+        arguments: super::MethodInstantiation,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let Some(etas_types::ItemSignature::Flow(implementation)) =
             self.types.facts.item_signatures.get(&item)
@@ -452,6 +460,22 @@ impl EffectSemantics<'_> {
             return Err(invalid("method implementation has no checked signature"));
         };
         let mut generics = BTreeMap::new();
+        if let Some(method) = self.native_impl_method(item) {
+            for (position, parameter) in method.owner_params.iter().enumerate() {
+                let argument = arguments
+                    .owner_bindings
+                    .get(&parameter.subject)
+                    .ok_or_else(|| invalid("source method owner binding is missing"))?;
+                generics.insert(
+                    CallableGenericParameter::Native {
+                        owner: method.implementation,
+                        position: position as u32,
+                    },
+                    CallableGenericValue::Type(*argument),
+                );
+            }
+        }
+        let arguments = arguments.generics;
         for (position, parameter) in implementation.generic_params.iter().enumerate() {
             let value = match parameter.kind {
                 CallableGenericParamKind::Type => CallableGenericValue::Type(

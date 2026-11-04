@@ -10,6 +10,7 @@ pub(super) struct CallSummaryMapper<'a, 'hir> {
     pub(super) semantics: &'a EffectSemantics<'hir>,
     pub(super) bindings: &'a [(String, HirExprId)],
     pub(super) type_bindings: &'a [(String, TypeId)],
+    pub(super) type_parameters: &'a std::collections::HashMap<TypeId, TypeId>,
     pub(super) rows: &'a [(String, EffectRow)],
     pub(super) residual_bindings: Option<
         &'a std::collections::BTreeMap<
@@ -43,7 +44,9 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
     ) -> Result<crate::ResidualCheckSet, Self::Error> {
         if !checks.is_empty()
             && self.residual_bindings.is_none()
-            && (!self.type_bindings.is_empty() || !self.rows.is_empty())
+            && (!self.type_bindings.is_empty()
+                || !self.type_parameters.is_empty()
+                || !self.rows.is_empty())
         {
             return Err(self.unsupported_residual_substitution());
         }
@@ -65,12 +68,41 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
         self.types.substitute(ty).map_err(Into::into)
     }
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error> {
-        self.semantics
-            .specialize_effect(effect, self.bindings, self.type_bindings)
+        let mut effect = self
+            .semantics
+            .specialize_effect(effect, self.bindings, &[])?;
+        match &mut effect {
+            Effect::AppliedAction(action) => {
+                for arg in &mut action.args {
+                    if let etas_types::EffectArgRef::Type(ty) = arg {
+                        *ty = self.ty(*ty)?;
+                    }
+                }
+            }
+            Effect::Applied { args, .. } => {
+                for ty in args {
+                    *ty = self.ty(*ty)?;
+                }
+            }
+            Effect::Error(ty) => *ty = self.ty(*ty)?,
+            _ => {}
+        }
+        Ok(effect)
     }
     fn row(&mut self, row: &EffectRow) -> Result<EffectRow, Self::Error> {
-        self.semantics
-            .specialize_effect_row(row, self.bindings, self.type_bindings, self.rows)
+        let effects = row
+            .effects
+            .iter()
+            .cloned()
+            .map(|effect| self.effect(effect))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(super::bind_effect_row_tail(
+            EffectRow {
+                effects: effects.into_iter().collect(),
+                open: row.open,
+            },
+            self.rows,
+        ))
     }
 }
 

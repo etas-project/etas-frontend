@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn validate(
     environment: &ProjectEnvironmentInput,
 ) -> Result<(), ExternalEnvironmentValidationError> {
@@ -25,13 +28,22 @@ pub(super) fn validate(
             .iter()
             .find(|origin| origin.package == metadata.package)
             .ok_or_else(|| fail("published methods require canonical package origins"))?;
-        let headers = origin
+        let descriptors = origin
             .descriptors
             .as_ref()
-            .and_then(|set| set.headers.as_ref())
+            .ok_or_else(|| fail("published methods require canonical descriptors"))?;
+        let parameters =
+            etas_package_metadata::MetadataTypeParameters::from_descriptors(descriptors)
+                .map_err(|error| fail(&error.to_string()))?;
+        let headers = descriptors
+            .headers
+            .as_ref()
             .ok_or_else(|| fail("published methods require canonical callable headers"))?;
         let mut ids = BTreeSet::new();
         for method in &metadata.methods {
+            parameters
+                .validate_method(method)
+                .map_err(|error| fail(&error.to_string()))?;
             let owner = method.identity.implementation();
             if !ids.insert(&method.identity)
                 || owner.package() != origin.origins.package

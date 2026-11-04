@@ -153,7 +153,7 @@ fn references(root: &Ty) -> BTreeSet<Vec<String>> {
                 }
                 pending.extend(result.as_deref());
             }
-            Ty::Primitive(_) | Ty::Var(_) | Ty::Prompt | Ty::PromptPart => {}
+            Ty::Primitive(_) | Ty::Var(_) | Ty::Parameter { .. } | Ty::Prompt | Ty::PromptPart => {}
         }
     }
     result

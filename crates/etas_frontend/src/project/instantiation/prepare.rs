@@ -49,6 +49,7 @@ impl From<&str> for InstantiationError {
 pub(crate) struct PreparedInstantiations {
     pub store: Arc<TypeStore>,
     pub plan: Arc<NativeInstantiationPlan>,
+    pub method_bodies: BTreeSet<HirItemId>,
 }
 
 pub(crate) struct PreparationInput<'a> {
@@ -57,6 +58,21 @@ pub(crate) struct PreparationInput<'a> {
     pub effects: &'a etas_effects::EffectFacts,
     pub limits: etas_code::descriptor::DescriptorLimits,
     pub control: Option<&'a dyn PipelineExecutionControl>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparationPhase {
+    Types,
+    Effects,
+}
+
+pub(crate) struct InvocationInput<'a> {
+    pub hir: &'a HirRevision,
+    pub types: &'a TypeOutput,
+    pub targets: &'a HashMap<HirExprId, BTreeSet<HirItemId>>,
+    pub limits: etas_code::descriptor::DescriptorLimits,
+    pub control: Option<&'a dyn PipelineExecutionControl>,
+    pub phase: PreparationPhase,
 }
 
 pub(crate) fn prepare(
@@ -80,35 +96,56 @@ pub(crate) fn prepare(
         })
         .collect();
     prepare_from_targets(
-        input.hir,
-        input.types,
-        &targets,
-        input.limits,
-        input.control,
+        InvocationInput {
+            hir: input.hir,
+            types: input.types,
+            targets: &targets,
+            limits: input.limits,
+            control: input.control,
+            phase: PreparationPhase::Effects,
+        },
         seeds,
         interner,
     )
 }
 
 pub(crate) fn prepare_from_targets(
-    hir: &HirRevision,
-    types: &TypeOutput,
-    targets: &HashMap<HirExprId, BTreeSet<HirItemId>>,
-    limits: etas_code::descriptor::DescriptorLimits,
-    control: Option<&dyn PipelineExecutionControl>,
+    input: InvocationInput<'_>,
     seeds: &[NativeInstantiation],
     interner: Option<TypeInterner>,
 ) -> Result<PreparedInstantiations, InstantiationError> {
-    if types.facts.generic_instantiations.is_empty() && seeds.is_empty() {
+    let InvocationInput {
+        hir,
+        types,
+        targets,
+        limits,
+        control,
+        phase,
+    } = input;
+    if types.facts.generic_instantiations.is_empty()
+        && types.facts.checked_method_calls.is_empty()
+        && types.facts.existential_packs.is_empty()
+        && seeds.is_empty()
+    {
         return Ok(PreparedInstantiations {
             store: types.store.clone(),
             plan: Arc::default(),
+            method_bodies: BTreeSet::new(),
         });
     }
     let index = hir.index();
     let mut calls = BTreeMap::<HirItemId, Vec<HirExprId>>::new();
-    for call in types.facts.generic_instantiations.keys() {
-        if targets.get(call).is_none_or(BTreeSet::is_empty) {
+    for call in types
+        .facts
+        .generic_instantiations
+        .keys()
+        .chain(types.facts.checked_method_calls.keys())
+        .chain(types.facts.existential_packs.keys())
+    {
+        if targets.get(call).is_none_or(BTreeSet::is_empty)
+            && !types.facts.checked_method_calls.contains_key(call)
+            && !types.facts.existential_packs.contains_key(call)
+        {
             continue;
         }
         let owner = index
@@ -119,11 +156,13 @@ pub(crate) fn prepare_from_targets(
     }
     for sites in calls.values_mut() {
         sites.sort();
+        sites.dedup();
     }
     if calls.is_empty() && seeds.is_empty() {
         return Ok(PreparedInstantiations {
             store: types.store.clone(),
             plan: Arc::default(),
+            method_bodies: BTreeSet::new(),
         });
     }
     let mut roots = BTreeMap::<HirItemId, Vec<TypeId>>::new();
@@ -150,15 +189,19 @@ pub(crate) fn prepare_from_targets(
         .filter(|owner| {
             signature(&types.facts, **owner)
                 .is_none_or(|signature| signature.generic_params.is_empty())
+                && super::owner_parameters(hir, &types.facts, **owner).is_empty()
         })
         .map(|owner| NativeInstantiation {
             owner: *owner,
             arguments: vec![],
+            owner_bindings: vec![],
         })
         .collect::<VecDeque<_>>();
     pending.extend(seeds.iter().cloned());
     let mut seen = HashSet::new();
     let mut plan = NativeInstantiationPlan::default();
+    let witnesses = super::witness::WitnessResolver::new(types);
+    let mut method_bodies = BTreeSet::new();
     let mut interner = interner.unwrap_or_else(|| TypeInterner::from_store((*types.store).clone()));
     let mut materialized = Vec::new();
     let mut representations =
@@ -188,8 +231,10 @@ pub(crate) fn prepare_from_targets(
         (|| -> Result<(), InstantiationError> {
             let template = signature(&types.facts, instance.owner);
             let (type_bindings, row_bindings) = instance.bindings(template)?;
+            let parameters = instance.type_parameters(template);
             let mut substitution =
                 TypeSubstitutionEngine::materializing(&mut interner, &type_bindings, None)
+                    .with_type_parameters(&parameters)
                     .with_effect_arguments(&row_bindings)
                     .with_expansion_depth(limits.max_expansion_depth)
                     .with_execution_control(control);
@@ -240,7 +285,46 @@ pub(crate) fn prepare_from_targets(
                 );
             }
             for call in calls.get(&instance.owner).into_iter().flatten() {
-                let fact = &types.facts.generic_instantiations[call];
+                if let Some(method) = types.facts.checked_method_calls.get(call)
+                    && matches!(
+                        method.target,
+                        etas_types::method::MethodTarget::BoundSpec { .. }
+                    )
+                {
+                    if let Some(application) =
+                        witnesses.method_application(method, &mut substitution)?
+                    {
+                        method_bodies.insert(application.body);
+                        match application.instance {
+                            Some(instance) => pending.push_back(instance),
+                            None if phase == PreparationPhase::Types => {}
+                            None => {
+                                return Err(
+                                    "native invocation has unmaterialized deferred effect rows"
+                                        .into(),
+                                );
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if let Some(pack) = types.facts.existential_packs.get(call) {
+                    let pack = witnesses.pack_bodies(pack, &mut substitution)?;
+                    method_bodies.extend(pack.bodies);
+                    pending.extend(pack.applications);
+                }
+                let fact = match types.facts.checked_method_calls.get(call) {
+                    Some(method) => &method.instantiation,
+                    None => match types.facts.generic_instantiations.get(call) {
+                        Some(fact) => fact,
+                        None => continue,
+                    },
+                };
+                if !fact.deferred_effect_row_obligations.is_empty()
+                    && phase == PreparationPhase::Types
+                {
+                    continue;
+                }
                 for item in targets.get(call).into_iter().flatten() {
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
@@ -250,32 +334,8 @@ pub(crate) fn prepare_from_targets(
                         .get(call)
                         .map(|fact| &fact.target)
                     {
-                        Some(etas_types::method::MethodTarget::BoundSpec {
-                            spec: etas_types::CheckedSpecRef::Source(symbol),
-                            member,
-                            ..
-                        }) => {
-                            let symbol = hir
-                                .canonical_source_symbol(*symbol)
-                                .ok_or("spec invocation has no canonical spec")?;
-                            let method = types
-                                .facts
-                                .spec_signatures
-                                .get(&symbol)
-                                .and_then(|spec| {
-                                    spec.methods
-                                        .iter()
-                                        .find(|candidate| candidate.identity == *member)
-                                })
-                                .ok_or("spec invocation has no checked method declaration")?;
-                            let declaration = method
-                                .signature_in(&types.facts)
-                                .ok_or("spec invocation has no checked method signature")?;
-                            Some(method.implementation_instantiation(
-                                declaration,
-                                target_signature,
-                                fact,
-                            )?)
+                        Some(etas_types::method::MethodTarget::BoundSpec { member, .. }) => {
+                            Some(witnesses.instantiation(member, target_signature, fact)?)
                         }
                         _ => None,
                     };
@@ -287,7 +347,20 @@ pub(crate) fn prepare_from_targets(
                     pending.push_back(NativeInstantiation {
                         owner: *item,
                         arguments,
+                        owner_bindings: types
+                            .facts
+                            .checked_method_calls
+                            .get(call)
+                            .into_iter()
+                            .flat_map(|fact| &fact.owner_bindings)
+                            .map(|(parameter, argument)| {
+                                Ok((*parameter, substitution.substitute(*argument)?))
+                            })
+                            .collect::<Result<_, etas_types::TypeSubstitutionError>>()?,
                     });
+                    if types.facts.checked_method_calls.contains_key(call) {
+                        method_bodies.insert(*item);
+                    }
                 }
             }
             for argument in &instance.arguments {
@@ -304,7 +377,7 @@ pub(crate) fn prepare_from_targets(
                     ),
                 }
             }
-            if !instance.arguments.is_empty() {
+            if !instance.arguments.is_empty() || !instance.owner_bindings.is_empty() {
                 plan.push(instance);
             }
             drop(substitution);
@@ -340,10 +413,11 @@ pub(crate) fn prepare_from_targets(
     Ok(PreparedInstantiations {
         store: Arc::new(interner.into_store()),
         plan: Arc::new(plan),
+        method_bodies,
     })
 }
 
-fn bind_call(
+pub(super) fn bind_call(
     substitution: &mut TypeSubstitutionEngine<'_>,
     target: &etas_types::CallableSignature,
     fact: &GenericInstantiationFact,

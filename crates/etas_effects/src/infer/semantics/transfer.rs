@@ -442,6 +442,15 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
             )) => match self.latent_source_summary(source, span) {
                 Ok(summary) => {
                     if let LatentSource::Metadata(source) = source {
+                        if let Err(error) =
+                            self.record_applied_metadata_method_returns(source, expr, &mut state)
+                        {
+                            return AnalysisStep::handled(self.incomplete_at(
+                                span,
+                                error.to_string(),
+                                state,
+                            ));
+                        }
                         self.inputs
                             .metadata_call_targets
                             .entry(expr)

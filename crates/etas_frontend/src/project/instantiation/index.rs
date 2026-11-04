@@ -37,6 +37,7 @@ impl NativeInstantiationPlan {
                 CallableGenericArg::EffectRow(row) => Argument::Row(row),
             }),
         );
+        let mut selected: Option<&NativeInstantiation> = None;
         for position in self.by_hash.get(&hash).into_iter().flatten() {
             let instance = self
                 .instances
@@ -60,10 +61,18 @@ impl NativeInstantiationPlan {
                     _ => false,
                 });
             if equal {
-                return Ok(Some(instance));
+                if selected
+                    .is_some_and(|previous| previous.owner_bindings != instance.owner_bindings)
+                {
+                    return Err(
+                        "callable application requires distinct implementation owner bindings"
+                            .into(),
+                    );
+                }
+                selected = Some(instance);
             }
         }
-        Ok(None)
+        Ok(selected)
     }
 }
 
@@ -116,6 +125,7 @@ mod tests {
         plan.push(NativeInstantiation {
             owner,
             arguments: vec![NativeGenericArgument::Type(TypeId(4))],
+            owner_bindings: vec![],
         });
         let hash = application_hash(owner, 1, [Argument::Type(TypeId(3))].into_iter());
         plan.by_hash.insert(hash, vec![0]);

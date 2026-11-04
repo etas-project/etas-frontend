@@ -474,6 +474,7 @@ impl DefinitionDescriptorProjector<'_> {
         let matches_owner = match owner {
             GenericOwner::Declaration(id) => self.identities.symbol(symbol) == Some(id),
             GenericOwner::Method(id) => self.identities.method(symbol) == Some(id),
+            GenericOwner::Implementation(_) | GenericOwner::ImplementationPattern(_) => false,
         };
         if !matches_owner {
             return Err(TraceTemplateProjectionError::CallableOwnerMismatch);

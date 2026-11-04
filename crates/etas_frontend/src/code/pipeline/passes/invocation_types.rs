@@ -146,6 +146,7 @@ fn materialize(
         return Ok(instantiation::PreparedInstantiations {
             store: Arc::new(interner.into_store()),
             plan: target.native_instantiations.clone(),
+            method_bodies: Default::default(),
         });
     }
     let source_catalog = DefinitionCatalog::build(
@@ -222,9 +223,15 @@ fn materialize(
             })
             .collect::<Result<_, _>>()
             .map_err(InstantiationError::from)?;
+        let owner_bindings = instance.relocate_owner_bindings(
+            instantiation::owner_parameters(&source.hir, &source.types, instance.owner),
+            instantiation::owner_parameters(&target.hir, &target.types, item),
+            &mut relocation,
+        )?;
         seeds.push(NativeInstantiation {
             owner: item,
             arguments,
+            owner_bindings,
         });
     }
     instantiation::prepare(

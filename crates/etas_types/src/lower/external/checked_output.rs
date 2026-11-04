@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 pub struct CheckedExternalTypeResolver<'a> {
     types: &'a TypeOutput,
+    specs: std::sync::OnceLock<crate::SpecFacts>,
     parameters: Option<HashMap<String, TypeId>>,
 }
 
@@ -20,8 +21,19 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         receiver: TypeId,
         args: &[TypeId],
         member: &crate::SpecMethodIdentity,
-    ) -> Option<&crate::method::MethodSignatureFact> {
-        self.types.facts.methods.witness(receiver, args, member)
+    ) -> Result<Option<crate::method::MethodWitness<'_>>, ExternalMetadataLoweringError> {
+        self.types
+            .facts
+            .methods
+            .resolve_witness(
+                &self.types.store,
+                self.specs
+                    .get_or_init(|| crate::SpecFacts::from(self.types.facts.as_ref())),
+                receiver,
+                args,
+                member,
+            )
+            .map_err(|message| ExternalMetadataLoweringError { message })
     }
 
     pub fn method_identity<'b>(
@@ -77,6 +89,7 @@ impl<'a> CheckedExternalTypeResolver<'a> {
     pub fn new(types: &'a TypeOutput) -> Self {
         Self {
             types,
+            specs: Default::default(),
             parameters: None,
         }
     }
@@ -98,6 +111,7 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         }
         Ok(Self {
             types,
+            specs: Default::default(),
             parameters: Some(bindings),
         })
     }
@@ -143,6 +157,12 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         ty: &crate::ExternalTypeInput,
     ) -> Result<TypeId, ExternalMetadataLoweringError> {
         match ty {
+        crate::ExternalTypeInput::Parameter { owner, position } => {
+            let identity = crate::ty::CanonicalTypeParameterIdentity::new_scoped(owner.clone(), *position)
+                .map_err(|message| ExternalMetadataLoweringError { message: message.into() })?;
+            self.types.store.canonical_parameter(&identity)
+                .ok_or_else(|| ExternalMetadataLoweringError { message: "external type parameter has no checked owner binding".into() })
+        }
         crate::ExternalTypeInput::Var(name) if self.parameters.is_some() => {
             self.parameters.as_ref().and_then(|params| params.get(name)).copied()
                 .ok_or_else(|| ExternalMetadataLoweringError {
@@ -244,6 +264,7 @@ impl<'a> CheckedExternalTypeResolver<'a> {
             })),
             crate::ExternalTypeInput::Alias { target, .. } => self.type_structure(target),
             crate::ExternalTypeInput::Named(_)
+            | crate::ExternalTypeInput::Parameter { .. }
             | crate::ExternalTypeInput::Nominal { .. }
             | crate::ExternalTypeInput::Enum { .. }
             | crate::ExternalTypeInput::Applied { .. } => {

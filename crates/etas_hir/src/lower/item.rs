@@ -300,6 +300,7 @@ impl LowerCtx {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
+        let type_params = self.lower_impl_type_params(&decl.target, scope, item_id);
         let target = match &decl.target {
             ast::ImplTarget::Agent { target, specs, .. } => {
                 return self.lower_agent_impl(decl, target, specs, item_id, parent_scope, scope);
@@ -337,18 +338,18 @@ impl LowerCtx {
             .owner_path()
             .map(path_text)
             .unwrap_or_else(|| "<invalid-impl>".to_string());
-        let receiver_type = match &decl.target {
-            ast::ImplTarget::Inherent {
-                target,
-                type_args,
-                span,
-            } => Some(ast::TypeExpr::Path {
-                path: target.clone(),
-                args: type_args.clone(),
-                span: *span,
-            }),
-            ast::ImplTarget::SpecSatisfaction { self_type, .. } => Some(self_type.clone()),
-            ast::ImplTarget::Agent { .. } | ast::ImplTarget::Error { .. } => None,
+        let receiver_type = match &target {
+            HirImplTarget::Inherent { target, type_args } => {
+                let ty = self.hir.types.alloc(HirType::Path {
+                    path: target.clone(),
+                    args: type_args.clone(),
+                    span: decl.target.span(),
+                });
+                self.source_map.map_type(ty, decl.target.span());
+                Some(ty)
+            }
+            HirImplTarget::SpecSatisfaction { self_type, .. } => Some(*self_type),
+            HirImplTarget::Agent { .. } | HirImplTarget::Error => None,
         };
         let owner_effect = match &target {
             HirImplTarget::Inherent { target, .. } => match &target.resolution {
@@ -373,13 +374,8 @@ impl LowerCtx {
             .map(|item| match item {
                 (_, ImplItem::Flow(flow)) => {
                     let body = self.hir.items.alloc(HirItem::Error { span: flow.span });
-                    let callable = self.lower_flow_like(
-                        flow,
-                        body,
-                        scope,
-                        Some(&owner),
-                        receiver_type.as_ref(),
-                    );
+                    let callable =
+                        self.lower_flow_like(flow, body, scope, Some(&owner), receiver_type);
                     *self.hir.items.get_mut(body).expect("reserved method body") =
                         HirItem::Flow(callable);
                     self.map_item(body, flow.span);
@@ -400,6 +396,7 @@ impl LowerCtx {
             .collect();
         self.map_item(item_id, decl.span);
         HirImplDecl {
+            type_params,
             target,
             items,
             scope,
@@ -598,12 +595,11 @@ impl LowerCtx {
         generics.extend(signature.type_params.iter().cloned());
         let type_params = self.lower_type_params(&generics, scope, item_id);
         let receiver_type_param = receiver.map(|_| type_params[0]);
-        let params = self.lower_params_with_receiver(
-            &signature.params,
-            scope,
-            item_id,
-            receiver_type.as_ref(),
-        );
+        let receiver_type = receiver_type
+            .as_ref()
+            .map(|ty| self.lower_type(ty, scope, item_id));
+        let params =
+            self.lower_params_with_receiver(&signature.params, scope, item_id, receiver_type);
         let return_type = signature
             .return_type
             .as_ref()
@@ -861,7 +857,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
         owner_qualifier: Option<&str>,
-        receiver_type: Option<&ast::TypeExpr>,
+        receiver_type: Option<HirTypeId>,
     ) -> HirFlowDecl {
         let symbol = if let Some(owner_qualifier) = owner_qualifier {
             self.alloc_symbol_with_def(SymbolData {
@@ -886,7 +882,7 @@ impl LowerCtx {
         item_id: HirItemId,
         parent_scope: ScopeId,
         symbol: SymbolId,
-        receiver_type: Option<&ast::TypeExpr>,
+        receiver_type: Option<HirTypeId>,
     ) -> HirFlowDecl {
         let scope = self
             .scopes

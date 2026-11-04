@@ -2004,6 +2004,13 @@ fn validate_type_semantics(
             }
             Ok(())
         }
+        ProjectExternalTypeInput::Parameter { owner, .. } => {
+            if owner.is_portable_parameter_owner() {
+                Ok(())
+            } else {
+                Err("type parameter requires a portable checked owner".into())
+            }
+        }
         ProjectExternalTypeInput::Named(path) => validate_path(path, "named type path"),
         ProjectExternalTypeInput::Enum { path, variants } => {
             validate_path(path, "enum type path")?;
@@ -2352,6 +2359,7 @@ fn validate_type_resource_bounds_with_budget(
                 }
                 ProjectExternalTypeInput::Primitive(_)
                 | ProjectExternalTypeInput::Var(_)
+                | ProjectExternalTypeInput::Parameter { .. }
                 | ProjectExternalTypeInput::Named(_)
                 | ProjectExternalTypeInput::Prompt
                 | ProjectExternalTypeInput::PromptPart => {}

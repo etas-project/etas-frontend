@@ -224,6 +224,7 @@ pub fn collect_agent_spec_satisfactions(
                     continue;
                 };
                 state.spec_impls.push(crate::SpecImplFact {
+                    generic_params: Vec::new(),
                     self_type,
                     spec_symbol: symbol,
                     args: args.clone(),

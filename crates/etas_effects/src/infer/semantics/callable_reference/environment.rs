@@ -1,6 +1,7 @@
 use super::*;
 use crate::facts::{CallableEnvironment, CallableEnvironmentId};
 use crate::infer::semantics::{specialize::TraceArgumentBindings, state::EffectState};
+use etas_types::TypeId;
 
 impl EffectSemantics<'_> {
     pub(crate) fn capture_callable_reference(
@@ -136,6 +137,7 @@ impl EffectSemantics<'_> {
             return Ok(None);
         }
         let (types, rows) = self.reference_environment_bindings(&reference)?;
+        let type_parameters = self.reference_environment_type_parameters(&reference)?;
         let substitutions = types.iter().cloned().collect();
         let application_owner = reference
             .environment
@@ -159,6 +161,7 @@ impl EffectSemantics<'_> {
                             &self.types.store,
                             &substitutions,
                         )
+                        .with_type_parameters(&type_parameters)
                         .with_effect_arguments(&row_arguments)
                         .substitute(ty)?,
                     )
@@ -205,6 +208,19 @@ impl EffectSemantics<'_> {
             },
         )?;
         Ok(Some(id))
+    }
+
+    pub(in crate::infer::semantics) fn reference_environment_type_parameters(
+        &self,
+        reference: &CallableReturnReference,
+    ) -> Result<std::collections::HashMap<TypeId, TypeId>, EffectSpecializationError> {
+        match reference.environment {
+            Some(id) => self.native_environment_type_parameters(
+                reference.owner,
+                &self.callable_environment(id)?.generics,
+            ),
+            None => Ok(Default::default()),
+        }
     }
 }
 

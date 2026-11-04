@@ -48,6 +48,12 @@ impl<'a> EffectSourceSnapshots<'a> {
 
 #[derive(Clone)]
 pub struct EffectAnalysisInput<'a> {
+    pub(crate) spec_unit_targets: std::sync::Arc<
+        std::collections::HashMap<
+            etas_hir::HirItemId,
+            std::collections::BTreeSet<crate::EffectUnit>,
+        >,
+    >,
     pub(crate) spec_method_targets: std::sync::Arc<
         std::collections::HashMap<
             etas_hir::HirExprId,

@@ -129,6 +129,7 @@ impl LowerCtx {
         let ResolveResult::Resolved(agent) = target.resolution else {
             self.map_item(implementation, decl.span);
             return HirImplDecl {
+                type_params: Vec::new(),
                 target: HirImplTarget::Agent { target, specs },
                 items: vec![HirImplItem::Error { span: decl.span }],
                 scope,
@@ -183,6 +184,7 @@ impl LowerCtx {
         }
         self.map_item(implementation, decl.span);
         HirImplDecl {
+            type_params: Vec::new(),
             target: HirImplTarget::Agent { target, specs },
             items,
             scope,

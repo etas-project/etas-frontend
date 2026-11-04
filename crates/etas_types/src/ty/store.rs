@@ -18,6 +18,7 @@ struct FrozenTypes {
     ids: HashMap<Type, TypeId>,
     nominal_identities: BTreeMap<TypeId, etas_code::DefinitionKey>,
     parameter_identities: BTreeMap<TypeId, CanonicalTypeParameterIdentity>,
+    parameter_ids: HashMap<CanonicalTypeParameterIdentity, TypeId>,
     identity: TypeBaseId,
 }
 
@@ -39,7 +40,7 @@ pub struct TypeBaseId(pub [u8; 32]);
     etas_core::RetainedSize,
 )]
 pub struct CanonicalTypeParameterIdentity {
-    owner: etas_code::DefinitionKey,
+    owner: etas_code::descriptor::GenericOwner,
     index: u32,
 }
 
@@ -53,7 +54,32 @@ impl CanonicalTypeParameterIdentity {
         ) {
             return Err("type parameter owner is not a type, spec or agent declaration");
         }
-        Ok(Self { owner, index })
+        Self::new_scoped(
+            etas_code::descriptor::GenericOwner::Declaration(owner),
+            index,
+        )
+    }
+
+    pub fn new_scoped(
+        owner: etas_code::descriptor::GenericOwner,
+        index: u32,
+    ) -> Result<Self, &'static str> {
+        let identity = Self { owner, index };
+        if !identity.valid_owner() {
+            return Err("invalid canonical generic owner");
+        }
+        Ok(identity)
+    }
+
+    pub fn owner(&self) -> &etas_code::descriptor::GenericOwner {
+        &self.owner
+    }
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    fn valid_owner(&self) -> bool {
+        self.owner.is_portable_parameter_owner()
     }
 }
 
@@ -97,11 +123,16 @@ impl SharedTypeBase {
         nominal_identities.hash(&mut hash);
         parameter_identities.hash(&mut hash);
         let identity = TypeBaseId(*hash.0.finalize().as_bytes());
+        let parameter_ids = parameter_identities
+            .iter()
+            .map(|(id, key)| (key.clone(), *id))
+            .collect();
         Self(Arc::new(FrozenTypes {
             types,
             ids,
             nominal_identities,
             parameter_identities,
+            parameter_ids,
             identity,
         }))
     }
@@ -168,11 +199,16 @@ impl SharedTypeBase {
             .checkpoint()
             .map_err(TypeBaseBuildError::Interrupted)?;
         let identity = TypeBaseId(*hash.0.finalize().as_bytes());
+        let parameter_ids = parameter_identities
+            .iter()
+            .map(|(id, key)| (key.clone(), *id))
+            .collect();
         Ok(Self(Arc::new(FrozenTypes {
             types,
             ids,
             nominal_identities,
             parameter_identities,
+            parameter_ids,
             identity,
         })))
     }
@@ -200,6 +236,7 @@ pub struct TypeStore {
     types: Vec<Type>,
     nominal_identities: BTreeMap<TypeId, etas_code::DefinitionKey>,
     parameter_identities: BTreeMap<TypeId, CanonicalTypeParameterIdentity>,
+    parameter_ids: HashMap<CanonicalTypeParameterIdentity, TypeId>,
 }
 
 /// Program-local lookup only. Hash collisions are resolved by full Type equality.
@@ -272,6 +309,7 @@ impl TypeStore {
             types: Vec::new(),
             nominal_identities: BTreeMap::new(),
             parameter_identities: BTreeMap::new(),
+            parameter_ids: HashMap::new(),
         }
     }
 
@@ -301,6 +339,13 @@ impl TypeStore {
         self.parameter_identities
             .get(&id)
             .or_else(|| self.base.as_ref()?.0.parameter_identities.get(&id))
+    }
+
+    pub fn canonical_parameter(&self, identity: &CanonicalTypeParameterIdentity) -> Option<TypeId> {
+        self.parameter_ids
+            .get(identity)
+            .copied()
+            .or_else(|| self.base.as_ref()?.0.parameter_ids.get(identity).copied())
     }
 
     fn parameter_identities(&self) -> BTreeMap<TypeId, CanonicalTypeParameterIdentity> {
@@ -389,12 +434,8 @@ impl TypeStore {
             base.0.parameter_identities.values().collect();
         for (id, key) in &parameter_identities {
             let local = (id.0 as usize).checked_sub(base_len);
-            if !matches!(
-                key.owner.kind(),
-                etas_code::DefinitionKind::Type
-                    | etas_code::DefinitionKind::Spec
-                    | etas_code::DefinitionKind::Agent
-            ) || !matches!(local.and_then(|index| types.get(index)), Some(Type::Named(name)) if name.source_parameter.is_none())
+            if !key.valid_owner()
+                || !matches!(local.and_then(|index| types.get(index)), Some(Type::Named(name)) if name.source_parameter.is_none())
                 || !parameter_keys.insert(key)
                 || nominal_identities.contains_key(id)
             {
@@ -405,6 +446,10 @@ impl TypeStore {
             base: Some(base),
             types: types.into_iter().map(canonical_type).collect(),
             nominal_identities,
+            parameter_ids: parameter_identities
+                .iter()
+                .map(|(id, key)| (key.clone(), *id))
+                .collect(),
             parameter_identities,
         })
     }
@@ -459,12 +504,8 @@ impl<'de> Deserialize<'de> for TypeStore {
         }
         let mut parameter_keys = std::collections::BTreeSet::new();
         for (id, identity) in &flat.parameter_identities {
-            if !matches!(
-                identity.owner.kind(),
-                etas_code::DefinitionKind::Type
-                    | etas_code::DefinitionKind::Spec
-                    | etas_code::DefinitionKind::Agent
-            ) || !matches!(flat.types.get(id.0 as usize), Some(Type::Named(name)) if name.source_parameter.is_none())
+            if !identity.valid_owner()
+                || !matches!(flat.types.get(id.0 as usize), Some(Type::Named(name)) if name.source_parameter.is_none())
                 || !parameter_keys.insert(identity)
                 || flat.nominal_identities.contains_key(id)
             {
@@ -477,6 +518,11 @@ impl<'de> Deserialize<'de> for TypeStore {
             base: None,
             types: flat.types.into_iter().map(canonical_type).collect(),
             nominal_identities: flat.nominal_identities,
+            parameter_ids: flat
+                .parameter_identities
+                .iter()
+                .map(|(id, key)| (key.clone(), *id))
+                .collect(),
             parameter_identities: flat.parameter_identities,
         })
     }
@@ -487,7 +533,6 @@ pub struct TypeInterner {
     store: TypeStore,
     types: HashMap<Type, TypeId>,
     canonical_nominals: HashMap<etas_code::DefinitionKey, TypeId>,
-    canonical_parameters: HashMap<CanonicalTypeParameterIdentity, TypeId>,
 }
 
 impl TypeInterner {
@@ -528,16 +573,10 @@ impl TypeInterner {
             .into_iter()
             .map(|(id, key)| (key, id))
             .collect();
-        let canonical_parameters = store
-            .parameter_identities()
-            .into_iter()
-            .map(|(id, key)| (key, id))
-            .collect();
         Self {
             store,
             types,
             canonical_nominals,
-            canonical_parameters,
         }
     }
 
@@ -592,21 +631,19 @@ impl TypeInterner {
         identity: CanonicalTypeParameterIdentity,
         name: String,
     ) -> Result<TypeId, &'static str> {
-        if !matches!(
-            identity.owner.kind(),
-            etas_code::DefinitionKind::Type
-                | etas_code::DefinitionKind::Spec
-                | etas_code::DefinitionKind::Agent
-        ) || name.is_empty()
-        {
+        if !identity.valid_owner() || name.is_empty() {
             return Err("invalid canonical type parameter");
         }
         let ty = Type::Named(super::NamedTypeRef {
             name,
             source_parameter: None,
         });
-        if let Some(id) = self.canonical_parameters.get(&identity).copied() {
-            return if self.store.get(id) == Some(&ty) {
+        if let Some(id) = self.store.canonical_parameter(&identity) {
+            return if self.store.get(id) == Some(&ty)
+                || matches!(
+                    identity.owner,
+                    etas_code::descriptor::GenericOwner::Implementation(_)
+                ) {
                 Ok(id)
             } else {
                 Err("canonical parameter has conflicting declaration")
@@ -614,8 +651,12 @@ impl TypeInterner {
         }
         let id = self.store.intern(ty);
         self.store.parameter_identities.insert(id, identity.clone());
-        self.canonical_parameters.insert(identity, id);
+        self.store.parameter_ids.insert(identity, id);
         Ok(id)
+    }
+
+    pub fn canonical_parameter(&self, identity: &CanonicalTypeParameterIdentity) -> Option<TypeId> {
+        self.store.canonical_parameter(identity)
     }
 
     pub fn store(&self) -> &TypeStore {

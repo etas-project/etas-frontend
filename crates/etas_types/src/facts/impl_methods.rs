@@ -5,5 +5,6 @@ pub struct TypeImplMethodFact {
     pub implementation: etas_hir::HirItemId,
     pub body: etas_hir::HirItemId,
     pub self_type: crate::TypeId,
+    pub owner_params: Vec<crate::CallableGenericParam>,
     pub inherent: bool,
 }

@@ -492,8 +492,25 @@ pub(crate) struct TypeDeclaration {
 #[derive(Clone, PartialEq, Eq, etas_core::RetainedSize)]
 pub(crate) struct GenericDeclaration {
     pub name: String,
+    pub subject: Option<TypeId>,
     pub effect: bool,
     pub bounds: Vec<BoundDeclaration>,
+}
+
+impl From<&etas_types::CallableGenericParam> for GenericDeclaration {
+    fn from(parameter: &etas_types::CallableGenericParam) -> Self {
+        Self {
+            name: parameter.name.clone(),
+            subject: Some(parameter.subject),
+            effect: parameter.kind == etas_types::CallableGenericParamKind::Effect,
+            bounds: parameter
+                .bounds
+                .iter()
+                .cloned()
+                .map(BoundDeclaration::Checked)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, etas_core::RetainedSize)]
@@ -509,6 +526,8 @@ pub struct DefinitionIdentityIndex {
     symbols: HashMap<SymbolId, DefinitionKey>,
     paths: BTreeMap<Vec<String>, DefinitionKey>,
     methods: HashMap<SymbolId, MethodId>,
+    method_owner_parameters: HashMap<MethodId, Vec<GenericDeclaration>>,
+    implementation_parameters: HashMap<TypeId, etas_package_metadata::GenericTypeParameter>,
     method_paths: BTreeMap<Vec<String>, MethodPath>,
     pub(crate) types: HashMap<TypeId, TypeDeclaration>,
     pub(crate) type_names: HashMap<String, TypeDeclaration>,
@@ -576,6 +595,8 @@ impl DefinitionIdentityIndex {
             symbols: HashMap::new(),
             paths: origins.external_definitions.clone(),
             methods: HashMap::new(),
+            method_owner_parameters: HashMap::new(),
+            implementation_parameters: HashMap::new(),
             method_paths: BTreeMap::new(),
             types: HashMap::new(),
             type_names: HashMap::new(),
@@ -663,6 +684,7 @@ impl DefinitionIdentityIndex {
                     .iter()
                     .map(|parameter| GenericDeclaration {
                         name: parameter.name.clone(),
+                        subject: None,
                         effect: false,
                         bounds: parameter
                             .bounds
@@ -881,6 +903,11 @@ impl DefinitionIdentityIndex {
                     }
                     Ok(GenericDeclaration {
                         name: data.name.clone(),
+                        subject: match checked.types.symbol_types.get(param) {
+                            Some(SymbolTypeFact::Param { ty }) => Some(*ty),
+                            _ if data.kind == etas_hir::SymbolKind::EffectParam => None,
+                            _ => return Err(ProjectionError::MissingDeclaration(*param)),
+                        },
                         effect: data.kind == etas_hir::SymbolKind::EffectParam,
                         bounds: checked_bounds
                             .into_iter()
@@ -1034,6 +1061,31 @@ impl DefinitionIdentityIndex {
         id: MethodId,
     ) -> Result<(), ProjectionError> {
         let inherent = if let Some(method) = checked.types.type_impl_methods.get(&symbol) {
+            for (position, parameter) in method.owner_params.iter().enumerate() {
+                let identity = etas_package_metadata::GenericTypeParameter {
+                    owner: etas_code::descriptor::GenericOwner::Implementation(
+                        id.implementation().clone(),
+                    ),
+                    position: position as u32,
+                };
+                if self
+                    .implementation_parameters
+                    .insert(parameter.subject, identity.clone())
+                    .is_some_and(|previous| previous != identity)
+                {
+                    return Err(ProjectionError::Invalid(
+                        "implementation parameter has conflicting canonical owners".into(),
+                    ));
+                }
+            }
+            self.method_owner_parameters.insert(
+                id.clone(),
+                method
+                    .owner_params
+                    .iter()
+                    .map(GenericDeclaration::from)
+                    .collect(),
+            );
             method.inherent
         } else {
             checked
@@ -1089,6 +1141,20 @@ impl DefinitionIdentityIndex {
 
     pub(crate) fn method(&self, symbol: SymbolId) -> Option<&MethodId> {
         self.methods.get(&symbol)
+    }
+
+    pub(crate) fn implementation_parameter(
+        &self,
+        ty: TypeId,
+    ) -> Option<&etas_package_metadata::GenericTypeParameter> {
+        self.implementation_parameters.get(&ty)
+    }
+
+    pub(crate) fn method_owner_parameters(
+        &self,
+        method: &MethodId,
+    ) -> Option<&[GenericDeclaration]> {
+        self.method_owner_parameters.get(method).map(Vec::as_slice)
     }
 
     pub(crate) fn callable_path(

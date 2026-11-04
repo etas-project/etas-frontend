@@ -1139,9 +1139,12 @@ impl<'a> ProjectMetadataProjection<'a> {
     }
 
     fn metadata_type(&self, ty: TypeId) -> Result<MetadataType, PackageMetadataError> {
-        let mut metadata = metadata_type(ty, &self.checked.type_store, &|spec| {
-            self.checked_spec_path(spec)
-        })?;
+        let mut metadata = metadata_type(
+            ty,
+            &self.checked.type_store,
+            &|spec| self.checked_spec_path(spec),
+            self.identities,
+        )?;
         self.canonicalize_metadata_type(&mut metadata)?;
         Ok(metadata)
     }
@@ -1151,9 +1154,12 @@ impl<'a> ProjectMetadataProjection<'a> {
         ty: TypeId,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataType, PackageMetadataError> {
-        let mut metadata = metadata_type(ty, &self.checked.type_store, &|spec| {
-            self.checked_spec_path(spec)
-        })?;
+        let mut metadata = metadata_type(
+            ty,
+            &self.checked.type_store,
+            &|spec| self.checked_spec_path(spec),
+            self.identities,
+        )?;
         normalize_generic_type(&mut metadata, generic_names);
         self.canonicalize_metadata_type(&mut metadata)?;
         Ok(metadata)
@@ -1164,9 +1170,12 @@ impl<'a> ProjectMetadataProjection<'a> {
         row: &EffectRowRef,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
-        let mut metadata = metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
-            self.checked_spec_path(spec)
-        })?;
+        let mut metadata = metadata_effect_row_ref(
+            row,
+            &self.checked.type_store,
+            &|spec| self.checked_spec_path(spec),
+            self.identities,
+        )?;
         normalize_generic_effect_row(&mut metadata, generic_names);
         self.canonicalize_effect_row_types(&mut metadata)?;
         Ok(metadata)
@@ -1177,9 +1186,12 @@ impl<'a> ProjectMetadataProjection<'a> {
         arg: &EffectArgRef,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectArg, PackageMetadataError> {
-        let mut metadata = metadata_effect_arg(arg, &self.checked.type_store, &|spec| {
-            self.checked_spec_path(spec)
-        })?;
+        let mut metadata = metadata_effect_arg(
+            arg,
+            &self.checked.type_store,
+            &|spec| self.checked_spec_path(spec),
+            self.identities,
+        )?;
         if let Some(ty) = &mut metadata.ty {
             normalize_generic_type(ty, generic_names);
             self.canonicalize_metadata_type(ty)?;
@@ -1603,9 +1615,12 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .args
                     .iter()
                     .map(|arg| {
-                        metadata_effect_arg(arg, &self.checked.type_store, &|spec| {
-                            self.checked_spec_path(spec)
-                        })
+                        metadata_effect_arg(
+                            arg,
+                            &self.checked.type_store,
+                            &|spec| self.checked_spec_path(spec),
+                            self.identities,
+                        )
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             }),
@@ -1616,9 +1631,12 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|arg| {
                         Ok(MetadataEffectArg {
                             kind: MetadataEffectArgKind::Type,
-                            ty: Some(metadata_type(*arg, &self.checked.type_store, &|spec| {
-                                self.checked_spec_path(spec)
-                            })?),
+                            ty: Some(metadata_type(
+                                *arg,
+                                &self.checked.type_store,
+                                &|spec| self.checked_spec_path(spec),
+                                self.identities,
+                            )?),
                             path: Vec::new(),
                             value: String::new(),
                         })
@@ -1629,9 +1647,12 @@ impl<'a> ProjectMetadataProjection<'a> {
                 path: vec!["Error".to_owned()],
                 args: vec![MetadataEffectArg {
                     kind: MetadataEffectArgKind::Type,
-                    ty: Some(metadata_type(*ty, &self.checked.type_store, &|spec| {
-                        self.checked_spec_path(spec)
-                    })?),
+                    ty: Some(metadata_type(
+                        *ty,
+                        &self.checked.type_store,
+                        &|spec| self.checked_spec_path(spec),
+                        self.identities,
+                    )?),
                     path: Vec::new(),
                     value: String::new(),
                 }],

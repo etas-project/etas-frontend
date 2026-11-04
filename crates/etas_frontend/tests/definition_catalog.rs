@@ -14,6 +14,9 @@ use etas_frontend::{
 };
 use etas_hir::{HirExprId, HirReflectTarget};
 
+#[path = "definition_catalog/owner_binders.rs"]
+mod owner_binders;
+
 fn check(sources: &[&str]) -> CheckedProgram {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(""));
     input.options.entry_policy = EntryPolicy::Optional;

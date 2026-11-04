@@ -50,8 +50,9 @@ fn lower_objects(
                 if let metadata::ExistentialWitnessTarget::Implementation { method, .. } = &witness.target {
                     let source_type = type_id(&node.source_type, resolver)?;
                     let implementation = resolver.method_witness(source_type, &bound.args, &member)
+                        .map_err(|error| error.message)?
                         .ok_or_else(|| "object member has no checked implementation evidence".to_owned())?;
-                    if resolver.method_identity(&implementation.target) != Some(method) {
+                    if resolver.method_identity(&implementation.declaration.target) != Some(method) {
                         return Err("object member target disagrees with its checked implementation".into());
                     }
                 }

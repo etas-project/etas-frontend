@@ -14,9 +14,12 @@ fn projected(source: &str, name: &str) -> MetadataType {
         })
         .unwrap();
     let projection = super::super::ProjectMetadataProjection::new(&checked);
-    metadata_type(ty, &checked.type_store, &|spec| {
-        projection.checked_spec_path(spec)
-    })
+    metadata_type(
+        ty,
+        &checked.type_store,
+        &|spec| projection.checked_spec_path(spec),
+        None,
+    )
     .unwrap()
 }
 
@@ -94,8 +97,13 @@ fn structural_cycles_without_nominal_identity_fail_closed() {
     let mut store = TypeStore::new();
     let root = store.intern(Type::Option(TypeId(0)));
     assert_eq!(root, TypeId(0));
-    let error =
-        metadata_type(root, &store, &|_| Err(invalid("missing spec declaration"))).unwrap_err();
+    let error = metadata_type(
+        root,
+        &store,
+        &|_| Err(invalid("missing spec declaration")),
+        None,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("nominal identity boundary"));
 }
 
@@ -106,7 +114,12 @@ fn deep_acyclic_types_reach_the_explicit_metadata_budget() {
     for _ in 0..etas_package_metadata::MAX_METADATA_GRAPH_DEPTH + 2 {
         root = store.intern(Type::Option(root));
     }
-    let error =
-        metadata_type(root, &store, &|_| Err(invalid("missing spec declaration"))).unwrap_err();
+    let error = metadata_type(
+        root,
+        &store,
+        &|_| Err(invalid("missing spec declaration")),
+        None,
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("metadata graph budget"));
 }
