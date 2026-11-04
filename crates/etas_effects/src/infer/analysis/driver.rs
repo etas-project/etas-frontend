@@ -51,6 +51,13 @@ pub fn run_effect_analysis<'a>(
         let mut parameters = (*input.parameter_effects).clone();
         let callable_environments = result.semantics.callable_environments.borrow().clone();
         let method_evidence = result.semantics.method_evidence.borrow().clone();
+        let mut spec_method_targets = (*input.spec_method_targets).clone();
+        for (call, targets) in result.semantics.discovered_spec_targets.borrow().iter() {
+            spec_method_targets
+                .entry(*call)
+                .or_default()
+                .extend(targets);
+        }
         for (symbol, observed) in &result.semantics.inputs.inferred_parameter_effects {
             let mut summary = observed.clone();
             if let Some(current) = parameters.get(symbol) {
@@ -75,6 +82,7 @@ pub fn run_effect_analysis<'a>(
             && call_results == *input.call_results
             && callable_environments == input.callable_environments
             && method_evidence == input.method_evidence
+            && spec_method_targets == *input.spec_method_targets
         {
             result.semantics.inputs.callable_environments = (*callable_environments).clone();
             result.semantics.inputs.inferred_parameter_effects = parameters;
@@ -89,6 +97,9 @@ pub fn run_effect_analysis<'a>(
         input.call_results = std::sync::Arc::new(call_results);
         input.callable_environments = callable_environments;
         input.method_evidence = method_evidence;
+        // Checked witness applications can discover body dependencies only after
+        // generic substitution. Rebuild the SCC graph before accepting summaries.
+        input.spec_method_targets = std::sync::Arc::new(spec_method_targets);
         Ok(true)
     })?;
     if solved.status != etas_utils::ConvergenceStatus::Converged {
