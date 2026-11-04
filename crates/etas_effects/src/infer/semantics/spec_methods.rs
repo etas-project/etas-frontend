@@ -6,6 +6,7 @@ mod evidence;
 mod implementations;
 mod metadata;
 mod metadata_graphs;
+mod objects;
 mod rows;
 pub(super) use evidence::MethodEvidence;
 pub(crate) use metadata_graphs::MethodCallbackGraph;

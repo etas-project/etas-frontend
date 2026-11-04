@@ -184,6 +184,19 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Some(pack) = self.types.facts.existential_packs.get(&expr) {
+            return pack
+                .witnesses
+                .iter()
+                .filter_map(|witness| match witness.target {
+                    etas_types::method::MethodTarget::Source { callable, .. }
+                    | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                        Some(EffectUnit::Item(callable))
+                    }
+                    _ => None,
+                })
+                .collect();
+        }
         if let Some(target) = self.checked_method_target(expr) {
             return vec![target];
         }

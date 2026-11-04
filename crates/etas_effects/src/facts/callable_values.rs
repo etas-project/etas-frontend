@@ -57,6 +57,10 @@ pub enum CallableGenericValue {
     etas_core::RetainedSize,
 )]
 pub enum CallableValueOrigin {
+    Existential {
+        pack: HirExprId,
+        environment: CallableEnvironmentId,
+    },
     /// The caller-visible transformer of a definition, not an edited body's analysis.
     FrozenContract {
         unit: EffectUnit,

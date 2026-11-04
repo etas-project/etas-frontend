@@ -9,6 +9,7 @@ mod capture_environment;
 mod constructor;
 mod definition_contract;
 pub mod engine;
+mod existential;
 mod external;
 mod external_outcomes;
 pub mod handlers;

@@ -15,6 +15,19 @@ impl EffectSemantics<'_> {
         let mut sources = BTreeSet::new();
         for source in returned {
             let parameter = match source {
+                crate::CallableReturnSource::Existential { pack, environment } => {
+                    let environment = self.instantiate_callable_environment(
+                        *environment,
+                        application,
+                        bindings,
+                        state,
+                    )?;
+                    sources.insert(LatentSource::Existential {
+                        pack: *pack,
+                        environment,
+                    });
+                    continue;
+                }
                 crate::CallableReturnSource::ExternalFrozen { reflection } => {
                     self.external_reflection_metadata(*reflection)
                         .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;

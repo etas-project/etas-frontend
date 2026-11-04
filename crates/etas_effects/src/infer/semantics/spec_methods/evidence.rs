@@ -24,6 +24,7 @@ fn invalid(reason: &str) -> EffectSpecializationError {
 
 pub(crate) enum MethodEvidence {
     Resolved(LatentSource),
+    Alternatives(std::collections::BTreeSet<LatentSource>),
     Deferred { summary: Box<EffectSummary> },
 }
 
@@ -279,6 +280,22 @@ impl EffectSemantics<'_> {
         let declaration = method_fact
             .signature_in(&self.types.facts)
             .ok_or_else(|| invalid("method evidence callable signature is missing"))?;
+        if matches!(
+            self.types.store.get(receiver),
+            Some(etas_types::Type::Existential { .. })
+        ) && let Some(sources) =
+            self.existential_method_sources(super::objects::ObjectMethodInput {
+                call,
+                invocation: environment,
+                snapshot: &snapshot,
+                method: method_fact,
+                declaration,
+                arguments: &arguments,
+                spec_args: &args,
+            })?
+        {
+            return Ok(MethodEvidence::Alternatives(sources));
+        }
         if let Some(EffectUnit::Item(item)) =
             self.checked_method_witness_target(receiver, &args, member)
         {
@@ -379,6 +396,12 @@ impl EffectSemantics<'_> {
         receiver: TypeId,
         args: &[TypeId],
     ) -> Result<bool, EffectSpecializationError> {
+        if matches!(
+            self.types.store.get(receiver),
+            Some(etas_types::Type::Existential { .. })
+        ) {
+            return Ok(true);
+        }
         for parameter in self
             .native_generic_params(owner)
             .ok_or_else(|| invalid("method evidence lexical scope is missing"))?

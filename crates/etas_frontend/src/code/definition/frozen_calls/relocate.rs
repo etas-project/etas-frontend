@@ -790,6 +790,7 @@ impl<'a> Relocation<'a> {
                                                     } else {
                                                     ReturnObservation::CallableSources(sources.iter().map(|source| {
                                                         Ok(match source {
+                                                            CallableReturnSource::Existential { pack, environment } => CallableReturnSource::Existential { pack: self.captured_expr(*pack)?, environment: *environment },
                                                             CallableReturnSource::ExternalFrozen { reflection } => {
                                                                 let target = *self.native_exprs.get(reflection).ok_or_else(|| invalid("returned external reflection has no checked target binding"))?;
                                                                 let original = self.original.types.reflections.get(reflection).ok_or_else(|| invalid("returned external reflection has no source fact"))?;

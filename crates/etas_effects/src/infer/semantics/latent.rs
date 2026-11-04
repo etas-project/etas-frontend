@@ -44,6 +44,20 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Option<Vec<LatentSource>> {
+        if self.types.facts.existential_packs.contains_key(&expr) {
+            return Some(vec![
+                self.existential_pack_origin(state, expr)
+                    .unwrap_or(LatentSource::Unavailable { expr }),
+            ]);
+        }
+        self.latent_producer_sources(state, expr)
+    }
+
+    pub(super) fn latent_producer_sources(
+        &self,
+        state: &EffectState,
+        expr: HirExprId,
+    ) -> Option<Vec<LatentSource>> {
         if let Some(sources) = self.definition_contract_sources(state, expr) {
             return Some(sources);
         }
@@ -542,6 +556,17 @@ impl EffectSemantics<'_> {
             }
             match self.types.store.get(ty) {
                 Some(Type::Existential { .. }) => return true,
+                Some(Type::Named(named))
+                    if named.source_parameter.is_some_and(|parameter| {
+                        self.types
+                            .facts
+                            .type_param_bounds
+                            .get(&parameter)
+                            .is_some_and(|bounds| !bounds.is_empty())
+                    }) =>
+                {
+                    return true;
+                }
                 Some(Type::Function(_)) => {
                     self.flow_type_presence.borrow_mut().insert(root, true);
                     return true;

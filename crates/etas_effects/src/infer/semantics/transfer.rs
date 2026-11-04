@@ -428,12 +428,11 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     AnalysisStep::handled(self.incomplete_at(span, error.to_string(), state))
                 }
             },
-            Ok(super::spec_methods::MethodEvidence::Resolved(_)) => {
-                AnalysisStep::handled(self.incomplete_at(
-                    span,
-                    "concrete source method was not scheduled as a checked call",
-                    state,
-                ))
+            Ok(super::spec_methods::MethodEvidence::Resolved(source)) => {
+                self.apply_method_sources(expr, span, state, std::iter::once(source))
+            }
+            Ok(super::spec_methods::MethodEvidence::Alternatives(sources)) => {
+                self.apply_method_sources(expr, span, state, sources)
             }
             Ok(super::spec_methods::MethodEvidence::Deferred { summary }) => {
                 let ActionTraceDomain::ParameterCall { target, .. } = &summary.action_trace else {
@@ -778,6 +777,63 @@ impl EffectSemantics<'_> {
             }
         }
         true
+    }
+}
+
+impl EffectSemantics<'_> {
+    fn apply_method_sources(
+        &mut self,
+        expr: HirExprId,
+        span: Span,
+        mut state: EffectState,
+        sources: impl IntoIterator<Item = LatentSource>,
+    ) -> AnalysisStep<EffectState> {
+        let mut joined: Option<crate::EffectSummary> = None;
+        for source in sources {
+            let summary = match self.latent_source_summary(source, span) {
+                Ok(summary) => summary,
+                Err(error) => {
+                    return AnalysisStep::handled(self.incomplete_at(
+                        span,
+                        error.to_string(),
+                        state,
+                    ));
+                }
+            };
+            match source {
+                LatentSource::Captured { unit, .. } | LatentSource::Unit(unit) => {
+                    self.inputs
+                        .native_call_targets
+                        .entry(expr)
+                        .or_default()
+                        .insert(unit);
+                }
+                LatentSource::Metadata(source) => {
+                    self.inputs
+                        .metadata_call_targets
+                        .entry(expr)
+                        .or_default()
+                        .insert(source);
+                }
+                _ => {}
+            }
+            match &mut joined {
+                Some(joined) => {
+                    joined.join_branch(&summary);
+                }
+                None => joined = Some(summary),
+            }
+        }
+        let Some(summary) = joined else {
+            return AnalysisStep::handled(self.incomplete_at(
+                span,
+                "method has no checked implementation sources",
+                state,
+            ));
+        };
+        self.note_call_outcomes(expr, None, &summary, &mut state);
+        state.summary.seq_assign(&summary);
+        AnalysisStep::handled(state)
     }
 }
 

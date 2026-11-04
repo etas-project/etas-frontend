@@ -65,6 +65,10 @@ pub enum ReturnObservation {
     etas_core::RetainedSize,
 )]
 pub enum CallableReturnSource {
+    Existential {
+        pack: HirExprId,
+        environment: crate::facts::CallableEnvironmentId,
+    },
     /// A checked metadata-backed reflection and its frozen callable contract.
     ExternalFrozen {
         reflection: HirExprId,

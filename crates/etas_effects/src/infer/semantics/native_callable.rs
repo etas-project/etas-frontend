@@ -143,6 +143,15 @@ impl EffectSemantics<'_> {
                         pending.extend(origins);
                     }
                 }
+                LatentSource::Existential { environment, .. } => {
+                    for origins in self
+                        .callable_environment(environment)?
+                        .parameters
+                        .into_values()
+                    {
+                        pending.extend(origins);
+                    }
+                }
                 _ => {}
             }
         }

@@ -32,6 +32,12 @@ impl EffectSemantics<'_> {
         let Some(ty) = self.symbol_value_type(symbol) else {
             return false;
         };
+        if matches!(self.types.store.get(ty), Some(Type::Existential { .. }))
+            || matches!(self.types.store.get(ty), Some(Type::Named(named)) if named.source_parameter.is_some_and(|parameter|
+                self.types.facts.type_param_bounds.get(&parameter).is_some_and(|bounds| !bounds.is_empty())))
+        {
+            return true;
+        }
         let signature = match self.types.facts.item_signatures.get(owner) {
             Some(
                 etas_types::ItemSignature::Flow(signature)

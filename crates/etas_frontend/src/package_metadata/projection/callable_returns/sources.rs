@@ -25,6 +25,11 @@ impl Builder<'_, '_> {
                 ));
             }
             let instance = match source {
+                CallableReturnSource::Existential { .. } => {
+                    return Err(invalid(
+                        "existential value requires a portable checked witness graph",
+                    ));
+                }
                 CallableReturnSource::ExternalFrozen { reflection } => {
                     let reference = self.external_reference(reflection, true)?;
                     output.insert(CallableValueSource::FrozenContract(
@@ -206,6 +211,10 @@ impl Builder<'_, '_> {
     ) -> Result<Option<(CallableReturnSource, Option<CallableEnvironmentId>)>, PackageMetadataError>
     {
         Ok(Some(match origin {
+            CallableValueOrigin::Existential { pack, environment } => (
+                CallableReturnSource::Existential { pack, environment },
+                Some(environment),
+            ),
             CallableValueOrigin::ExternalFrozen { reflection } => {
                 (CallableReturnSource::ExternalFrozen { reflection }, None)
             }

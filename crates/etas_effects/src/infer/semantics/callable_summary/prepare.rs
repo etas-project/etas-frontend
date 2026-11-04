@@ -49,6 +49,16 @@ impl EffectSemantics<'_> {
             },
             LatentSource::SpecMethod { call, environment } => {
                 match self.spec_method_evidence(call, environment)? {
+                    super::super::spec_methods::MethodEvidence::Alternatives(sources) => {
+                        Ok(CallableSummaryPlan::Alternatives(
+                            sources
+                                .into_iter()
+                                .map(|source| {
+                                    CallableSummaryKey::in_mode(source, key.span(), key.mode)
+                                })
+                                .collect(),
+                        ))
+                    }
                     super::super::spec_methods::MethodEvidence::Resolved(
                         LatentSource::Captured { unit, environment },
                     ) => self.prepare_native_value_summary(unit, environment, key.span(), key.mode),
