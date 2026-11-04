@@ -281,8 +281,7 @@ impl EffectSemantics<'_> {
                         })
                         .ok_or_else(|| {
                             invalid(format!(
-                                "metadata method callback has no checked argument binding for {parameter:?}; available parameters: {:?}",
-                                bindings.keys().collect::<Vec<_>>()
+                                "metadata method callback has no checked argument binding for {parameter:?}"
                             ))
                         })?;
                     origins.extend(values);

@@ -66,6 +66,11 @@ impl EffectSemantics<'_> {
     ) -> Result<std::collections::BTreeSet<LatentSource>, EffectSpecializationError> {
         match binding {
             TraceArgumentBinding::Expression(expr) => {
+                if !self.types.facts.expr_types.contains_key(expr) {
+                    return Err(EffectSpecializationError::InvalidCallableEnvironment {
+                        reason: "call argument has no checked value type".into(),
+                    });
+                }
                 if !self.expr_type_contains_flow(*expr) {
                     return Ok(Default::default());
                 }
