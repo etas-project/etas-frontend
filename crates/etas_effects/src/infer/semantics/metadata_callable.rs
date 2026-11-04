@@ -498,12 +498,10 @@ impl EffectSemantics<'_> {
             );
         }
         for (position, expr) in context.arguments.iter().enumerate() {
-            let origins = if self.expr_type_contains_flow(*expr) {
-                self.latent_sources_for_expr(state, *expr)
-                    .unwrap_or_else(|| vec![LatentSource::Unavailable { expr: *expr }])
-            } else {
-                Vec::new()
-            };
+            let origins = self.trace_argument_origins(
+                &super::specialize::TraceArgumentBinding::Expression(*expr),
+                state,
+            )?;
             environment.parameters.insert(
                 crate::ParameterCallTarget::Graph {
                     graph: key,
@@ -512,7 +510,7 @@ impl EffectSemantics<'_> {
                         position: position as u32,
                     },
                 },
-                origins.into_iter().collect(),
+                origins,
             );
         }
         let environment_id = if environment.parameters.is_empty() && environment.generics.is_empty()

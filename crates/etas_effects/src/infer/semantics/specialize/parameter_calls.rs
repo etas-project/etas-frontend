@@ -65,11 +65,16 @@ impl EffectSemantics<'_> {
         state: &EffectState,
     ) -> Result<std::collections::BTreeSet<LatentSource>, EffectSpecializationError> {
         match binding {
-            TraceArgumentBinding::Expression(expr) => Ok(self
-                .latent_sources_for_expr(state, *expr)
-                .unwrap_or_else(|| vec![LatentSource::Unavailable { expr: *expr }])
-                .into_iter()
-                .collect()),
+            TraceArgumentBinding::Expression(expr) => {
+                if !self.expr_type_contains_flow(*expr) {
+                    return Ok(Default::default());
+                }
+                Ok(self
+                    .latent_sources_for_expr(state, *expr)
+                    .unwrap_or_else(|| vec![LatentSource::Unavailable { expr: *expr }])
+                    .into_iter()
+                    .collect())
+            }
             TraceArgumentBinding::Origins(sources) => Ok(sources.clone()),
         }
     }
