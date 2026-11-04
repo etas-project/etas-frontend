@@ -69,6 +69,9 @@ mod tests {
                     version: "0.1.0".into(),
                     edition: "2026".into(),
                     import_root: format!("dep{id}"),
+                    std_compatibility: etas_std::standard_registry()
+                        .version()
+                        .compatibility_identity(),
                 })
                 .collect(),
             external_package_dependencies: edges

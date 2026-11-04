@@ -226,7 +226,7 @@ impl DefinitionSources {
                     .ok_or_else(|| error(entry.clone(), "declaration has no owned source"))?;
                 if matches!(
                     source.kind,
-                    SourceKind::DependencySourceOverlay { .. } | SourceKind::VirtualStd
+                    SourceKind::DependencySourceOverlay { .. } | SourceKind::VirtualStd { .. }
                 ) {
                     return Err(error(
                         entry.clone(),
@@ -278,7 +278,8 @@ impl DefinitionSources {
                         && files.get(&body.source).is_some_and(|source| {
                             matches!(
                                 source.kind,
-                                SourceKind::DependencySourceOverlay { .. } | SourceKind::VirtualStd
+                                SourceKind::DependencySourceOverlay { .. }
+                                    | SourceKind::VirtualStd { .. }
                             )
                         })
                     {

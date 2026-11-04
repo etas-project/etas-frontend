@@ -1987,10 +1987,6 @@ flow lookup(table: Map<string, i64>) -> i64 {
   return table["answer"];
 }
 
-flow char_at(text: string) -> char {
-  return text[1];
-}
-
 flow byte_at(data: bytes) -> u8 {
   return data[1];
 }
@@ -2010,7 +2006,7 @@ flow byte_at(data: bytes) -> u8 {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(index_types.len(), 4);
+    assert_eq!(index_types.len(), 3);
     assert!(matches!(
         output.store.get(index_types[0].1),
         Some(Type::Primitive(PrimitiveType::String))
@@ -2021,10 +2017,6 @@ flow byte_at(data: bytes) -> u8 {
     ));
     assert!(matches!(
         output.store.get(index_types[2].1),
-        Some(Type::Primitive(PrimitiveType::Char))
-    ));
-    assert!(matches!(
-        output.store.get(index_types[3].1),
         Some(Type::Primitive(PrimitiveType::U8))
     ));
     assert!(
@@ -2046,15 +2038,22 @@ flow byte_at(data: bytes) -> u8 {
             .facts
             .checked_index_errors
             .contains_key(&index_types[2].0),
-        "string indexing must materialize checked IndexError facts"
-    );
-    assert!(
-        output
-            .facts
-            .checked_index_errors
-            .contains_key(&index_types[3].0),
         "bytes indexing must materialize checked IndexError facts"
     );
+}
+
+#[test]
+fn check_program_rejects_string_indexing() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        "flow main(text: string) -> char { return text[0]; }",
+    ));
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)
+    }));
 }
 
 #[test]

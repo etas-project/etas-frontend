@@ -1,4 +1,4 @@
-use crate::passes::artifacts::{PARSED_SOURCE_SET, SOURCE_SET};
+use crate::passes::artifacts::{ADMITTED_STD_LIBRARY_SOURCES, PARSED_SOURCE_SET, SOURCE_SET};
 use crate::{ProjectContext, SourceFile, SourceKind, SourceSet};
 use etas_utils::{
     ArtifactKey, ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -19,6 +19,7 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
             ArtifactSet::from([
                 SOURCE_SET,
                 PARSED_SOURCE_SET,
+                ADMITTED_STD_LIBRARY_SOURCES,
                 FROZEN_DEFINITION_ENVIRONMENT,
                 CANDIDATE_BODY_OVERLAYS,
             ]),
@@ -162,6 +163,21 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
                 kind: source.kind.clone(),
             });
         }
+        let admitted_std_library_sources = files
+            .iter()
+            .filter_map(|source| {
+                let SourceKind::VirtualStd {
+                    source: library_source,
+                } = &source.kind
+                else {
+                    return None;
+                };
+                Some(crate::passes::AdmittedStandardLibrarySource {
+                    source: source.id,
+                    library_source: *library_source,
+                })
+            })
+            .collect();
         context.sources = Some(Arc::new(SourceSet {
             files,
             stable_source_keys,
@@ -170,6 +186,10 @@ impl Pass<ProjectContext> for FreezeDefinitionEnvironmentPass {
             environment_fingerprint: original.environment_fingerprint.clone(),
             external_modules_fingerprint: original.external_modules_fingerprint.clone(),
         }));
+        context.admitted_std_library_sources =
+            Some(Arc::new(crate::passes::AdmittedStandardLibrarySources {
+                sources: admitted_std_library_sources,
+            }));
         context.parsed_sources = parsed.to_vec();
         context.reused_parsed_sources = parsed.len();
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)

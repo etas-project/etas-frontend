@@ -127,7 +127,9 @@ pub enum SourceKind {
         import_root: String,
     },
     SingleFileInput,
-    VirtualStd,
+    VirtualStd {
+        source: etas_std::StdLibrarySourceId,
+    },
     VirtualGenerated,
     LspOverlay,
 }

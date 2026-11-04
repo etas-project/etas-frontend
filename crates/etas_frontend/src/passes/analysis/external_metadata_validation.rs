@@ -262,10 +262,21 @@ fn validate_external_environment(
             || package.version.is_empty()
             || package.edition.is_empty()
             || package.import_root.is_empty()
+            || package.std_compatibility.is_empty()
         {
             return Err(ExternalEnvironmentValidationError::package(
                 package.id,
                 "external package identity fields must not be empty",
+            ));
+        }
+        let expected_std = std_registry.version().compatibility_identity();
+        if package.std_compatibility != expected_std {
+            return Err(ExternalEnvironmentValidationError::package(
+                package.id,
+                format!(
+                    "external package standard-library compatibility `{}` does not match `{expected_std}`",
+                    package.std_compatibility
+                ),
             ));
         }
         if packages.insert(package.id, package).is_some() {

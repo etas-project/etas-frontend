@@ -31,6 +31,9 @@ fn input(alias: &str, body: &str) -> ProjectInput {
                 version: "1.0.0".into(),
                 edition: "2026".into(),
                 import_root: format!("dep.{side}"),
+                std_compatibility: etas_std::standard_registry()
+                    .version()
+                    .compatibility_identity(),
             });
     }
     input

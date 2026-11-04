@@ -10,6 +10,9 @@ use crate::{
 
 use crate::passes::artifacts::{PARSED_SOURCE_SET, SOURCE_SET, unit_kind_with_diagnostics};
 
+pub(crate) use standard_library::AdmittedStandardLibrarySource;
+pub use standard_library::{AdmitStandardLibrarySourcesPass, AdmittedStandardLibrarySources};
+
 pub struct BuildSourceSetPass;
 
 impl Pass<ProjectContext> for BuildSourceSetPass {
@@ -77,6 +80,13 @@ impl Pass<ProjectContext> for ParseSourceFilePass {
                 unit
             )));
         };
+        if context
+            .parsed_sources
+            .iter()
+            .any(|parsed| parsed.source == source_id)
+        {
+            return PassResult::unchanged();
+        }
         if let Some(parsed) = context.parsed_source_reuse.remove(&source_id) {
             context
                 .diagnostics
@@ -230,3 +240,4 @@ mod tests {
         assert!(failure.message.contains("mismatched unit kind"));
     }
 }
+mod standard_library;

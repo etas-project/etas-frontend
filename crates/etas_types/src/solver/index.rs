@@ -32,11 +32,8 @@ fn index_shape(
         Some(Type::Array(value)) | Some(Type::List(value)) | Some(Type::Slice(value)) => {
             Ok(IndexShape::Sequence { value: *value })
         }
-        Some(Type::Primitive(primitive @ (PrimitiveType::String | PrimitiveType::Bytes))) => {
-            let element = match primitive {
-                PrimitiveType::String => PrimitiveType::Char,
-                _ => PrimitiveType::U8,
-            };
+        Some(Type::Primitive(PrimitiveType::Bytes)) => {
+            let element = PrimitiveType::U8;
             let value = primitive_type_id(store, element).ok_or_else(|| SolverFailure {
                 code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
                 span: origin.span,

@@ -122,6 +122,9 @@ fn dependency_source_origins_are_checked_against_package_and_metadata() {
             version: "1".into(),
             edition: "2026".into(),
             import_root: "dep".into(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         });
     let binding = ProjectDependencySourcePackage {
         package: id,

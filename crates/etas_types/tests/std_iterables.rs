@@ -9,7 +9,7 @@ fn check(source: &str) -> etas_types::TypeOutput {
 
 #[test]
 fn std_iterable_element_types_survive_aliases_generic_calls_and_finalization() {
-    for name in ["Deque", "Queue", "Stack"] {
+    for name in ["Deque", "Queue", "Stack", "Iter"] {
         for source in [
             format!(
                 "flow first<T>(xs: {name}<T>) -> Option<T> {{ for x in xs limit Iterations(1) {{ return Some(x); }} return None; }} flow main(xs: {name}<string>) -> Option<string> {{ return first(xs); }}"
@@ -44,7 +44,7 @@ fn std_iterable_element_types_survive_aliases_generic_calls_and_finalization() {
 
 #[test]
 fn std_iterable_checks_item_type_and_does_not_project_unrelated_nominals() {
-    for name in ["Deque", "Queue", "Stack"] {
+    for name in ["Deque", "Queue", "Stack", "Iter"] {
         for source in [
             format!(
                 "flow main(xs: {name}<string>) -> i32 {{ for x in xs limit Iterations(1) {{ return x; }} return 0; }}"

@@ -8,11 +8,12 @@ use etas_core::{Diagnostic, DiagnosticCode, EffectDiagnosticCode, Severity};
 use crate::{CheckedProgramData, ProjectContext, SourceBundle};
 
 use crate::passes::artifacts::{
-    CALLABLE_INSTANTIATIONS, CHECKED_PROJECT, CHECKED_REFLECTION_TARGETS, DEFINITION_SOURCES,
-    EFFECT_OUTPUT, GENERIC_EFFECT_BINDINGS, HANDLER_INSTANTIATIONS, HIR_OUTPUT,
-    INTERPRETER_SUPPORT, MODULE_INDEX, PROJECT_ENTRY, REACHABILITY_FACTS, RESIDUAL_BACKEND_SUPPORT,
-    RESOLVED_IMPORTS, TOP_LEVEL_LET_FACTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
-    VALIDATED_ITEM_ANNOTATIONS, VERIFIED_RESIDUAL_PLANS,
+    CALLABLE_INSTANTIATIONS, CHECKED_PROJECT, CHECKED_REFLECTION_TARGETS,
+    CHECKED_STD_LIBRARY_IMPLEMENTATIONS, DEFINITION_SOURCES, EFFECT_OUTPUT,
+    GENERIC_EFFECT_BINDINGS, HANDLER_INSTANTIATIONS, HIR_OUTPUT, INTERPRETER_SUPPORT, MODULE_INDEX,
+    PROJECT_ENTRY, REACHABILITY_FACTS, RESIDUAL_BACKEND_SUPPORT, RESOLVED_IMPORTS,
+    TOP_LEVEL_LET_FACTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, VALIDATED_ITEM_ANNOTATIONS,
+    VERIFIED_RESIDUAL_PLANS,
 };
 
 pub struct BuildCheckedProjectPass;
@@ -22,6 +23,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
         PassDescriptor::new("BuildCheckedProjectPass", PassKind::Emit)
             .requires(ArtifactSet::from([
                 HIR_OUTPUT,
+                CHECKED_STD_LIBRARY_IMPLEMENTATIONS,
                 MODULE_INDEX,
                 RESOLVED_IMPORTS,
                 TOP_LEVEL_LET_FACTS,
@@ -91,6 +93,13 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 .effects
                 .as_ref()
                 .expect("effect output should exist");
+            let Some(checked_std_library_implementations) =
+                context.checked_std_library_implementations.as_ref()
+            else {
+                return PassResult::failed(
+                    "checked project is missing standard library implementation facts",
+                );
+            };
             let effect_artifacts = context
                 .effect_pipeline_artifacts
                 .as_ref()
@@ -146,6 +155,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 native_instantiations: instantiations.clone(),
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
+                checked_std_library_implementations: checked_std_library_implementations.clone(),
                 project_environment_fingerprint: definition_environment.fingerprint().to_owned(),
                 dependency_metadata_fingerprints: environment
                     .canonical_dependency_metadata_fingerprints(),

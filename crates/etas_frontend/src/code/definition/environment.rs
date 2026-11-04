@@ -127,12 +127,13 @@ impl FrozenDefinitionEnvironment {
         let standard = origins.standard_package.fingerprint();
         let origin_bindings = origins.fingerprint(&checked)?;
         let artifact_schema = crate::FRONTEND_ARTIFACT_SCHEMA_VERSION.to_le_bytes();
+        let std_compatibility = checked.std_registry.version().compatibility_identity();
         let mut parts = vec![
             identity_fingerprint.as_bytes().as_slice(),
             standard.as_bytes().as_slice(),
             checked.compiler_version.as_bytes(),
             artifact_schema.as_slice(),
-            checked.std_registry.version().contract.as_bytes(),
+            std_compatibility.as_bytes(),
             checked.definition_environment.fingerprint().as_bytes(),
             options.as_bytes(),
             body_revisions.as_bytes().as_slice(),
@@ -257,11 +258,12 @@ impl FrozenDefinitionEnvironment {
     }
     pub(crate) fn compilation_fingerprint(&self) -> CodeFingerprint {
         let options = self.checked.compile_options.canonical_options_fingerprint();
+        let std_compatibility = self.checked.std_registry.version().compatibility_identity();
         CodeFingerprint::of_parts(
             "etas.code.compiler-configuration.v1",
             [
                 self.checked.compiler_version.as_bytes(),
-                self.checked.std_registry.version().contract.as_bytes(),
+                std_compatibility.as_bytes(),
                 options.as_bytes(),
                 crate::FRONTEND_ARTIFACT_SCHEMA_VERSION
                     .to_le_bytes()
@@ -352,7 +354,17 @@ fn source_fingerprint(unit: &crate::SourceFile) -> CodeFingerprint {
         ),
         crate::SourceKind::SourceProjectFile => fingerprint("project"),
         crate::SourceKind::SingleFileInput => fingerprint("single-file"),
-        crate::SourceKind::VirtualStd => fingerprint("standard"),
+        crate::SourceKind::VirtualStd { source } => {
+            let asset = etas_std::standard_library_source(*source);
+            CodeFingerprint::of_parts(
+                "etas.code.frozen-source.v1",
+                [
+                    b"standard".as_slice(),
+                    asset.virtual_path.as_bytes(),
+                    text.as_bytes().as_slice(),
+                ],
+            )
+        }
         crate::SourceKind::VirtualGenerated => fingerprint("generated"),
         crate::SourceKind::LspOverlay => fingerprint("editor-overlay"),
     }

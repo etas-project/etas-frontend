@@ -924,6 +924,7 @@ pub(crate) fn external_package(value: &crate::ProjectExternalPackageInput) -> St
     encoder.text(&value.version);
     encoder.text(&value.edition);
     encoder.text(&value.import_root);
+    encoder.text(&value.std_compatibility);
     encoder.finish()
 }
 

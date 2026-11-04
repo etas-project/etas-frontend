@@ -80,6 +80,9 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     if facts.known_std_types.index_error.is_none() {
         facts.known_std_types.index_error = body.known_std_types.index_error;
     }
+    if facts.known_std_types.text_error.is_none() {
+        facts.known_std_types.text_error = body.known_std_types.text_error;
+    }
     facts
         .known_std_types
         .runtime_types

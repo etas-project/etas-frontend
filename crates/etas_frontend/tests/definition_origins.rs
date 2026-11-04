@@ -309,6 +309,9 @@ fn a_dependency_overlay_cannot_be_claimed_by_the_declared_source_package_helper(
             version: "1.0.0".into(),
             edition: "2025".into(),
             import_root: "consumer_alias".into(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         });
     let output = Frontend.check_project(input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
@@ -351,6 +354,9 @@ fn a_dependency_module_part_cannot_inherit_the_first_local_parts_package() {
             version: "1.0.0".into(),
             edition: "2025".into(),
             import_root: "dependency".into(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         });
     let output = Frontend.check_project(input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
