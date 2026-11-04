@@ -18,6 +18,9 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(crate) spec_method_targets: std::sync::Arc<
+        std::collections::HashMap<HirExprId, std::collections::BTreeSet<EffectUnit>>,
+    >,
     pub(super) argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
     pub(crate) analysis_units: std::sync::Arc<std::collections::BTreeSet<EffectUnit>>,
     pub(crate) discovered_external_method_sources:
@@ -132,6 +135,7 @@ impl<'a> EffectSemantics<'a> {
             std::sync::Arc::new(super::argument_values::ArgumentWrites::build(hir, None).unwrap());
         let mut semantics = Self::from_input(
             crate::infer::analysis::EffectAnalysisInput {
+                spec_method_targets: Default::default(),
                 external_implementations: &[],
                 method_evidence: Default::default(),
                 frozen_graphs: Default::default(),
@@ -163,6 +167,7 @@ impl<'a> EffectSemantics<'a> {
         argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
     ) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
+            spec_method_targets,
             external_implementations,
             method_evidence,
             frozen_graphs,
@@ -184,6 +189,7 @@ impl<'a> EffectSemantics<'a> {
             memory_provenance,
         } = input;
         let mut semantics = Self {
+            spec_method_targets,
             argument_writes,
             residual_identity,
             source_snapshots,
