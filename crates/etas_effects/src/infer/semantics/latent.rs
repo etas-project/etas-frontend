@@ -531,109 +531,13 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn type_contains_flow(&self, ty: etas_types::TypeId) -> bool {
-        if self.descriptor_contract_type(ty).is_some() {
-            return true;
-        }
-        if let Some(found) = self.flow_type_presence.borrow().get(&ty) {
-            return *found;
-        }
-        let root = ty;
-        let mut pending = vec![ty];
-        let mut visited = std::collections::HashSet::new();
-        while let Some(ty) = pending.pop() {
-            if !visited.insert(ty) {
-                continue;
-            }
-            if self.descriptor_contract_type(ty).is_some() {
-                self.flow_type_presence.borrow_mut().insert(root, true);
-                return true;
-            }
-            if let Some(found) = self.flow_type_presence.borrow().get(&ty).copied() {
-                if found {
-                    return true;
-                }
-                continue;
-            }
-            match self.types.store.get(ty) {
-                Some(Type::Existential { .. }) => return true,
-                Some(Type::Named(named))
-                    if named.source_parameter.is_some_and(|parameter| {
-                        self.types
-                            .facts
-                            .type_param_bounds
-                            .get(&parameter)
-                            .is_some_and(|bounds| !bounds.is_empty())
-                    }) =>
-                {
-                    return true;
-                }
-                Some(Type::Function(_)) => {
-                    self.flow_type_presence.borrow_mut().insert(root, true);
-                    return true;
-                }
-                Some(
-                    Type::Array(inner)
-                    | Type::List(inner)
-                    | Type::Set(inner)
-                    | Type::Slice(inner)
-                    | Type::Option(inner)
-                    | Type::Schema(inner)
-                    | Type::Message(inner)
-                    | Type::MemorySelection(inner)
-                    | Type::MemoryRegion(inner)
-                    | Type::Refined { base: inner, .. }
-                    | Type::Trust { inner, .. },
-                ) => pending.push(*inner),
-                Some(
-                    Type::Map { key, value }
-                    | Type::Store { key, value }
-                    | Type::Result {
-                        ok: key,
-                        err: value,
-                    },
-                ) => pending.extend([*key, *value]),
-                Some(Type::Record(record)) => {
-                    pending.extend(record.fields.iter().map(|field| field.ty))
-                }
-                Some(Type::Tuple(types)) => pending.extend(types),
-                Some(Type::Nominal(nominal)) => pending.extend(nominal.representation),
-                Some(Type::Applied { constructor, args }) => {
-                    // Traverse the finite declaration graph and concrete arguments,
-                    // never repeatedly instantiate recursive nominal applications.
-                    pending.push(etas_types::TypeId(constructor.0));
-                    pending.extend(args);
-                }
-                Some(Type::Enum(_)) => match self.types.facts.enum_layouts.get(&ty) {
-                    Some(layout) => pending.extend(
-                        layout
-                            .variants
-                            .iter()
-                            .flat_map(|variant| variant.fields.iter())
-                            .copied(),
-                    ),
-                    // Incomplete layout facts cannot prove the absence of callables.
-                    None => return true,
-                },
-                Some(
-                    Type::Primitive(_)
-                    | Type::IntegerLiteral { .. }
-                    | Type::Var(_)
-                    | Type::Range { .. }
-                    | Type::Handler(_)
-                    | Type::Named(_)
-                    | Type::Prompt
-                    | Type::PromptPart
-                    | Type::MemoryPlace(_)
-                    | Type::ResourceHandle(_),
-                ) => {}
-                None => return true,
-            }
-        }
-        let mut cache = self.flow_type_presence.borrow_mut();
-        for ty in visited {
-            cache.insert(ty, false);
-        }
-        false
+        self.latent_type_shapes
+            .get_or_init(|| {
+                super::latent_shape::LatentTypeShapes::build(self.types, |ty| {
+                    self.descriptor_contract_type(ty).is_some()
+                })
+            })
+            .contains(ty)
     }
 
     pub(crate) fn is_deferred_first_class_param(&self, expr: HirExprId) -> bool {

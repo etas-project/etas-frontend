@@ -7,8 +7,15 @@ fn recursive_type_graphs_preserve_callable_payload_presence_without_expansion() 
 module app;
 enum Tree<T> { Leaf(T), Children(Array<Tree<T>>), }
 type Callbacks = { next: (i32) -> i32 ![] };
+spec Allowed;
+type Token = i32;
+impl Token ~ Allowed;
+enum Tagged<T ~ Allowed> { Value(T), Children(Array<Tagged<T>>), }
+type Phantom<T ~ Allowed> = string;
 flow numbers(value: Tree<i32>) -> unit { return; }
 flow callbacks(value: Tree<Callbacks>) -> unit { return; }
+flow tagged(value: Tagged<Token>) -> unit { return; }
+flow phantom<T ~ Allowed>(value: Phantom<T>) -> unit { return; }
 "#,
     ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -40,6 +47,8 @@ flow callbacks(value: Tree<Callbacks>) -> unit { return; }
     for (name, expected) in [
         ("numbers", false),
         ("callbacks", true),
+        ("tagged", false),
+        ("phantom", false),
         ("numbers", false),
         ("callbacks", true),
     ] {

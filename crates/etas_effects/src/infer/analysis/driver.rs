@@ -21,6 +21,7 @@ pub fn run_effect_analysis<'a>(
         crate::infer::semantics::argument_values::ArgumentWrites::build(input.hir, control)
             .map_err(EffectPipelineError::Interrupted)?,
     );
+    let latent_type_shapes = std::sync::Arc::new(std::sync::OnceLock::new());
     let solved = etas_utils::FixpointEngine::default().try_solve(input, |input| {
         if let Some(control) = control {
             control
@@ -28,6 +29,7 @@ pub fn run_effect_analysis<'a>(
                 .map_err(EffectPipelineError::Interrupted)?;
         }
         let mut semantics = EffectSemantics::from_input(input.clone(), argument_writes.clone());
+        semantics.latent_type_shapes = latent_type_shapes.clone();
         semantics.analysis_units = analysis_units.clone();
         semantics.query_control = control;
         let analysis = InterproceduralAnalysis::new(units.iter().copied(), semantics);

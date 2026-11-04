@@ -17,6 +17,7 @@ mod inference;
 mod interprocedural;
 mod lambda_capture;
 pub mod latent;
+mod latent_shape;
 mod latent_source;
 mod metadata_callable;
 mod method_calls;

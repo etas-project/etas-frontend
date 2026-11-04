@@ -73,7 +73,8 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) call_results: std::sync::Arc<super::state::LatentEnv>,
     pub(crate) discovered_call_results: std::cell::RefCell<super::state::LatentEnv>,
     pub(crate) discovered_global_values: super::state::LatentEnv,
-    pub(crate) flow_type_presence: std::cell::RefCell<std::collections::HashMap<TypeId, bool>>,
+    pub(crate) latent_type_shapes:
+        std::sync::Arc<std::sync::OnceLock<super::latent_shape::LatentTypeShapes>>,
     pub(crate) lambda_capture_symbols: std::cell::RefCell<
         std::collections::HashMap<HirExprId, std::collections::BTreeSet<etas_hir::SymbolId>>,
     >,
@@ -233,7 +234,7 @@ impl<'a> EffectSemantics<'a> {
             call_results,
             discovered_call_results: Default::default(),
             discovered_global_values: Default::default(),
-            flow_type_presence: Default::default(),
+            latent_type_shapes: Default::default(),
             lambda_capture_symbols: Default::default(),
             captured_values,
             discovered_value_captures: Default::default(),
