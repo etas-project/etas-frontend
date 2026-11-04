@@ -145,6 +145,7 @@ pub(crate) fn prepare_from_targets(
         if targets.get(call).is_none_or(BTreeSet::is_empty)
             && !types.facts.checked_method_calls.contains_key(call)
             && !types.facts.existential_packs.contains_key(call)
+            && super::targets::external_signature(hir, types, *call).is_none()
         {
             continue;
         }
@@ -285,6 +286,13 @@ pub(crate) fn prepare_from_targets(
                 );
             }
             for call in calls.get(&instance.owner).into_iter().flatten() {
+                if let Some(signature) = super::targets::external_signature(hir, types, *call)
+                    && let Some(fact) = types.facts.generic_instantiations.get(call)
+                {
+                    let dictionary = witnesses.bound_bodies(signature, fact, &mut substitution)?;
+                    method_bodies.extend(dictionary.bodies);
+                    pending.extend(dictionary.applications);
+                }
                 if let Some(method) = types.facts.checked_method_calls.get(call)
                     && matches!(
                         method.target,

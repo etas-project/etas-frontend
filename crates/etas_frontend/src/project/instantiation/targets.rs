@@ -3,6 +3,34 @@ use std::collections::{BTreeSet, HashMap};
 use etas_hir::{HirExpr, HirExprId, HirItemId, ResolveResult, SymbolDef};
 use etas_types::{TypeOutput, method::MethodTarget};
 
+pub(super) fn external_signature<'a>(
+    hir: &etas_hir::HirProgram,
+    types: &'a TypeOutput,
+    expr: HirExprId,
+) -> Option<&'a etas_types::CallableSignature> {
+    let path = match hir.exprs.get(expr)? {
+        HirExpr::Call { callee, .. } => match hir.exprs.get(*callee)? {
+            HirExpr::Path(path) => path,
+            _ => return None,
+        },
+        HirExpr::Path(path) => path,
+        _ => return None,
+    };
+    let ResolveResult::Resolved(symbol) = path.resolution else {
+        return None;
+    };
+    let symbol = hir.canonical_source_symbol(symbol)?;
+    if !matches!(hir.symbols.get(symbol)?.def, SymbolDef::ImportAlias { .. }) {
+        return None;
+    }
+    match types.facts.symbol_types.get(&symbol)? {
+        etas_types::SymbolTypeFact::Flow { signature }
+        | etas_types::SymbolTypeFact::Tool { signature } => Some(signature),
+        etas_types::SymbolTypeFact::Agent { signature } => signature.callable(),
+        _ => None,
+    }
+}
+
 pub(crate) fn direct_targets(
     hir: &etas_hir::HirProgram,
     types: &TypeOutput,

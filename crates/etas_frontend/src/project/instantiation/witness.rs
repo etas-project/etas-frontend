@@ -9,6 +9,8 @@ use etas_types::{
 
 use super::{InstantiationError, NativeInstantiation};
 
+mod external;
+
 pub(super) struct WitnessResolver<'a> {
     types: &'a TypeOutput,
     specs: etas_types::SpecFacts,
@@ -61,13 +63,21 @@ impl<'a> WitnessResolver<'a> {
             .map(|ty| substitution.substitute(*ty))
             .collect::<Result<Vec<_>, _>>()?;
         let store = substitution.input_store();
-        let witness = self.types.facts.methods.resolve_witness(
-            store,
-            &self.specs,
-            receiver,
-            &args,
-            member,
-        )?;
+        self.resolve_in_store(store, receiver, &args, member)
+    }
+
+    fn resolve_in_store(
+        &self,
+        store: &etas_types::TypeStore,
+        receiver: etas_types::TypeId,
+        args: &[etas_types::TypeId],
+        member: &SpecMethodIdentity,
+    ) -> Result<Option<MethodWitness<'_>>, InstantiationError> {
+        let witness =
+            self.types
+                .facts
+                .methods
+                .resolve_witness(store, &self.specs, receiver, args, member)?;
         let symbolic = matches!(store.get(receiver), Some(Type::Existential { .. }))
             || matches!(store.get(receiver), Some(Type::Named(named)) if named.source_parameter.is_some())
             || store.parameter_identity(receiver).is_some();
