@@ -49,6 +49,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .provisional
         .expr_types
         .extend(state.solver_report.inferred_expr_types.clone());
+    for (expr, pack) in &state.solver_report.existential_packs {
+        state.provisional.expr_types.insert(*expr, pack.object_type);
+    }
     if let Err(error) = crate::ty::materialize_representations(
         &mut ctx.interner,
         state
@@ -90,6 +93,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .checked_method_calls
         .extend(state.solver_report.checked_method_calls);
+    ctx.signature_facts
+        .existential_packs
+        .extend(state.solver_report.existential_packs);
     ctx.signature_facts
         .reflections
         .extend(state.solver_report.reflections);
@@ -367,6 +373,9 @@ fn apply_solver_substitutions(
         }
     }
     for fact in state.solver_report.checked_method_calls.values_mut() {
+        fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
+    }
+    for fact in state.solver_report.existential_packs.values_mut() {
         fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
     }
     Ok(())

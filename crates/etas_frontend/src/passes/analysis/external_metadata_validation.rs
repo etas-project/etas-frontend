@@ -1978,6 +1978,16 @@ fn validate_type_semantics(
     allow_unbound_vars: bool,
 ) -> Result<(), String> {
     match ty {
+        ProjectExternalTypeInput::Existential { bounds } => {
+            if bounds.is_empty() {
+                return Err("existential type requires at least one spec bound".into());
+            }
+            for bound in bounds {
+                validate_path(&bound.spec, "existential spec path")?;
+                validate_types_semantics(&bound.args, scope, allow_unbound_vars)?;
+            }
+            Ok(())
+        }
         ProjectExternalTypeInput::Primitive(name) => {
             validate_name(name, "primitive name")?;
             if !etas_types::lower::external::is_valid_external_primitive(name) {
@@ -2220,6 +2230,26 @@ fn validate_type_resource_bounds_with_budget(
         let next = depth + 1;
         match node {
             TypeGraphNode::Type(ty) => match ty {
+                ProjectExternalTypeInput::Existential { bounds } => {
+                    for bound in bounds {
+                        *nodes = nodes
+                            .checked_add(1)
+                            .ok_or("external metadata node count overflow")?;
+                        if *nodes > MAX_EXTERNAL_METADATA_GRAPH_NODES {
+                            return Err(
+                                "external metadata type graph exceeds maximum node count".into()
+                            );
+                        }
+                        for arg in &bound.args {
+                            push_type_graph_node(
+                                &mut stack,
+                                TypeGraphNode::Type(arg),
+                                next + 1,
+                                *nodes,
+                            )?;
+                        }
+                    }
+                }
                 ProjectExternalTypeInput::Applied { args, .. }
                 | ProjectExternalTypeInput::Tuple(args)
                 | ProjectExternalTypeInput::ResourceHandle { args, .. } => {

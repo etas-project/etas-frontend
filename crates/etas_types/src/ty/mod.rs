@@ -26,6 +26,7 @@ pub use display::display_type;
 pub use foreign::{ForeignTypeGraph, ForeignTypeGraphInput, relocate_foreign_type_graph};
 pub use graph::checked_type_graph;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
+pub(crate) use normalize::type_contains_id;
 pub use normalize::{
     applied_representation, applied_representation_in_store, nominal_representation_parts,
     record_fields_with_applied_params, type_contains_named_param, type_contains_source_parameter,
@@ -61,6 +62,9 @@ pub struct TypeId(pub u32);
     Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub enum Type {
+    Existential {
+        bounds: Vec<crate::CheckedSpecBound>,
+    },
     Primitive(PrimitiveType),
     IntegerLiteral {
         text: String,

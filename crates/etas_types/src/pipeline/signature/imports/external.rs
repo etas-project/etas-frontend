@@ -25,6 +25,7 @@ pub fn apply_external_signature_input(
     ctx: &mut TypePipelineContext<'_>,
     input: &ExternalSignatureInput,
 ) {
+    specs::declare(ctx, input);
     if !types::prepare(ctx, input) {
         return;
     }

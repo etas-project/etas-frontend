@@ -182,7 +182,7 @@ pub fn lower_std_spec_impls(
         .collect()
 }
 
-fn lower_std_generic_params(
+pub(super) fn lower_std_generic_params(
     ctx: &mut TypePipelineContext<'_>,
     registry: &StdRegistry,
     params: &[etas_std::StdGenericParam],

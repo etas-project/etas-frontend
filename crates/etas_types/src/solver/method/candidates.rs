@@ -51,6 +51,7 @@ pub(super) fn eligible(
         }
     }
     if matches!(evidence, MethodEvidence::Bound { .. })
+        && !matches!(input.store.get(receiver), Some(Type::Existential { .. }))
         && !matches!(input.store.get(receiver), Some(Type::Named(name)) if name.source_parameter.is_some())
     {
         return false;

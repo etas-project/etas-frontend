@@ -1,5 +1,6 @@
 pub(crate) mod code;
 pub mod effect_row;
+pub(crate) mod existential;
 pub mod external;
 pub(crate) mod spec_method;
 pub mod std;

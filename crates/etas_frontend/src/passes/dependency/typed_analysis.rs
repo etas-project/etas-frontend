@@ -167,6 +167,20 @@ fn checked_targets(context: &ProjectContext) -> Result<Vec<HirItemId>, &'static 
     }
     impl<'view, 'hir> HirVisitor<'view, 'hir> for Targets<'_> {
         fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
+            if let Some(pack) = self.facts.existential_packs.get(&expr.id()) {
+                for witness in &pack.witnesses {
+                    match &witness.target {
+                        etas_types::method::MethodTarget::Source { callable, .. }
+                        | etas_types::method::MethodTarget::Agent { callable, .. } => {
+                            self.items.insert(*callable);
+                        }
+                        etas_types::method::MethodTarget::BoundSpec { spec, member, .. } => {
+                            self.spec_methods(spec, Some(member))
+                        }
+                        _ => {}
+                    }
+                }
+            }
             if let Some(fact) = self.facts.checked_method_calls.get(&expr.id()) {
                 match &fact.target {
                     etas_types::method::MethodTarget::Source { callable, .. }

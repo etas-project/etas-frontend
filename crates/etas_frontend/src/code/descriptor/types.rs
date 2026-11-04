@@ -16,6 +16,7 @@ impl DefinitionDescriptorProjector<'_> {
             .get(source)
             .ok_or(ProjectionError::MissingType(source))?;
         let width = match data {
+            Type::Existential { bounds } => bounds.iter().map(|bound| 1 + bound.args.len()).sum(),
             Type::Primitive(_)
             | Type::IntegerLiteral { .. }
             | Type::Var(_)
@@ -50,6 +51,17 @@ impl DefinitionDescriptorProjector<'_> {
         self.ensure_edges(width)?;
         let data = data.clone();
         let (constructor, arguments) = match data {
+            Type::Existential { bounds } => {
+                let mut bounds = self.project_bounds(
+                    bounds
+                        .into_iter()
+                        .map(crate::code::identity::BoundDeclaration::Checked)
+                        .collect(),
+                    scope,
+                )?;
+                bounds.sort_by(|left, right| left.definition.cmp(&right.definition));
+                return Ok(TypeInfo::Existential { bounds });
+            }
             Type::Primitive(primitive) => {
                 return Ok(TypeInfo::Primitive(primitive_info(primitive)));
             }

@@ -102,6 +102,12 @@ pub enum TypeConstraint {
         rhs: TypeId,
         origin: ConstraintOrigin,
     },
+    ExistentialPack {
+        expr: etas_hir::HirExprId,
+        from: TypeId,
+        to: TypeId,
+        origin: ConstraintOrigin,
+    },
     Assignable {
         from: TypeId,
         to: TypeId,

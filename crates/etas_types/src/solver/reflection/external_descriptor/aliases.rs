@@ -36,6 +36,13 @@ impl ExternalDescriptorMatcher<'_> {
     ) -> Result<(), &'static str> {
         self.charge(depth)?;
         match ty {
+            Ty::Existential { bounds } => {
+                for bound in bounds {
+                    for arg in &mut bound.args {
+                        self.substitute_alias_type(arg, substitutions, depth + 1)?;
+                    }
+                }
+            }
             Ty::Var(name) => {
                 if let Some(value) = substitutions.get(name) {
                     self.charge_alias_clone(value, depth + 1)?;
@@ -137,6 +144,10 @@ impl ExternalDescriptorMatcher<'_> {
         while let Some((ty, depth)) = pending.pop() {
             self.charge(depth)?;
             let text_bytes = match ty {
+                Ty::Existential { bounds } => bounds
+                    .iter()
+                    .flat_map(|bound| &bound.spec)
+                    .fold(0usize, |sum, part| sum.saturating_add(part.len())),
                 Ty::Primitive(text) | Ty::Var(text) => text.len(),
                 Ty::Named(path)
                 | Ty::Applied { path, .. }
@@ -159,6 +170,12 @@ impl ExternalDescriptorMatcher<'_> {
             self.charge_alias_bytes(text_bytes)?;
             let next = depth + 1;
             match ty {
+                Ty::Existential { bounds } => {
+                    for bound in bounds {
+                        self.charge(next)?;
+                        pending.extend(bound.args.iter().map(|arg| (arg, next + 1)));
+                    }
+                }
                 Ty::Applied { args, .. } | Ty::Tuple(args) | Ty::ResourceHandle { args, .. } => {
                     pending.extend(args.iter().map(|ty| (ty, next)))
                 }

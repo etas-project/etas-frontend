@@ -54,6 +54,9 @@ impl<'a> TypeRepresentationMaterializer<'a> {
                 .cloned()
                 .ok_or(TypeSubstitutionError::MissingType(ty))?;
             match data {
+                Type::Existential { bounds } => {
+                    pending.extend(bounds.into_iter().flat_map(|bound| bound.args));
+                }
                 Type::Applied { constructor, args } => {
                     let owner = TypeId(constructor.0);
                     if matches!(interner.store().get(owner), Some(Type::Enum(_)))

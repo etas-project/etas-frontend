@@ -70,6 +70,38 @@ impl ExternalDescriptorMatcher<'_> {
             return self.ty(input, *target, &nested, depth + 1);
         }
         match (input, expected) {
+            (
+                ExternalTypeInput::Existential { bounds },
+                TypeInfo::Existential { bounds: expected },
+            ) => {
+                if bounds.len() != expected.len() {
+                    return Ok(false);
+                }
+                let mut used = vec![false; expected.len()];
+                for bound in bounds {
+                    let mut matched = false;
+                    for (index, candidate) in expected.iter().enumerate() {
+                        self.charge(depth + 1)?;
+                        if !used[index]
+                            && self.identity(&bound.spec, &candidate.definition)?
+                            && self.types(
+                                bound.args.iter(),
+                                &candidate.arguments,
+                                scope,
+                                depth + 1,
+                            )?
+                        {
+                            used[index] = true;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
             (ExternalTypeInput::Primitive(name), TypeInfo::Primitive(expected)) => {
                 Ok(crate::lower::external::primitive_from_external_name(name)
                     .map(super::super::descriptor_types::primitive)

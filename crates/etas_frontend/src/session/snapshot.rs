@@ -1140,6 +1140,14 @@ impl BodySignatureReferenceCollector<'_> {
             return;
         };
         match ty {
+            HirType::Existential { bounds, .. } => {
+                for bound in bounds {
+                    self.push_path_source_item(&bound.path);
+                    for argument in &bound.args {
+                        self.visit_type(*argument);
+                    }
+                }
+            }
             HirType::Handler {
                 handled,
                 produced,
@@ -1789,6 +1797,26 @@ fn hir_spec_expr_signature_part(expr: &etas_hir::HirSpecExpr, hir: &HirProgram) 
 
 fn hir_type_signature_part(ty: HirTypeId, hir: &HirProgram) -> String {
     match hir.types.get(ty).expect("HIR type id should resolve") {
+        HirType::Existential { bounds, .. } => {
+            let mut bounds = bounds
+                .iter()
+                .map(|bound| {
+                    format!(
+                        "{}<{}>",
+                        path_signature_part(&bound.path),
+                        bound
+                            .args
+                            .iter()
+                            .map(|argument| hir_type_signature_part(*argument, hir))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>();
+            bounds.sort();
+            bounds.dedup();
+            format!("existential<{}>", bounds.join("+"))
+        }
         HirType::Handler {
             handled,
             produced,

@@ -78,6 +78,10 @@ fn latent_output(
 
 fn children(node: &TypeInfo) -> Vec<TypeInfoRef> {
     match node {
+        TypeInfo::Existential { bounds } => bounds
+            .iter()
+            .flat_map(|bound| bound.arguments.iter().copied())
+            .collect(),
         TypeInfo::Builtin { arguments, .. } | TypeInfo::Tuple(arguments) => arguments.clone(),
         TypeInfo::Record(fields) => fields.iter().map(|field| field.ty).collect(),
         TypeInfo::Nominal { representation, .. } => representation.iter().copied().collect(),
@@ -114,10 +118,12 @@ fn transfer(
             .ok_or_else(|| invalid("latent type dependency is absent"))
     };
     match node {
-        TypeInfo::Function(_) | TypeInfo::Handler { .. } => Ok(Latent {
-            intrinsic: true,
-            ..Default::default()
-        }),
+        TypeInfo::Function(_) | TypeInfo::Handler { .. } | TypeInfo::Existential { .. } => {
+            Ok(Latent {
+                intrinsic: true,
+                ..Default::default()
+            })
+        }
         TypeInfo::Parameter(parameter) => Ok(Latent {
             parameters: [*parameter].into(),
             ..Default::default()

@@ -397,6 +397,11 @@ impl Encoder {
                 Task::Type(ty) => {
                     self.byte(4);
                     match ty {
+                        Type::Existential { bounds } => {
+                            self.byte(27);
+                            self.number(bounds.len());
+                            tasks.extend(bounds.iter().rev().map(Task::Bound));
+                        }
                         Type::Primitive(name) => {
                             self.byte(0);
                             self.text(name);

@@ -6,6 +6,15 @@ pub(crate) fn resolve_external_spec(
     path: &[String],
     arity: usize,
 ) -> Result<CheckedSpecRef, String> {
+    resolve_external_spec_path(ctx, path, arity)
+        .map_err(|reason| format!("package {}: {reason}", package.0))
+}
+
+pub(super) fn resolve_external_spec_path(
+    ctx: &TypePipelineContext<'_>,
+    path: &[String],
+    arity: usize,
+) -> Result<CheckedSpecRef, String> {
     if path.first().is_some_and(|segment| segment == "std") {
         let segments = path.iter().map(String::as_str).collect::<Vec<_>>();
         let symbol = ctx
@@ -35,12 +44,9 @@ pub(crate) fn resolve_external_spec(
         .signatures
         .iter()
         .filter(|(identity, _)| identity.path == path);
-    let (identity, signature) = declarations.next().ok_or_else(|| {
-        format!(
-            "package {} references a spec without a checked declaration",
-            package.0
-        )
-    })?;
+    let (identity, signature) = declarations
+        .next()
+        .ok_or("external metadata references a spec without a checked declaration")?;
     if declarations.next().is_some() {
         return Err("external spec path has more than one package owner".into());
     }

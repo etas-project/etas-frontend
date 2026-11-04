@@ -735,6 +735,14 @@ fn apply_type_var_substitution<E>(
         return ty;
     };
     match ty_data {
+        Type::Existential { mut bounds } => {
+            for bound in &mut bounds {
+                for arg in &mut bound.args {
+                    *arg = apply_type_var_substitution(ctx, *arg, substitution);
+                }
+            }
+            ctx.ctx.interner.intern(Type::Existential { bounds })
+        }
         Type::Var(var) => substitution.get(var).unwrap_or(ty),
         Type::Array(inner) => {
             let inner = apply_type_var_substitution(ctx, inner, substitution);

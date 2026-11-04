@@ -565,7 +565,21 @@ impl<'a> ProjectMetadataProjection<'a> {
         bound: &etas_types::CheckedSpecBound,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataSpecBound, PackageMetadataError> {
-        let spec = match &bound.spec {
+        Ok(MetadataSpecBound {
+            spec: self.checked_spec_path(&bound.spec)?,
+            args: bound
+                .args
+                .iter()
+                .map(|arg| self.metadata_type_in_generic_scope(*arg, generic_names))
+                .collect::<Result<_, _>>()?,
+        })
+    }
+
+    fn checked_spec_path(
+        &self,
+        spec: &etas_types::CheckedSpecRef,
+    ) -> Result<Vec<String>, PackageMetadataError> {
+        Ok(match spec {
             etas_types::CheckedSpecRef::Source(symbol) => self
                 .symbol_canonical_path(*symbol)
                 .ok_or_else(|| PackageMetadataError::InvalidMetadataType {
@@ -600,14 +614,6 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &|key| self.checked.foreign_type_bindings.verifies_marker_spec(key),
                 )?
             }
-        };
-        Ok(MetadataSpecBound {
-            spec,
-            args: bound
-                .args
-                .iter()
-                .map(|arg| self.metadata_type_in_generic_scope(*arg, generic_names))
-                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
@@ -1118,7 +1124,9 @@ impl<'a> ProjectMetadataProjection<'a> {
     }
 
     fn metadata_type(&self, ty: TypeId) -> Result<MetadataType, PackageMetadataError> {
-        let mut metadata = metadata_type(ty, &self.checked.type_store)?;
+        let mut metadata = metadata_type(ty, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         self.canonicalize_metadata_type(&mut metadata)?;
         Ok(metadata)
     }
@@ -1128,7 +1136,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         ty: TypeId,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataType, PackageMetadataError> {
-        let mut metadata = metadata_type(ty, &self.checked.type_store)?;
+        let mut metadata = metadata_type(ty, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         normalize_generic_type(&mut metadata, generic_names);
         self.canonicalize_metadata_type(&mut metadata)?;
         Ok(metadata)
@@ -1139,7 +1149,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         row: &EffectRowRef,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectRow, PackageMetadataError> {
-        let mut metadata = metadata_effect_row_ref(row, &self.checked.type_store)?;
+        let mut metadata = metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         normalize_generic_effect_row(&mut metadata, generic_names);
         self.canonicalize_effect_row_types(&mut metadata)?;
         Ok(metadata)
@@ -1150,7 +1162,9 @@ impl<'a> ProjectMetadataProjection<'a> {
         arg: &EffectArgRef,
         generic_names: &BTreeSet<String>,
     ) -> Result<MetadataEffectArg, PackageMetadataError> {
-        let mut metadata = metadata_effect_arg(arg, &self.checked.type_store)?;
+        let mut metadata = metadata_effect_arg(arg, &self.checked.type_store, &|spec| {
+            self.checked_spec_path(spec)
+        })?;
         if let Some(ty) = &mut metadata.ty {
             normalize_generic_type(ty, generic_names);
             self.canonicalize_metadata_type(ty)?;
@@ -1183,6 +1197,11 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
         for field in &mut metadata.fields {
             self.canonicalize_metadata_type(&mut field.ty)?;
+        }
+        for bound in &mut metadata.bounds {
+            for argument in &mut bound.args {
+                self.canonicalize_metadata_type(argument)?;
+            }
         }
         if let Some(effects) = &mut metadata.effects {
             self.canonicalize_effect_row_types(effects)?;
@@ -1565,7 +1584,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 args: action
                     .args
                     .iter()
-                    .map(|arg| metadata_effect_arg(arg, &self.checked.type_store))
+                    .map(|arg| {
+                        metadata_effect_arg(arg, &self.checked.type_store, &|spec| {
+                            self.checked_spec_path(spec)
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             Effect::Applied { tag, args } => Ok(MetadataEffectRef {
@@ -1575,7 +1598,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                     .map(|arg| {
                         Ok(MetadataEffectArg {
                             kind: MetadataEffectArgKind::Type,
-                            ty: Some(metadata_type(*arg, &self.checked.type_store)?),
+                            ty: Some(metadata_type(*arg, &self.checked.type_store, &|spec| {
+                                self.checked_spec_path(spec)
+                            })?),
                             path: Vec::new(),
                             value: String::new(),
                         })
@@ -1586,7 +1611,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                 path: vec!["Error".to_owned()],
                 args: vec![MetadataEffectArg {
                     kind: MetadataEffectArgKind::Type,
-                    ty: Some(metadata_type(*ty, &self.checked.type_store)?),
+                    ty: Some(metadata_type(*ty, &self.checked.type_store, &|spec| {
+                        self.checked_spec_path(spec)
+                    })?),
                     path: Vec::new(),
                     value: String::new(),
                 }],
@@ -2624,6 +2651,11 @@ fn normalize_generic_type(ty: &mut MetadataType, names: &BTreeSet<String>) {
     }
     for child in &mut ty.children {
         normalize_generic_type(child, names);
+    }
+    for bound in &mut ty.bounds {
+        for argument in &mut bound.args {
+            normalize_generic_type(argument, names);
+        }
     }
     for field in &mut ty.fields {
         normalize_generic_type(&mut field.ty, names);

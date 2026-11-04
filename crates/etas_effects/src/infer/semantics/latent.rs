@@ -541,6 +541,7 @@ impl EffectSemantics<'_> {
                 continue;
             }
             match self.types.store.get(ty) {
+                Some(Type::Existential { .. }) => return true,
                 Some(Type::Function(_)) => {
                     self.flow_type_presence.borrow_mut().insert(root, true);
                     return true;

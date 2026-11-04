@@ -680,7 +680,7 @@ pub struct ProjectExternalSpecMethodInput {
     pub receiver_param: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub struct ProjectExternalSpecBoundInput {
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
@@ -822,6 +822,9 @@ pub enum ProjectExternalEffectArgInput {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
 pub enum ProjectExternalTypeInput {
+    Existential {
+        bounds: Vec<ProjectExternalSpecBoundInput>,
+    },
     Primitive(String),
     Var(String),
     Named(Vec<String>),

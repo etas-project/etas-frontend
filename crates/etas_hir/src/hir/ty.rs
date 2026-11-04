@@ -8,6 +8,10 @@ pub use ast::PrimitiveType as HirPrimitiveType;
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub enum HirType {
+    Existential {
+        bounds: Vec<HirTypeParamBound>,
+        span: Span,
+    },
     Handler {
         handled: HirEffectRow,
         produced: HirHandlerProducedEffects,
@@ -51,6 +55,7 @@ impl HirType {
     pub fn span(&self) -> Span {
         match self {
             Self::Arrow { span, .. }
+            | Self::Existential { span, .. }
             | Self::Handler { span, .. }
             | Self::Primitive { span, .. }
             | Self::Path { span, .. }

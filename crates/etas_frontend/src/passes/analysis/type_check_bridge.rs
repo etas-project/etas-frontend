@@ -708,6 +708,17 @@ pub(super) fn convert_external_type(
     ty: &ProjectExternalTypeInput,
 ) -> etas_types::ExternalTypeInput {
     match ty {
+        ProjectExternalTypeInput::Existential { bounds } => {
+            etas_types::ExternalTypeInput::Existential {
+                bounds: bounds
+                    .iter()
+                    .map(|bound| etas_types::ExternalSpecBoundInput {
+                        spec: bound.spec.clone(),
+                        args: bound.args.iter().map(convert_external_type).collect(),
+                    })
+                    .collect(),
+            }
+        }
         ProjectExternalTypeInput::Primitive(name) => {
             etas_types::ExternalTypeInput::Primitive(name.clone())
         }

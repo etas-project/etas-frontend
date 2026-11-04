@@ -16,6 +16,7 @@ pub struct TypePipelineContext<'a> {
     pub diagnostics: Vec<Diagnostic>,
     pub lowering_type_stack: Vec<etas_hir::SymbolId>,
     pub(crate) type_applications: Vec<crate::lower::type_application::TypeApplication>,
+    pub(crate) existential_annotations: Vec<(crate::TypeId, etas_core::Span)>,
     pub external_type_paths: HashMap<Vec<String>, crate::TypeId>,
     pub external_type_aliases: HashMap<Vec<String>, (Vec<String>, crate::TypeId)>,
 }
@@ -139,6 +140,7 @@ impl<'a> TypePipelineContext<'a> {
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
+            existential_annotations: Vec::new(),
             external_type_paths: HashMap::new(),
             external_type_aliases: HashMap::new(),
         }
@@ -182,6 +184,7 @@ impl<'a> TypePipelineContext<'a> {
             diagnostics: Vec::new(),
             lowering_type_stack: Vec::new(),
             type_applications: Vec::new(),
+            existential_annotations: Vec::new(),
             external_type_paths: HashMap::new(),
             external_type_aliases: HashMap::new(),
         }

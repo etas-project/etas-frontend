@@ -177,6 +177,14 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
 
     fn type_data(&mut self, ty: Type) -> Type {
         match ty {
+            Type::Existential { mut bounds } => {
+                for bound in &mut bounds {
+                    for arg in &mut bound.args {
+                        *arg = self.ty(*arg);
+                    }
+                }
+                Type::Existential { bounds }
+            }
             Type::Array(inner) => Type::Array(self.ty(inner)),
             Type::List(inner) => Type::List(self.ty(inner)),
             Type::Map { key, value } => Type::Map {
@@ -576,6 +584,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         ));
     }
     for fact in facts.checked_method_calls.values_mut() {
+        fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
+            .unwrap_or_else(|never| match never {});
+    }
+    for fact in facts.existential_packs.values_mut() {
         fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
             .unwrap_or_else(|never| match never {});
     }

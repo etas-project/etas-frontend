@@ -7,6 +7,7 @@ mod construction;
 pub mod effect_row;
 #[cfg(test)]
 mod execution_tests;
+mod existential;
 pub mod field;
 mod handler;
 pub mod index;
@@ -73,6 +74,7 @@ impl TypeSolver {
     ) -> Result<SolverReport, E> {
         checkpoint()?;
         let mut report = SolverReport::default();
+        let mut existential_packs = Vec::new();
         let mut pending_access_constraints = Vec::new();
         let mut pending_method_constraints = Vec::new();
         let mut checked_method_constraints = Vec::new();
@@ -88,6 +90,7 @@ impl TypeSolver {
         for constraint in input.constraints {
             checkpoint()?;
             match constraint {
+                TypeConstraint::ExistentialPack { .. } => existential_packs.push(constraint),
                 TypeConstraint::HandlerOverloadInstantiation {
                     candidates,
                     requests,
@@ -649,6 +652,10 @@ impl TypeSolver {
             &callable_references,
             checkpoint,
         )?;
+        for constraint in existential_packs {
+            checkpoint()?;
+            existential::pack(&input, &mut report, constraint);
+        }
         checkpoint()?;
         Ok(report)
     }

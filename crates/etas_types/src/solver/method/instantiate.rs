@@ -85,6 +85,53 @@ pub(super) fn probe(
         }
         substitutions = unifier.into_substitution();
     }
+    if let MethodEvidence::Bound {
+        spec,
+        args: expected,
+        ..
+    } = evidence
+    {
+        let receiver = super::super::resolve_substitution(input.store, &substitutions, args[0]);
+        let alternatives = match spec_solver::bound_evidence::arguments(
+            input.store,
+            input.spec_facts,
+            receiver,
+            spec,
+        ) {
+            Ok(arguments) => arguments,
+            Err(message) => {
+                result.report.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span: call.origin.span,
+                    message,
+                });
+                return result;
+            }
+        };
+        let mut selected = None;
+        for arguments in alternatives {
+            if arguments.len() != expected.len() {
+                continue;
+            }
+            let mut unifier = TypeUnifier::with_known_substitution(input.store, &substitutions);
+            if !expected
+                .iter()
+                .zip(arguments)
+                .all(|(expected, actual)| unifier.unify(*expected, actual).is_ok())
+            {
+                continue;
+            }
+            if selected.is_some() {
+                result.report.push(SolverFailure { code: etas_core::TypeDiagnosticCode::TypeMismatch, span: call.origin.span,
+                    message: "method has multiple applicable declared spec bounds; select explicit spec arguments".into() });
+                return result;
+            }
+            selected = Some(unifier.into_substitution());
+        }
+        if let Some(bindings) = selected {
+            substitutions.extend(&bindings);
+        }
+    }
     result.report = solve_callable_constraint(
         input.store,
         input.spec_facts,

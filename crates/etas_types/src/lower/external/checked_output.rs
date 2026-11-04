@@ -166,6 +166,32 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         ty: &crate::ExternalTypeInput,
     ) -> Result<Type, ExternalMetadataLoweringError> {
         match ty {
+            crate::ExternalTypeInput::Existential { bounds } => Ok(Type::Existential {
+                bounds: bounds
+                    .iter()
+                    .map(|bound| {
+                        let spec = if self
+                            .types
+                            .facts
+                            .std_spec_aliases
+                            .values()
+                            .any(|path| path == &bound.spec)
+                        {
+                            crate::CheckedSpecRef::Std(bound.spec.clone())
+                        } else {
+                            crate::CheckedSpecRef::External(self.spec_identity(&bound.spec)?)
+                        };
+                        Ok(crate::CheckedSpecBound {
+                            spec,
+                            args: bound
+                                .args
+                                .iter()
+                                .map(|arg| self.type_id(arg))
+                                .collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<_, ExternalMetadataLoweringError>>()?,
+            }),
             crate::ExternalTypeInput::Primitive(name) => Ok(Type::Primitive(
                 primitive_from_external_name(name).ok_or_else(|| {
                     ExternalMetadataLoweringError {

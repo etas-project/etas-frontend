@@ -49,6 +49,7 @@ pub fn check_top_level_items(
         diagnostics: Vec::new(),
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
+        existential_annotations: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
         external_type_aliases: std::collections::HashMap::new(),
     };
@@ -149,6 +150,7 @@ fn infer_outputs_with_checkpoint<E>(
         diagnostics: seed.diagnostics,
         lowering_type_stack: Vec::new(),
         type_applications: Vec::new(),
+        existential_annotations: Vec::new(),
         external_type_paths: std::collections::HashMap::new(),
         external_type_aliases: std::collections::HashMap::new(),
     };

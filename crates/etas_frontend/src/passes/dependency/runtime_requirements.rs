@@ -192,6 +192,14 @@ pub(super) fn compute_reachability(
     }
     if let Some(types) = types {
         for expr in &linked.exprs {
+            if let Some(pack) = types.existential_packs.get(expr) {
+                for witness in &pack.witnesses {
+                    if let etas_types::method::MethodTarget::External { identity } = &witness.target
+                    {
+                        planner.collect_external_method(identity)?;
+                    }
+                }
+            }
             if let Some(call) = types.checked_method_calls.get(expr)
                 && let etas_types::method::MethodTarget::External { identity } = &call.target
             {

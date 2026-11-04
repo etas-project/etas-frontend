@@ -32,6 +32,15 @@ impl Parser<'_> {
     }
 
     pub(crate) fn primary_type(&mut self) -> TypeExpr {
+        if let Some(start) = self.cursor.eat_punct(Punct::Question) {
+            self.expect_punct(Punct::Tilde, "expected `~` after existential `?`");
+            let mut bounds = vec![self.type_param_bound()];
+            while self.cursor.eat_punct(Punct::Plus).is_some() {
+                bounds.push(self.type_param_bound());
+            }
+            let span = start.span.cover(bounds.last().unwrap().span);
+            return TypeExpr::Existential { bounds, span };
+        }
         if self.cursor.at_punct(Punct::Bang) {
             return self.handler_type();
         }

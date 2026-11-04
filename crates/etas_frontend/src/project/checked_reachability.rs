@@ -306,6 +306,15 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
         if self.error.is_some() {
             return;
         }
+        if let Some(pack) = self.checked.types.existential_packs.get(&expression.id()) {
+            for witness in &pack.witnesses {
+                if let etas_types::method::MethodTarget::Source { callable, .. }
+                | etas_types::method::MethodTarget::Agent { callable, .. } = witness.target
+                {
+                    self.pending.push(callable);
+                }
+            }
+        }
         if let Some(method) = self
             .checked
             .types

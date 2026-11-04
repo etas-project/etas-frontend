@@ -317,6 +317,9 @@ pub struct ExternalRecordFieldInput {
 
 #[derive(Clone, Debug)]
 pub enum ExternalTypeInput {
+    Existential {
+        bounds: Vec<ExternalSpecBoundInput>,
+    },
     Primitive(String),
     Var(String),
     Named(Vec<String>),

@@ -203,6 +203,7 @@ fn receiver_head(store: &TypeStore, ty: TypeId) -> ReceiverHead {
         Type::MemoryRegion(_) => 21,
         Type::ResourceHandle(_) => 22,
         Type::IntegerLiteral { .. } => 23,
+        Type::Existential { .. } => 24,
         Type::Refined { base, .. } => return receiver_head(store, *base),
     };
     ReceiverHead::Family(family)

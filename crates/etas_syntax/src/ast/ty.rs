@@ -2,6 +2,10 @@ use crate::{Span, ast::expr::Expr, ast::name::Path};
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum TypeExpr {
+    Existential {
+        bounds: Vec<super::TypeParamBound>,
+        span: Span,
+    },
     Handler(HandlerType),
     Arrow {
         effect: Option<EffectRow>,
@@ -36,6 +40,7 @@ impl TypeExpr {
         match self {
             Self::Handler(handler) => handler.span,
             Self::Arrow { span, .. }
+            | Self::Existential { span, .. }
             | Self::Primitive { span, .. }
             | Self::Path { span, .. }
             | Self::Tuple { span, .. }

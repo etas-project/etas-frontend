@@ -15,8 +15,7 @@ pub(crate) struct TypeApplication {
 pub(crate) fn take_obligations(
     ctx: &mut TypePipelineContext<'_>,
 ) -> (Vec<SpecObligation>, Vec<ValidationRequest>) {
-    let mut obligations = Vec::new();
-    let mut validations = Vec::new();
+    let (mut obligations, mut validations) = super::existential::take_obligations(ctx);
     for application in std::mem::take(&mut ctx.type_applications) {
         let parameters = match ctx.symbol_fact(application.symbol) {
             Some(SymbolTypeFact::Agent { .. }) => Vec::new(),

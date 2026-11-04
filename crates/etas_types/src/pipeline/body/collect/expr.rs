@@ -36,6 +36,13 @@ pub fn collect_expr<E>(
     if let Some(ty) = ctx.state.provisional.expr_types.get(&expr).copied() {
         return Ok(ty);
     }
+    let object = expected.filter(|ty| {
+        matches!(
+            ctx.ctx.interner.store().get(*ty),
+            Some(Type::Existential { .. })
+        )
+    });
+    let expected = if object.is_some() { None } else { expected };
     collect_method_receivers(ctx, expr)?;
     let ty = match ctx.ctx.hir.exprs[expr].clone() {
         HirExpr::Literal(literal) => collect_literal(ctx, Some(expr), &literal, expected),
@@ -447,7 +454,20 @@ pub fn collect_expr<E>(
             ctx.primitive(PrimitiveType::Never)
         }
     };
-    Ok(ctx.record_expr_type(expr, ty))
+    let result = if let Some(object) = object.filter(|object| *object != ty) {
+        ctx.emit(TypeConstraint::ExistentialPack {
+            expr,
+            from: ty,
+            to: object,
+            origin: ConstraintOrigin {
+                span: ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks),
+            },
+        });
+        object
+    } else {
+        ty
+    };
+    Ok(ctx.record_expr_type(expr, result))
 }
 
 fn collect_method_receivers<E>(

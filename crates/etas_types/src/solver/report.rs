@@ -7,6 +7,8 @@ use crate::{CheckedIndexKind, CheckedSliceKind, TypeId, solver::unification::Sub
 
 #[derive(Clone, Debug, Default)]
 pub struct SolverReport {
+    pub existential_packs:
+        HashMap<HirExprId, crate::facts::existentials::CheckedExistentialPackFact>,
     pub substitutions: Substitution,
     pub named_substitutions: HashMap<String, TypeId>,
     pub inferred_expr_types: HashMap<HirExprId, TypeId>,
@@ -33,6 +35,7 @@ impl SolverReport {
     }
 
     pub fn append(&mut self, other: SolverReport) {
+        self.existential_packs.extend(other.existential_packs);
         self.substitutions.extend(&other.substitutions);
         self.named_substitutions.extend(other.named_substitutions);
         for (expr, ty) in other.inferred_expr_types {

@@ -356,6 +356,19 @@ fn evidence_satisfies_inner(
     args: &[TypeId],
     active: &mut ActiveObligations,
 ) -> bool {
+    if let Some(Type::Existential { bounds }) = store.get(ty) {
+        return bounds.iter().any(|bound| {
+            entails_inner(
+                store,
+                facts,
+                bound.spec.clone(),
+                &bound.args,
+                target,
+                args,
+                active,
+            )
+        });
+    }
     let external_impl = facts.external_impls.iter().any(|implementation| {
         type_same(store, implementation.self_type, ty)
             && entails_inner(
@@ -550,7 +563,7 @@ fn entails_inner(
     false
 }
 
-fn normalize(facts: &SpecFacts, spec: CheckedSpecRef) -> CheckedSpecRef {
+pub(super) fn normalize(facts: &SpecFacts, spec: CheckedSpecRef) -> CheckedSpecRef {
     match spec {
         CheckedSpecRef::Source(symbol) => {
             if let Some(identity) = facts.external_aliases.get(&symbol) {

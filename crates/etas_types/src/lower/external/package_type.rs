@@ -54,6 +54,23 @@ impl Projection {
         };
         let single = |this: &mut Self| this.ty(child(0)?, depth + 1).map(Box::new);
         Ok(match ty.kind {
+            TypeKind::Existential => Ty::Existential {
+                bounds: ty
+                    .bounds
+                    .iter()
+                    .map(|bound| {
+                        self.enter(depth + 1)?;
+                        Ok(crate::ExternalSpecBoundInput {
+                            spec: bound.spec.clone(),
+                            args: bound
+                                .args
+                                .iter()
+                                .map(|arg| self.ty(arg, depth + 2))
+                                .collect::<Result<_, _>>()?,
+                        })
+                    })
+                    .collect::<Result<_, ExternalMetadataLoweringError>>()?,
+            },
             TypeKind::Primitive => Ty::Primitive(ty.name.clone()),
             TypeKind::Var => Ty::Var(ty.name.clone()),
             TypeKind::Named => Ty::Named(ty.path.clone()),

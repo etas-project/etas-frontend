@@ -763,7 +763,8 @@ impl EffectSemantics<'_> {
                     None => return false,
                 },
                 Some(
-                    Type::Var(_)
+                    Type::Existential { .. }
+                    | Type::Var(_)
                     | Type::Function(_)
                     | Type::Handler(_)
                     | Type::Named(_)
