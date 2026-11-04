@@ -1,0 +1,1 @@
+flow encode_checkpoint(value: string) -> string { return value; } flow decode_checkpoint(value: string) -> string { return value; } flow main() -> string { let encoded = encode_checkpoint("checkpoint:19"); let decoded = decode_checkpoint(encoded); return decoded; }

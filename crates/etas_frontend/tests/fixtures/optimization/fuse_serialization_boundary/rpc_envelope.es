@@ -1,0 +1,1 @@
+flow encode_envelope(value: string) -> string { return value; } flow decode_envelope(value: string) -> string { return value; } flow main() -> string { let encoded = encode_envelope("rpc:request"); let decoded = decode_envelope(encoded); return decoded; }

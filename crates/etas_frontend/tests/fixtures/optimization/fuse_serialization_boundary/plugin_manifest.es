@@ -1,0 +1,1 @@
+flow encode_manifest(value: string) -> string { return value; } flow decode_manifest(value: string) -> string { return value; } flow main() -> string { let encoded = encode_manifest("plugin:workspace"); let decoded = decode_manifest(encoded); return decoded; }

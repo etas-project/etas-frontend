@@ -1,0 +1,1 @@
+flow encode_prompt(value: string) -> string { return value; } flow decode_prompt(value: string) -> string { return value; } flow main() -> string { let encoded = encode_prompt("system:user"); let decoded = decode_prompt(encoded); return decoded; }

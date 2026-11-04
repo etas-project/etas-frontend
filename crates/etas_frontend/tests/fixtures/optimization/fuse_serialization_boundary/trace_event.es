@@ -1,0 +1,1 @@
+flow encode_event(value: string) -> string { return value; } flow decode_event(value: string) -> string { return value; } flow main() -> string { let encoded = encode_event("event:tool"); let decoded = decode_event(encoded); return decoded; }

@@ -1,0 +1,1 @@
+flow encode_schema(value: string) -> string { return value; } flow decode_schema(value: string) -> string { return value; } flow main() -> string { let encoded = encode_schema("tool:read"); let decoded = decode_schema(encoded); return decoded; }

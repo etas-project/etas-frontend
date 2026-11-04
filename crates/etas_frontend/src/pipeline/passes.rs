@@ -9,11 +9,12 @@ use crate::passes::{
     CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
     ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
     ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
-    FinalizeTypeFactsPass, FuseProjectionScansPass, InferCallableOutputsPass, LowerModuleItemsPass,
-    MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
-    PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
-    PrepareEffectRegistryPass, PrepareInvocationTypesPass, PrepareVersionedRequestPass,
-    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    FinalizeTypeFactsPass, FuseProjectionScansPass, FuseSerializationBoundaryPass,
+    InferCallableOutputsPass, LowerModuleItemsPass, MaterializeGenericEffectRowsPass,
+    NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
+    PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
+    PrepareInvocationTypesPass, PrepareVersionedRequestPass, ResolveEntryItemPass,
+    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, SuffixDemandHistoryPass,
     SynthesizeScopedIndexPass, TypeCheckBodyPass, ValidateEntryContractPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
@@ -122,6 +123,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(AgentEffectLegalityPass)
         .pass(PrepareVersionedRequestPass)
         .pass(VersionedPreparationCsePass)
+        .pass(FuseSerializationBoundaryPass)
         .pass(FuseProjectionScansPass)
         .pass(SynthesizeScopedIndexPass)
         .pass(SuffixDemandHistoryPass)

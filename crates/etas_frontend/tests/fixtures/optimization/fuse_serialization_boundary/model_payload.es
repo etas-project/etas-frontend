@@ -1,0 +1,1 @@
+flow encode_payload(value: string) -> string { return value; } flow decode_payload(value: string) -> string { return value; } flow main() -> string { let encoded = encode_payload("model:m3.1"); let decoded = decode_payload(encoded); return decoded; }

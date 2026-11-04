@@ -1,0 +1,1 @@
+flow encode_record(value: string) -> string { return value; } flow decode_record(value: string) -> string { return value; } flow main() -> string { let encoded = encode_record("record:v42"); let decoded = decode_record(encoded); return decoded; }

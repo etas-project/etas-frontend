@@ -1,0 +1,1 @@
+flow encode_policy(value: string) -> string { return value; } flow decode_policy(value: string) -> string { return value; } flow main() -> string { let encoded = encode_policy("policy:sandbox"); let decoded = decode_policy(encoded); return decoded; }
