@@ -359,8 +359,10 @@ impl EffectSemantics<'_> {
             &mut trace_bindings,
             self.callable_environment_site(site.call)?,
             state,
-            &type_bindings,
-            &effect_row_bindings,
+            super::callable_generics::ScopedGenericArguments::named(
+                &type_bindings,
+                &effect_row_bindings,
+            ),
         )?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,

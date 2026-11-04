@@ -723,6 +723,12 @@ pub(super) fn convert_external_type(
             etas_types::ExternalTypeInput::Primitive(name.clone())
         }
         ProjectExternalTypeInput::Var(name) => etas_types::ExternalTypeInput::Var(name.clone()),
+        ProjectExternalTypeInput::Parameter { owner, position } => {
+            etas_types::ExternalTypeInput::Parameter {
+                owner: owner.clone(),
+                position: *position,
+            }
+        }
         ProjectExternalTypeInput::Named(path) => etas_types::ExternalTypeInput::Named(path.clone()),
         ProjectExternalTypeInput::Enum { path, variants } => etas_types::ExternalTypeInput::Enum {
             path: path.clone(),

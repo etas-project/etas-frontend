@@ -11,6 +11,9 @@ use etas_frontend::{
 use etas_hir::{HirItem, HirItemId};
 use etas_types::ItemSignature;
 
+#[path = "definition_descriptors/scoped_parameters.rs"]
+mod scoped_parameters;
+
 fn checked(source: &str) -> CheckedProgram {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
     input.options.entry_policy = etas_frontend::EntryPolicy::Optional;

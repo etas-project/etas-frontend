@@ -343,3 +343,136 @@ impl First ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
     assert_eq!(direct.len(), 1);
     assert_eq!(direct, aliased);
 }
+
+#[test]
+fn binary_methods_keep_owner_parameters_distinct_from_shadowing_method_parameters() {
+    use etas_code::descriptor::GenericOwner;
+    use etas_package_metadata::TypeKind;
+    let source = include_str!("fixtures/method_resolution/owner_catalog.es")
+        .replace("type Container", "public type Container");
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(package()),
+            package_id: "library".into(),
+            package_version: "0.1.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: "blake3:source".into(),
+            manifest_hash: "blake3:manifest".into(),
+            dependency_lock_hash: "blake3:lock".into(),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked(&source),
+    )
+    .expect("generic impl metadata");
+    let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("library.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    let methods = &metadata.public_metadata.methods;
+    assert_eq!(methods.len(), 2);
+    let replace = methods
+        .iter()
+        .find(|method| method.identity.name() == "replace")
+        .unwrap();
+    let owner = &replace.self_type.children[0];
+    assert_eq!(owner.kind, TypeKind::Parameter);
+    let parameter = owner.parameter.as_ref().unwrap();
+    assert_eq!(
+        parameter.owner,
+        GenericOwner::Implementation(replace.identity.implementation().clone())
+    );
+    assert_eq!(parameter.position, 0);
+    let signature = replace.root().unwrap();
+    assert_eq!(signature.params[0].children[0], *owner);
+    assert_eq!(signature.output.children[0].kind, TypeKind::Var);
+    assert_eq!(signature.output.children[0].name, "T");
+    let get = methods
+        .iter()
+        .find(|method| method.identity.name() == "get")
+        .unwrap();
+    assert_eq!(get.root().unwrap().output, *owner);
+    let external = etas_types::lower::external::package_type_input(owner).unwrap();
+    assert!(
+        matches!(external, etas_types::ExternalTypeInput::Parameter { owner, position: 0 }
+        if owner == parameter.owner)
+    );
+}
+
+#[test]
+fn returned_method_closures_publish_their_scoped_owner_effects() {
+    let source = include_str!(
+        "../../etas_effects/tests/fixtures/method_resolution/captured_owner_binders.es"
+    )
+    .replace("type Container", "public type Container")
+    .replace("effect Probe", "public effect Probe");
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(package()),
+            package_id: "library".into(),
+            package_version: "0.1.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: "blake3:source".into(),
+            manifest_hash: "blake3:manifest".into(),
+            dependency_lock_hash: "blake3:lock".into(),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked(&source),
+    )
+    .expect("captured owner effects must be exportable");
+    let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("library.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    for method in &metadata.public_metadata.methods {
+        let closure = method
+            .callable
+            .values
+            .iter()
+            .find(|node| node.param_names.is_empty())
+            .expect("exported anonymous flow");
+        let selectors = closure
+            .requested_actions
+            .effects
+            .iter()
+            .map(|effect| &effect.args[0].ty)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selectors.len(),
+            2,
+            "{}: {closure:?}",
+            method.identity.name()
+        );
+        assert!(
+            selectors.iter().any(|ty| ty
+                .as_ref()
+                .is_some_and(|ty| ty.kind == etas_package_metadata::TypeKind::Parameter)),
+            "{selectors:?}"
+        );
+        if method.identity.name() == "capture" {
+            assert!(
+                selectors
+                    .iter()
+                    .any(|ty| ty.as_ref().is_some_and(|ty| ty.kind
+                        == etas_package_metadata::TypeKind::Var
+                        && ty.name == "T")),
+                "{selectors:?}"
+            );
+        } else {
+            assert!(
+                selectors.iter().any(|ty| ty
+                    .as_ref()
+                    .is_some_and(|ty| ty.kind == etas_package_metadata::TypeKind::Primitive
+                        && ty.name == "string")),
+                "{selectors:?}"
+            );
+        }
+    }
+}

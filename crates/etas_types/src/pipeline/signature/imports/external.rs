@@ -41,6 +41,7 @@ pub fn apply_external_signature_input(
         let Some(span) = package_binding_span(input, metadata.package) else {
             continue;
         };
+        methods::prepare(ctx, metadata, span);
         for ty in &metadata.behavior_types {
             lower_external_type(ctx, span, ty);
         }

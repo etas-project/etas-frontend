@@ -442,6 +442,11 @@ impl CheckedResidualPlans {
             GenericOwner::Declaration(key) => CallableId::declaration(key.clone())
                 .map_err(|error| ResidualBindingError::Owner(format!("{error:?}")))?,
             GenericOwner::Method(method) => CallableId::method(method.clone()),
+            GenericOwner::Implementation(_) | GenericOwner::ImplementationPattern(_) => {
+                return Err(owner_error(
+                    "implementation binder scope is not a callable revision owner",
+                ));
+            }
         };
         let declaration = program
             .hir

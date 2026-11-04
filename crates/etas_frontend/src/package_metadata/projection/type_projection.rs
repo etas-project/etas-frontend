@@ -8,24 +8,27 @@ pub(super) fn metadata_type(
     ty: TypeId,
     store: &TypeStore,
     spec_path: &SpecPathResolver<'_>,
+    identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
 ) -> Result<MetadataType, PackageMetadataError> {
-    TypeProjection::new(store, spec_path).ty(ty)
+    TypeProjection::new(store, spec_path, identities).ty(ty)
 }
 
 pub(super) fn metadata_effect_row_ref(
     row: &EffectRowRef,
     store: &TypeStore,
     spec_path: &SpecPathResolver<'_>,
+    identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
 ) -> Result<MetadataEffectRow, PackageMetadataError> {
-    TypeProjection::new(store, spec_path).row(row)
+    TypeProjection::new(store, spec_path, identities).row(row)
 }
 
 pub(super) fn metadata_effect_arg(
     arg: &EffectArgRef,
     store: &TypeStore,
     spec_path: &SpecPathResolver<'_>,
+    identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
 ) -> Result<MetadataEffectArg, PackageMetadataError> {
-    TypeProjection::new(store, spec_path).arg(arg)
+    TypeProjection::new(store, spec_path, identities).arg(arg)
 }
 
 type SpecPathResolver<'a> =
@@ -36,6 +39,7 @@ type SpecPathResolver<'a> =
 struct TypeProjection<'a> {
     store: &'a TypeStore,
     spec_path: &'a SpecPathResolver<'a>,
+    identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
     nominals: BTreeSet<TypeId>,
     structural: BTreeSet<(TypeId, Option<TypeId>)>,
     anchor: Option<TypeId>,
@@ -44,10 +48,15 @@ struct TypeProjection<'a> {
 }
 
 impl<'a> TypeProjection<'a> {
-    fn new(store: &'a TypeStore, spec_path: &'a SpecPathResolver<'a>) -> Self {
+    fn new(
+        store: &'a TypeStore,
+        spec_path: &'a SpecPathResolver<'a>,
+        identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Self {
         Self {
             store,
             spec_path,
+            identities,
             nominals: BTreeSet::new(),
             structural: BTreeSet::new(),
             anchor: None,
@@ -71,6 +80,29 @@ impl<'a> TypeProjection<'a> {
             return Err(PackageMetadataError::UnsupportedType {
                 ty,
                 reason: "package type projection exceeds the metadata graph budget".into(),
+            });
+        }
+        let parameter = self
+            .identities
+            .and_then(|index| index.implementation_parameter(ty))
+            .cloned()
+            .or_else(|| {
+                self.store.parameter_identity(ty).and_then(|identity| {
+                    matches!(
+                        identity.owner(),
+                        etas_code::descriptor::GenericOwner::Implementation(_)
+                    )
+                    .then(|| etas_package_metadata::GenericTypeParameter {
+                        owner: identity.owner().clone(),
+                        position: identity.index(),
+                    })
+                })
+            });
+        if let Some(parameter) = parameter {
+            return Ok(MetadataType {
+                kind: MetadataTypeKind::Parameter,
+                parameter: Some(parameter),
+                ..Default::default()
             });
         }
         let parent = self.anchor;

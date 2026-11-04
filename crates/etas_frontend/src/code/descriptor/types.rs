@@ -67,9 +67,15 @@ impl DefinitionDescriptorProjector<'_> {
             }
             Type::Named(data) => {
                 let binder = self.scopes[scope]
-                    .binders
-                    .get(&data.name)
+                    .type_parameters
+                    .get(&source)
                     .copied()
+                    .or_else(|| {
+                        (data.source_parameter.is_none()
+                            && self.checked.type_store.parameter_identity(source).is_none())
+                        .then(|| self.scopes[scope].binders.get(&data.name).copied())
+                        .flatten()
+                    })
                     .ok_or_else(|| ProjectionError::MissingIdentity(data.name.clone()))?;
                 if self.binders[binder.0 as usize].kind != GenericParameterKind::Type {
                     return Err(ProjectionError::UnresolvedType(source));
@@ -220,12 +226,7 @@ impl DefinitionDescriptorProjector<'_> {
                 scope,
             );
         }
-        let mut parameters = self.scopes[scope]
-            .binders
-            .values()
-            .copied()
-            .collect::<Vec<_>>();
-        parameters.sort_by_key(|reference| self.binders[reference.0 as usize].position);
+        let parameters = self.scopes[scope].own_binders.clone();
         if let Some(target) = declaration.alias {
             return Ok(TypeInfo::Alias {
                 definition: declaration.identity,

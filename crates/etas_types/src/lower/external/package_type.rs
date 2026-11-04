@@ -73,6 +73,16 @@ impl Projection {
             },
             TypeKind::Primitive => Ty::Primitive(ty.name.clone()),
             TypeKind::Var => Ty::Var(ty.name.clone()),
+            TypeKind::Parameter => {
+                let parameter = ty
+                    .parameter
+                    .as_ref()
+                    .ok_or_else(|| error("type parameter has no checked owner"))?;
+                Ty::Parameter {
+                    owner: parameter.owner.clone(),
+                    position: parameter.position,
+                }
+            }
             TypeKind::Named => Ty::Named(ty.path.clone()),
             TypeKind::Enum => Ty::Enum {
                 path: ty.path.clone(),

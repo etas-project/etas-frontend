@@ -198,15 +198,22 @@ impl EffectSemantics<'_> {
         mode: CallableSummaryMode,
     ) -> Result<CallableSummaryPlan, EffectSpecializationError> {
         let snapshot = self.callable_environment(environment)?;
-        let (types, rows) = self.native_environment_generics(
-            unit.owner()
-                .ok_or_else(|| invalid("captured callable has no checked owner"))?,
-            &snapshot.generics,
-        )?;
+        let owner = unit
+            .owner()
+            .ok_or_else(|| invalid("captured callable has no checked owner"))?;
+        let (types, rows) = self.native_environment_generics(owner, &snapshot.generics)?;
+        let type_parameters = self.native_environment_type_parameters(owner, &snapshot.generics)?;
         let template = self
             .latent_leaf_summary(LatentSource::Unit(unit), span)
             .ok_or_else(|| invalid("captured callable has no solved template summary"))?;
-        let template = self.specialize_summary_with_bindings(&template, &[], &types, &rows)?;
+        let template = self.specialize_summary_with_residual_bindings(
+            &template,
+            &[],
+            &types,
+            &type_parameters,
+            &rows,
+            None,
+        )?;
         let mut bindings = snapshot
             .parameters
             .into_iter()
@@ -219,8 +226,11 @@ impl EffectSemantics<'_> {
             &mut bindings,
             environment.application,
             &invocation_state,
-            &types,
-            &rows,
+            super::callable_generics::ScopedGenericArguments {
+                types: &types,
+                parameters: Some(&type_parameters),
+                rows: &rows,
+            },
         )?;
         let bindings = bindings
             .into_iter()

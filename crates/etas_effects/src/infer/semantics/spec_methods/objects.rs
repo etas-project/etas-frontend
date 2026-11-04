@@ -91,9 +91,12 @@ impl EffectSemantics<'_> {
                 .get(&pack)
                 .ok_or_else(|| invalid("existential pack has no lexical owner"))?;
             let (types, rows) = self.native_environment_generics(owner, &packed.generics)?;
+            let type_parameters =
+                self.native_environment_type_parameters(owner, &packed.generics)?;
             let names = types.into_iter().collect::<HashMap<_, _>>();
             let rows = self.type_row_arguments(&rows, Some(packed.owner))?;
             let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
+                .with_type_parameters(&type_parameters)
                 .with_effect_arguments(&rows);
             let source_type = substitution.substitute(pack_fact.source_type)?;
             let mut selected = None;

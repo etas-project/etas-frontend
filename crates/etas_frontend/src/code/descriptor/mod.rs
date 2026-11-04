@@ -5,6 +5,7 @@ mod input;
 mod outcomes;
 mod project;
 mod residual;
+mod scope;
 mod specs;
 mod standard;
 mod types;

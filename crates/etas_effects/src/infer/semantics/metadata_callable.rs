@@ -327,8 +327,7 @@ impl EffectSemantics<'_> {
                 .environment
                 .map_or(source.graph, |environment| environment.application),
             &invocation_state,
-            &types,
-            &rows,
+            super::callable_generics::ScopedGenericArguments::named(&types, &rows),
         )?;
         let bindings = bindings
             .into_iter()

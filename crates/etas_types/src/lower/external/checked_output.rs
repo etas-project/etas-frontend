@@ -143,6 +143,12 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         ty: &crate::ExternalTypeInput,
     ) -> Result<TypeId, ExternalMetadataLoweringError> {
         match ty {
+        crate::ExternalTypeInput::Parameter { owner, position } => {
+            let identity = crate::ty::CanonicalTypeParameterIdentity::new_scoped(owner.clone(), *position)
+                .map_err(|message| ExternalMetadataLoweringError { message: message.into() })?;
+            self.types.store.canonical_parameter(&identity)
+                .ok_or_else(|| ExternalMetadataLoweringError { message: "external type parameter has no checked owner binding".into() })
+        }
         crate::ExternalTypeInput::Var(name) if self.parameters.is_some() => {
             self.parameters.as_ref().and_then(|params| params.get(name)).copied()
                 .ok_or_else(|| ExternalMetadataLoweringError {
@@ -244,6 +250,7 @@ impl<'a> CheckedExternalTypeResolver<'a> {
             })),
             crate::ExternalTypeInput::Alias { target, .. } => self.type_structure(target),
             crate::ExternalTypeInput::Named(_)
+            | crate::ExternalTypeInput::Parameter { .. }
             | crate::ExternalTypeInput::Nominal { .. }
             | crate::ExternalTypeInput::Enum { .. }
             | crate::ExternalTypeInput::Applied { .. } => {

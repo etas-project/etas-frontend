@@ -112,9 +112,12 @@ impl ProjectMetadataProjection<'_> {
                         }
                         etas_effects::ExternalSpecMethodGenericArgument::EffectRow(row) => {
                             SpecMethodGenericArgument::EffectRow(captured.effect_row(
-                                metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
-                                    self.checked_spec_path(spec)
-                                })?,
+                                metadata_effect_row_ref(
+                                    row,
+                                    &self.checked.type_store,
+                                    &|spec| self.checked_spec_path(spec),
+                                    self.identities,
+                                )?,
                             )?)
                         }
                     })
@@ -244,9 +247,12 @@ impl ProjectMetadataProjection<'_> {
                         .find(|(name, _)| name == &parameter.name)
                         .map(|(_, row)| row)
                         .ok_or_else(|| invalid("method evidence effect argument is not solved"))?;
-                    let row = metadata_effect_row_ref(row, &self.checked.type_store, &|spec| {
-                        self.checked_spec_path(spec)
-                    })?;
+                    let row = metadata_effect_row_ref(
+                        row,
+                        &self.checked.type_store,
+                        &|spec| self.checked_spec_path(spec),
+                        self.identities,
+                    )?;
                     SpecMethodGenericArgument::EffectRow(captured.effect_row(row)?)
                 }
             });

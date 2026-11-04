@@ -184,6 +184,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         context: UnitContext<Self::Unit>,
         expr: HirExprId,
     ) -> Vec<Self::Unit> {
+        if let Some(targets) = self.spec_method_targets.get(&expr) {
+            return targets.iter().copied().collect();
+        }
         if let Some(pack) = self.types.facts.existential_packs.get(&expr) {
             return pack
                 .witnesses

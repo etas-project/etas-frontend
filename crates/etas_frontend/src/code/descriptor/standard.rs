@@ -222,12 +222,7 @@ impl DefinitionDescriptorProjector<'_> {
         identity: &DefinitionKey,
         scope: usize,
     ) -> Result<TypeInfo, ProjectionError> {
-        let mut parameters = self.scopes[scope]
-            .binders
-            .values()
-            .copied()
-            .collect::<Vec<_>>();
-        parameters.sort_by_key(|reference| self.binders[reference.0 as usize].position);
+        let parameters = self.scopes[scope].own_binders.clone();
         if declaration.kind == TypeDeclKind::Enum {
             let mut path = identity.module().to_vec();
             path.extend_from_slice(identity.declaration());

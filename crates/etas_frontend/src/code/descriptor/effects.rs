@@ -115,8 +115,10 @@ impl DefinitionDescriptorProjector<'_> {
                         .ok_or_else(|| ProjectionError::MissingIdentity(bound.path.join(".")))?
                         .clone();
                     let module = match &self.scopes[scope].owner {
-                        GenericOwner::Declaration(owner) => owner.module(),
+                        GenericOwner::Declaration(owner)
+                        | GenericOwner::ImplementationPattern(owner) => owner.module(),
                         GenericOwner::Method(method) => method.implementation().module(),
+                        GenericOwner::Implementation(implementation) => implementation.module(),
                     }
                     .to_vec();
                     let arguments = bound

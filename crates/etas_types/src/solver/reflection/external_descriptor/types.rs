@@ -110,6 +110,16 @@ impl ExternalDescriptorMatcher<'_> {
             (ExternalTypeInput::Var(name), TypeInfo::Parameter(expected)) => {
                 Ok(self.parameters.get(name) == Some(expected))
             }
+            (ExternalTypeInput::Parameter { owner, position }, TypeInfo::Parameter(expected)) => {
+                Ok(graph
+                    .binders
+                    .get(expected.0 as usize)
+                    .is_some_and(|binder| {
+                        binder.owner == *owner
+                            && binder.position == *position
+                            && binder.kind == GenericParameterKind::Type
+                    }))
+            }
             (
                 ExternalTypeInput::Named(path),
                 TypeInfo::Nominal { definition, .. } | TypeInfo::Enum { definition, .. },

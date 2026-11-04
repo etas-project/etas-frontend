@@ -2,12 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use etas_code::CodeFingerprint;
 use etas_core::Span;
-use etas_types::{
-    CallableGenericParamKind, GenericInstantiationFact, TypeId, TypeSubstitutionEngine,
-};
+use etas_types::{CallableGenericParamKind, GenericInstantiationFact, TypeSubstitutionEngine};
 
 use crate::{
-    EffectRow, EffectSummary, ParameterCallTarget,
+    EffectSummary, ParameterCallTarget,
     facts::{
         CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
         MetadataSpecMethodDefinition,
@@ -25,7 +23,7 @@ fn invalid(reason: impl Into<String>) -> EffectSpecializationError {
     }
 }
 
-type GenericArguments<'a> = (&'a [(String, TypeId)], &'a [(String, EffectRow)]);
+use super::super::callable_generics::ScopedGenericArguments as GenericArguments;
 
 impl EffectSemantics<'_> {
     pub(crate) fn register_metadata_method(
@@ -92,7 +90,7 @@ impl EffectSemantics<'_> {
         })
     }
 
-    pub(crate) fn bind_metadata_method_environment(
+    pub(in crate::infer::semantics) fn bind_metadata_method_environment(
         &self,
         invocation: CodeFingerprint,
         environment: Option<CallableEnvironmentId>,
@@ -101,15 +99,15 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         generics: GenericArguments<'_>,
     ) -> Result<CallableEnvironmentId, EffectSpecializationError> {
-        let (types, rows) = generics;
+        let types = generics.types;
+        let rows = generics.rows;
         if let Some(environment) = environment {
             return self.instantiate_callable_environment_with_values(
                 environment,
                 application,
                 bindings,
                 state,
-                types,
-                rows,
+                generics,
             );
         }
         let definition = self

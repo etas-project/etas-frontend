@@ -4,7 +4,7 @@ use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
 
 use crate::{
-    ActionTraceDomain, EffectRow, EffectSet, EffectSummary, ParameterCallTarget,
+    ActionTraceDomain, EffectSummary, ParameterCallTarget,
     facts::{
         CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
     },
@@ -29,14 +29,13 @@ pub(crate) enum MethodEvidence {
 }
 
 impl EffectSemantics<'_> {
-    pub(crate) fn bind_spec_method_arguments(
+    pub(in crate::infer::semantics) fn bind_spec_method_arguments(
         &self,
         summary: &EffectSummary,
         bindings: &mut TraceArgumentBindings,
         application: etas_code::CodeFingerprint,
         state: &EffectState,
-        types: &[(String, TypeId)],
-        rows: &[(String, EffectRow)],
+        generics: super::super::callable_generics::ScopedGenericArguments<'_>,
     ) -> Result<(), EffectSpecializationError> {
         let mut calls = BTreeMap::new();
         summary.action_trace.collect_parameter_calls(&mut calls);
@@ -75,7 +74,7 @@ impl EffectSemantics<'_> {
                     application,
                     bindings,
                     state,
-                    (types, rows),
+                    generics,
                 )?;
                 bindings.insert(
                     reference.target,
@@ -97,8 +96,7 @@ impl EffectSemantics<'_> {
                 application,
                 bindings,
                 state,
-                types,
-                rows,
+                generics,
             )?;
             bindings.insert(
                 reference.target,
@@ -118,31 +116,7 @@ impl EffectSemantics<'_> {
         let owner = state
             .owner
             .ok_or_else(|| invalid("spec invocation has no checked owner"))?;
-        let parameters = self
-            .native_generic_params(owner)
-            .ok_or_else(|| invalid("spec invocation has no checked generic scope"))?;
-        let generics = parameters
-            .iter()
-            .enumerate()
-            .map(|(position, parameter)| {
-                let value = match parameter.kind {
-                    CallableGenericParamKind::Type => CallableGenericValue::Type(parameter.subject),
-                    CallableGenericParamKind::Effect => {
-                        CallableGenericValue::EffectRow(EffectRow {
-                            effects: EffectSet::new(),
-                            open: Some(crate::effect_var_id_from_name(&parameter.name)),
-                        })
-                    }
-                };
-                (
-                    CallableGenericParameter::Native {
-                        owner,
-                        position: position as u32,
-                    },
-                    value,
-                )
-            })
-            .collect();
+        let generics = self.lexical_generic_values(owner)?;
         let arguments = self.checked_method_arguments(call)?;
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
@@ -193,9 +167,12 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| invalid("method evidence has no checked lexical owner"))?;
         let snapshot = self.callable_environment(environment)?;
         let (types, rows) = self.native_environment_generics(lexical_owner, &snapshot.generics)?;
+        let type_parameters =
+            self.native_environment_type_parameters(lexical_owner, &snapshot.generics)?;
         let names = types.iter().cloned().collect::<HashMap<_, _>>();
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
         let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
+            .with_type_parameters(&type_parameters)
             .with_effect_arguments(&type_rows);
         let mut arguments = self.call_generic_bindings(call);
         for (_, ty) in &mut arguments.types {
@@ -364,6 +341,7 @@ impl EffectSemantics<'_> {
             bound_bindings.insert(parameter.name.clone(), receiver);
         }
         let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &bound_bindings)
+            .with_type_parameters(&type_parameters)
             .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &declaration.effects {
@@ -402,8 +380,8 @@ impl EffectSemantics<'_> {
         ) {
             return Ok(true);
         }
-        for parameter in self
-            .native_generic_params(owner)
+        for (_, parameter) in self
+            .native_generic_interface(owner)
             .ok_or_else(|| invalid("method evidence lexical scope is missing"))?
         {
             if let Some(etas_types::Type::Named(named)) = self.types.store.get(parameter.subject)

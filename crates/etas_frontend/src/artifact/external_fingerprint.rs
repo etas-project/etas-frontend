@@ -410,6 +410,11 @@ impl Encoder {
                             self.byte(1);
                             self.text(name);
                         }
+                        Type::Parameter { owner, position } => {
+                            self.byte(28);
+                            self.0.update(owner.fingerprint().as_bytes());
+                            self.number(*position as usize);
+                        }
                         Type::Named(path) => {
                             self.byte(2);
                             self.path(path);

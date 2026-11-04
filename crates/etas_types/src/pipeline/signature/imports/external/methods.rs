@@ -1,5 +1,28 @@
 use super::*;
 
+pub(super) fn prepare(
+    ctx: &mut TypePipelineContext<'_>,
+    metadata: &crate::ExternalPublicMetadataInput,
+    span: etas_core::Span,
+) {
+    for method in &metadata.methods {
+        let owner = etas_code::descriptor::GenericOwner::Implementation(
+            method.identity.implementation().clone(),
+        );
+        if let Err(reason) = crate::lower::external::reserve_external_generic_parameters(
+            ctx,
+            &method.owner_params,
+            Some(&owner),
+        ) {
+            ctx.diagnostics.push(etas_core::Diagnostic::type_check(
+                etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                reason,
+            ));
+        }
+    }
+}
+
 pub(super) fn apply(
     ctx: &mut TypePipelineContext<'_>,
     metadata: &crate::ExternalPublicMetadataInput,
@@ -7,12 +30,15 @@ pub(super) fn apply(
 ) {
     for method in &metadata.methods {
         let label = format!("{:?}", method.identity);
-        let Some(owner_params) = crate::lower::external::lower_external_generic_params(
+        let Some(owner_params) = crate::lower::external::lower_external_scoped_generic_params(
             ctx,
             span,
             metadata.package,
             &label,
             &method.owner_params,
+            Some(etas_code::descriptor::GenericOwner::Implementation(
+                method.identity.implementation().clone(),
+            )),
         ) else {
             continue;
         };
