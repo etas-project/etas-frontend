@@ -14,8 +14,9 @@ use crate::passes::{
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
     PrepareEffectRegistryPass, PrepareInvocationTypesPass, PrepareVersionedRequestPass,
     ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
-    ReuseTypeBodyFactsPass, RunEffectPipelinePass, SuffixDemandHistoryPass, TypeCheckBodyPass,
-    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    ReuseTypeBodyFactsPass, RunEffectPipelinePass, SuffixDemandHistoryPass,
+    SynthesizeScopedIndexPass, TypeCheckBodyPass, ValidateEntryContractPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
     ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
     VerifyInterpreterSupportPass, VersionedPreparationCsePass,
 };
@@ -122,6 +123,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(PrepareVersionedRequestPass)
         .pass(VersionedPreparationCsePass)
         .pass(FuseProjectionScansPass)
+        .pass(SynthesizeScopedIndexPass)
         .pass(SuffixDemandHistoryPass)
         .pass(VerifyInterpreterSupportPass);
     if !candidate {
