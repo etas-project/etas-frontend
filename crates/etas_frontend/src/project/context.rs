@@ -75,6 +75,8 @@ pub struct ProjectContext {
     pub checked: Option<CheckedProject>,
     pub diagnostics: Vec<Diagnostic>,
     pub(crate) hir_lowering: Option<ProjectHirLoweringState>,
+    pub(crate) optimization_legality: Option<crate::AgentEffectLegalityFacts>,
+    pub(crate) optimization_report: crate::HirOptimizationReport,
 }
 
 impl ProjectContext {
@@ -135,6 +137,8 @@ impl ProjectContext {
             checked: None,
             diagnostics: Vec::new(),
             hir_lowering: None,
+            optimization_legality: None,
+            optimization_report: Default::default(),
         }
     }
 

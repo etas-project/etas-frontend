@@ -2,9 +2,9 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
-    AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass, BindMethodOriginsPass,
-    BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass,
-    BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
+    AgentEffectLegalityPass, AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass,
+    BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass,
+    BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
     CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
     CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
     ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
@@ -12,8 +12,8 @@ use crate::passes::{
     FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
-    PrepareEffectRegistryPass, PrepareInvocationTypesPass, ResolveEntryItemPass,
-    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    PrepareEffectRegistryPass, PrepareInvocationTypesPass, PrepareVersionedRequestPass,
+    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass, ValidateEntryContractPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
     ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
@@ -118,6 +118,8 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(MaterializeGenericEffectRowsPass)
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)
+        .pass(AgentEffectLegalityPass)
+        .pass(PrepareVersionedRequestPass)
         .pass(VerifyInterpreterSupportPass);
     if !candidate {
         pipeline.push_pass(ValidateEntryContractPass);

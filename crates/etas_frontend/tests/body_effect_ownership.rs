@@ -242,11 +242,11 @@ fn body_effect_payload_and_capacity_scale_with_local_facts() {
         source.push_str("flow main() -> i32 { return f_0(1); }");
         let builds_before = etas_hir::HirTreeIndex::thread_build_count();
         let output = check(source);
-        // Lowering and import application each finalize a HIR revision. Analysis
-        // of any number of bodies must reuse the latter revision's index.
+        // Lowering, import application, and optimization each finalize one HIR
+        // revision. Analysis of any number of bodies reuses those indexes.
         assert_eq!(
             etas_hir::HirTreeIndex::thread_build_count() - builds_before,
-            2
+            3
         );
         assert_eq!(output.effect_body_outputs.len(), count + 1);
         sizes.push(assert_partition(&output));

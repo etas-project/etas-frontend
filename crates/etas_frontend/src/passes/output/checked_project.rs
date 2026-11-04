@@ -185,6 +185,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                     Default::default()
                 },
                 compile_options: context.input.options.clone(),
+                optimization_report: context.optimization_report.clone(),
                 hir: hir.hir.clone(),
                 top_level_lets: top_level_lets.clone(),
                 types: types.facts.clone(),

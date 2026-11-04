@@ -1,6 +1,7 @@
 mod artifact;
 pub mod code;
 mod incremental;
+mod optimization;
 mod output;
 mod package_metadata;
 mod passes;
@@ -22,6 +23,9 @@ pub use incremental::{
     CompilerOptionChange, DependencyOverlayChange, DiagnosticSet, EnvironmentChange,
     MemoryArtifactReuse, ProjectChangeSet, SnapshotDetailLevel, SourceChange, SourceVersion,
     TextEdit,
+};
+pub use optimization::{
+    AgentEffectLegalityFacts, HirOptimizationPassReport, HirOptimizationReport,
 };
 pub(crate) use output::ValidatedExternalEnvironment;
 pub use output::{

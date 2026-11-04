@@ -6,6 +6,7 @@ pub(crate) mod execution;
 mod graph;
 mod hir;
 mod module;
+mod optimization;
 mod output;
 mod resolution;
 mod source;
@@ -33,6 +34,7 @@ pub use hir::{
     PredeclareProjectSymbolsPass,
 };
 pub use module::{BuildModuleCatalogPass, BuildModuleIndexPass, BuildUnitTreePass};
+pub use optimization::{AgentEffectLegalityPass, PrepareVersionedRequestPass};
 pub use output::{BuildCheckedProjectPass, ResolveEntryItemPass, ValidateEntryContractPass};
 pub use resolution::{
     ApplyResolvedImportsToHirPass, BindValidatedExternalImportTargetsPass, CatalogModuleProvider,

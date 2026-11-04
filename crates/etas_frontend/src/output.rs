@@ -58,14 +58,27 @@ impl ProjectInput {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
     pub reflection: crate::code::definition::ReflectionOptions,
+    /// Run guarded typed-HIR optimization passes before publishing the checked program.
+    pub optimize_hir: bool,
     /// Implemented residual-enforcement semantics of the selected execution
     /// target. The default supports no residual plan, so every outstanding
     /// residual obligation is rejected.
     pub residual_target: etas_code::residual::target::ResidualTargetCapabilities,
+}
+
+impl Default for ProjectCompileOptions {
+    fn default() -> Self {
+        Self {
+            entry_policy: EntryPolicy::default(),
+            reflection: crate::code::definition::ReflectionOptions::default(),
+            optimize_hir: true,
+            residual_target: Default::default(),
+        }
+    }
 }
 
 impl ProjectCompileOptions {
@@ -76,7 +89,18 @@ impl ProjectCompileOptions {
             EntryPolicy::Runnable => "runnable",
         };
         let (retained, exported) = self.reflection.canonical_entries();
-        let mut parts = vec!["frontend-options", "v3", entry_policy, "retain-bodies"];
+        let optimization = if self.optimize_hir {
+            "hir-optimization-on"
+        } else {
+            "hir-optimization-off"
+        };
+        let mut parts = vec![
+            "frontend-options",
+            "v4",
+            entry_policy,
+            optimization,
+            "retain-bodies",
+        ];
         parts.extend(retained);
         parts.push("export-bodies");
         parts.extend(exported);
@@ -1246,6 +1270,7 @@ pub struct CheckedProgramData {
     // not through this revision's local body/intrinsic reachability closure.
     pub(crate) frozen_agent_call_boundaries: std::collections::BTreeSet<HirItemId>,
     pub compile_options: ProjectCompileOptions,
+    pub optimization_report: crate::HirOptimizationReport,
     pub hir: etas_hir::HirRevision,
     pub top_level_lets: TopLevelLetFacts,
     pub types: Arc<TypeFacts>,
