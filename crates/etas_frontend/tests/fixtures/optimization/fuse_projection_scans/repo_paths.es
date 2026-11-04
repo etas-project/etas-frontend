@@ -1,0 +1,1 @@
+flow main() -> string { var paths = ""; var tokens = ""; for path in ["src", "tests", "docs", "examples", "benches"] limit Iterations(5) { paths = paths + path; } for token in ["src", "tests", "docs", "examples", "benches"] limit Iterations(5) { tokens = tokens + token; } return paths + tokens; }

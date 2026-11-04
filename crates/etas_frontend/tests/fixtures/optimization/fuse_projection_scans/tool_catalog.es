@@ -1,0 +1,1 @@
+flow main() -> string { var names = ""; var schemas = ""; for tool in ["read", "write", "search", "patch"] limit Iterations(4) { names = names + tool; } for entry in ["read", "write", "search", "patch"] limit Iterations(4) { schemas = schemas + entry; } return names + schemas; }

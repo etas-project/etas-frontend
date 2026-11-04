@@ -1,0 +1,1 @@
+flow main() -> string { var events = ""; var digest = ""; for trace in ["start", "tool", "model", "finish"] limit Iterations(4) { events = events + trace; } for part in ["start", "tool", "model", "finish"] limit Iterations(4) { digest = digest + part; } return events + digest; }

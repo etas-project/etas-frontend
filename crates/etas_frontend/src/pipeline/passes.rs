@@ -9,7 +9,7 @@ use crate::passes::{
     CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
     ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
     ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
-    FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    FinalizeTypeFactsPass, FuseProjectionScansPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
     PrepareEffectRegistryPass, PrepareInvocationTypesPass, PrepareVersionedRequestPass,
@@ -121,6 +121,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(AgentEffectLegalityPass)
         .pass(PrepareVersionedRequestPass)
         .pass(VersionedPreparationCsePass)
+        .pass(FuseProjectionScansPass)
         .pass(SuffixDemandHistoryPass)
         .pass(VerifyInterpreterSupportPass);
     if !candidate {

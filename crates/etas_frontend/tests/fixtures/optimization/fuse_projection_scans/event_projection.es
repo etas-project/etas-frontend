@@ -1,0 +1,1 @@
+flow main() -> string { var ids = ""; var labels = ""; for event in ["e1", "e2", "e3", "e4", "e5"] limit Iterations(5) { ids = ids + event; } for item in ["e1", "e2", "e3", "e4", "e5"] limit Iterations(5) { labels = labels + item; } return ids + labels; }

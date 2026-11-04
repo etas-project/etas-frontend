@@ -1,0 +1,1 @@
+flow main() -> string { var ids = ""; var metadata = ""; for server in ["fs", "git", "browser", "db"] limit Iterations(4) { ids = ids + server; } for descriptor in ["fs", "git", "browser", "db"] limit Iterations(4) { metadata = metadata + descriptor; } return ids + metadata; }

@@ -1,0 +1,1 @@
+flow main() -> string { var paths = ""; var hashes = ""; for file in ["main.rs", "lib.rs", "Cargo.toml", "README.md"] limit Iterations(4) { paths = paths + file; } for digest in ["main.rs", "lib.rs", "Cargo.toml", "README.md"] limit Iterations(4) { hashes = hashes + digest; } return paths + hashes; }
