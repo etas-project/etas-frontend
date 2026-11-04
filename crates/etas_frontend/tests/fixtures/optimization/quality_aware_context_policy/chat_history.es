@@ -1,0 +1,1 @@
+flow build_chat_history(value: string) -> string { return value + value + value; } flow main() -> string { let history_full = build_chat_history("u1:a1:u2:a2"); return "u2"; }
