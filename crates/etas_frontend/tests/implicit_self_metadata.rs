@@ -10,6 +10,9 @@ public spec Encoder {
     flow encode_with(self, amount: i32) -> i32;
 }
 public flow encode<T ~ Encoder>(value: T) -> i32 { return value::Encoder.encode(); }
+public flow captured<T ~ Encoder>(value: T) -> (() -> i32 ![]) ![] {
+    return () => value::Encoder.encode();
+}
 flow main() -> unit { return; }
 "#,
     )));
@@ -85,4 +88,25 @@ flow main() -> unit { return; }
     assert!(requests.actions.is_empty());
     assert_eq!(requests.parameters.len(), 1);
     assert_eq!(&requests.parameters[0].parameter, parameter);
+    let graph = metadata
+        .public_metadata
+        .effect_summaries
+        .iter()
+        .find(|summary| summary.item == ["api", "captured"])
+        .and_then(|summary| summary.returned_callables.as_ref())
+        .expect("returned method keeps its lexical receiver binding");
+    assert!(
+        graph
+            .values
+            .iter()
+            .any(|node| node
+                .parameter_bindings
+                .iter()
+                .any(|binding| binding.parameter
+                    == etas_package_metadata::CallableValueParameter {
+                        scope: etas_package_metadata::CallableValueScope::Root,
+                        position: 0,
+                    })),
+        "method receiver capture was omitted from the lexical interface: {graph:?}"
+    );
 }

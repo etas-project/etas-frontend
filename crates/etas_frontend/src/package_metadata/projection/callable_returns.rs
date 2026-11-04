@@ -6,6 +6,55 @@ use etas_package_metadata::{
 };
 
 impl ProjectMetadataProjection<'_> {
+    fn callable_trace_parameters(
+        &self,
+        summary: &EffectSummary,
+    ) -> Result<BTreeSet<etas_effects::ParameterCallTarget>, PackageMetadataError> {
+        use etas_effects::{ParameterCallTarget as Target, facts::CallableValueOrigin as Origin};
+        let mut parameters = trace_parameters(&summary.action_trace);
+        let mut pending = parameters
+            .iter()
+            .filter_map(|parameter| match parameter {
+                Target::SpecMethod { environment, .. }
+                | Target::MetadataSpecMethod {
+                    environment: Some(environment),
+                    ..
+                } => Some(*environment),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(environment) = pending.pop() {
+            if !visited.insert(environment) {
+                continue;
+            }
+            let snapshot = self
+                .checked
+                .effects
+                .callable_environments
+                .get(&environment)
+                .ok_or_else(|| invalid("method capture has no checked parameter environment"))?;
+            for origin in snapshot.parameters.values().flatten() {
+                match origin {
+                    Origin::Parameter { symbol, .. } => {
+                        parameters.insert(Target::Native(*symbol));
+                    }
+                    Origin::Captured { environment, .. }
+                    | Origin::SpecMethod { environment, .. }
+                    | Origin::MetadataSpecMethod { environment, .. }
+                    | Origin::Existential { environment, .. } => pending.push(*environment),
+                    Origin::Metadata(source) => pending.extend(source.environment),
+                    Origin::MetadataObject(source) => pending.extend(source.environment),
+                    Origin::FrozenContract { environment, .. }
+                    | Origin::Reference { environment, .. }
+                    | Origin::StdReference { environment, .. } => pending.extend(environment),
+                    _ => {}
+                }
+            }
+        }
+        Ok(parameters)
+    }
+
     pub(in crate::package_metadata) fn implementation_callable_graph(
         &self,
         item: HirItemId,
@@ -390,7 +439,7 @@ impl Builder<'_, '_> {
             }
             None => None,
         };
-        let trace_parameters = trace_parameters(&summary.action_trace);
+        let trace_parameters = self.projection.callable_trace_parameters(summary)?;
         let mut parameter_bindings = vec![];
         let mut bound_parameters = BTreeSet::new();
         let mut trace_labels = BTreeMap::new();

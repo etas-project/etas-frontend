@@ -246,7 +246,7 @@ impl Builder<'_, '_> {
         };
         let mut labels = BTreeMap::new();
         let mut parameters = BTreeMap::new();
-        for target in trace_parameters(&summary.action_trace) {
+        for target in self.projection.callable_trace_parameters(summary)? {
             if matches!(
                 target,
                 ParameterCallTarget::SpecMethod { .. }
