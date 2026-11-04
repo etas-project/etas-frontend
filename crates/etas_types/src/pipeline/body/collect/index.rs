@@ -60,6 +60,7 @@ pub fn collect_slice<E>(
         Some(Type::Array(inner)) | Some(Type::List(inner)) | Some(Type::Slice(inner)) => {
             Some(ctx.ctx.interner.intern(Type::Slice(inner)))
         }
+        Some(Type::Primitive(crate::PrimitiveType::Bytes)) => Some(base_ty),
         Some(Type::Range { index }) => Some(ctx.ctx.interner.intern(Type::Range { index })),
         _ => None,
     };

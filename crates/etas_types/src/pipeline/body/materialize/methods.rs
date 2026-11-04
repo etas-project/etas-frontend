@@ -31,10 +31,18 @@ pub(super) fn materialize(
                 overload,
                 ..
             } => {
+                let mut runtime_signature = fact.signature.clone();
+                if let crate::method::MethodReceiver::Value { slot } = fact.receiver {
+                    let receiver = runtime_signature
+                        .params
+                        .get_mut(slot as usize)
+                        .ok_or("checked standard method receiver slot is out of bounds")?;
+                    *receiver = fact.receiver_type;
+                }
                 let callable_type = ctx.interner.intern(Type::Function(FlowType {
-                    input: fact.signature.params.clone(),
-                    output: fact.signature.output,
-                    effects: fact.signature.effects.clone(),
+                    input: runtime_signature.params.clone(),
+                    output: runtime_signature.output,
+                    effects: runtime_signature.effects.clone(),
                 }));
                 state.solver_report.std_intrinsic_calls.insert(
                     *expr,
@@ -43,7 +51,7 @@ pub(super) fn materialize(
                         intrinsic: *intrinsic,
                         overload: *overload,
                         callable_type,
-                        signature: fact.signature.clone(),
+                        signature: runtime_signature,
                     },
                 );
             }

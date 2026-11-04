@@ -205,6 +205,18 @@ pub fn solve_slice_access(store: &TypeStore, input: SliceAccessSolveInput<'_>) -
                 },
             );
         }
+        Some(Type::Primitive(PrimitiveType::Bytes)) => {
+            unify_or_assign(store, base, output, origin, &mut unifier, &mut report);
+            report.record_slice_kind(
+                expr,
+                CheckedSliceKind::Sequence {
+                    base,
+                    start,
+                    end,
+                    output,
+                },
+            );
+        }
         Some(Type::Range { index }) => {
             let index = resolve_substitution(store, substitutions, *index);
             let range = first_type_id(store, Type::Range { index }).unwrap_or(output);
