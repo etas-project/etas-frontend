@@ -243,7 +243,11 @@ impl NativeDefinitionStore {
             diagnostics: Vec::new(),
         };
         let mut seeds = producer_program.native_instantiations.instances().to_vec();
-        seeds.push(NativeInstantiation { owner, arguments });
+        seeds.push(NativeInstantiation {
+            owner,
+            arguments,
+            owner_bindings: Vec::new(),
+        });
         let prepared = instantiation::prepare(
             instantiation::PreparationInput {
                 hir: &producer_program.hir,

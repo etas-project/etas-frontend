@@ -180,6 +180,7 @@ fn a_single_instantiation_can_be_cancelled_during_type_substitution() {
     let seed = NativeInstantiation {
         owner,
         arguments: vec![NativeGenericArgument::Type(integer)],
+        owner_bindings: vec![],
     };
     let control = Stop(AtomicUsize::new(0));
     let result = prepare(
@@ -245,6 +246,7 @@ fn a_wrong_kind_argument_is_not_an_open_template() {
     let instance = NativeInstantiation {
         owner: etas_hir::HirItemId(0),
         arguments: vec![NativeGenericArgument::Type(etas_types::TypeId(0))],
+        owner_bindings: vec![],
     };
     assert!(
         instance

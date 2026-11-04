@@ -229,6 +229,15 @@ pub struct TypeSubstitutionEngine<'a> {
 }
 
 impl<'a> TypeSubstitutionEngine<'a> {
+    pub fn input_store(&self) -> &TypeStore {
+        match &self.target {
+            SubstitutionTarget::Materialize(interner) => interner.store(),
+            SubstitutionTarget::Existing(store) => store,
+            SubstitutionTarget::Relocate(input) => input.source,
+            SubstitutionTarget::RelocateMaterialize(input) => input.source,
+        }
+    }
+
     /// Whether this engine leaves identities in the existing type universe
     /// unchanged. Relocation and materialization are never identity mappings.
     pub fn is_identity_mapping(&self) -> bool {
@@ -928,12 +937,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
         if let Some(replacement) = self.type_parameters.and_then(|params| params.get(&id)) {
             return Some(*replacement);
         }
-        let store = match &self.target {
-            SubstitutionTarget::Materialize(interner) => interner.store(),
-            SubstitutionTarget::Existing(store) => store,
-            SubstitutionTarget::Relocate(input) => input.source,
-            SubstitutionTarget::RelocateMaterialize(input) => input.source,
-        };
+        let store = self.input_store();
         if let Some(identity) = store.parameter_identity(id) {
             return self
                 .canonical_parameters
