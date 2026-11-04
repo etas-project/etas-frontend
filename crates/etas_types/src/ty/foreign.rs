@@ -141,6 +141,7 @@ pub fn relocate_foreign_type_graph(
             declaration_types: &declarations,
             effect_names: input.effect_names,
         })
+        .with_spec_identities(input.specs)
         .with_expansion_depth(input.max_depth)
         .with_budget(input.budget);
     let mut completed = Vec::new();
@@ -449,6 +450,60 @@ mod tests {
             result.type_generics[&result.declarations[&nominal]][0].subject,
             mapped_generic
         );
+    }
+
+    #[test]
+    fn nominal_representation_relocates_its_existential_spec_identity() {
+        let mut source = TypeInterner::new();
+        let from = CheckedSpecRef::Source(etas_hir::SymbolId(17));
+        let to = CheckedSpecRef::Canonical(
+            DefinitionKey::new(
+                PackageKey::from_name_and_version("caller", "1.0.0").unwrap(),
+                vec!["app".into()],
+                vec!["Marker".into()],
+                DefinitionKind::Spec,
+            )
+            .unwrap(),
+        );
+        let object = source.intern(Type::Existential {
+            bounds: vec![CheckedSpecBound {
+                spec: from.clone(),
+                args: vec![],
+            }],
+        });
+        let nominal = source.intern(Type::Nominal(NominalTypeRef {
+            name: "Holder".into(),
+            params: vec![],
+            representation: Some(object),
+            read_only_erased_view: false,
+        }));
+        let result = relocate_foreign_type_graph(
+            TypeInterner::new(),
+            ForeignTypeGraphInput {
+                source: source.store(),
+                facts: &TypeFacts::default(),
+                target_facts: &TypeFacts::default(),
+                reachable: &[nominal, object],
+                identities: &HashMap::from([(nominal, identity("Holder"))]),
+                declarations: &HashMap::new(),
+                effect_names: &HashMap::new(),
+                specs: &HashMap::from([(from, to.clone())]),
+                max_depth: 32,
+                budget: &TypeSubstitutionBudget::new(100, 100, None),
+            },
+        )
+        .unwrap();
+        let Some(Type::Nominal(holder)) =
+            result.interner.store().get(result.declarations[&nominal])
+        else {
+            panic!("holder")
+        };
+        let Some(Type::Existential { bounds }) =
+            result.interner.store().get(holder.representation.unwrap())
+        else {
+            panic!("existential representation")
+        };
+        assert_eq!(bounds[0].spec, to);
     }
 
     #[test]
