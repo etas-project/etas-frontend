@@ -35,7 +35,8 @@ pub use hir::{
 };
 pub use module::{BuildModuleCatalogPass, BuildModuleIndexPass, BuildUnitTreePass};
 pub use optimization::{
-    AgentEffectLegalityPass, PrepareVersionedRequestPass, VersionedPreparationCsePass,
+    AgentEffectLegalityPass, PrepareVersionedRequestPass, SuffixDemandHistoryPass,
+    VersionedPreparationCsePass,
 };
 pub use output::{BuildCheckedProjectPass, ResolveEntryItemPass, ValidateEntryContractPass};
 pub use resolution::{

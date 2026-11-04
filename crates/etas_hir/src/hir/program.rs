@@ -26,7 +26,10 @@ pub struct HirProgram {
     pub modules_arena: HirModuleArena,
     pub source_map: SourceMap,
     pub diagnostics: Vec<Diagnostic>,
+    optimized_out_blocks: std::collections::HashSet<crate::HirBlockId>,
     optimized_out_exprs: std::collections::HashSet<crate::HirExprId>,
+    optimized_out_patterns: std::collections::HashSet<crate::HirPatId>,
+    optimized_out_statements: std::collections::HashSet<crate::HirStmtId>,
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -38,12 +41,36 @@ pub struct HirAgentMethod {
 }
 
 impl HirProgram {
+    pub fn mark_block_optimized_out(&mut self, block: crate::HirBlockId) {
+        self.optimized_out_blocks.insert(block);
+    }
+
     pub fn mark_expr_optimized_out(&mut self, expression: crate::HirExprId) {
         self.optimized_out_exprs.insert(expression);
     }
 
+    pub fn mark_pattern_optimized_out(&mut self, pattern: crate::HirPatId) {
+        self.optimized_out_patterns.insert(pattern);
+    }
+
+    pub fn mark_statement_optimized_out(&mut self, statement: crate::HirStmtId) {
+        self.optimized_out_statements.insert(statement);
+    }
+
+    pub fn is_block_optimized_out(&self, block: crate::HirBlockId) -> bool {
+        self.optimized_out_blocks.contains(&block)
+    }
+
     pub fn is_expr_optimized_out(&self, expression: crate::HirExprId) -> bool {
         self.optimized_out_exprs.contains(&expression)
+    }
+
+    pub fn is_pattern_optimized_out(&self, pattern: crate::HirPatId) -> bool {
+        self.optimized_out_patterns.contains(&pattern)
+    }
+
+    pub fn is_statement_optimized_out(&self, statement: crate::HirStmtId) -> bool {
+        self.optimized_out_statements.contains(&statement)
     }
 
     /// Follow resolver-owned source bindings without reinterpreting textual paths.

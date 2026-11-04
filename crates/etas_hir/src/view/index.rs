@@ -647,7 +647,9 @@ impl HirTreeIndexBuilder<'_> {
             }
         }
         for (block, _) in self.program.blocks.iter() {
-            if !self.index.block_owner.contains_key(&block) {
+            if !self.index.block_owner.contains_key(&block)
+                && !self.program.is_block_optimized_out(block)
+            {
                 self.diagnostics.push(HirTreeIndexDiagnostic::OrphanNode {
                     kind: HirTreeNodeKind::Block,
                     id: block.0,
@@ -655,7 +657,9 @@ impl HirTreeIndexBuilder<'_> {
             }
         }
         for (stmt, _) in self.program.stmts.iter() {
-            if !self.index.stmt_block.contains_key(&stmt) {
+            if !self.index.stmt_block.contains_key(&stmt)
+                && !self.program.is_statement_optimized_out(stmt)
+            {
                 self.diagnostics.push(HirTreeIndexDiagnostic::OrphanNode {
                     kind: HirTreeNodeKind::Statement,
                     id: stmt.0,
@@ -681,7 +685,9 @@ impl HirTreeIndexBuilder<'_> {
             }
         }
         for (pat, _) in self.program.pats.iter() {
-            if !self.index.pat_owner.contains_key(&pat) {
+            if !self.index.pat_owner.contains_key(&pat)
+                && !self.program.is_pattern_optimized_out(pat)
+            {
                 self.diagnostics.push(HirTreeIndexDiagnostic::OrphanNode {
                     kind: HirTreeNodeKind::Pattern,
                     id: pat.0,
