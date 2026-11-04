@@ -1,1 +1,4 @@
-flow snapshot_provider_options(value: string) -> string { return value; } flow main() -> string { let current = "retry:3"; return snapshot_provider_options(current); }
+flow main() -> List<string> {
+    let snapshot = ["minimax"; "m3.1-flash"; "temperature=0"];
+    return snapshot.extend([]);
+}

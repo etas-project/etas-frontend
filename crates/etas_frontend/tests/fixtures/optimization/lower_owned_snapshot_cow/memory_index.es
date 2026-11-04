@@ -1,1 +1,4 @@
-flow clone_memory_index(value: string) -> string { return value; } flow main() -> string { let current = "facts:plans"; return clone_memory_index(current); }
+flow main() -> Array<i32> {
+    let snapshot = [1, 3, 5, 8, 13, 21];
+    return snapshot.extend([]);
+}

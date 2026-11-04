@@ -1,1 +1,8 @@
-flow encode_record(value: string) -> string { return value; } flow decode_record(value: string) -> string { return value; } flow main() -> string { let encoded = encode_record("record:v42"); let decoded = decode_record(encoded); return decoded; }
+import std.json.JsonValue;
+import std.json.parse;
+import std.json.stringify;
+
+flow main() -> JsonValue {
+    let value = parse("{\"thread_id\":\"t-42\",\"version\":9,\"deleted\":false}").unwrap();
+    return parse(stringify(value).unwrap()).unwrap();
+}

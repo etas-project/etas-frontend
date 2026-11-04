@@ -12,8 +12,8 @@ The survey examples are used as workload models, not as instructions. The implem
 | `SuffixDemandHistory` | latest CWD, recent tool result, retry error and checkpoint demand | replace a complete literal history scan whose only result is the last value with the last value |
 | `FuseProjectionScans` | adjacent message, event, metadata and tool projections | fuse equal bounded literal scans with disjoint string reductions |
 | `SynthesizeScopedIndex` | MCP/tool/model/request ID and pending-interrupt lookup | build a compile-time literal-key index and lower a full static membership scan to its proven result |
-| `LowerOwnedSnapshotCOW` | history, prompt, config and manifest snapshots | remove an owned snapshot wrapper only when its body is proven to return the immutable input unchanged |
-| `FuseSerializationBoundary` | prompt, schema, trace, checkpoint and RPC encode/decode boundaries | remove an encode/decode boundary only when its body is proven to preserve the value exactly |
+| `LowerOwnedSnapshotCOW` | history, prompt, config and manifest snapshots | lower a typed immutable `Array`/`List` extension by an empty collection to the original snapshot, eliminating the owned copy/allocation |
+| `FuseSerializationBoundary` | prompt, schema, trace, checkpoint and RPC encode/decode boundaries | remove the typed standard-library `JsonValue -> stringify -> parse` round trip, including checked `Result.unwrap` nodes, while preserving the original structured value |
 | `BatchStorageSemijoin` | N+1 key validation and batched storage probes | combine adjacent independent membership probes over the same bounded literal snapshot into one scan |
 | `ScheduleBoundedPipeline` | bounded file, model, tool, trace and persistence stages | combine adjacent pure stages over the same literal worklist when their mutable accumulators are disjoint |
 | `LowerResourceRegion` | model clients, connection pools, HTTP sessions and tool hosts | move a pure static resource descriptor acquisition to the outer region of a known-nonempty loop |

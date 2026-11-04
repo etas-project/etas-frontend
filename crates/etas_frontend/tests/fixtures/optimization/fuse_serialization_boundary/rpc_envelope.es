@@ -1,1 +1,8 @@
-flow encode_envelope(value: string) -> string { return value; } flow decode_envelope(value: string) -> string { return value; } flow main() -> string { let encoded = encode_envelope("rpc:request"); let decoded = decode_envelope(encoded); return decoded; }
+import std.json.JsonValue;
+import std.json.parse;
+import std.json.stringify;
+
+flow main() -> JsonValue {
+    let value = parse("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}").unwrap();
+    return parse(stringify(value).unwrap()).unwrap();
+}

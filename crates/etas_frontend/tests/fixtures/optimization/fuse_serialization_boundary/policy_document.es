@@ -1,1 +1,8 @@
-flow encode_policy(value: string) -> string { return value; } flow decode_policy(value: string) -> string { return value; } flow main() -> string { let encoded = encode_policy("policy:sandbox"); let decoded = decode_policy(encoded); return decoded; }
+import std.json.JsonValue;
+import std.json.parse;
+import std.json.stringify;
+
+flow main() -> JsonValue {
+    let value = parse("{\"network\":\"restricted\",\"approval\":\"on-request\"}").unwrap();
+    return parse(stringify(value).unwrap()).unwrap();
+}

@@ -1,1 +1,4 @@
-flow copy_workspace_view(value: string) -> string { return value; } flow main() -> string { let current = "src:tests:docs"; return copy_workspace_view(current); }
+flow main() -> Array<string> {
+    let snapshot = ["src", "tests", "docs", "Cargo.toml"];
+    return snapshot.extend([]);
+}

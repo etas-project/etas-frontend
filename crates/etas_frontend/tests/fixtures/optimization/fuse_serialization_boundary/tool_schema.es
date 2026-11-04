@@ -1,1 +1,8 @@
-flow encode_schema(value: string) -> string { return value; } flow decode_schema(value: string) -> string { return value; } flow main() -> string { let encoded = encode_schema("tool:read"); let decoded = decode_schema(encoded); return decoded; }
+import std.json.JsonValue;
+import std.json.parse;
+import std.json.stringify;
+
+flow main() -> JsonValue {
+    let value = parse("{\"name\":\"read\",\"required\":[\"path\"]}").unwrap();
+    return parse(stringify(value).unwrap()).unwrap();
+}

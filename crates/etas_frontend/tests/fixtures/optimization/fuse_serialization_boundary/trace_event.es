@@ -1,1 +1,8 @@
-flow encode_event(value: string) -> string { return value; } flow decode_event(value: string) -> string { return value; } flow main() -> string { let encoded = encode_event("event:tool"); let decoded = decode_event(encoded); return decoded; }
+import std.json.JsonValue;
+import std.json.parse;
+import std.json.stringify;
+
+flow main() -> JsonValue {
+    let value = parse("{\"span\":\"tool.call\",\"elapsed_ms\":17}").unwrap();
+    return parse(stringify(value).unwrap()).unwrap();
+}

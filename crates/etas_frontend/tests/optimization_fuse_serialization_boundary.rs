@@ -44,7 +44,7 @@ const PROGRAMS: [(&str, &str); 10] = [
 ];
 
 #[test]
-fn ten_proven_identity_serialization_boundaries_are_fused() {
+fn ten_json_stringify_parse_round_trips_are_fused() {
     for (name, source) in PROGRAMS {
         let baseline = compile(source, false);
         let optimized = compile(source, true);
@@ -63,7 +63,7 @@ fn ten_proven_identity_serialization_boundaries_are_fused() {
                 .pass("FuseSerializationBoundary")
                 .unwrap()
                 .rewritten,
-            2,
+            1,
             "{name} optimized report: {:?}",
             optimized.optimization_report
         );
