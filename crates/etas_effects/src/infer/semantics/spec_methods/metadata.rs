@@ -301,11 +301,8 @@ impl EffectSemantics<'_> {
                 }
             }
         }
-        if origins.is_empty() {
-            return Err(invalid(
-                "metadata method callback has no checked value sources",
-            ));
-        }
+        // A checked generic receiver may specialize to a non-callable value.
+        // Its explicit empty binding is distinct from a missing parameter above.
         Ok(origins)
     }
 
