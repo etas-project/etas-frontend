@@ -32,6 +32,10 @@ pub trait InterproceduralSemantics {
 
     fn missing_summary(&mut self, context: UnitContext<Self::Unit>) -> Self::Summary;
 
+    fn unit_dependencies(&self, _unit: Self::Unit) -> Vec<Self::Unit> {
+        Vec::new()
+    }
+
     fn call_target(
         &mut self,
         context: UnitContext<Self::Unit>,

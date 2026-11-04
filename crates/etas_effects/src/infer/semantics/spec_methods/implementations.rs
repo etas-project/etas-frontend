@@ -5,7 +5,7 @@ use crate::facts::{
     CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
 };
 use etas_package_metadata::{CallableValueScope, CallableValueSource};
-use etas_types::{GenericInstantiationFact, SpecMethodFact};
+use etas_types::SpecMethodFact;
 
 fn invalid(reason: &str) -> EffectSpecializationError {
     EffectSpecializationError::InvalidCallableEnvironment {
@@ -21,20 +21,25 @@ impl EffectSemantics<'_> {
         snapshot: CallableEnvironment,
         declaration: &etas_types::CallableSignature,
         method: &SpecMethodFact,
-        arguments: GenericInstantiationFact,
+        arguments: super::MethodInstantiation,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let etas_types::method::MethodTarget::External { identity } = &implementation.target else {
             return Err(invalid("external method witness does not target metadata"));
         };
+        let owner_bindings = arguments.owner_bindings;
         let arguments = method
-            .implementation_instantiation(declaration, &implementation.signature, &arguments)
+            .implementation_instantiation(
+                declaration,
+                &implementation.signature,
+                &arguments.generics,
+            )
             .map_err(|reason| invalid(&reason))?;
         self.capture_external_method(
             identity,
             &implementation.signature,
             invocation,
             snapshot,
-            &Default::default(),
+            &owner_bindings,
             (
                 arguments.type_bindings,
                 arguments

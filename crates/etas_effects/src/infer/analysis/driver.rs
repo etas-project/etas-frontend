@@ -52,6 +52,15 @@ pub fn run_effect_analysis<'a>(
         let callable_environments = result.semantics.callable_environments.borrow().clone();
         let method_evidence = result.semantics.method_evidence.borrow().clone();
         let mut spec_method_targets = (*input.spec_method_targets).clone();
+        let mut spec_unit_targets = (*input.spec_unit_targets).clone();
+        for (owner, targets) in result
+            .semantics
+            .discovered_spec_unit_targets
+            .borrow()
+            .iter()
+        {
+            spec_unit_targets.entry(*owner).or_default().extend(targets);
+        }
         for (call, targets) in result.semantics.discovered_spec_targets.borrow().iter() {
             spec_method_targets
                 .entry(*call)
@@ -83,6 +92,7 @@ pub fn run_effect_analysis<'a>(
             && callable_environments == input.callable_environments
             && method_evidence == input.method_evidence
             && spec_method_targets == *input.spec_method_targets
+            && spec_unit_targets == *input.spec_unit_targets
         {
             result.semantics.inputs.callable_environments = (*callable_environments).clone();
             result.semantics.inputs.inferred_parameter_effects = parameters;
@@ -99,6 +109,7 @@ pub fn run_effect_analysis<'a>(
         input.method_evidence = method_evidence;
         // Witness applications discover body dependencies after substitution.
         input.spec_method_targets = std::sync::Arc::new(spec_method_targets);
+        input.spec_unit_targets = std::sync::Arc::new(spec_unit_targets);
         Ok(true)
     })?;
     if solved.status != etas_utils::ConvergenceStatus::Converged {

@@ -168,6 +168,7 @@ pub fn lower_std_spec_impls(
     registry
         .spec_impls()
         .map(|implementation| CheckedStdSpecImplFact {
+            generic_params: Vec::new(),
             self_type: lower_std_type(ctx, registry, &implementation.self_type),
             spec: implementation.spec.path.clone(),
             args: implementation

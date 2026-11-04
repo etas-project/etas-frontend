@@ -18,6 +18,7 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(super) spec_facts: etas_types::SpecFacts,
     pub(crate) spec_method_targets: std::sync::Arc<
         std::collections::HashMap<HirExprId, std::collections::BTreeSet<EffectUnit>>,
     >,
@@ -53,6 +54,12 @@ pub(crate) struct EffectSemantics<'a> {
         std::cell::RefCell<std::collections::HashMap<HirExprId, Vec<(String, EffectRow)>>>,
     pub(crate) discovered_spec_targets: std::cell::RefCell<
         std::collections::HashMap<HirExprId, std::collections::BTreeSet<EffectUnit>>,
+    >,
+    pub(crate) spec_unit_targets: std::sync::Arc<
+        std::collections::HashMap<etas_hir::HirItemId, std::collections::BTreeSet<EffectUnit>>,
+    >,
+    pub(crate) discovered_spec_unit_targets: std::cell::RefCell<
+        std::collections::HashMap<etas_hir::HirItemId, std::collections::BTreeSet<EffectUnit>>,
     >,
     pub(crate) symbol_lexical_scopes:
         std::collections::HashMap<etas_hir::SymbolId, Option<etas_hir::ScopeId>>,
@@ -135,6 +142,7 @@ impl<'a> EffectSemantics<'a> {
             std::sync::Arc::new(super::argument_values::ArgumentWrites::build(hir, None).unwrap());
         let mut semantics = Self::from_input(
             crate::infer::analysis::EffectAnalysisInput {
+                spec_unit_targets: Default::default(),
                 spec_method_targets: Default::default(),
                 external_implementations: &[],
                 method_evidence: Default::default(),
@@ -167,6 +175,7 @@ impl<'a> EffectSemantics<'a> {
         argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
     ) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
+            spec_unit_targets,
             spec_method_targets,
             external_implementations,
             method_evidence,
@@ -189,6 +198,8 @@ impl<'a> EffectSemantics<'a> {
             memory_provenance,
         } = input;
         let mut semantics = Self {
+            spec_unit_targets,
+            discovered_spec_unit_targets: Default::default(),
             spec_method_targets,
             argument_writes,
             residual_identity,
@@ -251,6 +262,7 @@ impl<'a> EffectSemantics<'a> {
             call_completion_exits: Default::default(),
             hir,
             context: HirAnalysisContext::new(hir),
+            spec_facts: etas_types::SpecFacts::from(types.facts.as_ref()),
             types,
             std_registry,
             memory_provenance,

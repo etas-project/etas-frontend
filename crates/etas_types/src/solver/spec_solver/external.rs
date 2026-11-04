@@ -369,46 +369,76 @@ fn evidence_satisfies_inner(
             )
         });
     }
+    if facts.std_impls.iter().any(|implementation| {
+        implementation_satisfies(
+            store,
+            facts,
+            Implementation {
+                parameters: &implementation.generic_params,
+                subject: implementation.self_type,
+                spec: CheckedSpecRef::Std(implementation.spec.clone()),
+                args: &implementation.args,
+            },
+            ty,
+            target,
+            args,
+            active,
+        )
+    }) {
+        return true;
+    }
     let external_impl = facts.external_impls.iter().any(|implementation| {
-        type_same(store, implementation.self_type, ty)
-            && entails_inner(
-                store,
-                facts,
-                CheckedSpecRef::External(implementation.spec.clone()),
-                &implementation.args,
-                target,
-                args,
-                active,
-            )
+        implementation_satisfies(
+            store,
+            facts,
+            Implementation {
+                parameters: &implementation.generic_params,
+                subject: implementation.self_type,
+                spec: CheckedSpecRef::External(implementation.spec.clone()),
+                args: &implementation.args,
+            },
+            ty,
+            target,
+            args,
+            active,
+        )
     });
     if external_impl {
         return true;
     }
     if facts.canonical.impls.iter().any(|implementation| {
-        type_same(store, implementation.self_type, ty)
-            && entails_inner(
-                store,
-                facts,
-                CheckedSpecRef::Canonical(implementation.spec.clone()),
-                &implementation.args,
-                target,
-                args,
-                active,
-            )
+        implementation_satisfies(
+            store,
+            facts,
+            Implementation {
+                parameters: &implementation.generic_params,
+                subject: implementation.self_type,
+                spec: CheckedSpecRef::Canonical(implementation.spec.clone()),
+                args: &implementation.args,
+            },
+            ty,
+            target,
+            args,
+            active,
+        )
     }) {
         return true;
     }
     if facts.impls.iter().any(|implementation| {
-        type_same(store, implementation.self_type, ty)
-            && entails_inner(
-                store,
-                facts,
-                CheckedSpecRef::Source(implementation.spec_symbol),
-                &implementation.args,
-                target,
-                args,
-                active,
-            )
+        implementation_satisfies(
+            store,
+            facts,
+            Implementation {
+                parameters: &implementation.generic_params,
+                subject: implementation.self_type,
+                spec: CheckedSpecRef::Source(implementation.spec_symbol),
+                args: &implementation.args,
+            },
+            ty,
+            target,
+            args,
+            active,
+        )
     }) {
         return true;
     }
@@ -435,6 +465,94 @@ fn evidence_satisfies_inner(
                 active,
             )
         })
+}
+
+struct Implementation<'a> {
+    parameters: &'a [crate::CallableGenericParam],
+    subject: TypeId,
+    spec: CheckedSpecRef,
+    args: &'a [TypeId],
+}
+
+fn implementation_satisfies(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    implementation: Implementation<'_>,
+    ty: TypeId,
+    target: &CheckedSpecRef,
+    expected: &[TypeId],
+    active: &mut ActiveObligations,
+) -> bool {
+    let Some(bindings) = super::implementation::match_subject(
+        store,
+        implementation.parameters,
+        implementation.subject,
+        ty,
+    ) else {
+        return false;
+    };
+    if !implementation_bounds(store, facts, implementation.parameters, &bindings, active) {
+        return false;
+    }
+    let Some(args) = super::implementation::substitute(store, &bindings, implementation.args)
+    else {
+        return false;
+    };
+    entails_inner(
+        store,
+        facts,
+        implementation.spec,
+        &args,
+        target,
+        expected,
+        active,
+    )
+}
+
+fn implementation_bounds(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    parameters: &[crate::CallableGenericParam],
+    bindings: &HashMap<TypeId, TypeId>,
+    active: &mut ActiveObligations,
+) -> bool {
+    for parameter in parameters {
+        let Some(argument) = bindings.get(&parameter.subject) else {
+            return false;
+        };
+        for bound in &parameter.bounds {
+            let Some(args) = super::implementation::substitute(store, bindings, &bound.args) else {
+                return false;
+            };
+            let satisfied = match &bound.spec {
+                CheckedSpecRef::Source(spec) => {
+                    source_satisfies_inner(store, facts, *argument, *spec, &args, active)
+                }
+                CheckedSpecRef::External(spec) => {
+                    type_satisfies_inner(store, facts, *argument, spec, &args, active)
+                }
+                CheckedSpecRef::Canonical(spec) => {
+                    canonical_type_satisfies_inner(store, facts, *argument, spec, &args, active)
+                }
+                CheckedSpecRef::Std(spec) => {
+                    std_satisfies_inner(store, facts, *argument, spec, &args, active)
+                }
+            };
+            if !satisfied {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+pub(super) fn checked_implementation_bounds(
+    store: &TypeStore,
+    facts: &SpecFacts,
+    parameters: &[crate::CallableGenericParam],
+    bindings: &HashMap<TypeId, TypeId>,
+) -> bool {
+    implementation_bounds(store, facts, parameters, bindings, &mut HashSet::new())
 }
 
 pub(super) fn entails(

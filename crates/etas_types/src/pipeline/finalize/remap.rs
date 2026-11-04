@@ -410,9 +410,21 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
     }
 
     fn spec_impl(&mut self, implementation: &mut SpecImplFact) {
+        for parameter in &mut implementation.generic_params {
+            self.generic_parameter(parameter);
+        }
         implementation.self_type = self.ty(implementation.self_type);
         for arg in &mut implementation.args {
             *arg = self.ty(*arg);
+        }
+    }
+
+    fn generic_parameter(&mut self, parameter: &mut crate::CallableGenericParam) {
+        parameter.subject = self.ty(parameter.subject);
+        for bound in &mut parameter.bounds {
+            for ty in &mut bound.args {
+                *ty = self.ty(*ty);
+            }
         }
     }
 
@@ -862,6 +874,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     for implementation in &mut facts.external_specs.impls {
+        for parameter in &mut implementation.generic_params {
+            remapper.generic_parameter(parameter);
+        }
         implementation.self_type = remapper.ty(implementation.self_type);
         for ty in &mut implementation.args {
             *ty = remapper.ty(*ty);
@@ -880,6 +895,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         }
     }
     for implementation in &mut facts.canonical_specs.impls {
+        for parameter in &mut implementation.generic_params {
+            remapper.generic_parameter(parameter);
+        }
         implementation.self_type = remapper.ty(implementation.self_type);
         for ty in &mut implementation.args {
             *ty = remapper.ty(*ty);
@@ -906,6 +924,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         remapper.spec_impl(implementation);
     }
     for implementation in &mut facts.std_spec_impls {
+        for parameter in &mut implementation.generic_params {
+            remapper.generic_parameter(parameter);
+        }
         implementation.self_type = remapper.ty(implementation.self_type);
         for arg in &mut implementation.args {
             *arg = remapper.ty(*arg);

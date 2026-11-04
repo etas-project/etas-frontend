@@ -32,6 +32,8 @@ pub struct TypeUnifier<'a> {
     known: Option<&'a Substitution>,
     read_only_erasure: bool,
     definition_contract: bool,
+    pattern_parameters: Option<&'a std::collections::HashSet<TypeId>>,
+    parameter_bindings: HashMap<TypeId, TypeId>,
 }
 
 impl<'a> TypeUnifier<'a> {
@@ -42,6 +44,8 @@ impl<'a> TypeUnifier<'a> {
             known: None,
             read_only_erasure: false,
             definition_contract: false,
+            pattern_parameters: None,
+            parameter_bindings: HashMap::new(),
         }
     }
 
@@ -52,6 +56,8 @@ impl<'a> TypeUnifier<'a> {
             known: None,
             read_only_erasure: false,
             definition_contract: false,
+            pattern_parameters: None,
+            parameter_bindings: HashMap::new(),
         }
     }
 
@@ -63,12 +69,27 @@ impl<'a> TypeUnifier<'a> {
             known: Some(known),
             read_only_erasure: false,
             definition_contract: false,
+            pattern_parameters: None,
+            parameter_bindings: HashMap::new(),
         }
     }
 
     pub(crate) fn with_read_only_erasure(mut self) -> Self {
         self.read_only_erasure = true;
         self
+    }
+
+    pub(crate) fn with_pattern_parameters(
+        mut self,
+        parameters: &'a std::collections::HashSet<TypeId>,
+    ) -> Self {
+        self.pattern_parameters = Some(parameters);
+        self.definition_contract = true;
+        self
+    }
+
+    pub(crate) fn into_parameter_bindings(self) -> HashMap<TypeId, TypeId> {
+        self.parameter_bindings
     }
 
     pub fn into_substitution(self) -> Substitution {
@@ -82,8 +103,27 @@ impl<'a> TypeUnifier<'a> {
     pub fn unify(&mut self, lhs: TypeId, rhs: TypeId) -> Result<(), UnifyError> {
         let lhs = self.resolve(lhs)?;
         let rhs = self.resolve(rhs)?;
-        if lhs == rhs {
+        if self
+            .pattern_parameters
+            .is_some_and(|parameters| parameters.contains(&lhs))
+        {
+            if let Some(previous) = self.parameter_bindings.get(&lhs) {
+                let mut exact = Self::new(self.store);
+                exact.definition_contract = true;
+                return exact.unify(*previous, rhs);
+            }
+            self.parameter_bindings.insert(lhs, rhs);
             return Ok(());
+        }
+        if lhs == rhs && self.pattern_parameters.is_none() {
+            return Ok(());
+        }
+        if self.pattern_parameters.is_some()
+            && lhs != rhs
+            && (matches!(self.store.get(lhs), Some(Type::Var(_)))
+                || matches!(self.store.get(rhs), Some(Type::Var(_))))
+        {
+            return Err(UnifyError::Mismatch { lhs, rhs });
         }
         match (self.store.get(lhs), self.store.get(rhs)) {
             (
@@ -277,6 +317,7 @@ impl<'a> TypeUnifier<'a> {
                 self.definition_contract = contract;
                 result
             }
+            _ if lhs == rhs => Ok(()),
             _ => Err(UnifyError::Mismatch { lhs, rhs }),
         }
     }

@@ -111,13 +111,20 @@ fn witnesses(
                 input
                     .declaration_facts
                     .methods
-                    .witness(source, &bound.args, &method.identity)
+                    .resolve_witness(
+                        input.store,
+                        input.spec_facts,
+                        source,
+                        &bound.args,
+                        &method.identity,
+                    )?
                     .ok_or_else(|| {
                         format!(
                             "existential packing has no unique checked witness for `{}`",
                             method.name
                         )
                     })?
+                    .declaration
                     .target
                     .clone()
             };

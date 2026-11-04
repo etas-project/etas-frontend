@@ -243,6 +243,7 @@ mod tests {
             .canonical_specs
             .impls
             .push(etas_types::facts::specs::CanonicalSpecImplFact {
+                generic_params: Vec::new(),
                 self_type: etas_types::TypeId(1),
                 spec: key,
                 args: vec![],

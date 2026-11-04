@@ -80,7 +80,7 @@ pub fn collect_type_impl_methods(
     }
 }
 
-fn inherit_owner_bounds(
+pub(super) fn inherit_owner_bounds(
     ctx: &mut TypePipelineContext<'_>,
     state: &mut SignaturePipelineState,
     subject: crate::TypeId,
@@ -170,20 +170,26 @@ fn inherit_owner_bounds(
                 ));
                 continue;
             };
-            parameter.bounds.push(crate::CheckedSpecBound {
+            let inherited = crate::CheckedSpecBound {
                 spec: bound.spec.clone(),
                 args: args.clone(),
-            });
-            state
-                .type_param_bounds
-                .entry(symbol)
-                .or_default()
-                .push(crate::TypeParamBoundFact {
+            };
+            if parameter.bounds.contains(&inherited) {
+                continue;
+            }
+            parameter.bounds.push(inherited);
+            let bounds = state.type_param_bounds.entry(symbol).or_default();
+            if !bounds
+                .iter()
+                .any(|bound| bound.spec_symbol == spec_symbol && bound.args == args)
+            {
+                bounds.push(crate::TypeParamBoundFact {
                     param: symbol,
                     param_name: parameter.name.clone(),
                     spec_symbol,
                     args,
                 });
+            }
         }
     }
 }

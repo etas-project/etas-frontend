@@ -119,7 +119,7 @@ impl EffectSemantics<'_> {
             let witness = selected.ok_or_else(|| {
                 invalid("existential value has no evidence for the selected spec member")
             })?;
-            let target = if matches!(witness.target, MethodTarget::BoundSpec { .. }) {
+            if matches!(witness.target, MethodTarget::BoundSpec { .. }) {
                 if matches!(
                     self.types.store.get(source_type),
                     Some(Type::Existential { .. })
@@ -138,18 +138,30 @@ impl EffectSemantics<'_> {
                 {
                     return Ok(None);
                 }
-                &self
-                    .types
-                    .facts
-                    .methods
-                    .witness(source_type, spec_args, &method.identity)
-                    .ok_or_else(|| {
-                        invalid("existential generic source has no checked member witness")
-                    })?
-                    .target
-            } else {
-                &witness.target
-            };
+            }
+            let resolved = self
+                .types
+                .facts
+                .methods
+                .resolve_witness(
+                    &self.types.store,
+                    &self.spec_facts,
+                    source_type,
+                    spec_args,
+                    &method.identity,
+                )
+                .map_err(|reason| invalid(&reason))?
+                .ok_or_else(|| {
+                    invalid("existential generic source has no checked member witness")
+                })?;
+            if !matches!(witness.target, MethodTarget::BoundSpec { .. })
+                && resolved.declaration.target != witness.target
+            {
+                return Err(invalid(
+                    "existential target differs from its checked member witness",
+                ));
+            }
+            let target = &resolved.declaration.target;
             let mut actual = snapshot.clone();
             actual.parameters.insert(
                 ParameterCallTarget::Interface(0),
@@ -159,10 +171,13 @@ impl EffectSemantics<'_> {
                     .cloned()
                     .ok_or_else(|| invalid("existential producer capture is missing"))?,
             );
-            let arguments = etas_types::GenericInstantiationFact {
-                type_bindings: arguments.types.clone(),
-                effect_row_bindings: arguments.effect_rows.clone(),
-                deferred_effect_row_obligations: Vec::new(),
+            let arguments = super::MethodInstantiation {
+                owner_bindings: resolved.owner_bindings,
+                generics: etas_types::GenericInstantiationFact {
+                    type_bindings: arguments.types.clone(),
+                    effect_row_bindings: arguments.effect_rows.clone(),
+                    deferred_effect_row_obligations: Vec::new(),
+                },
             };
             let source = match target {
                 MethodTarget::Source { callable, .. } => {
@@ -180,24 +195,14 @@ impl EffectSemantics<'_> {
                         arguments,
                     )?
                 }
-                MethodTarget::External { .. } => {
-                    let implementation = self
-                        .types
-                        .facts
-                        .methods
-                        .witness(source_type, spec_args, &method.identity)
-                        .ok_or_else(|| {
-                            invalid("existential external member declaration is missing")
-                        })?;
-                    self.capture_external_spec_implementation(
-                        implementation,
-                        invocation,
-                        actual,
-                        declaration,
-                        method,
-                        arguments,
-                    )?
-                }
+                MethodTarget::External { .. } => self.capture_external_spec_implementation(
+                    resolved.declaration,
+                    invocation,
+                    actual,
+                    declaration,
+                    method,
+                    arguments,
+                )?,
                 _ => {
                     return Err(invalid(
                         "existential method has no executable checked target",

@@ -409,15 +409,24 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
             ) {
                 continue;
             }
+            let generic_params =
+                match implementation_methods::owner_parameters(ctx, &implementation.methods) {
+                    Ok(parameters) => parameters,
+                    Err(reason) => {
+                        incomplete_external_type_facts(ctx, span, reason);
+                        continue;
+                    }
+                };
             let spec_symbol = match spec {
                 crate::CheckedSpecRef::Source(symbol) => symbol,
                 crate::CheckedSpecRef::Std(path) => {
-                    record_std_spec_evidence(ctx, self_type, path, args);
+                    record_std_spec_evidence(ctx, self_type, path, args, generic_params);
                     continue;
                 }
                 crate::CheckedSpecRef::External(spec) => {
                     ctx.signature_facts.external_specs.impls.push(
                         crate::facts::specs::ExternalSpecImplFact {
+                            generic_params,
                             self_type,
                             spec,
                             args,
@@ -428,6 +437,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 crate::CheckedSpecRef::Canonical(spec) => {
                     ctx.signature_facts.canonical_specs.impls.push(
                         crate::facts::specs::CanonicalSpecImplFact {
+                            generic_params,
                             self_type,
                             spec,
                             args,
@@ -437,6 +447,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 }
             };
             ctx.signature_facts.spec_impls.push(SpecImplFact {
+                generic_params,
                 self_type,
                 spec_symbol,
                 args,
@@ -471,12 +482,13 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
             let spec_symbol = match spec {
                 crate::CheckedSpecRef::Source(symbol) => symbol,
                 crate::CheckedSpecRef::Std(path) => {
-                    record_std_spec_evidence(ctx, self_type, path, args);
+                    record_std_spec_evidence(ctx, self_type, path, args, Vec::new());
                     continue;
                 }
                 crate::CheckedSpecRef::External(spec) => {
                     ctx.signature_facts.external_specs.impls.push(
                         crate::facts::specs::ExternalSpecImplFact {
+                            generic_params: Vec::new(),
                             self_type,
                             spec,
                             args,
@@ -487,6 +499,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 crate::CheckedSpecRef::Canonical(spec) => {
                     ctx.signature_facts.canonical_specs.impls.push(
                         crate::facts::specs::CanonicalSpecImplFact {
+                            generic_params: Vec::new(),
                             self_type,
                             spec,
                             args,
@@ -615,8 +628,10 @@ fn record_std_spec_evidence(
     self_type: TypeId,
     spec: Vec<String>,
     args: Vec<TypeId>,
+    generic_params: Vec<crate::CallableGenericParam>,
 ) {
     let evidence = crate::CheckedStdSpecImplFact {
+        generic_params,
         self_type,
         spec,
         args,

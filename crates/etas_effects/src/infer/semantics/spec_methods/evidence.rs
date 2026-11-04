@@ -183,15 +183,23 @@ impl EffectSemantics<'_> {
         }
         self.solve_spec_method_row_obligations(call, &snapshot, &mut arguments)?;
         if let etas_types::method::MethodTarget::Source { callable, .. } = fact.target {
+            let owner_bindings = fact
+                .owner_bindings
+                .iter()
+                .map(|(parameter, argument)| Ok((*parameter, substitution.substitute(*argument)?)))
+                .collect::<Result<_, EffectSpecializationError>>()?;
             return self
                 .capture_source_method_implementation(
                     callable,
                     environment,
                     snapshot,
-                    etas_types::GenericInstantiationFact {
-                        type_bindings: arguments.types,
-                        effect_row_bindings: arguments.effect_rows,
-                        deferred_effect_row_obligations: Vec::new(),
+                    super::MethodInstantiation {
+                        owner_bindings,
+                        generics: etas_types::GenericInstantiationFact {
+                            type_bindings: arguments.types,
+                            effect_row_bindings: arguments.effect_rows,
+                            deferred_effect_row_obligations: Vec::new(),
+                        },
                     },
                 )
                 .map(MethodEvidence::Resolved);
@@ -279,8 +287,15 @@ impl EffectSemantics<'_> {
         {
             return Ok(MethodEvidence::Alternatives(sources));
         }
-        if let Some(EffectUnit::Item(item)) =
-            self.checked_method_witness_target(receiver, &args, member)
+        let witness = self
+            .types
+            .facts
+            .methods
+            .resolve_witness(&self.types.store, &self.spec_facts, receiver, &args, member)
+            .map_err(|reason| invalid(&reason))?;
+        if let Some(witness) = witness.as_ref()
+            && let etas_types::method::MethodTarget::Source { callable: item, .. } =
+                witness.declaration.target
         {
             self.discovered_spec_targets
                 .borrow_mut()
@@ -294,37 +309,37 @@ impl EffectSemantics<'_> {
                     snapshot,
                     declaration,
                     method_fact,
-                    etas_types::GenericInstantiationFact {
-                        type_bindings: arguments.types,
-                        effect_row_bindings: arguments.effect_rows,
-                        deferred_effect_row_obligations: Vec::new(),
+                    super::MethodInstantiation {
+                        owner_bindings: witness.owner_bindings.clone(),
+                        generics: etas_types::GenericInstantiationFact {
+                            type_bindings: arguments.types,
+                            effect_row_bindings: arguments.effect_rows,
+                            deferred_effect_row_obligations: Vec::new(),
+                        },
                     },
                 )
                 .map(MethodEvidence::Resolved);
         }
-        if let Some(implementation) = self
-            .types
-            .facts
-            .methods
-            .witness(receiver, &args, member)
-            .filter(|method| {
-                matches!(
-                    method.target,
-                    etas_types::method::MethodTarget::External { .. }
-                )
-            })
-        {
+        if let Some(witness) = witness.filter(|witness| {
+            matches!(
+                witness.declaration.target,
+                etas_types::method::MethodTarget::External { .. }
+            )
+        }) {
             return self
                 .capture_external_spec_implementation(
-                    implementation,
+                    witness.declaration,
                     environment,
                     snapshot,
                     declaration,
                     method_fact,
-                    etas_types::GenericInstantiationFact {
-                        type_bindings: arguments.types,
-                        effect_row_bindings: arguments.effect_rows,
-                        deferred_effect_row_obligations: Vec::new(),
+                    super::MethodInstantiation {
+                        owner_bindings: witness.owner_bindings,
+                        generics: etas_types::GenericInstantiationFact {
+                            type_bindings: arguments.types,
+                            effect_row_bindings: arguments.effect_rows,
+                            deferred_effect_row_obligations: Vec::new(),
+                        },
                     },
                 )
                 .map(MethodEvidence::Resolved);
@@ -410,17 +425,26 @@ impl EffectSemantics<'_> {
         snapshot: CallableEnvironment,
         declaration: &etas_types::CallableSignature,
         method: &etas_types::SpecMethodFact,
-        arguments: etas_types::GenericInstantiationFact,
+        arguments: super::MethodInstantiation,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let Some(etas_types::ItemSignature::Flow(implementation)) =
             self.types.facts.item_signatures.get(&item)
         else {
             return Err(invalid("method implementation has no checked signature"));
         };
+        let arguments_owner = arguments.owner_bindings;
         let arguments = method
-            .implementation_instantiation(declaration, implementation, &arguments)
+            .implementation_instantiation(declaration, implementation, &arguments.generics)
             .map_err(|reason| invalid(&reason))?;
-        self.capture_source_method_implementation(item, invocation, snapshot, arguments)
+        self.capture_source_method_implementation(
+            item,
+            invocation,
+            snapshot,
+            super::MethodInstantiation {
+                generics: arguments,
+                owner_bindings: arguments_owner,
+            },
+        )
     }
 
     pub(super) fn capture_source_method_implementation(
@@ -428,7 +452,7 @@ impl EffectSemantics<'_> {
         item: HirItemId,
         invocation: CallableEnvironmentId,
         snapshot: CallableEnvironment,
-        arguments: etas_types::GenericInstantiationFact,
+        arguments: super::MethodInstantiation,
     ) -> Result<LatentSource, EffectSpecializationError> {
         let Some(etas_types::ItemSignature::Flow(implementation)) =
             self.types.facts.item_signatures.get(&item)
@@ -436,6 +460,22 @@ impl EffectSemantics<'_> {
             return Err(invalid("method implementation has no checked signature"));
         };
         let mut generics = BTreeMap::new();
+        if let Some(method) = self.native_impl_method(item) {
+            for (position, parameter) in method.owner_params.iter().enumerate() {
+                let argument = arguments
+                    .owner_bindings
+                    .get(&parameter.subject)
+                    .ok_or_else(|| invalid("source method owner binding is missing"))?;
+                generics.insert(
+                    CallableGenericParameter::Native {
+                        owner: method.implementation,
+                        position: position as u32,
+                    },
+                    CallableGenericValue::Type(*argument),
+                );
+            }
+        }
+        let arguments = arguments.generics;
         for (position, parameter) in implementation.generic_params.iter().enumerate() {
             let value = match parameter.kind {
                 CallableGenericParamKind::Type => CallableGenericValue::Type(

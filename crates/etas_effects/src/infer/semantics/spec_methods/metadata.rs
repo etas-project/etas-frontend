@@ -403,37 +403,54 @@ impl EffectSemantics<'_> {
             .types
             .facts
             .methods
-            .witness(receiver, &spec_args, &fact.identity);
-        if let Some(etas_types::method::MethodSignatureFact {
-            target: etas_types::method::MethodTarget::Source { callable: item, .. },
-            ..
-        }) = implementation
+            .resolve_witness(
+                &self.types.store,
+                &self.spec_facts,
+                receiver,
+                &spec_args,
+                &fact.identity,
+            )
+            .map_err(invalid)?;
+        if let Some(witness) = implementation.as_ref()
+            && let etas_types::method::MethodTarget::Source { callable: item, .. } =
+                witness.declaration.target
         {
+            self.discovered_spec_unit_targets
+                .borrow_mut()
+                .entry(snapshot.owner)
+                .or_default()
+                .insert(crate::EffectUnit::Item(item));
             return self
                 .capture_spec_implementation(
-                    *item,
+                    item,
                     environment,
                     snapshot,
                     signature,
                     fact,
-                    arguments,
+                    super::MethodInstantiation {
+                        owner_bindings: witness.owner_bindings.clone(),
+                        generics: arguments,
+                    },
                 )
                 .map(super::MethodEvidence::Resolved);
         }
         if let Some(implementation) = implementation.filter(|method| {
             matches!(
-                method.target,
+                method.declaration.target,
                 etas_types::method::MethodTarget::External { .. }
             )
         }) {
             return self
                 .capture_external_spec_implementation(
-                    implementation,
+                    implementation.declaration,
                     environment,
                     snapshot,
                     signature,
                     fact,
-                    arguments,
+                    super::MethodInstantiation {
+                        owner_bindings: implementation.owner_bindings,
+                        generics: arguments,
+                    },
                 )
                 .map(super::MethodEvidence::Resolved);
         }

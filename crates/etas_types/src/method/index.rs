@@ -11,7 +11,7 @@ pub struct MethodIndex {
     members: HashMap<String, Vec<u32>>,
     nominal: HashMap<TypeId, HashMap<String, Vec<u32>>>,
     families: HashMap<u8, HashMap<String, Vec<u32>>>,
-    witnesses: HashMap<TypeId, Vec<u32>>,
+    witness_patterns: HashMap<ReceiverHead, HashMap<crate::SpecMethodIdentity, Vec<u32>>>,
     implementations: HashMap<crate::CheckedSpecRef, Vec<u32>>,
     targets: HashMap<TargetKey, Vec<u32>>,
 }
@@ -61,11 +61,15 @@ impl MethodIndex {
             };
             bucket.entry(entry.name.clone()).or_default().push(index);
             if let super::MethodEvidence::Implementation { spec, .. } = &entry.evidence {
-                result
-                    .witnesses
-                    .entry(entry.receiver_type)
-                    .or_default()
-                    .push(index);
+                if let Some(member) = &entry.spec_member {
+                    result
+                        .witness_patterns
+                        .entry(receiver_head(store, entry.receiver_type))
+                        .or_default()
+                        .entry(member.clone())
+                        .or_default()
+                        .push(index);
+                }
                 result
                     .implementations
                     .entry(spec.clone())
@@ -100,17 +104,113 @@ impl MethodIndex {
         matches.next().is_none().then_some(declaration)
     }
 
-    pub fn witness(
+    pub fn resolve_witness(
         &self,
+        store: &TypeStore,
+        facts: &crate::SpecFacts,
         receiver: TypeId,
         args: &[TypeId],
         member: &crate::SpecMethodIdentity,
-    ) -> Option<&MethodSignatureFact> {
-        let mut matches = self.witnesses.get(&receiver)?.iter().map(|index| self.get(*index))
-            .filter(|entry| entry.spec_member.as_ref() == Some(member)
-                && matches!(&entry.evidence, super::MethodEvidence::Implementation { args: actual, .. } if actual == args));
-        let selected = matches.next()?;
-        matches.next().is_none().then_some(selected)
+    ) -> Result<Option<MethodWitness<'_>>, String> {
+        let Some(candidates) = self
+            .witness_patterns
+            .get(&receiver_head(store, receiver))
+            .and_then(|bucket| bucket.get(member))
+        else {
+            return Ok(None);
+        };
+        let mut selected: Option<MethodWitness<'_>> = None;
+        for index in candidates {
+            let declaration = self.get(*index);
+            let MethodEvidence::Implementation {
+                args: parameters, ..
+            } = &declaration.evidence
+            else {
+                unreachable!()
+            };
+            let Some(bindings) = crate::solver::spec_solver::match_implementation_subject(
+                store,
+                &declaration.owner_params,
+                declaration.receiver_type,
+                receiver,
+            ) else {
+                continue;
+            };
+            if !crate::solver::spec_solver::implementation_bounds_satisfied(
+                store,
+                facts,
+                &declaration.owner_params,
+                &bindings,
+            ) {
+                continue;
+            }
+            let Some(actual) = crate::solver::spec_solver::implementation::substitute(
+                store, &bindings, parameters,
+            ) else {
+                continue;
+            };
+            if actual != args {
+                continue;
+            }
+            if let Some(previous) = &selected {
+                if previous.declaration.target == declaration.target
+                    && previous.owner_bindings == bindings
+                {
+                    continue;
+                }
+                return Err(
+                    "method has multiple applicable checked implementation witnesses".into(),
+                );
+            }
+            selected = Some(MethodWitness {
+                declaration,
+                owner_bindings: bindings,
+                spec_args: actual,
+            });
+        }
+        Ok(selected)
+    }
+
+    pub fn witnesses_for_receiver(
+        &self,
+        store: &TypeStore,
+        facts: &crate::SpecFacts,
+        receiver: TypeId,
+    ) -> Result<Vec<MethodWitness<'_>>, String> {
+        let Some(members) = self.witness_patterns.get(&receiver_head(store, receiver)) else {
+            return Ok(Vec::new());
+        };
+        let mut result = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        for (member, candidates) in members {
+            for index in candidates {
+                let entry = self.get(*index);
+                let MethodEvidence::Implementation { args, .. } = &entry.evidence else {
+                    unreachable!()
+                };
+                let Some(bindings) = crate::solver::spec_solver::match_implementation_subject(
+                    store,
+                    &entry.owner_params,
+                    entry.receiver_type,
+                    receiver,
+                ) else {
+                    continue;
+                };
+                let Some(args) =
+                    crate::solver::spec_solver::implementation::substitute(store, &bindings, args)
+                else {
+                    continue;
+                };
+                if visited.insert((member, args.clone())) {
+                    if let Some(witness) =
+                        self.resolve_witness(store, facts, receiver, &args, member)?
+                    {
+                        result.push(witness);
+                    }
+                }
+            }
+        }
+        Ok(result)
     }
 
     pub fn member(&self, name: &str) -> impl Iterator<Item = (u32, &MethodSignatureFact)> {
@@ -191,9 +291,26 @@ fn same_evidence(left: &MethodEvidence, right: &MethodEvidence) -> bool {
     }
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 enum ReceiverHead {
     Nominal(TypeId),
     Family(u8),
+}
+
+pub struct MethodWitness<'a> {
+    pub declaration: &'a MethodSignatureFact,
+    pub owner_bindings: HashMap<TypeId, TypeId>,
+    pub spec_args: Vec<TypeId>,
 }
 
 fn receiver_head(store: &TypeStore, ty: TypeId) -> ReceiverHead {

@@ -115,6 +115,7 @@ struct PlannedSignature {
 
 #[derive(Clone)]
 struct PlannedImpl {
+    generic_params: Vec<etas_types::CallableGenericParam>,
     self_type: TypeId,
     spec: CheckedSpecRef,
     args: Vec<TypeId>,
@@ -150,7 +151,16 @@ impl CheckedSpecPlan {
                     .chain(signature.source_binders.iter().flatten().copied())
             })
             .chain(self.implementations.iter().flat_map(|implementation| {
-                std::iter::once(implementation.self_type).chain(implementation.args.iter().copied())
+                std::iter::once(implementation.self_type)
+                    .chain(implementation.args.iter().copied())
+                    .chain(implementation.generic_params.iter().flat_map(|parameter| {
+                        std::iter::once(parameter.subject).chain(
+                            parameter
+                                .bounds
+                                .iter()
+                                .flat_map(|bound| bound.args.iter().copied()),
+                        )
+                    }))
             }))
     }
     pub(crate) fn materialize(
@@ -305,6 +315,19 @@ impl CheckedSpecPlan {
         .with_budget(budget);
         for implementation in &self.implementations {
             budget.charge_node()?;
+            let mut generic_params = implementation.generic_params.clone();
+            for parameter in &mut generic_params {
+                budget.charge_node()?;
+                parameter.subject = relocation.substitute(parameter.subject)?;
+                for bound in &mut parameter.bounds {
+                    bound.spec = self.mapping.get(&bound.spec).cloned().ok_or_else(|| {
+                        etas_types::TypeSubstitutionError::MissingSpecIdentity(bound.spec.clone())
+                    })?;
+                    for ty in &mut bound.args {
+                        *ty = relocation.substitute(*ty)?;
+                    }
+                }
+            }
             let self_type = relocation.substitute(implementation.self_type)?;
             let mut args = Vec::new();
             for ty in &implementation.args {
@@ -313,12 +336,14 @@ impl CheckedSpecPlan {
             }
             match self.mapping.get(&implementation.spec) {
                 Some(CheckedSpecRef::Canonical(spec)) => facts.impls.push(CanonicalSpecImplFact {
+                    generic_params,
                     self_type,
                     spec: spec.clone(),
                     args,
                 }),
                 Some(CheckedSpecRef::Std(spec)) => {
                     std_impls.push(etas_types::CheckedStdSpecImplFact {
+                        generic_params,
                         self_type,
                         spec: spec.clone(),
                         args,
@@ -475,36 +500,50 @@ pub(crate) fn checked_spec_plan(
             pending.push_back(bound.spec.clone());
         }
     }
-    let mut add_impl =
-        |self_type: TypeId, spec: CheckedSpecRef, args: &[TypeId]| -> Result<(), ProjectionError> {
-            let mut relevant = false;
-            for ty in reachable {
-                charge_edges(budget, 1)?;
-                if etas_types::TypeUnifier::new(&source.type_store)
-                    .unify(self_type, *ty)
-                    .is_ok()
-                {
-                    relevant = true;
-                    break;
-                }
+    let mut add_impl = |self_type: TypeId,
+                        spec: CheckedSpecRef,
+                        args: &[TypeId],
+                        generic_params: &[etas_types::CallableGenericParam]|
+     -> Result<(), ProjectionError> {
+        let mut relevant = false;
+        for ty in reachable {
+            charge_edges(budget, 1)?;
+            if etas_types::solver::spec_solver::match_implementation_subject(
+                &source.type_store,
+                generic_params,
+                self_type,
+                *ty,
+            )
+            .is_some()
+            {
+                relevant = true;
+                break;
             }
-            if relevant {
-                charge_edges(budget, args.len())?;
-                pending.push_back(spec.clone());
-                implementations.push(PlannedImpl {
-                    self_type,
-                    spec,
-                    args: args.to_vec(),
-                });
-            }
-            Ok(())
-        };
+        }
+        if relevant {
+            charge_edges(budget, args.len())?;
+            pending.push_back(spec.clone());
+            pending.extend(
+                generic_params
+                    .iter()
+                    .flat_map(|parameter| parameter.bounds.iter().map(|bound| bound.spec.clone())),
+            );
+            implementations.push(PlannedImpl {
+                generic_params: generic_params.to_vec(),
+                self_type,
+                spec,
+                args: args.to_vec(),
+            });
+        }
+        Ok(())
+    };
     for item in &source.types.spec_impls {
         charge_node(budget)?;
         add_impl(
             item.self_type,
             CheckedSpecRef::Source(item.spec_symbol),
             &item.args,
+            &item.generic_params,
         )?;
     }
     for item in &source.types.external_specs.impls {
@@ -513,6 +552,7 @@ pub(crate) fn checked_spec_plan(
             item.self_type,
             CheckedSpecRef::External(item.spec.clone()),
             &item.args,
+            &item.generic_params,
         )?;
     }
     for item in &source.types.canonical_specs.impls {
@@ -521,6 +561,7 @@ pub(crate) fn checked_spec_plan(
             item.self_type,
             CheckedSpecRef::Canonical(item.spec.clone()),
             &item.args,
+            &item.generic_params,
         )?;
     }
     for item in &source.types.std_spec_impls {
@@ -529,6 +570,7 @@ pub(crate) fn checked_spec_plan(
             item.self_type,
             CheckedSpecRef::Std(item.spec.clone()),
             &item.args,
+            &item.generic_params,
         )?;
     }
     let mut seen = HashSet::new();

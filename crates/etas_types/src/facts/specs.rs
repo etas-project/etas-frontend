@@ -60,6 +60,7 @@ pub struct CanonicalSpecSignatureFact {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct CanonicalSpecImplFact {
+    pub generic_params: Vec<crate::CallableGenericParam>,
     pub self_type: TypeId,
     pub spec: etas_code::DefinitionKey,
     pub args: Vec<TypeId>,
@@ -138,6 +139,52 @@ impl RelocatedSpecFacts {
                     CheckedSpecRef::Std(_) => {}
                     CheckedSpecRef::Source(_) | CheckedSpecRef::External(_) => {
                         return Err("relocated spec contains a source-local reference".into());
+                    }
+                }
+            }
+        }
+        for parameters in self
+            .canonical
+            .impls
+            .iter()
+            .map(|implementation| &implementation.generic_params)
+            .chain(
+                self.std_impls
+                    .iter()
+                    .map(|implementation| &implementation.generic_params),
+            )
+        {
+            let mut subjects = std::collections::HashSet::new();
+            for parameter in parameters {
+                checkpoint()?;
+                if parameter.kind != crate::CallableGenericParamKind::Type
+                    || store.get(parameter.subject).is_none()
+                    || !subjects.insert(parameter.subject)
+                {
+                    return Err("relocated implementation has invalid owner parameters".into());
+                }
+                for bound in &parameter.bounds {
+                    checkpoint()?;
+                    if bound.args.iter().any(|ty| store.get(*ty).is_none()) {
+                        return Err("relocated owner bound references a missing type".into());
+                    }
+                    match &bound.spec {
+                        CheckedSpecRef::Canonical(key) => {
+                            if signature(key).is_none_or(|target| {
+                                target.kind != SpecKind::TypeSpec
+                                    || target.param_names.len() != bound.args.len()
+                            }) {
+                                return Err(
+                                    "relocated owner bound has no matching spec declaration".into(),
+                                );
+                            }
+                        }
+                        CheckedSpecRef::Std(_) => {}
+                        CheckedSpecRef::Source(_) | CheckedSpecRef::External(_) => {
+                            return Err(
+                                "relocated owner bound contains a source-local reference".into()
+                            );
+                        }
                     }
                 }
             }
@@ -241,6 +288,7 @@ pub struct ExternalSpecSignatureFact {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecImplFact {
+    pub generic_params: Vec<crate::CallableGenericParam>,
     pub self_type: TypeId,
     pub spec: ExternalSpecIdentity,
     pub args: Vec<TypeId>,
@@ -265,6 +313,7 @@ pub struct CheckedSpecBound {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct CheckedStdSpecImplFact {
+    pub generic_params: Vec<crate::CallableGenericParam>,
     pub self_type: TypeId,
     pub spec: Vec<String>,
     pub args: Vec<TypeId>,
@@ -305,6 +354,7 @@ pub enum SpecKind {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecImplFact {
+    pub generic_params: Vec<crate::CallableGenericParam>,
     pub self_type: TypeId,
     pub spec_symbol: etas_hir::SymbolId,
     pub args: Vec<TypeId>,
@@ -447,6 +497,7 @@ mod tests {
         let ty = store.intern(crate::Type::Primitive(crate::PrimitiveType::Bool));
         let facts = RelocatedSpecFacts {
             std_impls: vec![CheckedStdSpecImplFact {
+                generic_params: Vec::new(),
                 self_type: ty,
                 spec: vec!["std".into(), "S".into()],
                 args: vec![ty, ty, ty],
