@@ -64,6 +64,9 @@ pub struct ProjectCompileOptions {
     pub reflection: crate::code::definition::ReflectionOptions,
     /// Run guarded typed-HIR optimization passes before publishing the checked program.
     pub optimize_hir: bool,
+    /// Opt in to the policy-changing P3 context transform. Candidate bindings
+    /// retain only their most recent whitespace-delimited units.
+    pub quality_context_token_budget: Option<usize>,
     /// Implemented residual-enforcement semantics of the selected execution
     /// target. The default supports no residual plan, so every outstanding
     /// residual obligation is rejected.
@@ -76,6 +79,7 @@ impl Default for ProjectCompileOptions {
             entry_policy: EntryPolicy::default(),
             reflection: crate::code::definition::ReflectionOptions::default(),
             optimize_hir: true,
+            quality_context_token_budget: None,
             residual_target: Default::default(),
         }
     }
@@ -96,11 +100,19 @@ impl ProjectCompileOptions {
         };
         let mut parts = vec![
             "frontend-options",
-            "v4",
+            "v5",
             entry_policy,
             optimization,
             "retain-bodies",
         ];
+        let quality_context_token_budget;
+        if let Some(budget) = self.quality_context_token_budget {
+            quality_context_token_budget = budget.to_string();
+            parts.push("quality-context-token-budget");
+            parts.push(&quality_context_token_budget);
+        } else {
+            parts.push("quality-context-policy-off");
+        }
         parts.extend(retained);
         parts.push("export-bodies");
         parts.extend(exported);

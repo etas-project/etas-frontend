@@ -17,9 +17,27 @@ The survey examples are used as workload models, not as instructions. The implem
 | `BatchStorageSemijoin` | N+1 key validation and batched storage probes | combine adjacent independent membership probes over the same bounded literal snapshot into one scan |
 | `ScheduleBoundedPipeline` | bounded file, model, tool, trace and persistence stages | combine adjacent pure stages over the same literal worklist when their mutable accumulators are disjoint |
 | `LowerResourceRegion` | model clients, connection pools, HTTP sessions and tool hosts | move a pure static resource descriptor acquisition to the outer region of a known-nonempty loop |
-| `QualityAwareContextPolicy` | repo map, chat history, retrieval, memory and policy context candidates | remove a pure candidate only when typed-HIR use analysis proves there is no consumer |
+| `QualityAwareContextPolicy` | repo map, chat history, retrieval, memory and policy context candidates | remove an unconsumed pure candidate exactly; when `quality_context_token_budget` is explicitly set, retain only the most recent units of directly bound literal context |
 
-The default pipeline does not perform an approximate P3 context change. A pass that intentionally changes model-input tokens must use a separate explicit policy option and be evaluated for task success and fact recall with a live model; it must not be presented as an exact compiler rewrite.
+The default pipeline does not perform an approximate P3 context change. `ProjectCompileOptions::quality_context_token_budget` is a separate opt-in policy input, participates in the canonical compile fingerprint, and is intentionally not presented as a semantics-preserving rewrite. The interpreter and live-model evaluations report token reduction separately from answer/fact retention.
+
+## Survey provenance
+
+The fixture families preserve the computational shape of concrete survey observations rather than copying their source language. Representative anchors are:
+
+| Pass | Survey observation and source |
+|---|---|
+| `AgentEffectLegality` / `ScheduleBoundedPipeline` | `OPT-005`, mini-swe-agent effect-aware action scheduling |
+| `PrepareVersionedRequest` | `OPT-006`, mini-swe-agent retry payload preparation |
+| `VersionedPreparationCSE` | `OPT-020`, opencode session compaction preparation reuse |
+| `SuffixDemandHistory` | `FULL-a4a777b4c850e2`, agent-zero bounded retention-history suffix |
+| `FuseProjectionScans` | `FULL-d5cbce5e5fda8e`, ChatDev complementary message reductions |
+| `SynthesizeScopedIndex` | `FULL-5723d4e7f08547`, ChatDev sealed-topology edge index |
+| `LowerOwnedSnapshotCOW` | `OPT-026`, cline immutable history snapshot sharing |
+| `FuseSerializationBoundary` | `FULL-2af3a5aa471885`, Codex single serialization for combined goal projections |
+| `BatchStorageSemijoin` | `FULL-23ef735e150ad2`, Codex batched thread-item metadata hydration |
+| `LowerResourceRegion` | `OPT-035`, ChatDev scoped runtime-resource reuse |
+| `QualityAwareContextPolicy` | `OPT-045` exact unused-observation elimination plus the workbook's explicit P3 context-budget prototype |
 
 ## Stable facts across rewrites
 
@@ -27,4 +45,4 @@ HIR arena IDs remain stable. Removed nodes are explicitly marked optimized out s
 
 ## Tests
 
-Each pass has at least ten Etas programs under `crates/etas_frontend/tests/fixtures/optimization`. Frontend integration tests assert pass ownership and rewrite counts. The interpreter repository compiles the performance programs with optimization disabled and enabled, checks equal results, and measures deterministic steps, allocations, and elapsed time.
+Each pass has at least ten Etas programs under `crates/etas_frontend/tests/fixtures/optimization`. Frontend integration tests assert pass ownership and rewrite counts. The interpreter repository compiles exact-transform programs with optimization disabled and enabled, checks equal results, and measures deterministic steps, allocations, and elapsed time. The P3 budget fixtures instead assert a smaller returned model-input context and recent-suffix retention because the policy is explicitly semantics-changing.

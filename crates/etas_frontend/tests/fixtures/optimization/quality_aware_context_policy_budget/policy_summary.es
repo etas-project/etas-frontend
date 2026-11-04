@@ -1,0 +1,1 @@
+flow main() -> string { let summary_policy = "old allow network old deny shell old ask storage superseded policy final policy requires approval before external destructive actions"; return summary_policy; }

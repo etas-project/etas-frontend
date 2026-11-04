@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use etas_hir::{
-    HirExpr, HirExprId, HirPat, HirPatId, HirRevision, HirStmt, HirStmtId, HirTreeChild,
-    ResolveResult, SymbolId,
+    HirExpr, HirExprId, HirLiteral, HirPat, HirPatId, HirRevision, HirStmt, HirStmtId,
+    HirTreeChild, ResolveResult, SymbolId,
 };
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -40,12 +40,19 @@ impl Pass<ProjectContext> for QualityAwareContextPolicyPass {
                 .expect("legality pass must precede transforms");
             let output = context.hir.take().expect("HIR output should exist");
             let removals = find_removals(&output.hir, legality);
-            rewritten = removals.len();
-            context.hir = Some(if removals.is_empty() {
+            let budget_rewrites = context
+                .input
+                .options
+                .quality_context_token_budget
+                .map(|budget| find_budget_rewrites(&output.hir, &removals, budget))
+                .unwrap_or_default();
+            rewritten = removals.len() + budget_rewrites.len();
+            context.hir = Some(if rewritten == 0 {
                 output
             } else {
                 let mut editor = output.hir.edit();
                 apply_removals(editor.program_mut(), removals);
+                apply_budget_rewrites(editor.program_mut(), budget_rewrites);
                 let hir = editor
                     .finish()
                     .expect("typed-HIR optimization must preserve tree ownership");
@@ -60,6 +67,73 @@ impl Pass<ProjectContext> for QualityAwareContextPolicyPass {
                 rewritten,
             ));
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+    }
+}
+
+fn find_budget_rewrites(
+    revision: &HirRevision,
+    removals: &HashMap<HirStmtId, Removal>,
+    budget: usize,
+) -> Vec<(HirExprId, String)> {
+    let program = revision.program();
+    let mut rewrites = Vec::new();
+    for (_, block) in program.blocks.iter() {
+        for statement in &block.stmts {
+            if removals.contains_key(statement) {
+                continue;
+            }
+            let HirStmt::Let { pat, value, .. } = program.stmts[*statement] else {
+                continue;
+            };
+            let HirPat::Binding { symbol, .. } = program.pats[pat] else {
+                continue;
+            };
+            if !context_candidate(program, symbol) {
+                continue;
+            }
+            let Some(HirExpr::Literal(HirLiteral::String { value: text, .. })) =
+                program.exprs.get(value)
+            else {
+                continue;
+            };
+            if let Some(suffix) = token_suffix(text, budget) {
+                rewrites.push((value, suffix));
+            }
+        }
+    }
+    rewrites
+}
+
+fn token_suffix(text: &str, budget: usize) -> Option<String> {
+    if budget == 0 {
+        return (!text.is_empty()).then(String::new);
+    }
+    let mut starts = Vec::new();
+    let mut in_token = false;
+    for (index, character) in text.char_indices() {
+        if character.is_whitespace() {
+            in_token = false;
+        } else if !in_token {
+            starts.push(index);
+            in_token = true;
+        }
+    }
+    if starts.len() <= budget {
+        return None;
+    }
+    Some(text[starts[starts.len() - budget]..].to_owned())
+}
+
+fn apply_budget_rewrites(program: &mut etas_hir::HirProgram, rewrites: Vec<(HirExprId, String)>) {
+    for (expression, suffix) in rewrites {
+        let HirExpr::Literal(HirLiteral::String { value, .. }) = program
+            .exprs
+            .get_mut(expression)
+            .expect("context literal must remain available")
+        else {
+            unreachable!("budget rewrite targets a checked string literal")
+        };
+        *value = suffix;
     }
 }
 
