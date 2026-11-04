@@ -15,6 +15,27 @@ impl EffectSemantics<'_> {
         let mut sources = BTreeSet::new();
         for source in returned {
             let parameter = match source {
+                crate::CallableReturnSource::MetadataObject(source) => {
+                    let mut source = *source;
+                    if let Some(environment) = source.environment {
+                        source.environment = Some(self.instantiate_callable_environment(
+                            environment,
+                            application,
+                            bindings,
+                            state,
+                        )?);
+                    } else if self.frozen_graphs.contains_key(&source.graph) {
+                        source.environment = self.bind_frozen_graph_environment(
+                            source.graph,
+                            application,
+                            bindings,
+                            state,
+                            invocation_environment,
+                        )?;
+                    }
+                    sources.insert(LatentSource::MetadataObject(source));
+                    continue;
+                }
                 crate::CallableReturnSource::Existential { pack, environment } => {
                     let environment = self.instantiate_callable_environment(
                         *environment,

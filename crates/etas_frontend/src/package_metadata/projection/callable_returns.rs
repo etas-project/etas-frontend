@@ -9,8 +9,10 @@ impl ProjectMetadataProjection<'_> {
     pub(in crate::package_metadata) fn implementation_callable_graph(
         &self,
         item: HirItemId,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<CallableValueGraph, PackageMetadataError> {
-        let mut builder = Builder::new(self, item);
+        let scoped = self.with_identities(identities);
+        let mut builder = Builder::new(&scoped, item);
         builder.method_root = true;
         let roots = builder
             .sources(
@@ -29,9 +31,10 @@ impl ProjectMetadataProjection<'_> {
         &self,
         item: HirItemId,
         summary: &EffectSummary,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Option<CallableValueGraph>, PackageMetadataError> {
         Ok(self
-            .returned_callable_projection(item, summary)?
+            .returned_callable_projection(item, summary, identities)?
             .map(|projection| std::sync::Arc::unwrap_or_clone(projection.graph)))
     }
 
@@ -39,11 +42,13 @@ impl ProjectMetadataProjection<'_> {
         &self,
         item: HirItemId,
         summary: &EffectSummary,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
     ) -> Result<Option<crate::package_metadata::CheckedCallableGraph>, PackageMetadataError> {
         let Some(sources) = sources(summary) else {
             return Ok(None);
         };
-        let mut builder = Builder::new(self, item);
+        let scoped = self.with_identities(identities);
+        let mut builder = Builder::new(&scoped, item);
         let Some(roots) = builder.sources(&sources, CallableValueScope::Root, None)? else {
             return Ok(None);
         };
@@ -56,7 +61,11 @@ impl<'a, 'b> Builder<'a, 'b> {
         Self {
             projection,
             root,
+            identities: projection.identities,
             values: vec![],
+            objects: vec![],
+            native_objects: BTreeMap::new(),
+            foreign_objects: BTreeMap::new(),
             origins: vec![],
             units: BTreeMap::new(),
             foreign: BTreeMap::new(),
@@ -83,6 +92,20 @@ impl<'a, 'b> Builder<'a, 'b> {
     ) -> Result<Option<crate::package_metadata::CheckedCallableGraph>, PackageMetadataError> {
         while let Some(pending) = self.pending.pop() {
             let (index, node) = match pending {
+                Pending::ForeignObject(index, instance) => {
+                    let Some(object) = self.foreign_object_node(instance)? else {
+                        return Ok(None);
+                    };
+                    self.objects[index as usize] = Some(object);
+                    continue;
+                }
+                Pending::Object(index, instance) => {
+                    let Some(object) = self.object_node(instance)? else {
+                        return Ok(None);
+                    };
+                    self.objects[index as usize] = Some(object);
+                    continue;
+                }
                 Pending::Native(index, unit) => (index, self.node(index, unit)?),
                 Pending::Metadata(index, instance) => (index, self.foreign_node(index, instance)?),
                 Pending::Reference(index, reference) => {
@@ -97,6 +120,11 @@ impl<'a, 'b> Builder<'a, 'b> {
             self.values[index as usize] = Some(node);
         }
         let graph = CallableValueGraph {
+            objects: self
+                .objects
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| invalid("value evidence contains an unmaterialized object"))?,
             sources: roots,
             values: self
                 .values
@@ -124,7 +152,22 @@ struct ForeignInstance {
     root: CallableValueScope,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeObjectInstance {
+    pack: etas_hir::HirExprId,
+    environment: etas_effects::facts::CallableEnvironmentId,
+    scope: CallableValueScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ForeignObjectInstance {
+    source: etas_effects::MetadataObjectSource,
+    root: CallableValueScope,
+}
+
 enum Pending {
+    ForeignObject(u32, ForeignObjectInstance),
+    Object(u32, NativeObjectInstance),
     Native(u32, Instance),
     Metadata(u32, ForeignInstance),
     Reference(u32, etas_effects::CallableReturnReference),
@@ -133,7 +176,11 @@ enum Pending {
 struct Builder<'a, 'b> {
     projection: &'a ProjectMetadataProjection<'b>,
     root: HirItemId,
+    identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
     values: Vec<Option<CallableValueNode>>,
+    objects: Vec<Option<etas_package_metadata::ExistentialValueNode>>,
+    native_objects: BTreeMap<NativeObjectInstance, u32>,
+    foreign_objects: BTreeMap<ForeignObjectInstance, u32>,
     origins: Vec<crate::package_metadata::CallableGraphOrigin>,
     units: BTreeMap<Instance, u32>,
     foreign: BTreeMap<ForeignInstance, u32>,
@@ -468,7 +515,9 @@ mod behavior;
 mod captured;
 mod evidence;
 mod foreign;
+mod foreign_objects;
 mod generics;
+mod objects;
 mod references;
 mod sources;
 mod summary;

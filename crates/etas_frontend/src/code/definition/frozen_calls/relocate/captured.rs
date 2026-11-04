@@ -185,6 +185,10 @@ impl Relocation<'_> {
                             pending.extend(source.environment);
                             CallableValueOrigin::Metadata(source)
                         }
+                        CallableValueOrigin::MetadataObject(source) => {
+                            pending.extend(source.environment);
+                            CallableValueOrigin::MetadataObject(source)
+                        }
                         CallableValueOrigin::Parameter { owner, symbol } => {
                             CallableValueOrigin::Parameter {
                                 owner: *self.returned_items.get(&owner).ok_or_else(|| {

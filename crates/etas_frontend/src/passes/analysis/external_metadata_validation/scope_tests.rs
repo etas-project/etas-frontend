@@ -274,6 +274,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             latent_flows: vec![],
             action_trace: ProjectExternalActionTraceInput::Empty,
             returned_callables: Some(metadata::CallableValueGraph {
+                objects: Vec::new(),
                 sources: vec![metadata::CallableValueSource::Value(0)],
                 values: vec![node],
             }),

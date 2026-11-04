@@ -822,6 +822,7 @@ mod tests {
             returned_callables: None,
             callable_graph_key: None,
             callable_values: vec![],
+            object_values: vec![],
             default_handler_effects: None,
             package: Some("company-agents@1.0.0#company.agents".to_owned()),
             import_root: Some("company.agents".to_owned()),

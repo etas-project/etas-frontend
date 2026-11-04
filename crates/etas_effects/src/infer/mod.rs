@@ -7,8 +7,9 @@ mod requests;
 pub use outcome::{
     CallableAnalysisKind, CallableExitSummary, CallableOutcome, CallableReferenceTarget,
     CallableReturnReference, CallableReturnSource, ExitTraceFact, FrozenSourceLocation,
-    HandlerGapEvidence, MetadataCallableSource, OutcomeAnalysisGap, ParameterArgumentValue,
-    ParameterExitArgument, ParameterExitFact, ParameterHandlerScopeRef, ReturnObservation,
+    HandlerGapEvidence, MetadataCallableSource, MetadataObjectSource, OutcomeAnalysisGap,
+    ParameterArgumentValue, ParameterExitArgument, ParameterExitFact, ParameterHandlerScopeRef,
+    ReturnObservation,
 };
 pub use requests::{ActionRequestInstance, ParameterRequest, RequestInstantiationSummary};
 pub(crate) mod memory_provenance;

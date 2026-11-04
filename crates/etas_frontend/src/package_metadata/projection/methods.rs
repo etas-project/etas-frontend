@@ -91,7 +91,7 @@ impl ProjectMetadataProjection<'_> {
                 },
                 owner_params: self.callable_generic_params_metadata(&method.owner_params)?,
                 requirements: self.method_requirements(callable)?,
-                callable: self.implementation_callable_graph(callable)?,
+                callable: self.implementation_callable_graph(callable, Some(identities))?,
             };
             published.validate()?;
             if let Some(previous) = methods.insert(identity, published.clone())

@@ -158,6 +158,9 @@ impl EffectSemantics<'_> {
         let mut returned = std::collections::BTreeSet::new();
         for source in sources {
             let source = match source {
+                super::state::LatentSource::MetadataObject(source) => {
+                    crate::CallableReturnSource::MetadataObject(*source)
+                }
                 super::state::LatentSource::Existential { pack, environment } => {
                     crate::CallableReturnSource::Existential {
                         pack: *pack,

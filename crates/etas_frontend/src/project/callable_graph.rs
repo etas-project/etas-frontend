@@ -13,6 +13,58 @@ pub(crate) fn lower_callable_graph(
     lower_graph(graph, &resolver)
 }
 
+pub(crate) fn lower_callable_objects(
+    graph: &metadata::CallableValueGraph,
+    types: &TypeOutput,
+) -> Result<Vec<etas_effects::ExternalExistentialValueMetadata>, String> {
+    lower_objects(graph, &CheckedExternalTypeResolver::new(types))
+}
+
+pub(crate) fn lower_callable_objects_in_scope(
+    graph: &metadata::CallableValueGraph,
+    types: &TypeOutput,
+    parameters: &[etas_types::CallableGenericParam],
+) -> Result<Vec<etas_effects::ExternalExistentialValueMetadata>, String> {
+    let resolver = CheckedExternalTypeResolver::for_callable(types, parameters)
+        .map_err(|error| error.message)?;
+    lower_objects(graph, &resolver)
+}
+
+fn lower_objects(
+    graph: &metadata::CallableValueGraph,
+    resolver: &CheckedExternalTypeResolver<'_>,
+) -> Result<Vec<etas_effects::ExternalExistentialValueMetadata>, String> {
+    graph.objects.iter().map(|node| {
+        Ok(etas_effects::ExternalExistentialValueMetadata {
+            object_type: type_id(&node.object_type, resolver)?,
+            source_type: type_id(&node.source_type, resolver)?,
+            witnesses: node.witnesses.iter().map(|witness| {
+                let identity = resolver.spec_identity(&witness.bound.spec)
+                    .map_err(|error| error.message)?;
+                let member = resolver.spec_member_identity(&identity, &witness.member)
+                    .map_err(|error| error.message)?;
+                let bound = etas_types::CheckedSpecBound {
+                    spec: etas_types::CheckedSpecRef::External(identity),
+                    args: witness.bound.args.iter().map(|arg| type_id(arg, resolver)).collect::<Result<Vec<_>, _>>()?,
+                };
+                if let metadata::ExistentialWitnessTarget::Implementation { method, .. } = &witness.target {
+                    let source_type = type_id(&node.source_type, resolver)?;
+                    let implementation = resolver.method_witness(source_type, &bound.args, &member)
+                        .ok_or_else(|| "object member has no checked implementation evidence".to_owned())?;
+                    if !matches!(&implementation.target, etas_types::method::MethodTarget::External { identity } if identity == method) {
+                        return Err("object member target disagrees with its checked implementation".into());
+                    }
+                }
+                Ok(etas_effects::ExternalExistentialMemberMetadata {
+                    bound,
+                    member,
+                    target: witness.target.clone(),
+                })
+            }).collect::<Result<_, String>>()?,
+        })
+    }).collect()
+}
+
 pub(crate) fn lower_package_effect_row(
     value: &metadata::EffectRow,
     types: &TypeOutput,
@@ -80,6 +132,7 @@ fn request_target(
                             position: argument.position,
                             sources: argument.sources.clone(),
                             values: lower_graph(&argument.sources, resolver)?,
+                            objects: lower_objects(&argument.sources, resolver)?,
                         })
                     })
                     .collect::<Result<_, String>>()?,

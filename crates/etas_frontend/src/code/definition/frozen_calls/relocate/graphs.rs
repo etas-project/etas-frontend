@@ -1,6 +1,62 @@
 use super::*;
 
 impl Relocation<'_> {
+    pub(in crate::code::definition::frozen_calls) fn graph_objects(
+        &self,
+        objects: Vec<ExternalExistentialValueMetadata>,
+        scope: &GenericOwner,
+    ) -> Result<Vec<ExternalExistentialValueMetadata>, ProjectionError> {
+        objects
+            .into_iter()
+            .map(|mut object| {
+                object.object_type = self.ty(scope, object.object_type)?;
+                object.source_type = self.ty(scope, object.source_type)?;
+                for witness in &mut object.witnesses {
+                    let etas_types::CheckedSpecRef::External(source) = &witness.bound.spec else {
+                        return Err(invalid(
+                            "frozen metadata object has no external spec identity",
+                        ));
+                    };
+                    let identity =
+                        self.from.identities.path(&source.path).ok_or_else(|| {
+                            invalid("frozen object spec has no canonical identity")
+                        })?;
+                    let target = self
+                        .target_output
+                        .facts
+                        .external_specs
+                        .signatures
+                        .keys()
+                        .find(|target| self.to.identities.path(&target.path) == Some(identity))
+                        .ok_or_else(|| {
+                            invalid("frozen object spec has no checked target declaration")
+                        })?;
+                    let signature = &self.target_output.facts.external_specs.signatures[target];
+                    let etas_types::SpecMethodIdentity::External { path, .. } = &witness.member
+                    else {
+                        return Err(invalid(
+                            "frozen metadata object has no external member identity",
+                        ));
+                    };
+                    let name = path
+                        .last()
+                        .ok_or_else(|| invalid("frozen object member identity is empty"))?;
+                    let member = signature
+                        .methods
+                        .iter()
+                        .find(|member| &member.name == name)
+                        .ok_or_else(|| invalid("frozen object has no checked target member"))?;
+                    witness.member = member.identity.clone();
+                    witness.bound.spec = etas_types::CheckedSpecRef::External(target.clone());
+                    for arg in &mut witness.bound.args {
+                        *arg = self.ty(scope, *arg)?;
+                    }
+                }
+                Ok(object)
+            })
+            .collect()
+    }
+
     pub(in crate::code::definition::frozen_calls) fn graph_exits(
         &self,
         origins: &[crate::package_metadata::CallableGraphOrigin],
@@ -209,6 +265,7 @@ impl Relocation<'_> {
         }
         for argument in &mut method.callable_arguments {
             argument.values = self.graph_values(std::mem::take(&mut argument.values), scope)?;
+            argument.objects = self.graph_objects(std::mem::take(&mut argument.objects), scope)?;
         }
         Ok(())
     }
@@ -254,6 +311,18 @@ impl Relocation<'_> {
             .sources
             .iter()
             .map(|source| match source {
+                etas_package_metadata::CallableValueSource::Existential(object) => {
+                    graph.objects.get(*object as usize).ok_or_else(|| {
+                        invalid("frozen object root has no checked evidence node")
+                    })?;
+                    Ok(CallableReturnSource::MetadataObject(
+                        etas_effects::MetadataObjectSource {
+                            graph: key,
+                            object: *object,
+                            environment: None,
+                        },
+                    ))
+                }
                 etas_package_metadata::CallableValueSource::Value(value)
                 | etas_package_metadata::CallableValueSource::FrozenContract(value) => {
                     Ok(CallableReturnSource::Metadata(MetadataCallableSource {

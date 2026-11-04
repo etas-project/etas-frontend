@@ -74,6 +74,7 @@ pub(super) fn external_implementations(
                         graph_key,
                         graph: std::sync::Arc::new(method.callable.clone()),
                         values: crate::project::lower_callable_graph(&method.callable, types)?,
+                        objects: crate::project::lower_callable_objects(&method.callable, types)?,
                         requirements: method_requirements::lower(&method.requirements, types)?,
                         callable_contract: contracts.get_callable(
                             &etas_code::CallableId::method(method.identity.clone()),
@@ -581,6 +582,9 @@ fn external_effect_summary_metadata(
             })
             .transpose()?,
         returned_callables: summary.returned_callables.clone(),
+        object_values: summary.returned_callables.as_ref()
+            .map(|graph| crate::project::lower_callable_objects(graph, types))
+            .transpose()?.unwrap_or_default(),
         callable_values: summary
             .returned_callables
             .as_ref()

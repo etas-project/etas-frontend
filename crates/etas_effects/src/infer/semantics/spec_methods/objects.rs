@@ -18,6 +18,7 @@ fn invalid(reason: &str) -> EffectSpecializationError {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct ObjectMethodInput<'a> {
     pub call: etas_hir::HirExprId,
     pub invocation: CallableEnvironmentId,
@@ -53,6 +54,18 @@ impl EffectSemantics<'_> {
         let mut result = BTreeSet::new();
         while let Some(origin) = pending.pop() {
             if !visited.insert(origin) {
+                continue;
+            }
+            if let LatentSource::MetadataObject(source) = origin {
+                match self.metadata_object_method(source, input)? {
+                    super::object_metadata::ObjectResolution::Implementation(source) => {
+                        result.insert(source);
+                    }
+                    super::object_metadata::ObjectResolution::Repack(sources) => {
+                        pending.extend(sources)
+                    }
+                    super::object_metadata::ObjectResolution::Deferred => return Ok(None),
+                }
                 continue;
             }
             let LatentSource::Existential { pack, environment } = origin else {

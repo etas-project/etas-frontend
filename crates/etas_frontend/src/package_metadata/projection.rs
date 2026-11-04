@@ -51,16 +51,30 @@ use type_projection::{metadata_effect_arg, metadata_effect_row_ref, metadata_typ
 
 pub(crate) struct ProjectMetadataProjection<'a> {
     pub(super) checked: &'a CheckedProject,
-    canonical_type_paths: BTreeMap<String, Option<Vec<String>>>,
+    canonical_type_paths: std::sync::Arc<BTreeMap<String, Option<Vec<String>>>>,
     effect_registry: &'a EffectRegistry,
+    identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
     pub(crate) fn new(checked: &'a CheckedProject) -> Self {
         Self {
             checked,
-            canonical_type_paths: build_canonical_type_paths(checked),
+            canonical_type_paths: std::sync::Arc::new(build_canonical_type_paths(checked)),
             effect_registry: &checked.effect_registry,
+            identities: None,
+        }
+    }
+
+    fn with_identities<'b>(
+        &'b self,
+        identities: Option<&'b crate::code::identity::DefinitionIdentityIndex>,
+    ) -> ProjectMetadataProjection<'b> {
+        ProjectMetadataProjection {
+            checked: self.checked,
+            canonical_type_paths: self.canonical_type_paths.clone(),
+            effect_registry: self.effect_registry,
+            identities,
         }
     }
 
@@ -74,7 +88,8 @@ impl<'a> ProjectMetadataProjection<'a> {
             .definition_origin
             .map(|package| self.definition_identity_input(package))
             .transpose()?;
-        let mut public_metadata = self.public_metadata(
+        let scoped = self.with_identities(identity_input.as_ref().map(|(_, index)| index));
+        let mut public_metadata = scoped.public_metadata(
             &external_modules,
             identity_input.as_ref().map(|(_, index)| index),
         )?;
@@ -257,7 +272,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
         metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
         metadata.trace_spec_conformances = self.trace_spec_conformances(identities)?;
-        metadata.effect_summaries = self.effect_summaries()?;
+        metadata.effect_summaries = self.effect_summaries(identities)?;
         metadata.trace_spec_summaries = self.trace_spec_summaries(identities)?;
         for (_, module) in self.checked.module_index.modules.iter() {
             if !matches!(module.origin, ModuleOrigin::Source) {
@@ -1251,7 +1266,10 @@ impl<'a> ProjectMetadataProjection<'a> {
         })
     }
 
-    fn effect_summaries(&self) -> Result<Vec<MetadataEffectSummary>, PackageMetadataError> {
+    fn effect_summaries(
+        &self,
+        identities: Option<&crate::code::identity::DefinitionIdentityIndex>,
+    ) -> Result<Vec<MetadataEffectSummary>, PackageMetadataError> {
         let mut summaries = Vec::new();
         for (item, signature) in &self.checked.types.item_signatures {
             let callable = match signature {
@@ -1386,7 +1404,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &type_generic_names,
                     &self.trace_parameter_labels(*item)?,
                 )?,
-                returned_callables: self.returned_callables(*item, summary)?,
+                returned_callables: self.returned_callables(*item, summary, identities)?,
                 default_handler_effects: Some(etas_package_metadata::DefaultHandlerEffects {
                     direct_effects: self.public_direct_effect_metadata(
                         summary,

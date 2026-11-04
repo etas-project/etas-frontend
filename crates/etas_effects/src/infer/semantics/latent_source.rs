@@ -181,7 +181,9 @@ impl EffectSemantics<'_> {
             | LatentSource::Metadata(_)
             | LatentSource::SpecMethod { .. }
             | LatentSource::MetadataSpecMethod { .. } => None,
-            LatentSource::Unavailable { .. } | LatentSource::Existential { .. } => None,
+            LatentSource::Unavailable { .. }
+            | LatentSource::Existential { .. }
+            | LatentSource::MetadataObject(_) => None,
             LatentSource::EnumConstructor(symbol) => self
                 .checked_enum_constructor(symbol)
                 .then(EffectSummary::local),

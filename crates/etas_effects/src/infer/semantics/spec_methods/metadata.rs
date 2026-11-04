@@ -258,6 +258,20 @@ impl EffectSemantics<'_> {
         let mut origins = std::collections::BTreeSet::new();
         for source in &argument.sources.sources {
             match source {
+                CallableValueSource::Existential(object) => {
+                    argument
+                        .sources
+                        .objects
+                        .get(*object as usize)
+                        .ok_or_else(|| {
+                            invalid("metadata object argument has no checked value node")
+                        })?;
+                    origins.insert(LatentSource::MetadataObject(crate::MetadataObjectSource {
+                        graph,
+                        object: *object,
+                        environment: Some(id),
+                    }));
+                }
                 CallableValueSource::Parameter(parameter) => {
                     let values = captured
                         .parameters

@@ -6,7 +6,8 @@ pub use callable_application::{
 };
 mod checked_reachability;
 pub(crate) use callable_graph::{
-    lower_callable_graph, lower_callable_graph_in_scope, lower_callable_request_target,
+    lower_callable_graph, lower_callable_graph_in_scope, lower_callable_objects,
+    lower_callable_objects_in_scope, lower_callable_request_target,
     lower_callable_request_target_in_scope, lower_package_effect_row,
 };
 mod context;

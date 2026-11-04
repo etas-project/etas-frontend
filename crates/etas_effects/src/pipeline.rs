@@ -38,6 +38,7 @@ pub struct ExternalEffectSummaryMetadata {
     pub callable_graph_key: Option<etas_code::CodeFingerprint>,
     pub returned_callables: Option<etas_package_metadata::CallableValueGraph>,
     pub callable_values: Vec<ExternalCallableValueMetadata>,
+    pub object_values: Vec<ExternalExistentialValueMetadata>,
     #[serde(default)]
     pub default_handler_effects: Option<ExternalDefaultHandlerEffectsMetadata>,
     #[serde(default)]
@@ -91,11 +92,30 @@ pub struct ExternalCallableValueMetadata {
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
+pub struct ExternalExistentialValueMetadata {
+    pub object_type: etas_types::TypeId,
+    pub source_type: etas_types::TypeId,
+    pub witnesses: Vec<ExternalExistentialMemberMetadata>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalExistentialMemberMetadata {
+    pub bound: etas_types::CheckedSpecBound,
+    pub member: etas_types::SpecMethodIdentity,
+    pub target: etas_package_metadata::ExistentialWitnessTarget,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ExternalSpecImplementationMetadata {
     pub identity: etas_code::MethodId,
     pub graph_key: etas_code::CodeFingerprint,
     pub graph: std::sync::Arc<etas_package_metadata::CallableValueGraph>,
     pub values: Vec<ExternalCallableValueMetadata>,
+    pub objects: Vec<ExternalExistentialValueMetadata>,
     pub callable_contract: Option<ExternalCallableContract>,
     pub requirements: ExternalMethodRequirements,
 }
@@ -210,6 +230,7 @@ pub struct ExternalSpecMethodCallableArgument {
     pub position: u32,
     pub sources: etas_package_metadata::CallableValueGraph,
     pub values: Vec<ExternalCallableValueMetadata>,
+    pub objects: Vec<ExternalExistentialValueMetadata>,
 }
 
 #[derive(
@@ -834,6 +855,7 @@ mod tests {
         )
         .unwrap();
         let graph = CallableValueGraph {
+            objects: Vec::new(),
             sources: vec![CallableValueSource::Value(0)],
             values: vec![CallableValueNode {
                 residual_checks: vec![reference],
