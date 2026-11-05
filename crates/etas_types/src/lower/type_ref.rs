@@ -144,7 +144,8 @@ fn lower_named_path(
     args: Vec<TypeId>,
     span: etas_core::Span,
 ) -> TypeId {
-    if let ResolveResult::Resolved(symbol) = path.resolution {
+    let source_symbol = resolved_source_type_symbol(ctx, path);
+    if let Some(symbol) = source_symbol {
         let canonical = ctx
             .symbols
             .canonical_symbol(ctx.hir, symbol)
@@ -192,8 +193,8 @@ fn lower_named_path(
             }),
         _ => None,
     };
-    let resolved_declaration = match path.resolution {
-        ResolveResult::Resolved(symbol) => {
+    let resolved_declaration = match source_symbol {
+        Some(symbol) => {
             matches!(
                 ctx.symbol_fact(symbol),
                 Some(
@@ -276,8 +277,8 @@ fn lower_declared_path(
     args: Vec<TypeId>,
     span: etas_core::Span,
 ) -> TypeId {
-    match path.resolution {
-        ResolveResult::Resolved(symbol) => {
+    match resolved_source_type_symbol(ctx, path) {
+        Some(symbol) => {
             let canonical_symbol = ctx
                 .symbols
                 .canonical_symbol(ctx.hir, symbol)
@@ -358,8 +359,45 @@ fn lower_declared_path(
                 known_or_named_path(ctx, name, None, args, span)
             }
         }
-        _ => known_or_named_path(ctx, name, None, args, span),
+        None => known_or_named_path(ctx, name, None, args, span),
     }
+}
+
+fn resolved_source_type_symbol(
+    ctx: &TypePipelineContext<'_>,
+    path: &etas_hir::ResolvedPath,
+) -> Option<etas_hir::SymbolId> {
+    match &path.resolution {
+        ResolveResult::Resolved(symbol) => Some(*symbol),
+        ResolveResult::PartiallyResolved(partial) => {
+            let prefix = partial.resolved_prefix?;
+            let symbol = ctx.hir.symbols.get(prefix)?;
+            let SymbolDef::ImportAlias {
+                path: target_path, ..
+            } = &symbol.def
+            else {
+                return None;
+            };
+            let mut target_path = target_path.clone();
+            target_path.extend(partial.remaining.iter().cloned());
+            ctx.symbols.canonical_path(ctx.hir, &target_path)
+        }
+        ResolveResult::Unresolved => unresolved_import_alias_type_symbol(ctx, path),
+        ResolveResult::Ambiguous(_) => None,
+    }
+}
+
+fn unresolved_import_alias_type_symbol(
+    ctx: &TypePipelineContext<'_>,
+    path: &etas_hir::ResolvedPath,
+) -> Option<etas_hir::SymbolId> {
+    let (prefix, remaining) = path.segments.split_first()?;
+    ctx.symbols.canonical_import_path(
+        ctx.hir,
+        path.span.source,
+        &prefix.name,
+        remaining.iter().map(|segment| segment.name.clone()),
+    )
 }
 
 fn apply_alias_type(
