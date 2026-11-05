@@ -39,8 +39,10 @@ pub use module::{BuildModuleCatalogPass, BuildModuleIndexPass, BuildUnitTreePass
 pub use optimization::{
     AgentEffectLegalityPass, ApplyQualityContextBudgetPolicyPass, BatchStorageSemijoinPass,
     FuseProjectionScansPass, FuseSerializationBoundaryPass, LowerOwnedSnapshotCowPass,
-    LowerResourceRegionPass, PrepareVersionedRequestPass, PruneUnusedQualityContextPass,
-    ScheduleBoundedPipelinePass, SuffixDemandHistoryPass, SynthesizeScopedIndexPass,
+    LowerResourceRegionPass, PrepareVersionedRequestPass, ProjectAgentObservationPass,
+    PruneSupersededAgentEventsPass, PruneUnusedQualityContextPass, ScheduleBoundedPipelinePass,
+    ShortCircuitAgentThresholdPass, SpecializeAgentToolSchemasPass,
+    SpecializeDeterministicDispatchPass, SuffixDemandHistoryPass, SynthesizeScopedIndexPass,
     VersionedPreparationCsePass,
 };
 pub use output::{BuildCheckedProjectPass, ResolveEntryItemPass, ValidateEntryContractPass};

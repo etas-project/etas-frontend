@@ -14,7 +14,7 @@ fn every_semantics_preserving_optimization_fixture_compiles_at_all_levels() {
             .any(|component| component.as_os_str() == "quality_aware_context_policy_budget")
     });
     assert!(
-        fixtures.len() >= 120,
+        fixtures.len() >= 131,
         "found only {} fixtures",
         fixtures.len()
     );
@@ -91,7 +91,7 @@ fn context_budget_policy_is_independent_from_optimization_level() {
 fn optimization_fixtures_are_realistic_programs_not_micro_snippets() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/optimization");
     let fixtures = source_fixtures(&root);
-    assert_eq!(fixtures.len(), 130);
+    assert_eq!(fixtures.len(), 141);
 
     for fixture in fixtures {
         let source = std::fs::read_to_string(&fixture).unwrap();

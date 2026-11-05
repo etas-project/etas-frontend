@@ -15,13 +15,16 @@ use crate::passes::{
     LowerOwnedSnapshotCowPass, LowerResourceRegionPass, MaterializeGenericEffectRowsPass,
     NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
     PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
-    PrepareInvocationTypesPass, PrepareVersionedRequestPass, PruneUnusedQualityContextPass,
-    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    PrepareInvocationTypesPass, PrepareVersionedRequestPass, ProjectAgentObservationPass,
+    PruneSupersededAgentEventsPass, PruneUnusedQualityContextPass, ResolveEntryItemPass,
+    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, ScheduleBoundedPipelinePass,
-    SuffixDemandHistoryPass, SynthesizeScopedIndexPass, TypeCheckBodyPass,
-    ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
-    ValidateItemAnnotationsPass, ValidateResidualBackendSupportPass, ValidateTopLevelLetPass,
-    VerifyInterpreterSupportPass, VersionedPreparationCsePass,
+    ShortCircuitAgentThresholdPass, SpecializeAgentToolSchemasPass,
+    SpecializeDeterministicDispatchPass, SuffixDemandHistoryPass, SynthesizeScopedIndexPass,
+    TypeCheckBodyPass, ValidateEntryContractPass, ValidateExternalEnvironmentPass,
+    ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass,
+    ValidateResidualBackendSupportPass, ValidateTopLevelLetPass, VerifyInterpreterSupportPass,
+    VersionedPreparationCsePass,
 };
 use crate::{
     BODY_UNIT_KIND, MODULE_PART_UNIT_KIND, ProjectContext, SOURCE_FILE_UNIT_KIND,
@@ -177,12 +180,17 @@ fn o1_pipeline() -> Pipeline<ProjectContext> {
         .pass(LowerOwnedSnapshotCowPass)
         .pass(FuseSerializationBoundaryPass)
         .pass(SuffixDemandHistoryPass)
+        .pass(ProjectAgentObservationPass)
+        .pass(PruneSupersededAgentEventsPass)
+        .pass(ShortCircuitAgentThresholdPass)
         .pass(PruneUnusedQualityContextPass)
 }
 
 fn o2_pipeline() -> Pipeline<ProjectContext> {
     Pipeline::new("frontend.hir_optimization.o2")
         .pass(PrepareVersionedRequestPass)
+        .pass(SpecializeAgentToolSchemasPass)
+        .pass(SpecializeDeterministicDispatchPass)
         .pass(VersionedPreparationCsePass)
         .pass(FuseProjectionScansPass)
         .pass(BatchStorageSemijoinPass)
@@ -207,10 +215,15 @@ mod tests {
         "LowerOwnedSnapshotCowPass",
         "FuseSerializationBoundaryPass",
         "SuffixDemandHistoryPass",
+        "ProjectAgentObservationPass",
+        "PruneSupersededAgentEventsPass",
+        "ShortCircuitAgentThresholdPass",
         "PruneUnusedQualityContextPass",
     ];
     const O2_PASSES: &[&str] = &[
         "PrepareVersionedRequestPass",
+        "SpecializeAgentToolSchemasPass",
+        "SpecializeDeterministicDispatchPass",
         "VersionedPreparationCsePass",
         "FuseProjectionScansPass",
         "BatchStorageSemijoinPass",
