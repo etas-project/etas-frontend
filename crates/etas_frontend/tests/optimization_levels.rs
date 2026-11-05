@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use etas_frontend::{Frontend, OptimizationLevel, ProjectInput, SourceInput};
 
+const MIN_EFFECTIVE_FIXTURE_LINES: usize = 30;
+
 #[test]
 fn every_semantics_preserving_optimization_fixture_compiles_at_all_levels() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/optimization");
@@ -82,6 +84,29 @@ fn context_budget_policy_is_independent_from_optimization_level() {
                 fixture.display()
             );
         }
+    }
+}
+
+#[test]
+fn optimization_fixtures_are_realistic_programs_not_micro_snippets() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/optimization");
+    let fixtures = source_fixtures(&root);
+    assert_eq!(fixtures.len(), 130);
+
+    for fixture in fixtures {
+        let source = std::fs::read_to_string(&fixture).unwrap();
+        let effective_lines = source
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with("//")
+            })
+            .count();
+        assert!(
+            effective_lines >= MIN_EFFECTIVE_FIXTURE_LINES,
+            "{} has only {effective_lines} effective lines",
+            fixture.display()
+        );
     }
 }
 

@@ -1,9 +1,37 @@
-flow prepare_tool_schema(name: string) -> string { return name + ":schema"; }
-flow main() -> string {
-    var payload = "";
-    for _ in [1, 2, 3, 4] limit Iterations(4) {
-        let schema = prepare_tool_schema("workspace-tools");
-        payload = payload + schema;
+module app.main;
+
+flow prepare_tool_schema_catalog(profile: string) -> string {
+    let version = ":revision-7";
+    let encoding = ":json";
+    return profile + version + encoding;
+}
+
+flow scenario_name() -> string {
+    return "tool_schema_catalog";
+}
+
+flow append_audit(log: string, event: string) -> string {
+    return log + "|" + event;
+}
+
+flow build_audit(name: string) -> string {
+    var audit = "";
+    for stage in ["resolve", "validate", "prepare", "dispatch", "observe"] limit Iterations(5) {
+        audit = append_audit(audit, name + ":" + stage);
     }
-    return payload;
+    return audit;
+}
+
+flow main() -> string {
+    let name = scenario_name();
+    let audit = build_audit(name);
+    var payload = "";
+    for revision in ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"] limit Iterations(8) {
+        let prepared = prepare_tool_schema_catalog("tool_schema_catalog-stable-profile");
+        payload = payload + prepared + ":" + revision;
+    }
+    if audit == "" {
+        return "";
+    }
+    return audit + ":" + payload;
 }

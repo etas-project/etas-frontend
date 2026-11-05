@@ -1,9 +1,37 @@
-flow map_model_tools(provider: string) -> string { return provider + ":mapped-tools"; }
-flow main() -> string {
-    var request = "";
-    for _ in [1, 2, 3, 4, 5] limit Iterations(5) {
-        let tools = map_model_tools("responses-api");
-        request = request + tools;
+module app.main;
+
+flow prepare_model_tool_mapping(profile: string) -> string {
+    let version = ":revision-7";
+    let encoding = ":json";
+    return profile + version + encoding;
+}
+
+flow scenario_name() -> string {
+    return "model_tool_mapping";
+}
+
+flow append_audit(log: string, event: string) -> string {
+    return log + "|" + event;
+}
+
+flow build_audit(name: string) -> string {
+    var audit = "";
+    for stage in ["resolve", "validate", "prepare", "dispatch", "observe"] limit Iterations(5) {
+        audit = append_audit(audit, name + ":" + stage);
     }
-    return request;
+    return audit;
+}
+
+flow main() -> string {
+    let name = scenario_name();
+    let audit = build_audit(name);
+    var payload = "";
+    for revision in ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"] limit Iterations(8) {
+        let prepared = prepare_model_tool_mapping("model_tool_mapping-stable-profile");
+        payload = payload + prepared + ":" + revision;
+    }
+    if audit == "" {
+        return "";
+    }
+    return audit + ":" + payload;
 }

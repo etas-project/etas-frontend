@@ -1,6 +1,35 @@
-flow build_repo_map(revision: string) -> string { return "map:" + revision; }
+module app.main;
+
+flow compile_repo_map_cache(version: string) -> string {
+    let prefix = "repo_map_cache:";
+    let encoding = ":json";
+    let contract = ":stable";
+    return prefix + version + encoding + contract;
+}
+
+flow scenario_name() -> string {
+    return "repo_map_cache";
+}
+
+flow append_audit(log: string, event: string) -> string {
+    return log + "|" + event;
+}
+
+flow build_audit(name: string) -> string {
+    var audit = "";
+    for stage in ["load", "fingerprint", "prepare", "reuse", "publish"] limit Iterations(5) {
+        audit = append_audit(audit, name + ":" + stage);
+    }
+    return audit;
+}
+
 flow main() -> string {
-    let primary = build_repo_map("git-a19");
-    let retry = build_repo_map("git-a19");
-    return primary + retry;
+    let name = scenario_name();
+    let audit = build_audit(name);
+    let first = compile_repo_map_cache("revision-7");
+    let replay = compile_repo_map_cache("revision-7");
+    if audit == "" {
+        return "";
+    }
+    return audit + ":" + first + ":" + replay;
 }

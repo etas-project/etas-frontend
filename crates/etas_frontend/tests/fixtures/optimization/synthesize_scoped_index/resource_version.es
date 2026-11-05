@@ -1,1 +1,37 @@
-flow main() -> bool { var found = false; for version in ["v31", "v32", "v33", "v34", "v35"] limit Iterations(5) { if version == "v34" { found = true; } } return found; }
+module app.main;
+
+flow scenario_name() -> string {
+    return "resource_version";
+}
+
+flow append_audit(log: string, event: string) -> string {
+    return log + "|" + event;
+}
+
+flow build_audit(name: string) -> string {
+    var audit = "";
+    for stage in ["open-scope", "load-symbols", "resolve", "validate", "close-scope"] limit Iterations(5) {
+        audit = append_audit(audit, name + ":" + stage);
+    }
+    return audit;
+}
+
+flow target_key(name: string) -> string {
+    return name + "-target";
+}
+
+flow main() -> bool {
+    let name = scenario_name();
+    let target = target_key(name);
+    let audit = build_audit(target);
+    var found = false;
+    for key in ["root", "workspace", "module", "flow", "resource_version-target", "block", "closure", "fallback"] limit Iterations(8) {
+        if key == "resource_version-target" {
+            found = true;
+        }
+    }
+    if audit == "" {
+        return false;
+    }
+    return found;
+}
