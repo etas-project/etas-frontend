@@ -1,6 +1,8 @@
 use crate::{
     StdSignatureInput, StdSymbolBindingInput, SymbolTypeFact,
-    lower::std::{lower_std_spec_impls, lower_std_symbol, lower_std_type_symbol},
+    lower::std::{
+        lower_std_flow_signature, lower_std_spec_impls, lower_std_symbol, lower_std_type_symbol,
+    },
     pipeline::context::TypePipelineContext,
 };
 
@@ -33,6 +35,21 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
     let registry = ctx.std_registry.clone();
     record_known_std_types(ctx, &registry);
     ctx.signature_facts.std_spec_impls = lower_std_spec_impls(ctx, &registry);
+    for symbol in registry.symbols() {
+        let Some(etas_std::StdImplementationRef::Source { .. }) = symbol.implementation else {
+            continue;
+        };
+        let etas_std::StdDecl::Flow(flow) = &symbol.decl else {
+            continue;
+        };
+        let scope = registry
+            .module(symbol.module)
+            .map(|module| module.path.as_slice());
+        let signature = lower_std_flow_signature(ctx, &registry, flow, scope);
+        ctx.signature_facts
+            .std_callable_signatures
+            .insert(symbol.id, signature);
+    }
     for binding in &input.symbol_bindings {
         let Some(symbol) = registry.lookup_qualified(&binding.qualified_path) else {
             continue;
@@ -86,6 +103,9 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.filesystem_io_error = registry
         .lookup_qualified(&["std", "fs", "IOError"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+    ctx.signature_facts.known_std_types.text_error = registry
+        .lookup_qualified(&["std", "text", "TextError"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.priority_queue = registry
         .lookup_qualified(&["std", "collections", "PriorityQueue"])

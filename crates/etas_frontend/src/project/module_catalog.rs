@@ -47,6 +47,9 @@ impl ModuleCatalog {
                 ModuleOrigin::ProjectSource { module: candidate }
                 | ModuleOrigin::DependencySourceOverlay {
                     module: candidate, ..
+                }
+                | ModuleOrigin::StdSource {
+                    module: candidate, ..
                 } if *candidate == module => Some(key),
                 _ => None,
             })
@@ -66,6 +69,7 @@ pub struct ModuleRecord {
 pub enum ModuleOriginKind {
     ProjectSource,
     DependencySourceOverlay,
+    StdSource,
     ExternalMetadata,
     Std,
 }
@@ -78,6 +82,10 @@ pub enum ModuleOrigin {
     DependencySourceOverlay {
         package: ExternalPackageId,
         module: ModuleId,
+    },
+    StdSource {
+        module: ModuleId,
+        source: etas_std::StdLibrarySourceId,
     },
     ExternalMetadata {
         package: Option<ExternalPackageId>,
@@ -93,6 +101,7 @@ impl ModuleOrigin {
         match self {
             Self::ProjectSource { .. } => ModuleOriginKind::ProjectSource,
             Self::DependencySourceOverlay { .. } => ModuleOriginKind::DependencySourceOverlay,
+            Self::StdSource { .. } => ModuleOriginKind::StdSource,
             Self::ExternalMetadata { .. } => ModuleOriginKind::ExternalMetadata,
             Self::Std { .. } => ModuleOriginKind::Std,
         }

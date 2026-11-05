@@ -386,9 +386,9 @@ impl ProjectEnvironmentInput {
                 }
                 Ok(first.definition_package)
             }
-            SourceKind::VirtualStd | SourceKind::VirtualGenerated | SourceKind::LspOverlay => {
-                Err(SourcePackageOriginError::UnsupportedSource)
-            }
+            SourceKind::VirtualStd { .. }
+            | SourceKind::VirtualGenerated
+            | SourceKind::LspOverlay => Err(SourcePackageOriginError::UnsupportedSource),
         }
     }
 
@@ -712,6 +712,7 @@ pub struct ProjectExternalPackageInput {
     pub version: String,
     pub edition: String,
     pub import_root: String,
+    pub std_compatibility: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -1342,6 +1343,8 @@ pub struct CheckedProgramData {
     pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
     pub compiler_version: String,
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
+    pub(crate) checked_std_library_implementations:
+        std::sync::Arc<crate::passes::CheckedStandardLibraryImplementations>,
     pub project_environment_fingerprint: String,
     pub dependency_metadata_fingerprints: Vec<(String, String)>,
     pub sources: SourceBundle,

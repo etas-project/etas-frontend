@@ -2,6 +2,10 @@ use etas_utils::{ArtifactKey, ArtifactRef, ArtifactSet, UnitKindKey};
 
 pub(crate) const SOURCE_SET: ArtifactKey = ArtifactKey::new("frontend", "source_set");
 pub(crate) const PARSED_SOURCE_SET: ArtifactKey = ArtifactKey::new("frontend", "parsed_source_set");
+pub(crate) const ADMITTED_STD_LIBRARY_SOURCES: ArtifactKey =
+    ArtifactKey::new("frontend", "admitted_std_library_sources");
+pub(crate) const CHECKED_STD_LIBRARY_IMPLEMENTATIONS: ArtifactKey =
+    ArtifactKey::new("frontend", "checked_std_library_implementations");
 pub(crate) const MODULE_INDEX: ArtifactKey = ArtifactKey::new("frontend", "module_index");
 pub(crate) const MODULE_CATALOG: ArtifactKey = ArtifactKey::new("frontend", "module_catalog");
 pub(crate) const UNIT_TREE: ArtifactKey = ArtifactKey::new("frontend", "unit_tree");

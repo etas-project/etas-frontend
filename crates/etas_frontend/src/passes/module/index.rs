@@ -170,7 +170,7 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
                     id,
                     path: module_path.clone(),
                     parts: Vec::new(),
-                    origin: module_origin_for_source(source_file),
+                    origin: module_origin_for_source(source_file, &module_path),
                     visibility_exports: ExportTable::default(),
                     span,
                 });
@@ -265,7 +265,7 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
     }
 }
 
-fn module_origin_for_source(source_file: &SourceFile) -> ModuleOrigin {
+fn module_origin_for_source(source_file: &SourceFile, module_path: &ModulePath) -> ModuleOrigin {
     match &source_file.kind {
         SourceKind::DependencySourceOverlay {
             package,
@@ -273,6 +273,10 @@ fn module_origin_for_source(source_file: &SourceFile) -> ModuleOrigin {
         } => ModuleOrigin::DependencySourceOverlay {
             package: *package,
             import_root: import_root.clone(),
+        },
+        SourceKind::VirtualStd { source } => ModuleOrigin::VirtualStd {
+            module: module_path.clone(),
+            source: *source,
         },
         _ => ModuleOrigin::Source,
     }

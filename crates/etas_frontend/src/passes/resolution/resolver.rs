@@ -95,6 +95,13 @@ impl ModuleProvider for CatalogModuleProvider<'_> {
                     key: *key,
                     module: *source_module,
                 },
+                CatalogModuleOrigin::StdSource {
+                    module: source_module,
+                    ..
+                } => ResolvedModuleTarget::Source {
+                    key: *key,
+                    module: *source_module,
+                },
                 CatalogModuleOrigin::ExternalMetadata {
                     package,
                     module: external_module,

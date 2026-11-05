@@ -6,8 +6,8 @@ use etas_utils::{
 use crate::{
     ProjectContext,
     passes::artifacts::{
-        ANALYSIS_REACHABILITY_FACTS, DEFINITION_SOURCES, HIR_OUTPUT, REACHABILITY_FACTS,
-        RESOLVED_PATHS,
+        ADMITTED_STD_LIBRARY_SOURCES, ANALYSIS_REACHABILITY_FACTS, DEFINITION_SOURCES, HIR_OUTPUT,
+        REACHABILITY_FACTS, RESOLVED_PATHS,
     },
 };
 
@@ -21,6 +21,7 @@ impl Pass<ProjectContext> for ComputeDefinitionAnalysisReachabilityPass {
         )
         .requires(ArtifactSet::from([
             DEFINITION_SOURCES,
+            ADMITTED_STD_LIBRARY_SOURCES,
             REACHABILITY_FACTS,
             HIR_OUTPUT,
             RESOLVED_PATHS,
@@ -57,7 +58,25 @@ impl Pass<ProjectContext> for ComputeDefinitionAnalysisReachabilityPass {
             };
             sources.retained_items().collect::<Vec<_>>()
         };
+        let Some(admitted) = &context.admitted_std_library_sources else {
+            return PassResult::failed(
+                "definition analysis requires standard library admission facts",
+            );
+        };
+        let admitted_sources = admitted
+            .sources
+            .iter()
+            .map(|source| source.source)
+            .collect::<std::collections::HashSet<_>>();
+        if let Some(hir) = &context.hir {
+            roots.extend(hir.hir.items.iter().filter_map(|(item, declaration)| {
+                admitted_sources
+                    .contains(&declaration.span().source)
+                    .then_some(item)
+            }));
+        }
         roots.sort();
+        roots.dedup();
         let (items, bodies) =
             match super::runtime_requirements::source_analysis_closure(context, roots) {
                 Ok(closure) => closure,

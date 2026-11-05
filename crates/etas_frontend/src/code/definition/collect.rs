@@ -24,8 +24,9 @@ pub(super) fn build(
     origins: &DefinitionOrigins,
     limits: DescriptorLimits,
 ) -> Result<DefinitionCatalog, ProjectionError> {
-    let identities = DefinitionIdentityIndex::build_with_limits(&checked, origins, limits)?;
-    build_selected(checked, origins, identities, limits, None).map(|(catalog, _)| catalog)
+    let origins = origins.canonicalized_for_checked(&checked)?;
+    let identities = DefinitionIdentityIndex::build_with_limits(&checked, &origins, limits)?;
+    build_selected(checked, &origins, identities, limits, None).map(|(catalog, _)| catalog)
 }
 
 pub(super) fn build_exported(
@@ -35,9 +36,10 @@ pub(super) fn build_exported(
     limits: DescriptorLimits,
     selection: &BTreeSet<HirItemId>,
 ) -> Result<DefinitionDescriptorSet, ProjectionError> {
+    let origins = origins.canonicalized_for_checked(&checked)?;
     let source = checked.clone();
     let (catalog, declarations) =
-        build_selected(checked, origins, identities, limits, Some(selection))?;
+        build_selected(checked, &origins, identities, limits, Some(selection))?;
     let agents = catalog
         .agents
         .values()
@@ -55,7 +57,7 @@ pub(super) fn build_exported(
         })
         .map(|callable| callable.header.clone())
         .collect::<Vec<_>>();
-    let (snapshots, bodies) = super::snapshots::export(source, origins, limits, &agents, &flows)?;
+    let (snapshots, bodies) = super::snapshots::export(source, &origins, limits, &agents, &flows)?;
     let set = DefinitionDescriptorSet {
         graph: catalog.graph.data().clone(),
         declarations,

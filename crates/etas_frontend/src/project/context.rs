@@ -41,6 +41,10 @@ pub struct ProjectContext {
     pub sources: Option<std::sync::Arc<SourceSet>>,
     pub parsed_sources: Vec<crate::ParsedSource>,
     pub reused_parsed_sources: usize,
+    pub(crate) admitted_std_library_sources:
+        Option<Arc<crate::passes::AdmittedStandardLibrarySources>>,
+    pub(crate) checked_std_library_implementations:
+        Option<Arc<crate::passes::CheckedStandardLibraryImplementations>>,
     pub modules: Option<std::sync::Arc<ModuleIndex>>,
     pub module_catalog: Option<ModuleCatalog>,
     pub units: Option<std::sync::Arc<UnitTree>>,
@@ -109,6 +113,8 @@ impl ProjectContext {
             sources: None,
             parsed_sources: Vec::new(),
             reused_parsed_sources: 0,
+            admitted_std_library_sources: None,
+            checked_std_library_implementations: None,
             modules: None,
             module_catalog: None,
             units: None,

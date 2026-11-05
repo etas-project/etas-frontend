@@ -5,7 +5,7 @@ use super::{FRONTEND_ARTIFACT_SCHEMA_VERSION, fingerprint_text};
 pub const FRONTEND_COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) fn frontend_std_version(registry: &etas_std::StdRegistry) -> String {
-    let version = registry.version().contract.clone();
+    let version = registry.version().compatibility_identity();
     format!("etas_std:{version}")
 }
 

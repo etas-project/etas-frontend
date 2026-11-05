@@ -203,6 +203,9 @@ fn candidate_dependency_source_keeps_stable_key_after_source_id_remapping() {
             version: "1.0.0".into(),
             edition: "2026".into(),
             import_root: "dep".into(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         });
     input
         .environment

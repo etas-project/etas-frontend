@@ -128,6 +128,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         ));
         let package_metadata = PackageMetadata {
             version: 1,
+            std_compatibility: self.checked.std_registry.version().compatibility_identity(),
             package: PackageIdentity {
                 name: header.package_id.clone(),
                 version: header.package_version.clone(),

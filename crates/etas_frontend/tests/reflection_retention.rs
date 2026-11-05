@@ -451,6 +451,9 @@ fn a_consumer_cannot_authorize_dependency_overlay_body_retention() {
             version: "0.1.0".into(),
             edition: "2026".into(),
             import_root: "dep".into(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         });
     let output = Frontend.check_project(input);
     assert!(output.checked.is_none());
