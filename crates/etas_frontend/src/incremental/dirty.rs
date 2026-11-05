@@ -9,6 +9,14 @@ pub(crate) struct DirtyArtifactRoots {
 }
 
 impl DirtyArtifactRoots {
+    pub(crate) fn from_compiler_options() -> Self {
+        Self {
+            keys: vec![
+                FrontendArtifactKey::project(FrontendArtifactKind::HirProgram).to_cache_key(),
+            ],
+        }
+    }
+
     pub(crate) fn from_sources(changed_sources: &[SourceId], broad_project_change: bool) -> Self {
         let mut keys = changed_sources
             .iter()

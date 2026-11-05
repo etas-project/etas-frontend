@@ -7,12 +7,10 @@ use etas_utils::{
     PreservedArtifacts,
 };
 
-use crate::passes::artifacts::{
-    EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OPTIMIZATION_REPORT, HIR_OUTPUT,
-};
+use crate::passes::artifacts::{EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OUTPUT};
 use crate::{
-    AgentEffectLegalityFacts, AgentExpressionLegalityFact, HirOptimizationPassReport,
-    ProjectContext,
+    AgentEffectLegalityFacts, AgentExpressionLegalityFact, HirOptimizationGroup,
+    HirOptimizationPassReport, ProjectContext,
 };
 
 pub struct AgentEffectLegalityPass;
@@ -21,10 +19,7 @@ impl Pass<ProjectContext> for AgentEffectLegalityPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("AgentEffectLegalityPass", PassKind::Analysis)
             .requires(ArtifactSet::from([HIR_OUTPUT, EFFECT_OUTPUT]))
-            .produces(ArtifactSet::from([
-                HIR_OPTIMIZATION_LEGALITY,
-                HIR_OPTIMIZATION_REPORT,
-            ]))
+            .produces(ArtifactSet::one(HIR_OPTIMIZATION_LEGALITY))
     }
 
     fn run(
@@ -34,38 +29,45 @@ impl Pass<ProjectContext> for AgentEffectLegalityPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let mut facts = AgentEffectLegalityFacts::default();
-        if context.input.options.optimize_hir {
-            let effects = context
-                .effects
-                .as_ref()
-                .expect("effect facts must precede HIR optimization");
-            let hir = &context.hir.as_ref().expect("HIR output should exist").hir;
-            for (expression, summary) in &effects.facts.expr_effects {
-                let Some(owner) = hir.index().expr_item.get(expression).copied() else {
-                    continue;
-                };
-                let (reads, version_dependencies) = dependencies(hir, *expression);
-                facts.expressions.insert(
-                    *expression,
-                    AgentExpressionLegalityFact {
-                        owner,
-                        reads,
-                        version_dependencies,
-                        effect_free: effect_free(summary),
-                        deterministic: summary.determinism == Determinism::Deterministic,
-                        order_stable: order_stable(summary),
-                    },
-                );
-            }
+        let effects = context
+            .effects
+            .as_ref()
+            .expect("effect facts must precede HIR optimization");
+        let hir = &context.hir.as_ref().expect("HIR output should exist").hir;
+        for (expression, summary) in &effects.facts.expr_effects {
+            let Some(owner) = hir.index().expr_item.get(expression).copied() else {
+                continue;
+            };
+            let (reads, version_dependencies) = dependencies(hir, *expression);
+            facts.expressions.insert(
+                *expression,
+                AgentExpressionLegalityFact {
+                    owner,
+                    reads,
+                    version_dependencies,
+                    effect_free: effect_free(summary),
+                    deterministic: summary.determinism == Determinism::Deterministic,
+                    order_stable: order_stable(summary),
+                },
+            );
         }
         let matched = facts.movable_expression_count();
+        let affected_units = facts
+            .expressions
+            .values()
+            .map(|fact| fact.owner)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         context.optimization_legality = Some(facts);
         context
             .optimization_report
             .record(HirOptimizationPassReport::new(
                 "AgentEffectLegality",
+                HirOptimizationGroup::O1,
                 matched,
                 0,
+                affected_units,
+                true,
             ));
         PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
     }

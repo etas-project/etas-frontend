@@ -47,8 +47,10 @@ where
     pub(super) store: S,
     pub(super) pending_changed_sources: Vec<SourceId>,
     pub(super) pending_project_wide_change: bool,
+    pub(super) pending_pipeline_plan_change: bool,
     pub(super) pending_invalidation: InvalidationReport,
     pub(super) pending_body_artifact_reuse: BodyArtifactReuseInput,
+    pub(super) pending_parsed_source_reuse: HashMap<SourceId, ParsedSource>,
     pub(super) std_version: String,
     pub(super) options_hash: String,
     pub(super) std_registry: Arc<etas_std::StdRegistry>,
@@ -101,8 +103,10 @@ where
             store,
             pending_changed_sources: Vec::new(),
             pending_project_wide_change: false,
+            pending_pipeline_plan_change: false,
             pending_invalidation: InvalidationReport::default(),
             pending_body_artifact_reuse: BodyArtifactReuseInput::default(),
+            pending_parsed_source_reuse: HashMap::new(),
             std_version: frontend_std_version(&std_registry),
             options_hash,
             std_registry,
@@ -151,6 +155,12 @@ where
             self.pending_project_wide_change = false;
             false
         };
+        let pipeline_plan_change = if incremental {
+            std::mem::take(&mut self.pending_pipeline_plan_change)
+        } else {
+            self.pending_pipeline_plan_change = false;
+            false
+        };
         let body_artifact_reuse = if incremental && memory_reuse_enabled && !project_wide_change {
             let pending = std::mem::take(&mut self.pending_body_artifact_reuse);
             if pending.is_empty() {
@@ -163,8 +173,14 @@ where
             BodyArtifactReuseInput::default()
         };
         let parsed_source_reuse = if incremental && memory_reuse_enabled && !project_wide_change {
-            self.cached_parsed_sources(&self.pending_changed_sources, disk_artifact_access)?
+            let pending = std::mem::take(&mut self.pending_parsed_source_reuse);
+            if pending.is_empty() {
+                self.cached_parsed_sources(&self.pending_changed_sources, disk_artifact_access)?
+            } else {
+                pending
+            }
         } else {
+            self.pending_parsed_source_reuse.clear();
             HashMap::new()
         };
         let pipeline_run = run_pipeline(FrontendPipelineRequest {
@@ -172,6 +188,7 @@ where
             incremental,
             changed_sources: self.pending_changed_sources.clone(),
             project_wide_change,
+            pipeline_plan_change,
             body_artifact_reuse,
             parsed_source_reuse,
             check_scope: request.scope,
@@ -401,7 +418,7 @@ where
         })
     }
 
-    fn cached_parsed_sources(
+    pub(super) fn cached_parsed_sources(
         &self,
         changed_sources: &[SourceId],
         disk_artifact_access: DiskCacheAccess,
@@ -1251,6 +1268,7 @@ mod tests {
                      incremental,
                      changed_sources,
                      project_wide_change,
+                     pipeline_plan_change: _,
                      body_artifact_reuse: _reuse,
                      parsed_source_reuse: parsed_reuse,
                      check_scope: _scope,

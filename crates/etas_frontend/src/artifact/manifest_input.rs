@@ -130,7 +130,8 @@ mod tests {
                 .iter()
                 .all(|record| record.dependencies.is_empty())
         );
-        let mut pipeline = crate::pipeline::project_pipeline();
+        let plan = crate::optimization::OptimizationPlan::from_options(&context.input.options);
+        let mut pipeline = crate::pipeline::project_pipeline(&plan);
         let run = PassManager::new().run_pipeline(&mut pipeline, &mut context);
         assert!(
             matches!(run.control, PassControl::Continue),

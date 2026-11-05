@@ -5,12 +5,14 @@ use etas_hir::{
     HirStmt, HirStmtId, HirTreeChild, ResolveResult, SymbolDef,
 };
 use etas_utils::{
-    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
+    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult, PassScope,
     PreservedArtifacts,
 };
 
-use crate::passes::artifacts::{HIR_OPTIMIZATION_LEGALITY, HIR_OPTIMIZATION_REPORT, HIR_OUTPUT};
-use crate::{HirOptimizationPassReport, HirOutput, ProjectContext};
+use crate::passes::artifacts::{EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OUTPUT, TYPE_OUTPUT};
+use crate::{
+    BODY_UNIT_KIND, HirOptimizationGroup, HirOptimizationPassReport, HirOutput, ProjectContext,
+};
 
 pub struct SynthesizeScopedIndexPass;
 
@@ -36,63 +38,75 @@ struct Replacement {
 impl Pass<ProjectContext> for SynthesizeScopedIndexPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("SynthesizeScopedIndexPass", PassKind::Transform)
-            .requires(ArtifactSet::from([HIR_OUTPUT, HIR_OPTIMIZATION_LEGALITY]))
-            .produces(ArtifactSet::from([HIR_OUTPUT, HIR_OPTIMIZATION_REPORT]))
+            .scope(PassScope::Unit(BODY_UNIT_KIND))
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                TYPE_OUTPUT,
+                EFFECT_OUTPUT,
+                HIR_OPTIMIZATION_LEGALITY,
+            ]))
+            .produces(ArtifactSet::from([HIR_OUTPUT, TYPE_OUTPUT, EFFECT_OUTPUT]))
     }
 
     fn run(
         &mut self,
         context: &mut ProjectContext,
-        _pass_context: &PassContext<ProjectContext>,
+        pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let mut rewritten = 0;
-        if context.input.options.optimize_hir {
-            let legality = context
-                .optimization_legality
-                .as_ref()
-                .expect("legality pass must precede transforms");
-            let output = context.hir.take().expect("HIR output should exist");
-            let replacements = find_replacements(&output.hir, legality);
-            rewritten = replacements.len();
-            if !replacements.is_empty() {
-                super::facts::invalidate_replaced_expressions(
-                    context,
-                    replacements
-                        .values()
-                        .flat_map(|replacement| replacement.expressions.iter().copied()),
-                );
-            }
-            context.hir = Some(if replacements.is_empty() {
-                output
-            } else {
-                let mut editor = output.hir.edit();
-                apply_replacements(editor.program_mut(), replacements);
-                let hir = editor
-                    .finish()
-                    .expect("typed-HIR optimization must preserve tree ownership");
-                HirOutput { hir }
-            });
+        let body = crate::optimization::current_optimization_body(context, pass_context);
+        let legality = context
+            .optimization_legality
+            .as_ref()
+            .expect("legality pass must precede transforms");
+        let output = context.hir.take().expect("HIR output should exist");
+        let replacements = find_replacements(&output.hir, legality, &body.blocks);
+        let rewritten = replacements.len();
+        if !replacements.is_empty() {
+            super::facts::invalidate_replaced_expressions(
+                context,
+                replacements
+                    .values()
+                    .flat_map(|replacement| replacement.expressions.iter().copied()),
+            );
         }
+        context.hir = Some(if replacements.is_empty() {
+            output
+        } else {
+            let mut editor = output.hir.edit();
+            apply_replacements(editor.program_mut(), replacements);
+            let hir = editor
+                .finish()
+                .expect("typed-HIR optimization must preserve tree ownership");
+            HirOutput { hir }
+        });
         context
             .optimization_report
             .record(HirOptimizationPassReport::new(
                 "SynthesizeScopedIndex",
+                HirOptimizationGroup::O2,
                 rewritten,
                 rewritten,
+                usize::from(rewritten != 0),
+                rewritten != 0,
             ));
-        PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+        if rewritten == 0 {
+            PassResult::unchanged()
+        } else {
+            PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+        }
     }
 }
 
 fn find_replacements(
     revision: &HirRevision,
     legality: &crate::AgentEffectLegalityFacts,
+    blocks: &[HirBlockId],
 ) -> HashMap<HirStmtId, Replacement> {
     let program = revision.program();
     let mut replacements = HashMap::new();
-    for (_, block) in program.blocks.iter() {
-        for statement in &block.stmts {
+    for block in blocks {
+        for statement in &program.blocks[*block].stmts {
             let HirStmt::For {
                 pat,
                 iter,

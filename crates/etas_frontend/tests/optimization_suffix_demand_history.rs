@@ -48,13 +48,11 @@ fn ten_real_history_suffix_scans_are_eliminated() {
     for (name, source) in PROGRAMS {
         let baseline = compile(source, false);
         let optimized = compile(source, true);
-        assert_eq!(
+        assert!(
             baseline
                 .optimization_report
                 .pass("SuffixDemandHistory")
-                .unwrap()
-                .rewritten,
-            0,
+                .is_none(),
             "{name} baseline"
         );
         assert_eq!(
@@ -72,7 +70,11 @@ fn ten_real_history_suffix_scans_are_eliminated() {
 
 fn compile(source: &str, optimize_hir: bool) -> etas_frontend::CheckedProject {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
-    input.options.optimize_hir = optimize_hir;
+    input.options.optimization_level = if optimize_hir {
+        etas_frontend::OptimizationLevel::O3
+    } else {
+        etas_frontend::OptimizationLevel::O0
+    };
     let output = Frontend.check_project(input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     output.checked.expect("checked optimization fixture")

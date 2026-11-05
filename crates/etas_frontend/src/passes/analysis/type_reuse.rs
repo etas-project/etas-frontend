@@ -112,7 +112,9 @@ flow main() -> i64 {
 "#,
         ));
         let mut full_context = ProjectContext::new(input.clone());
-        let mut full_pipeline = project_pipeline();
+        let full_plan =
+            crate::optimization::OptimizationPlan::from_options(&full_context.input.options);
+        let mut full_pipeline = project_pipeline(&full_plan);
         let mut full_manager = PassManager::new();
         let full_run = full_manager.run_pipeline(&mut full_pipeline, &mut full_context);
 
@@ -161,7 +163,9 @@ flow main() -> i64 {
             },
             std::collections::HashMap::new(),
         );
-        let mut incremental_pipeline = project_pipeline();
+        let incremental_plan =
+            crate::optimization::OptimizationPlan::from_options(&incremental_context.input.options);
+        let mut incremental_pipeline = project_pipeline(&incremental_plan);
         let mut incremental_manager = PassManager::new();
         let incremental_run =
             incremental_manager.run_pipeline(&mut incremental_pipeline, &mut incremental_context);

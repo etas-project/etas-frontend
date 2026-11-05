@@ -36,7 +36,8 @@ flow main() -> i32 { return handle { hidden() } with { Echo.value(_) => { resume
         source.id = etas_core::SourceId(271);
         let mut context = ProjectContext::new(crate::ProjectInput::single_source(source));
         let mut manager = PassManager::new();
-        let run = manager.run_pipeline(&mut crate::pipeline::project_pipeline(), &mut context);
+        let plan = crate::optimization::OptimizationPlan::from_options(&context.input.options);
+        let run = manager.run_pipeline(&mut crate::pipeline::project_pipeline(&plan), &mut context);
         assert!(matches!(run.control, PassControl::Continue));
         assert!(context.diagnostics.is_empty(), "{:?}", context.diagnostics);
         assert!(context.checked.is_some());

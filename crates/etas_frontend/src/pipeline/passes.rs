@@ -2,20 +2,21 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
-    AgentEffectLegalityPass, AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass,
-    BatchStorageSemijoinPass, BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass,
-    BuildModuleCatalogPass, BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass,
-    BuildUnitTreePass, CompleteEffectRuntimeReachabilityPass,
-    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
-    ComputeAffectedModulesPass, ComputeDefinitionAnalysisReachabilityPass,
-    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
-    FinalizeProjectHirPass, FinalizeTypeFactsPass, FuseProjectionScansPass,
-    FuseSerializationBoundaryPass, InferCallableOutputsPass, LowerModuleItemsPass,
-    LowerOwnedSnapshotCowPass, LowerResourceRegionPass, MaterializeGenericEffectRowsPass,
-    NormalizeModuleImportsPass, ParseSourceFilePass, PredeclareProjectSymbolsPass,
-    PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
-    PrepareInvocationTypesPass, PrepareVersionedRequestPass, QualityAwareContextPolicyPass,
-    ResolveEntryItemPass, ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
+    AgentEffectLegalityPass, AnalyzeLoopProgressPass, ApplyQualityContextBudgetPolicyPass,
+    ApplyResolvedImportsToHirPass, BatchStorageSemijoinPass, BindMethodOriginsPass,
+    BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass,
+    BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
+    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
+    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
+    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
+    FinalizeTypeFactsPass, FuseProjectionScansPass, FuseSerializationBoundaryPass,
+    InferCallableOutputsPass, LowerModuleItemsPass, LowerOwnedSnapshotCowPass,
+    LowerResourceRegionPass, MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass,
+    ParseSourceFilePass, PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass,
+    PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
+    PrepareVersionedRequestPass, PruneUnusedQualityContextPass, ResolveEntryItemPass,
+    ResolveImportTargetsPass, ResolvePathsPass, RetainDefinitionSourcesPass,
     ReuseTypeBodyFactsPass, RunEffectPipelinePass, ScheduleBoundedPipelinePass,
     SuffixDemandHistoryPass, SynthesizeScopedIndexPass, TypeCheckBodyPass,
     ValidateEntryContractPass, ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
@@ -27,7 +28,7 @@ use crate::{
     project::ANALYZED_BODY_UNIT_FILTER,
 };
 
-pub fn project_pipeline() -> Pipeline<ProjectContext> {
+pub fn project_pipeline(plan: &crate::optimization::OptimizationPlan) -> Pipeline<ProjectContext> {
     Pipeline::new("frontend.check_project")
         .group(
             Pipeline::new("frontend.project_sources")
@@ -38,15 +39,17 @@ pub fn project_pipeline() -> Pipeline<ProjectContext> {
                     Pipeline::new("frontend.source").pass(ParseSourceFilePass),
                 ),
         )
-        .group(semantic_pipeline(false))
+        .group(semantic_pipeline(false, plan))
         .pass(BuildCheckedProjectPass)
 }
 
-pub(crate) fn candidate_body_pipeline() -> Pipeline<ProjectContext> {
+pub(crate) fn candidate_body_pipeline(
+    plan: &crate::optimization::OptimizationPlan,
+) -> Pipeline<ProjectContext> {
     Pipeline::new("frontend.check_candidate_body")
         .pass(crate::code::pipeline::passes::FreezeDefinitionEnvironmentPass)
         .pass(crate::code::pipeline::passes::ParseCandidateDependencySourcesPass)
-        .group(semantic_pipeline(true))
+        .group(semantic_pipeline(true, plan))
         .pass(BuildCheckedProjectPass)
         .pass(crate::code::pipeline::passes::MaterializeCandidateInvocationTypesPass)
         .pass(crate::code::pipeline::passes::BuildDefinitionDescriptorsPass)
@@ -54,7 +57,10 @@ pub(crate) fn candidate_body_pipeline() -> Pipeline<ProjectContext> {
         .pass(crate::code::pipeline::passes::EmitCheckedCandidatePass)
 }
 
-fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
+fn semantic_pipeline(
+    candidate: bool,
+    plan: &crate::optimization::OptimizationPlan,
+) -> Pipeline<ProjectContext> {
     let mut pipeline = Pipeline::new("frontend.project_semantics")
         .pass(BuildModuleIndexPass)
         .pass(BuildModuleCatalogPass)
@@ -121,18 +127,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(MaterializeGenericEffectRowsPass)
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)
-        .pass(AgentEffectLegalityPass)
-        .pass(LowerResourceRegionPass)
-        .pass(PrepareVersionedRequestPass)
-        .pass(VersionedPreparationCsePass)
-        .pass(LowerOwnedSnapshotCowPass)
-        .pass(FuseSerializationBoundaryPass)
-        .pass(ScheduleBoundedPipelinePass)
-        .pass(FuseProjectionScansPass)
-        .pass(BatchStorageSemijoinPass)
-        .pass(SynthesizeScopedIndexPass)
-        .pass(SuffixDemandHistoryPass)
-        .pass(QualityAwareContextPolicyPass)
+        .group(optimization_pipeline(plan))
         .pass(VerifyInterpreterSupportPass);
     if !candidate {
         pipeline.push_pass(ValidateEntryContractPass);
@@ -142,12 +137,165 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(crate::code::pipeline::passes::ResolveReflectionTargetsPass)
 }
 
+fn optimization_pipeline(plan: &crate::optimization::OptimizationPlan) -> Pipeline<ProjectContext> {
+    let mut pipeline = Pipeline::new("frontend.hir_optimization");
+    let needs_legality = plan.level.enables(crate::OptimizationLevel::O1)
+        || plan.quality_context_token_budget.is_some();
+    if needs_legality {
+        pipeline.push_pass(AgentEffectLegalityPass);
+    }
+    if plan.level.enables(crate::OptimizationLevel::O1) {
+        let mut body_pipeline = Pipeline::new("frontend.hir_optimization.body");
+        body_pipeline.push_group(o1_pipeline());
+        if plan.level.enables(crate::OptimizationLevel::O2) {
+            body_pipeline.push_group(o2_pipeline());
+        }
+        if plan.level.enables(crate::OptimizationLevel::O3) {
+            body_pipeline.push_group(o3_pipeline());
+        }
+        pipeline.push_for_each(
+            UnitSelector::Affected(BODY_UNIT_KIND),
+            UnitOrder::Stable,
+            body_pipeline,
+        );
+    }
+    if plan.quality_context_token_budget.is_some() {
+        pipeline.push_pass(ApplyQualityContextBudgetPolicyPass);
+    }
+    pipeline
+}
+
+fn o1_pipeline() -> Pipeline<ProjectContext> {
+    Pipeline::new("frontend.hir_optimization.o1")
+        .pass(LowerOwnedSnapshotCowPass)
+        .pass(FuseSerializationBoundaryPass)
+        .pass(SuffixDemandHistoryPass)
+        .pass(PruneUnusedQualityContextPass)
+}
+
+fn o2_pipeline() -> Pipeline<ProjectContext> {
+    Pipeline::new("frontend.hir_optimization.o2")
+        .pass(PrepareVersionedRequestPass)
+        .pass(VersionedPreparationCsePass)
+        .pass(FuseProjectionScansPass)
+        .pass(BatchStorageSemijoinPass)
+        .pass(SynthesizeScopedIndexPass)
+}
+
+fn o3_pipeline() -> Pipeline<ProjectContext> {
+    Pipeline::new("frontend.hir_optimization.o3")
+        .pass(ScheduleBoundedPipelinePass)
+        .pass(LowerResourceRegionPass)
+}
+
 #[cfg(test)]
 mod tests {
     use etas_utils::{ArtifactScope, PassControl, PassManager};
 
-    use super::project_pipeline;
-    use crate::{ProjectContext, ProjectInput, SourceInput};
+    use super::{optimization_pipeline, project_pipeline};
+    use crate::{OptimizationLevel, ProjectContext, ProjectInput, SourceInput};
+
+    const O1_PASSES: &[&str] = &[
+        "AgentEffectLegalityPass",
+        "LowerOwnedSnapshotCowPass",
+        "FuseSerializationBoundaryPass",
+        "SuffixDemandHistoryPass",
+        "PruneUnusedQualityContextPass",
+    ];
+    const O2_PASSES: &[&str] = &[
+        "PrepareVersionedRequestPass",
+        "VersionedPreparationCsePass",
+        "FuseProjectionScansPass",
+        "BatchStorageSemijoinPass",
+        "SynthesizeScopedIndexPass",
+    ];
+    const O3_PASSES: &[&str] = &["ScheduleBoundedPipelinePass", "LowerResourceRegionPass"];
+
+    fn plan(
+        level: OptimizationLevel,
+        budget: Option<usize>,
+    ) -> crate::optimization::OptimizationPlan {
+        crate::optimization::OptimizationPlan {
+            level,
+            quality_context_token_budget: budget,
+        }
+    }
+
+    fn scheduled_passes(level: OptimizationLevel, budget: Option<usize>) -> Vec<String> {
+        let pipeline = optimization_pipeline(&plan(level, budget));
+        PassManager::<ProjectContext>::new()
+            .schedule_text(&pipeline)
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("pass ").map(str::to_owned))
+            .collect()
+    }
+
+    fn expected_passes(level: OptimizationLevel, budget: Option<usize>) -> Vec<String> {
+        let mut passes = Vec::new();
+        if level.enables(OptimizationLevel::O1) || budget.is_some() {
+            passes.push("AgentEffectLegalityPass");
+        }
+        if level.enables(OptimizationLevel::O1) {
+            passes.extend(O1_PASSES[1..].iter().copied());
+        }
+        if level.enables(OptimizationLevel::O2) {
+            passes.extend(O2_PASSES.iter().copied());
+        }
+        if level.enables(OptimizationLevel::O3) {
+            passes.extend(O3_PASSES.iter().copied());
+        }
+        if budget.is_some() {
+            passes.push("ApplyQualityContextBudgetPolicyPass");
+        }
+        passes.into_iter().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn optimization_schedules_are_exact_monotonic_and_deterministic() {
+        for level in [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ] {
+            let first = scheduled_passes(level, None);
+            let second = scheduled_passes(level, None);
+            assert_eq!(first, second, "{level}");
+            assert_eq!(first, expected_passes(level, None), "{level}");
+        }
+        assert_eq!(
+            scheduled_passes(OptimizationLevel::O0, Some(8)),
+            expected_passes(OptimizationLevel::O0, Some(8))
+        );
+    }
+
+    #[test]
+    fn optimization_records_match_the_selected_level() {
+        for level in [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ] {
+            let mut input = ProjectInput::single_source(SourceInput::anonymous(
+                "flow main() -> i64 { return 1; }",
+            ));
+            input.options.optimization_level = level;
+            let mut context = ProjectContext::new(input);
+            let mut pipeline = project_pipeline(&plan(level, None));
+            let run = PassManager::new().run_pipeline(&mut pipeline, &mut context);
+            assert!(matches!(run.control, PassControl::Continue), "{level}");
+            let selected = expected_passes(level, None);
+            let records = run
+                .records
+                .iter()
+                .filter(|record| selected.iter().any(|name| name == record.pass))
+                .map(|record| record.pass)
+                .collect::<Vec<_>>();
+            assert_eq!(records, selected, "{level}");
+            assert_eq!(context.optimization_report.effective_level, level);
+        }
+    }
 
     #[test]
     fn pipeline_records_body_scoped_type_and_effect_artifacts() {
@@ -158,7 +306,8 @@ flow main() -> i64 {
 }
 "#,
         )));
-        let mut pipeline = project_pipeline();
+        let plan = crate::optimization::OptimizationPlan::from_options(&context.input.options);
+        let mut pipeline = project_pipeline(&plan);
         let mut manager = PassManager::new();
         let run = manager.run_pipeline(&mut pipeline, &mut context);
 

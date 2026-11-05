@@ -5,12 +5,14 @@ use etas_hir::{
     HirStmt, HirStmtId, ResolveResult, SymbolDef, SymbolId,
 };
 use etas_utils::{
-    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
+    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult, PassScope,
     PreservedArtifacts,
 };
 
-use crate::passes::artifacts::{HIR_OPTIMIZATION_LEGALITY, HIR_OPTIMIZATION_REPORT, HIR_OUTPUT};
-use crate::{HirOptimizationPassReport, HirOutput, ProjectContext};
+use crate::passes::artifacts::{EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OUTPUT, TYPE_OUTPUT};
+use crate::{
+    BODY_UNIT_KIND, HirOptimizationGroup, HirOptimizationPassReport, HirOutput, ProjectContext,
+};
 
 pub struct FuseProjectionScansPass;
 
@@ -35,66 +37,79 @@ struct Fusion {
 impl Pass<ProjectContext> for FuseProjectionScansPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("FuseProjectionScansPass", PassKind::Transform)
-            .requires(ArtifactSet::from([HIR_OUTPUT, HIR_OPTIMIZATION_LEGALITY]))
-            .produces(ArtifactSet::from([HIR_OUTPUT, HIR_OPTIMIZATION_REPORT]))
+            .scope(PassScope::Unit(BODY_UNIT_KIND))
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                TYPE_OUTPUT,
+                EFFECT_OUTPUT,
+                HIR_OPTIMIZATION_LEGALITY,
+            ]))
+            .produces(ArtifactSet::from([HIR_OUTPUT, TYPE_OUTPUT, EFFECT_OUTPUT]))
     }
 
     fn run(
         &mut self,
         context: &mut ProjectContext,
-        _pass_context: &PassContext<ProjectContext>,
+        pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let mut rewritten = 0;
-        if context.input.options.optimize_hir {
-            let legality = context
-                .optimization_legality
-                .as_ref()
-                .expect("legality pass must precede transforms");
-            let output = context.hir.take().expect("HIR output should exist");
-            let fusions = find_fusions(&output.hir, legality);
-            rewritten = fusions.len();
-            if !fusions.is_empty() {
-                super::facts::invalidate_replaced_expressions(
-                    context,
-                    fusions.values().flatten().flat_map(|fusion| {
-                        expression_tree_from_program(output.hir.program(), fusion.second.iterable)
-                            .into_iter()
-                            .chain(fusion.second.limits.iter().flat_map(|limit| {
-                                expression_tree_from_program(output.hir.program(), *limit)
-                            }))
-                    }),
-                );
-            }
-            context.hir = Some(if fusions.is_empty() {
-                output
-            } else {
-                let mut editor = output.hir.edit();
-                apply_fusions(editor.program_mut(), fusions);
-                let hir = editor
-                    .finish()
-                    .expect("typed-HIR optimization must preserve tree ownership");
-                HirOutput { hir }
-            });
+        let body = crate::optimization::current_optimization_body(context, pass_context);
+        let legality = context
+            .optimization_legality
+            .as_ref()
+            .expect("legality pass must precede transforms");
+        let output = context.hir.take().expect("HIR output should exist");
+        let fusions = find_fusions(&output.hir, legality, &body.blocks);
+        let rewritten = fusions.values().map(Vec::len).sum();
+        if !fusions.is_empty() {
+            super::facts::invalidate_replaced_expressions(
+                context,
+                fusions.values().flatten().flat_map(|fusion| {
+                    expression_tree_from_program(output.hir.program(), fusion.second.iterable)
+                        .into_iter()
+                        .chain(fusion.second.limits.iter().flat_map(|limit| {
+                            expression_tree_from_program(output.hir.program(), *limit)
+                        }))
+                }),
+            );
         }
+        context.hir = Some(if fusions.is_empty() {
+            output
+        } else {
+            let mut editor = output.hir.edit();
+            apply_fusions(editor.program_mut(), fusions);
+            let hir = editor
+                .finish()
+                .expect("typed-HIR optimization must preserve tree ownership");
+            HirOutput { hir }
+        });
         context
             .optimization_report
             .record(HirOptimizationPassReport::new(
                 "FuseProjectionScans",
+                HirOptimizationGroup::O2,
                 rewritten,
                 rewritten,
+                usize::from(rewritten != 0),
+                rewritten != 0,
             ));
-        PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+        if rewritten == 0 {
+            PassResult::unchanged()
+        } else {
+            PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+        }
     }
 }
 
 fn find_fusions(
     revision: &HirRevision,
     legality: &crate::AgentEffectLegalityFacts,
+    blocks: &[HirBlockId],
 ) -> HashMap<HirBlockId, Vec<Fusion>> {
     let program = revision.program();
     let mut result = HashMap::new();
-    for (block_id, block) in program.blocks.iter() {
+    for block_id in blocks {
+        let block = &program.blocks[*block_id];
         let mut fusions = Vec::new();
         let mut index = 0;
         while index + 1 < block.stmts.len() {
@@ -121,7 +136,7 @@ fn find_fusions(
             index += 2;
         }
         if !fusions.is_empty() {
-            result.insert(block_id, fusions);
+            result.insert(*block_id, fusions);
         }
     }
     result

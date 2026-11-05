@@ -171,7 +171,8 @@ mod tests {
         source.id = etas_core::SourceId(417);
         let mut context = ProjectContext::new(crate::ProjectInput::single_source(source));
         let mut manager = PassManager::new();
-        let run = manager.run_pipeline(&mut crate::pipeline::project_pipeline(), &mut context);
+        let plan = crate::optimization::OptimizationPlan::from_options(&context.input.options);
+        let run = manager.run_pipeline(&mut crate::pipeline::project_pipeline(&plan), &mut context);
         assert!(matches!(run.control, PassControl::Continue));
         assert!(context.diagnostics.is_empty(), "{:?}", context.diagnostics);
         let effects = context.effects.as_mut().unwrap();

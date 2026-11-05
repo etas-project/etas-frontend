@@ -2,12 +2,14 @@ use std::collections::HashMap;
 
 use etas_hir::{HirArg, HirExpr, HirExprId, HirRevision, HirTreeChild};
 use etas_utils::{
-    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
+    ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult, PassScope,
     PreservedArtifacts,
 };
 
-use crate::passes::artifacts::{HIR_OPTIMIZATION_LEGALITY, HIR_OPTIMIZATION_REPORT, HIR_OUTPUT};
-use crate::{HirOptimizationPassReport, HirOutput, ProjectContext};
+use crate::passes::artifacts::{EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OUTPUT, TYPE_OUTPUT};
+use crate::{
+    BODY_UNIT_KIND, HirOptimizationGroup, HirOptimizationPassReport, HirOutput, ProjectContext,
+};
 
 pub struct LowerOwnedSnapshotCowPass;
 
@@ -19,59 +21,75 @@ struct Replacement {
 impl Pass<ProjectContext> for LowerOwnedSnapshotCowPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("LowerOwnedSnapshotCowPass", PassKind::Transform)
-            .requires(ArtifactSet::from([HIR_OUTPUT, HIR_OPTIMIZATION_LEGALITY]))
-            .produces(ArtifactSet::from([HIR_OUTPUT, HIR_OPTIMIZATION_REPORT]))
+            .scope(PassScope::Unit(BODY_UNIT_KIND))
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                TYPE_OUTPUT,
+                EFFECT_OUTPUT,
+                HIR_OPTIMIZATION_LEGALITY,
+            ]))
+            .produces(ArtifactSet::from([HIR_OUTPUT, TYPE_OUTPUT, EFFECT_OUTPUT]))
     }
 
     fn run(
         &mut self,
         context: &mut ProjectContext,
-        _pass_context: &PassContext<ProjectContext>,
+        pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let mut rewritten = 0;
-        if context.input.options.optimize_hir {
-            let legality = context
-                .optimization_legality
+        let body = crate::optimization::current_optimization_body(context, pass_context);
+        let legality = context
+            .optimization_legality
+            .as_ref()
+            .expect("legality pass must precede transforms");
+        let types = std::sync::Arc::clone(
+            &context
+                .types
                 .as_ref()
-                .expect("legality pass must precede transforms");
-            let types = std::sync::Arc::clone(
-                &context
-                    .types
-                    .as_ref()
-                    .expect("type facts must precede typed-HIR optimization")
-                    .facts,
+                .expect("type facts must precede typed-HIR optimization")
+                .facts,
+        );
+        let output = context.hir.take().expect("HIR output should exist");
+        let replacements = find_replacements(&output.hir, legality, &types, &body.expressions);
+        let rewritten = replacements.len();
+        let affected_units = replacements
+            .keys()
+            .filter_map(|expression| output.hir.index().expr_item.get(expression))
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        if !replacements.is_empty() {
+            super::facts::invalidate_replaced_expressions(
+                context,
+                replacements.iter().flat_map(|(root, replacement)| {
+                    std::iter::once(*root).chain(replacement.optimized_out.iter().copied())
+                }),
             );
-            let output = context.hir.take().expect("HIR output should exist");
-            let replacements = find_replacements(&output.hir, legality, &types);
-            rewritten = replacements.len();
-            if !replacements.is_empty() {
-                super::facts::invalidate_replaced_expressions(
-                    context,
-                    replacements.iter().flat_map(|(root, replacement)| {
-                        std::iter::once(*root).chain(replacement.optimized_out.iter().copied())
-                    }),
-                );
-            }
-            context.hir = Some(if replacements.is_empty() {
-                output
-            } else {
-                let mut editor = output.hir.edit();
-                apply_replacements(editor.program_mut(), replacements);
-                let hir = editor
-                    .finish()
-                    .expect("typed-HIR optimization must preserve tree ownership");
-                HirOutput { hir }
-            });
         }
+        context.hir = Some(if replacements.is_empty() {
+            output
+        } else {
+            let mut editor = output.hir.edit();
+            apply_replacements(editor.program_mut(), replacements);
+            let hir = editor
+                .finish()
+                .expect("typed-HIR optimization must preserve tree ownership");
+            HirOutput { hir }
+        });
         context
             .optimization_report
             .record(HirOptimizationPassReport::new(
                 "LowerOwnedSnapshotCOW",
+                HirOptimizationGroup::O1,
                 rewritten,
                 rewritten,
+                affected_units,
+                rewritten != 0,
             ));
-        PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+        if rewritten == 0 {
+            PassResult::unchanged()
+        } else {
+            PassResult::changed(PreservedArtifacts::All, self.descriptor().produces)
+        }
     }
 }
 
@@ -79,10 +97,12 @@ fn find_replacements(
     revision: &HirRevision,
     legality: &crate::AgentEffectLegalityFacts,
     types: &etas_types::TypeFacts,
+    expressions: &[HirExprId],
 ) -> HashMap<HirExprId, Replacement> {
     let program = revision.program();
     let mut replacements = HashMap::new();
-    for (expression, data) in program.exprs.iter() {
+    for expression in expressions {
+        let data = &program.exprs[*expression];
         let HirExpr::MethodCall {
             receiver,
             method,
@@ -96,7 +116,7 @@ fn find_replacements(
         let [HirArg::Positional(argument)] = args.as_slice() else {
             continue;
         };
-        let Some(fact) = types.std_intrinsic_calls.get(&expression) else {
+        let Some(fact) = types.std_intrinsic_calls.get(expression) else {
             continue;
         };
         if method != "extend"
@@ -113,13 +133,13 @@ fn find_replacements(
                 program.exprs[*receiver],
                 HirExpr::Path(_) | HirExpr::Literal(_)
             )
-            || !legality.is_movable(expression)
+            || !legality.is_movable(*expression)
         {
             continue;
         }
-        let optimized_out = expression_descendants(revision, expression);
+        let optimized_out = expression_descendants(revision, *expression);
         replacements.insert(
-            expression,
+            *expression,
             Replacement {
                 value: program.exprs[*receiver].clone(),
                 optimized_out,

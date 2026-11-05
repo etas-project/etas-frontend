@@ -13,7 +13,8 @@ fn prepared() -> (
         ),
     ));
     let mut manager = PassManager::new();
-    let run = manager.run_pipeline(&mut crate::pipeline::project_pipeline(), &mut context);
+    let plan = crate::optimization::OptimizationPlan::from_options(&context.input.options);
+    let run = manager.run_pipeline(&mut crate::pipeline::project_pipeline(&plan), &mut context);
     assert!(
         matches!(run.control, PassControl::Continue),
         "{:?}",
@@ -135,8 +136,12 @@ fn entry_reachable_scope_does_not_require_facts_for_an_unanalyzed_body() {
         ),
     ));
     context.check_scope = crate::CheckScope::EntryReachable;
-    let run =
-        PassManager::new().run_pipeline(&mut crate::pipeline::project_pipeline(), &mut context);
+    let run = PassManager::new().run_pipeline(
+        &mut crate::pipeline::project_pipeline(
+            &crate::optimization::OptimizationPlan::from_options(&context.input.options),
+        ),
+        &mut context,
+    );
     assert!(
         matches!(run.control, PassControl::Continue),
         "{:?}",

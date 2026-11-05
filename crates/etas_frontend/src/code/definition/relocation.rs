@@ -161,7 +161,8 @@ mod tests {
         let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
         input.options.entry_policy = EntryPolicy::Optional;
         let mut context = ProjectContext::new(input);
-        let mut pipeline = crate::pipeline::project_pipeline();
+        let plan = crate::optimization::OptimizationPlan::from_options(&context.input.options);
+        let mut pipeline = crate::pipeline::project_pipeline(&plan);
         let run = etas_utils::PassManager::new().run_pipeline(&mut pipeline, &mut context);
         assert!(
             matches!(run.control, etas_utils::PassControl::Continue),

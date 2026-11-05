@@ -165,6 +165,16 @@ where
         self.project_mut(project)?.apply_changes(changes)
     }
 
+    pub fn replace_compile_options(
+        &mut self,
+        project: ProjectSessionId,
+        revision: ProjectRevision,
+        options: crate::ProjectCompileOptions,
+    ) -> Result<ChangeSummary, FrontendSessionError> {
+        self.project_mut(project)?
+            .replace_compile_options(revision, options)
+    }
+
     pub fn check(
         &mut self,
         project: ProjectSessionId,
@@ -282,4 +292,80 @@ where
 
 pub(in crate::session) fn cache_error(error: CacheError) -> FrontendSessionError {
     FrontendSessionError::Cache(error.to_string())
+}
+
+#[cfg(test)]
+mod optimization_level_tests {
+    use super::FrontendSession;
+    use crate::{CheckRequest, FrontendArtifactKind, OptimizationLevel, ProjectInput, SourceInput};
+
+    #[test]
+    fn live_level_change_reuses_pre_optimization_work_and_rebuilds_checked_hir() {
+        let mut input =
+            ProjectInput::single_source(SourceInput::anonymous("flow main() -> i64 { return 1; }"));
+        input.options.optimization_level = OptimizationLevel::O0;
+        let mut session = FrontendSession::new();
+        let project = session.open_project(input);
+        let initial = session
+            .check(project, CheckRequest::full_project())
+            .unwrap();
+        let initial_checked = initial.output.checked.as_ref().unwrap();
+        assert_eq!(
+            initial_checked.compile_options.optimization_level,
+            OptimizationLevel::O0
+        );
+        assert!(initial_checked.optimization_report.passes.is_empty());
+
+        let mut options = initial_checked.compile_options.clone();
+        options.optimization_level = OptimizationLevel::O3;
+        let change = session
+            .replace_compile_options(project, etas_cache::ProjectRevision(1), options)
+            .unwrap();
+        assert_eq!(
+            session.projects[&project]
+                .pending_body_artifact_reuse
+                .type_outputs
+                .len(),
+            1
+        );
+        assert!(
+            change.invalidated_artifacts.iter().any(|artifact| {
+                artifact.kind.as_str() == FrontendArtifactKind::HirProgram.key()
+            })
+        );
+        assert!(!change.invalidated_artifacts.iter().any(|artifact| {
+            artifact.kind.as_str() == FrontendArtifactKind::ParsedSource.key()
+                || artifact.kind.as_str() == FrontendArtifactKind::ModuleIndex.key()
+        }));
+
+        let rebuilt = session.check(project, CheckRequest::incremental()).unwrap();
+        let rebuilt_checked = rebuilt.output.checked.as_ref().unwrap();
+        assert_eq!(
+            rebuilt_checked.compile_options.optimization_level,
+            OptimizationLevel::O3
+        );
+        assert_eq!(
+            rebuilt_checked.optimization_report.effective_level,
+            OptimizationLevel::O3
+        );
+        assert!(
+            rebuilt_checked
+                .optimization_report
+                .pass("LowerResourceRegion")
+                .is_some()
+        );
+        assert_eq!(rebuilt.output.reused_parsed_sources, 1);
+        assert!(
+            rebuilt
+                .pipeline_records
+                .iter()
+                .filter(|record| record.pass == "TypeCheckBodyPass")
+                .all(|record| !record.changed)
+        );
+        assert!(
+            rebuilt.cache.reused_artifacts.iter().any(|artifact| {
+                artifact.kind.as_str() == FrontendArtifactKind::TypeFacts.key()
+            })
+        );
+    }
 }

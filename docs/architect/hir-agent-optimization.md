@@ -1,6 +1,6 @@
 # Typed-HIR agent optimization passes
 
-The frontend runs a conservative, semantics-preserving subset of the agent optimization patterns after type, effect, reachability, and loop analysis. The pass pipeline is enabled by `ProjectCompileOptions::optimize_hir` and records matches and rewrites in `CheckedProject::optimization_report`.
+The frontend runs a conservative, semantics-preserving subset of the agent optimization patterns after type, effect, reachability, and loop analysis. `ProjectCompileOptions::optimization_level` selects the monotonic O0–O3 pass schedule and records matches and rewrites in `CheckedProject::optimization_report`.
 
 The survey examples are used as workload models, not as instructions. The implemented HIR-local forms are:
 
@@ -17,7 +17,8 @@ The survey examples are used as workload models, not as instructions. The implem
 | `BatchStorageSemijoin` | N+1 key validation and batched storage probes | combine adjacent independent membership probes over the same bounded literal snapshot into one scan |
 | `ScheduleBoundedPipeline` | bounded file, model, tool, trace and persistence stages | combine adjacent `BoundedPipelineStage`-marked pure stages over the same literal worklist when their mutable accumulators are disjoint |
 | `LowerResourceRegion` | model clients, connection pools, HTTP sessions and tool hosts | move a pure `ReusableResourceFactory`-marked acquisition with version-stable arguments to the outer region of a known-nonempty loop |
-| `QualityAwareContextPolicy` | repo map, chat history, retrieval, memory and policy context candidates | remove an unconsumed pure `QualityContext`-marked boundary exactly; when `quality_context_token_budget` is explicitly set, retain only the most recent units of its literal context argument |
+| `PruneUnusedQualityContext` | repo map, chat history, retrieval, memory and policy context candidates | remove an unconsumed pure `QualityContext`-marked boundary exactly |
+| `ApplyQualityContextBudgetPolicy` | explicitly budgeted context candidates | when `quality_context_token_budget` is set, retain only the most recent units of its literal context argument; reported separately as a policy transform |
 
 The default pipeline does not perform an approximate P3 context change. `ProjectCompileOptions::quality_context_token_budget` is a separate opt-in policy input, participates in the canonical compile fingerprint, and is intentionally not presented as a semantics-preserving rewrite. The interpreter and live-model evaluations report token reduction separately from answer/fact retention.
 
@@ -39,7 +40,7 @@ The fixture families preserve the computational shape of concrete survey observa
 | `FuseSerializationBoundary` | `FULL-2af3a5aa471885`, Codex single serialization for combined goal projections |
 | `BatchStorageSemijoin` | `FULL-23ef735e150ad2`, Codex batched thread-item metadata hydration |
 | `LowerResourceRegion` | `OPT-035`, ChatDev scoped runtime-resource reuse |
-| `QualityAwareContextPolicy` | `OPT-045` exact unused-observation elimination plus the workbook's explicit P3 context-budget prototype |
+| `PruneUnusedQualityContext` / `ApplyQualityContextBudgetPolicy` | `OPT-045` exact unused-observation elimination plus the workbook's explicit P3 context-budget prototype |
 
 ## Stable facts across rewrites
 
@@ -47,4 +48,4 @@ HIR arena IDs remain stable. Removed nodes are explicitly marked optimized out s
 
 ## Tests
 
-Each pass has at least ten Etas programs under `crates/etas_frontend/tests/fixtures/optimization`. Frontend integration tests assert pass ownership and rewrite counts. The interpreter repository compiles exact-transform programs with optimization disabled and enabled, checks equal results, and measures deterministic steps, allocations, and elapsed time. The P3 budget fixtures instead assert a smaller returned model-input context and recent-suffix retention because the policy is explicitly semantics-changing.
+Each pass has at least ten Etas programs under `crates/etas_frontend/tests/fixtures/optimization`. Frontend integration tests assert pass ownership and rewrite counts. The interpreter repository compiles and executes exact-transform programs at O0, O1, O2, and O3, checks equal results, and measures deterministic steps, allocations, and elapsed time. The budget fixtures are separate and assert a smaller returned model-input context and recent-suffix retention at every level because the policy is explicitly semantics-changing.

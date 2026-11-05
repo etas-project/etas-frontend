@@ -24,6 +24,7 @@ pub(crate) struct FrontendPipelineRequest {
     pub(crate) incremental: bool,
     pub(crate) changed_sources: Vec<SourceId>,
     pub(crate) project_wide_change: bool,
+    pub(crate) pipeline_plan_change: bool,
     pub(crate) body_artifact_reuse: BodyArtifactReuseInput,
     pub(crate) parsed_source_reuse: HashMap<SourceId, ParsedSource>,
     pub(crate) check_scope: CheckScope,
@@ -45,6 +46,7 @@ pub(crate) fn run_controlled_check_pipeline(
         incremental,
         changed_sources,
         project_wide_change,
+        pipeline_plan_change,
         body_artifact_reuse,
         parsed_source_reuse,
         check_scope,
@@ -52,7 +54,8 @@ pub(crate) fn run_controlled_check_pipeline(
         std_registry,
         memory_probe,
     } = request;
-    let context = if incremental {
+    let optimization_plan = crate::optimization::OptimizationPlan::from_options(&input.options);
+    let mut context = if incremental {
         ProjectContext::new_incremental_with_reuse_and_std_registry(
             input,
             changed_sources,
@@ -65,9 +68,10 @@ pub(crate) fn run_controlled_check_pipeline(
         ProjectContext::new_with_std_registry(input, std_registry)
     }
     .with_check_scope(check_scope);
+    context.pipeline_plan_change = pipeline_plan_change;
     run_controlled_context_pipeline(
         context,
-        project_pipeline(),
+        project_pipeline(&optimization_plan),
         collect_timing,
         memory_probe,
         control,

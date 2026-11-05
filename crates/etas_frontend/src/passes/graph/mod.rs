@@ -326,11 +326,13 @@ impl Pass<ProjectContext> for ComputeAffectedModulesPass {
             .as_ref()
             .expect("import graph should exist");
 
-        let affected_module_ids = if context.incremental && !context.project_wide_change {
-            affected_module_closure(modules, graph, order, &context.changed_sources)
-        } else {
-            order.modules.clone()
-        };
+        let affected_module_ids =
+            if context.incremental && !context.project_wide_change && !context.pipeline_plan_change
+            {
+                affected_module_closure(modules, graph, order, &context.changed_sources)
+            } else {
+                order.modules.clone()
+            };
 
         let mut affected_modules = module_units(units, &affected_module_ids);
         dedup_units(&mut affected_modules);

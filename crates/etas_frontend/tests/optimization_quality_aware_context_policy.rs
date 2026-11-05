@@ -95,19 +95,17 @@ fn ten_unconsumed_context_candidates_are_pruned() {
     for (name, source) in PROGRAMS {
         let baseline = compile(source, false);
         let optimized = compile(source, true);
-        assert_eq!(
+        assert!(
             baseline
                 .optimization_report
-                .pass("QualityAwareContextPolicy")
-                .unwrap()
-                .rewritten,
-            0,
+                .pass("PruneUnusedQualityContext")
+                .is_none(),
             "{name} baseline"
         );
         assert_eq!(
             optimized
                 .optimization_report
-                .pass("QualityAwareContextPolicy")
+                .pass("PruneUnusedQualityContext")
                 .unwrap()
                 .rewritten,
             1,
@@ -122,19 +120,17 @@ fn ten_used_context_candidates_honor_the_explicit_token_budget() {
     for (name, source) in BUDGETED_PROGRAMS {
         let baseline = compile_with_budget(source, None);
         let optimized = compile_with_budget(source, Some(8));
-        assert_eq!(
+        assert!(
             baseline
                 .optimization_report
-                .pass("QualityAwareContextPolicy")
-                .unwrap()
-                .rewritten,
-            0,
+                .policy_transform("ApplyQualityContextBudgetPolicy")
+                .is_none(),
             "{name} baseline"
         );
         assert_eq!(
             optimized
                 .optimization_report
-                .pass("QualityAwareContextPolicy")
+                .policy_transform("ApplyQualityContextBudgetPolicy")
                 .unwrap()
                 .rewritten,
             1,
@@ -145,7 +141,11 @@ fn ten_used_context_candidates_honor_the_explicit_token_budget() {
 
 fn compile(source: &str, optimize_hir: bool) -> etas_frontend::CheckedProject {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
-    input.options.optimize_hir = optimize_hir;
+    input.options.optimization_level = if optimize_hir {
+        etas_frontend::OptimizationLevel::O3
+    } else {
+        etas_frontend::OptimizationLevel::O0
+    };
     check(input)
 }
 

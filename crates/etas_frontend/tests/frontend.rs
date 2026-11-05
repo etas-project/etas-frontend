@@ -3907,6 +3907,22 @@ fn frontend_session_incremental_check_reuses_valid_unchanged_source_artifacts() 
             "unchanged source body effect artifact should be reused after sibling source edit: {key}"
         );
     }
+    let changed_body = only_body_unit(&second.output, changed);
+    let optimized_bodies = second
+        .pipeline_records
+        .iter()
+        .filter(|record| record.pass == "LowerOwnedSnapshotCowPass")
+        .map(|record| {
+            record
+                .unit
+                .expect("body optimization pass should be unit-scoped")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        optimized_bodies,
+        vec![changed_body],
+        "incremental optimization should scan only the changed body"
+    );
 }
 
 #[test]

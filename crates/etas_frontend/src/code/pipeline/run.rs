@@ -312,9 +312,11 @@ fn analyze_body_inputs(
         })?;
     let fingerprint = candidate.snapshot;
     context.candidate = Some(candidate);
+    let optimization_plan =
+        crate::optimization::OptimizationPlan::from_options(&context.input.options);
     let run = crate::pipeline::run_controlled_context_pipeline(
         context,
-        crate::pipeline::candidate_body_pipeline(),
+        crate::pipeline::candidate_body_pipeline(&optimization_plan),
         true,
         memory_probe,
         control,

@@ -15,6 +15,77 @@ use crate::project::{
     SourceInput, SourceSet, UnitTree,
 };
 
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, etas_core::RetainedSize,
+)]
+pub enum OptimizationLevel {
+    O0,
+    O1,
+    #[default]
+    O2,
+    O3,
+}
+
+impl OptimizationLevel {
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::O0 => 0,
+            Self::O1 => 1,
+            Self::O2 => 2,
+            Self::O3 => 3,
+        }
+    }
+
+    pub const fn enables(self, minimum: Self) -> bool {
+        self.number() >= minimum.number()
+    }
+}
+
+impl std::fmt::Display for OptimizationLevel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "O{}", self.number())
+    }
+}
+
+impl TryFrom<u8> for OptimizationLevel {
+    type Error = OptimizationLevelParseError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::O0),
+            1 => Ok(Self::O1),
+            2 => Ok(Self::O2),
+            3 => Ok(Self::O3),
+            _ => Err(OptimizationLevelParseError),
+        }
+    }
+}
+
+impl std::str::FromStr for OptimizationLevel {
+    type Err = OptimizationLevelParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "0" | "O0" | "o0" => Ok(Self::O0),
+            "1" | "O1" | "o1" => Ok(Self::O1),
+            "2" | "O2" | "o2" => Ok(Self::O2),
+            "3" | "O3" | "o3" => Ok(Self::O3),
+            _ => Err(OptimizationLevelParseError),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OptimizationLevelParseError;
+
+impl std::fmt::Display for OptimizationLevelParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("optimization level must be one of 0, 1, 2, or 3")
+    }
+}
+
+impl std::error::Error for OptimizationLevelParseError {}
+
 id_type!(ProjectId);
 id_type!(ModuleId);
 id_type!(ModulePartId);
@@ -62,8 +133,8 @@ impl ProjectInput {
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
     pub reflection: crate::code::definition::ReflectionOptions,
-    /// Run guarded typed-HIR optimization passes before publishing the checked program.
-    pub optimize_hir: bool,
+    /// Select the optional typed-HIR optimization pipeline. O2 is the balanced default.
+    pub optimization_level: OptimizationLevel,
     /// Opt in to the policy-changing P3 context transform. Candidate bindings
     /// retain only their most recent whitespace-delimited units.
     pub quality_context_token_budget: Option<usize>,
@@ -78,7 +149,7 @@ impl Default for ProjectCompileOptions {
         Self {
             entry_policy: EntryPolicy::default(),
             reflection: crate::code::definition::ReflectionOptions::default(),
-            optimize_hir: true,
+            optimization_level: OptimizationLevel::default(),
             quality_context_token_budget: None,
             residual_target: Default::default(),
         }
@@ -93,14 +164,15 @@ impl ProjectCompileOptions {
             EntryPolicy::Runnable => "runnable",
         };
         let (retained, exported) = self.reflection.canonical_entries();
-        let optimization = if self.optimize_hir {
-            "hir-optimization-on"
-        } else {
-            "hir-optimization-off"
+        let optimization = match self.optimization_level {
+            OptimizationLevel::O0 => "optimization-level:o0",
+            OptimizationLevel::O1 => "optimization-level:o1",
+            OptimizationLevel::O2 => "optimization-level:o2",
+            OptimizationLevel::O3 => "optimization-level:o3",
         };
         let mut parts = vec![
             "frontend-options",
-            "v5",
+            "v6",
             entry_policy,
             optimization,
             "retain-bodies",
@@ -108,10 +180,10 @@ impl ProjectCompileOptions {
         let quality_context_token_budget;
         if let Some(budget) = self.quality_context_token_budget {
             quality_context_token_budget = budget.to_string();
-            parts.push("quality-context-token-budget");
+            parts.push("quality-context-policy:token-budget");
             parts.push(&quality_context_token_budget);
         } else {
-            parts.push("quality-context-policy-off");
+            parts.push("quality-context-policy:off");
         }
         parts.extend(retained);
         parts.push("export-bodies");
@@ -1387,4 +1459,60 @@ pub struct ProjectEntryFact {
 pub struct ProjectEntryResolution {
     pub module: HirModuleId,
     pub item: HirItemId,
+}
+
+#[cfg(test)]
+mod optimization_level_tests {
+    use super::{OptimizationLevel, ProjectCompileOptions};
+
+    #[test]
+    fn optimization_level_contract_is_ordered_parsed_and_defaults_to_o2() {
+        assert_eq!(OptimizationLevel::default(), OptimizationLevel::O2);
+        assert!(OptimizationLevel::O3.enables(OptimizationLevel::O2));
+        assert!(!OptimizationLevel::O1.enables(OptimizationLevel::O2));
+        for (number, level) in [
+            (0, OptimizationLevel::O0),
+            (1, OptimizationLevel::O1),
+            (2, OptimizationLevel::O2),
+            (3, OptimizationLevel::O3),
+        ] {
+            assert_eq!(OptimizationLevel::try_from(number).unwrap(), level);
+            assert_eq!(
+                number.to_string().parse::<OptimizationLevel>().unwrap(),
+                level
+            );
+            assert_eq!(level.to_string(), format!("O{number}"));
+        }
+        assert!(OptimizationLevel::try_from(4).is_err());
+        assert!("-O2".parse::<OptimizationLevel>().is_err());
+    }
+
+    #[test]
+    fn fingerprints_isolate_every_level_and_policy_input() {
+        let fingerprints = [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ]
+        .map(|optimization_level| {
+            ProjectCompileOptions {
+                optimization_level,
+                ..ProjectCompileOptions::default()
+            }
+            .canonical_options_fingerprint()
+        });
+        let distinct = fingerprints
+            .iter()
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(distinct.len(), fingerprints.len());
+
+        let base = ProjectCompileOptions::default().canonical_options_fingerprint();
+        let policy = ProjectCompileOptions {
+            quality_context_token_budget: Some(8),
+            ..ProjectCompileOptions::default()
+        }
+        .canonical_options_fingerprint();
+        assert_ne!(base, policy);
+    }
 }

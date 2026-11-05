@@ -33,6 +33,7 @@ pub struct ProjectContext {
     pub incremental: bool,
     pub check_scope: CheckScope,
     pub project_wide_change: bool,
+    pub(crate) pipeline_plan_change: bool,
     pub changed_sources: Vec<SourceId>,
     pub(crate) body_artifact_reuse: BodyArtifactReuseInput,
     pub(crate) parsed_source_reuse: HashMap<SourceId, crate::ParsedSource>,
@@ -89,6 +90,8 @@ impl ProjectContext {
         input: ProjectInput,
         std_registry: Arc<etas_std::StdRegistry>,
     ) -> Self {
+        let optimization_report =
+            crate::HirOptimizationReport::new(input.options.optimization_level);
         Self {
             reflection_targets: None,
             native_instantiations: None,
@@ -98,6 +101,7 @@ impl ProjectContext {
             incremental: false,
             check_scope: CheckScope::FullProject,
             project_wide_change: false,
+            pipeline_plan_change: false,
             changed_sources: Vec::new(),
             body_artifact_reuse: BodyArtifactReuseInput::default(),
             parsed_source_reuse: HashMap::new(),
@@ -138,7 +142,7 @@ impl ProjectContext {
             diagnostics: Vec::new(),
             hir_lowering: None,
             optimization_legality: None,
-            optimization_report: Default::default(),
+            optimization_report,
         }
     }
 
@@ -528,7 +532,8 @@ flow main() -> i64 {
 "#,
         ));
         let mut full_context = ProjectContext::new(input.clone());
-        let mut pipeline = project_pipeline();
+        let plan = crate::optimization::OptimizationPlan::from_options(&full_context.input.options);
+        let mut pipeline = project_pipeline(&plan);
         let mut manager = PassManager::new();
         let run = manager.run_pipeline(&mut pipeline, &mut full_context);
         assert!(matches!(run.control, etas_utils::PassControl::Continue));

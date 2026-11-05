@@ -35,10 +35,11 @@ pub use hir::{
 };
 pub use module::{BuildModuleCatalogPass, BuildModuleIndexPass, BuildUnitTreePass};
 pub use optimization::{
-    AgentEffectLegalityPass, BatchStorageSemijoinPass, FuseProjectionScansPass,
-    FuseSerializationBoundaryPass, LowerOwnedSnapshotCowPass, LowerResourceRegionPass,
-    PrepareVersionedRequestPass, QualityAwareContextPolicyPass, ScheduleBoundedPipelinePass,
-    SuffixDemandHistoryPass, SynthesizeScopedIndexPass, VersionedPreparationCsePass,
+    AgentEffectLegalityPass, ApplyQualityContextBudgetPolicyPass, BatchStorageSemijoinPass,
+    FuseProjectionScansPass, FuseSerializationBoundaryPass, LowerOwnedSnapshotCowPass,
+    LowerResourceRegionPass, PrepareVersionedRequestPass, PruneUnusedQualityContextPass,
+    ScheduleBoundedPipelinePass, SuffixDemandHistoryPass, SynthesizeScopedIndexPass,
+    VersionedPreparationCsePass,
 };
 pub use output::{BuildCheckedProjectPass, ResolveEntryItemPass, ValidateEntryContractPass};
 pub use resolution::{

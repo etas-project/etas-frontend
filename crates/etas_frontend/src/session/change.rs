@@ -19,6 +19,48 @@ impl<S> FrontendProjectState<S>
 where
     S: FrontendArtifactStore,
 {
+    pub(super) fn replace_compile_options(
+        &mut self,
+        revision: etas_cache::ProjectRevision,
+        options: crate::ProjectCompileOptions,
+    ) -> Result<ChangeSummary, FrontendSessionError> {
+        if revision <= self.revision {
+            return Err(FrontendSessionError::NonIncreasingProjectRevision {
+                current: self.revision,
+                requested: revision,
+            });
+        }
+        if self.input.options == options {
+            self.revision = revision;
+            return Ok(ChangeSummary {
+                revision,
+                ..ChangeSummary::default()
+            });
+        }
+
+        self.restore_cached_artifact_manifest(DiskCacheAccess::disabled())?;
+        self.pending_body_artifact_reuse =
+            self.cached_body_artifacts(DiskCacheAccess::disabled())?;
+        self.pending_parsed_source_reuse =
+            self.cached_parsed_sources(&[], DiskCacheAccess::disabled())?;
+        let invalidation =
+            invalidate_dirty_roots(&mut self.store, DirtyArtifactRoots::from_compiler_options())
+                .map_err(cache_error)?;
+        self.input.options = options;
+        self.options_hash = self.input.options.canonical_options_fingerprint();
+        self.pending_changed_sources.clear();
+        self.pending_project_wide_change = false;
+        self.pending_pipeline_plan_change = true;
+        self.pending_invalidation = invalidation.clone();
+        self.revision = revision;
+
+        Ok(ChangeSummary {
+            revision,
+            invalidated_artifacts: invalidation.invalidated,
+            ..ChangeSummary::default()
+        })
+    }
+
     pub(super) fn apply_changes(
         &mut self,
         changes: ProjectChangeSet,
@@ -200,6 +242,7 @@ where
         let invalidation =
             invalidate_dirty_roots(&mut self.store, dirty_roots).map_err(cache_error)?;
         self.pending_changed_sources = changed_sources.clone();
+        self.pending_parsed_source_reuse.clear();
         self.pending_project_wide_change = broad_project_change;
         self.pending_invalidation = invalidation.clone();
         self.revision = changes.revision;
