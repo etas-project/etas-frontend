@@ -806,6 +806,7 @@ pub(super) fn limit_kind_from_std(kind: StdLimitKind) -> LimitKind {
         StdLimitKind::Cost => LimitKind::Cost,
         StdLimitKind::WallTime => LimitKind::WallTime,
         StdLimitKind::Attempts => LimitKind::Attempts,
+        StdLimitKind::Concurrency => LimitKind::Concurrency,
     }
 }
 

@@ -562,6 +562,12 @@ impl<'a> TypeSubstitutionEngine<'a> {
                         require_closed_argument_row(row)?;
                     }
                 }
+                Type::Task(task) => require_closed_argument_row(&task.effects)?,
+                Type::Continuation(continuation) => {
+                    if let Some(row) = &continuation.residual_effects {
+                        require_closed_argument_row(row)?;
+                    }
+                }
                 _ => {}
             }
             let dependencies = self.dependencies(current)?;
@@ -665,6 +671,17 @@ impl<'a> TypeSubstitutionEngine<'a> {
                 }
                 dependencies.extend(handler.result);
             }
+            Type::Task(task) => {
+                dependencies.push(task.output);
+                self.row_dependencies(task.effects, &mut dependencies)?;
+            }
+            Type::Continuation(continuation) => {
+                dependencies.push(continuation.action_output);
+                dependencies.extend(continuation.handled_answer);
+                if let Some(row) = continuation.residual_effects {
+                    self.row_dependencies(row, &mut dependencies)?;
+                }
+            }
             Type::Applied { constructor, args } => {
                 if self.is_relocation() {
                     dependencies.push(TypeId(constructor.0));
@@ -686,6 +703,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             | Type::Enum(_)
             | Type::Named(_)
             | Type::Nominal(_)
+            | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
             | Type::MemoryPlace(_) => {}
@@ -828,6 +846,23 @@ impl<'a> TypeSubstitutionEngine<'a> {
                     .map(|result| self.substitute(result))
                     .transpose()?,
             }),
+            Type::Task(mut task) => {
+                task.output = self.substitute(task.output)?;
+                task.effects = self.substitute_effect_row(task.effects)?;
+                Type::Task(task)
+            }
+            Type::Continuation(mut continuation) => {
+                continuation.action_output = self.substitute(continuation.action_output)?;
+                continuation.handled_answer = continuation
+                    .handled_answer
+                    .map(|answer| self.substitute(answer))
+                    .transpose()?;
+                continuation.residual_effects = continuation
+                    .residual_effects
+                    .map(|row| self.substitute_effect_row(row))
+                    .transpose()?;
+                Type::Continuation(continuation)
+            }
             Type::Applied { constructor, args } => Type::Applied {
                 constructor: if self.is_relocation() {
                     super::TypeConstructorId(self.substitute(TypeId(constructor.0))?.0)
@@ -879,7 +914,11 @@ impl<'a> TypeSubstitutionEngine<'a> {
                         .collect::<Result<Vec<_>, _>>()?,
                 })
             }
-            Type::Primitive(_) | Type::Prompt | Type::PromptPart | Type::MemoryPlace(_) => {
+            Type::Primitive(_)
+            | Type::SchedulerHandle
+            | Type::Prompt
+            | Type::PromptPart
+            | Type::MemoryPlace(_) => {
                 if self.is_relocation() {
                     ty_data
                 } else {

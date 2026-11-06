@@ -996,6 +996,11 @@ impl From<RuntimeRequirementReason> for InterpreterSupport {
                     InterpreterFeatureKind::EffectHandler,
                 ),
             ),
+            RuntimeRequirementReason::TaskScheduler => Self::RequiresInterpreterOrchestration(
+                InterpreterOrchestrationRequirementSet::feature(
+                    InterpreterFeatureKind::TaskScheduler,
+                ),
+            ),
         }
     }
 }
@@ -1019,7 +1024,7 @@ impl RuntimeRequirementReason {
             Self::Command => Some(HostRequirementKind::Command),
             Self::SecretAccess => Some(HostRequirementKind::SecretAccess),
             Self::Compiler => Some(HostRequirementKind::Compiler),
-            Self::Checkpoint | Self::RuntimeHandler => None,
+            Self::Checkpoint | Self::RuntimeHandler | Self::TaskScheduler => None,
         }
     }
 }
@@ -1252,6 +1257,7 @@ pub enum InterpreterFeatureKind {
     Retry,
     Checkpoint,
     WorkflowOrchestration,
+    TaskScheduler,
 }
 
 #[derive(
@@ -1276,6 +1282,7 @@ pub enum RuntimeRequirementReason {
     SecretAccess,
     Compiler,
     RuntimeHandler,
+    TaskScheduler,
 }
 
 #[derive(

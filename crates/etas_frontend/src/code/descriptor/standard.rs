@@ -90,51 +90,7 @@ impl DefinitionDescriptorProjector<'_> {
                     })
                     .collect::<Result<_, ProjectionError>>()?;
                 let output = self.standard_ref(*output, scope, module)?;
-                let mut projected = Vec::with_capacity(effects.len());
-                for effect in effects {
-                    let target = self
-                        .identities
-                        .effect_target(&self.checked, &effect.path.join("."))?;
-                    let mut arguments = Vec::with_capacity(effect.args.len());
-                    for arg in effect.args {
-                        self.edge()?;
-                        arguments.push(match arg {
-                            etas_std::StdStaticArg::Type(ty) => {
-                                StaticEffectArgInfo::Type(self.standard_ref(ty, scope, module)?)
-                            }
-                            etas_std::StdStaticArg::Path(path) => {
-                                match self.identities.callable_path(&path)? {
-                                    Some(id) => StaticEffectArgInfo::Callable(id.clone()),
-                                    None => StaticEffectArgInfo::Resource(
-                                        self.identities
-                                            .path(&path)
-                                            .ok_or_else(|| {
-                                                ProjectionError::MissingIdentity(path.join("."))
-                                            })?
-                                            .clone(),
-                                    ),
-                                }
-                            }
-                            etas_std::StdStaticArg::String(text) => {
-                                self.text(&text)?;
-                                StaticEffectArgInfo::String(text)
-                            }
-                            etas_std::StdStaticArg::Int(text) => {
-                                self.text(&text)?;
-                                StaticEffectArgInfo::Integer(text)
-                            }
-                            etas_std::StdStaticArg::Wildcard => StaticEffectArgInfo::Wildcard,
-                        });
-                    }
-                    projected.push(EffectInfo { target, arguments });
-                }
-                self.edge()?;
-                self.node()?;
-                let effects = EffectRowInfoRef(self.rows.len() as u32);
-                self.rows.push(Some(EffectRowInfo {
-                    effects: projected,
-                    tail: None,
-                }));
+                let effects = self.project_standard_row(effects, scope, module)?;
                 return Ok(TypeInfo::Function(SignatureInfo {
                     generics: Vec::new(),
                     parameters,
@@ -142,6 +98,11 @@ impl DefinitionDescriptorProjector<'_> {
                     declared_output: None,
                     effects: Some(effects),
                 }));
+            }
+            StdType::Task { output, effects } => {
+                let output = self.standard_ref(*output, scope, module)?;
+                let effects = self.project_standard_row(effects, scope, module)?;
+                return Ok(TypeInfo::Task { output, effects });
             }
             StdType::NamedApplied { name, args } => {
                 let declaration = self.standard_declaration(&name, module)?;
@@ -214,6 +175,73 @@ impl DefinitionDescriptorProjector<'_> {
                 .map(|ty| self.standard_ref(ty, scope, module))
                 .collect::<Result<_, _>>()?,
         })
+    }
+
+    fn project_standard_row(
+        &mut self,
+        row: etas_std::StdEffectRowExpr,
+        scope: usize,
+        module: &[String],
+    ) -> Result<EffectRowInfoRef, ProjectionError> {
+        let tail = row
+            .tail
+            .map(|name| {
+                let binder = self.scopes[scope]
+                    .binders
+                    .get(&name)
+                    .copied()
+                    .ok_or(ProjectionError::UnresolvedBinder(name))?;
+                if self.binders[binder.0 as usize].kind != GenericParameterKind::EffectRow {
+                    return Err(ProjectionError::Invalid(
+                        "standard effect row refers to a value-type binder".into(),
+                    ));
+                }
+                Ok(binder)
+            })
+            .transpose()?;
+        let mut effects = Vec::with_capacity(row.effects.len());
+        for effect in row.effects {
+            let target = self
+                .identities
+                .effect_target(&self.checked, &effect.path.join("."))?;
+            let mut arguments = Vec::with_capacity(effect.args.len());
+            for arg in effect.args {
+                self.edge()?;
+                arguments.push(match arg {
+                    etas_std::StdStaticArg::Type(ty) => {
+                        StaticEffectArgInfo::Type(self.standard_ref(ty, scope, module)?)
+                    }
+                    etas_std::StdStaticArg::Path(path) => {
+                        match self.identities.callable_path(&path)? {
+                            Some(id) => StaticEffectArgInfo::Callable(id.clone()),
+                            None => StaticEffectArgInfo::Resource(
+                                self.identities
+                                    .path(&path)
+                                    .ok_or_else(|| {
+                                        ProjectionError::MissingIdentity(path.join("."))
+                                    })?
+                                    .clone(),
+                            ),
+                        }
+                    }
+                    etas_std::StdStaticArg::String(text) => {
+                        self.text(&text)?;
+                        StaticEffectArgInfo::String(text)
+                    }
+                    etas_std::StdStaticArg::Int(text) => {
+                        self.text(&text)?;
+                        StaticEffectArgInfo::Integer(text)
+                    }
+                    etas_std::StdStaticArg::Wildcard => StaticEffectArgInfo::Wildcard,
+                });
+            }
+            effects.push(EffectInfo { target, arguments });
+        }
+        self.edge()?;
+        self.node()?;
+        let reference = EffectRowInfoRef(self.rows.len() as u32);
+        self.rows.push(Some(EffectRowInfo { effects, tail }));
+        Ok(reference)
     }
 
     pub(super) fn project_standard_declaration(

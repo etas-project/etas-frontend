@@ -1,3 +1,4 @@
+pub mod concurrency;
 pub mod effects;
 pub mod enums;
 pub mod existentials;
@@ -16,6 +17,7 @@ use std::collections::HashMap;
 
 use etas_hir::{HirExprId, HirItemId, HirPatId, HirStmtId, HirTypeId, SymbolId};
 
+pub use concurrency::{ContinuationBindingFact, TaskOwnerFact};
 pub use effects::{
     ActionRequestSignature, CheckedActionCallFact, CheckedHandlerActionFact,
     DeferredHandlerInstantiation, DeferredHandlerOverload, EffectActionArgKind,
@@ -80,6 +82,10 @@ pub struct TypeFacts {
     pub definition_operations: HashMap<HirExprId, reflection::CheckedDefinitionOperation>,
     pub agent_inferences: HashMap<HirExprId, CheckedAgentInferenceFact>,
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, CheckedHandlerActionFact>,
+    #[serde(default)]
+    pub continuation_bindings: HashMap<SymbolId, ContinuationBindingFact>,
+    #[serde(default)]
+    pub task_owners: HashMap<HirExprId, TaskOwnerFact>,
     pub deferred_handler_instantiations:
         HashMap<etas_hir::HirHandlerArmId, DeferredHandlerInstantiation>,
     pub expr_memory_places: HashMap<HirExprId, TypeId>,

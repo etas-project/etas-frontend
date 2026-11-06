@@ -100,6 +100,7 @@ fn children(node: &TypeInfo) -> Vec<TypeInfoRef> {
         } => std::iter::once(*constructor)
             .chain(arguments.iter().copied())
             .collect(),
+        TypeInfo::Task { output, .. } => vec![*output],
         TypeInfo::Primitive(_)
         | TypeInfo::Parameter(_)
         | TypeInfo::Function(_)

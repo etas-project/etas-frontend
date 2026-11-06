@@ -261,6 +261,21 @@ impl<'a> TypeUnifier<'a> {
                     (None, None) | (None, Some(_)) | (Some(_), None) => Ok(()),
                 }
             }
+            (Some(Type::Task(a)), Some(Type::Task(b)))
+                if same_effect_row(Some(&a.effects), Some(&b.effects)) =>
+            {
+                self.unify(a.output, b.output)
+            }
+            (Some(Type::SchedulerHandle), Some(Type::SchedulerHandle)) => Ok(()),
+            (Some(Type::Continuation(a)), Some(Type::Continuation(b)))
+                if same_effect_row(a.residual_effects.as_ref(), b.residual_effects.as_ref()) =>
+            {
+                self.unify(a.action_output, b.action_output)?;
+                match (a.handled_answer, b.handled_answer) {
+                    (Some(a), Some(b)) => self.unify(a, b),
+                    (None, None) | (None, Some(_)) | (Some(_), None) => Ok(()),
+                }
+            }
             (Some(Type::Named(a)), Some(Type::Named(b)))
                 if match (
                     self.store.parameter_identity(lhs),
@@ -406,6 +421,20 @@ impl<'a> TypeUnifier<'a> {
                             effect_row_occurs(self.store, needle, row)
                         }
                     }
+            }
+            Some(Type::Task(task)) => {
+                self.occurs(needle, task.output)
+                    || effect_row_occurs(self.store, needle, &task.effects)
+            }
+            Some(Type::Continuation(continuation)) => {
+                self.occurs(needle, continuation.action_output)
+                    || continuation
+                        .handled_answer
+                        .is_some_and(|answer| self.occurs(needle, answer))
+                    || continuation
+                        .residual_effects
+                        .as_ref()
+                        .is_some_and(|row| effect_row_occurs(self.store, needle, row))
             }
             _ => false,
         }

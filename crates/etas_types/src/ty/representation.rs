@@ -117,6 +117,17 @@ impl<'a> TypeRepresentationMaterializer<'a> {
                         enqueue_row(&mut pending, row);
                     }
                 }
+                Type::Task(task) => {
+                    pending.push(task.output);
+                    enqueue_row(&mut pending, task.effects);
+                }
+                Type::Continuation(continuation) => {
+                    pending.push(continuation.action_output);
+                    pending.extend(continuation.handled_answer);
+                    if let Some(row) = continuation.residual_effects {
+                        enqueue_row(&mut pending, row);
+                    }
+                }
                 Type::ResourceHandle(super::ResourceHandleType::MemoryRegion { schema }) => {
                     pending.push(schema)
                 }
@@ -130,6 +141,7 @@ impl<'a> TypeRepresentationMaterializer<'a> {
                 | Type::IntegerLiteral { .. }
                 | Type::Var(_)
                 | Type::Named(_)
+                | Type::SchedulerHandle
                 | Type::Prompt
                 | Type::PromptPart
                 | Type::MemoryPlace(_) => {}

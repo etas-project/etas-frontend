@@ -44,6 +44,7 @@ pub(super) fn lower(behavior: &CallableValueBehavior) -> (Determinism, Interpret
                 I::Retry => InterpreterFeatureKind::Retry,
                 I::Checkpoint => InterpreterFeatureKind::Checkpoint,
                 I::WorkflowOrchestration => InterpreterFeatureKind::WorkflowOrchestration,
+                I::TaskScheduler => InterpreterFeatureKind::TaskScheduler,
             })
             .collect(),
     };

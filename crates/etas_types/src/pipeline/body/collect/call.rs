@@ -165,6 +165,13 @@ fn collect_call_inner<E>(
         return Ok(output);
     }
     let callable_candidate = collect_callable_callee(ctx, callee, callable_signature.is_some())?;
+    let intrinsic_candidate = callable_candidate.as_ref().and_then(|candidate| {
+        matches!(
+            candidate.operation,
+            crate::CallableCandidateOperation::StdIntrinsic { .. }
+        )
+        .then(|| candidate.clone())
+    });
     let generic_params = callable_candidate
         .as_ref()
         .map(|candidate| candidate.signature.generic_params.clone())
@@ -187,7 +194,7 @@ fn collect_call_inner<E>(
     };
     let callee_ty = if let Some(ty) = constructor {
         ctx.record_expr_type(callee, ty)
-    } else if let Some(candidate) = callable_candidate {
+    } else if let Some(candidate) = callable_candidate.as_ref() {
         candidate.ty
     } else {
         collect_expr(ctx, callee, None)?
@@ -216,16 +223,31 @@ fn collect_call_inner<E>(
         arg_count: arg_tys.len(),
         span,
     });
-    ctx.emit(TypeConstraint::Callable {
-        call: Some(call),
-        callee: callee_ty,
-        generic_params,
-        generic_args: checked_generic_args,
-        arg_exprs: call_arg_exprs(args),
-        args: arg_tys,
-        output,
-        origin: ConstraintOrigin { span },
-    });
+    if let Some(candidate) = intrinsic_candidate {
+        let probe = ctx.fresh_type_var();
+        ctx.emit(TypeConstraint::OverloadedCall {
+            expr: call,
+            callee: callee_ty,
+            candidates: vec![candidate],
+            probes: vec![probe],
+            generic_args: checked_generic_args,
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+    } else {
+        ctx.emit(TypeConstraint::Callable {
+            call: Some(call),
+            callee: callee_ty,
+            generic_params,
+            generic_args: checked_generic_args,
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+    }
     Ok(output)
 }
 
@@ -375,9 +397,22 @@ fn collect_callable_callee<E>(
         SymbolTypeFact::Agent { signature } => Some(signature.component),
         _ => None,
     };
-    let Some(candidate) = callable_candidate_from_fact(ctx, fact, instantiate_schematics) else {
+    let Some(mut candidate) = callable_candidate_from_fact(ctx, fact, instantiate_schematics)
+    else {
         return Ok(None);
     };
+    if let Some(SymbolDef::ImportAlias { path, .. }) =
+        ctx.ctx.hir.symbols.get(symbol).map(|symbol| &symbol.def)
+        && let Some(std_symbol) = ctx.ctx.std_registry.lookup_qualified(path)
+        && let Some(intrinsic) = &std_symbol.intrinsic
+    {
+        candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
+            qualified_path: std_symbol.qualified_path.clone(),
+            intrinsic: intrinsic.id.0,
+            overload: 0,
+            has_receiver: false,
+        };
+    }
     ctx.record_expr_type(callee, value_type.unwrap_or(candidate.ty));
     Ok(Some(candidate))
 }
@@ -819,6 +854,18 @@ fn apply_type_var_substitution<E>(
                 result,
             }))
         }
+        Type::Task(mut task) => {
+            task.output = apply_type_var_substitution(ctx, task.output, substitution);
+            ctx.ctx.interner.intern(Type::Task(task))
+        }
+        Type::Continuation(mut continuation) => {
+            continuation.action_output =
+                apply_type_var_substitution(ctx, continuation.action_output, substitution);
+            continuation.handled_answer = continuation
+                .handled_answer
+                .map(|answer| apply_type_var_substitution(ctx, answer, substitution));
+            ctx.ctx.interner.intern(Type::Continuation(continuation))
+        }
         Type::Applied { constructor, args } => {
             let args = args
                 .into_iter()
@@ -888,6 +935,7 @@ fn apply_type_var_substitution<E>(
         | Type::Enum(_)
         | Type::Named(_)
         | Type::Nominal(_)
+        | Type::SchedulerHandle
         | Type::Prompt
         | Type::PromptPart
         | Type::MemoryPlace(MemoryPlaceType { .. }) => ty,

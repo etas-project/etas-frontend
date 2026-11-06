@@ -52,7 +52,8 @@ impl EffectSemantics<'_> {
             LimitKind::Iterations
             | LimitKind::Tokens
             | LimitKind::ContextTokens
-            | LimitKind::Attempts => LimitValue::Count(value),
+            | LimitKind::Attempts
+            | LimitKind::Concurrency => LimitValue::Count(value),
             LimitKind::Cost => LimitValue::MoneyMicros {
                 amount: u128::from(value),
                 currency: "USD".to_owned(),

@@ -431,7 +431,7 @@ impl EffectRegistry {
             let StdDecl::Effect(effect) = &symbol.decl else {
                 continue;
             };
-            if effect.core {
+            if effect.core && self.tag_by_name(&effect.name).is_some() {
                 continue;
             }
             let Some(stable_id) = effect.stable_id else {
@@ -491,6 +491,13 @@ impl EffectRegistry {
                     has_default_handler: action.default_handler_effects.is_some(),
                 },
                 std_registry,
+            );
+            self.action_names.insert(
+                symbol.qualified_path.join("."),
+                ActionRef {
+                    tag: owner,
+                    action: EffectActionId(stable_id),
+                },
             );
         }
 
@@ -1127,6 +1134,7 @@ fn runtime_requirement_from_std(
         etas_std::StdRuntimeRequirement::SecretAccess => RuntimeRequirementReason::SecretAccess,
         etas_std::StdRuntimeRequirement::Compiler => RuntimeRequirementReason::Compiler,
         etas_std::StdRuntimeRequirement::RuntimeHandler => RuntimeRequirementReason::RuntimeHandler,
+        etas_std::StdRuntimeRequirement::TaskScheduler => RuntimeRequirementReason::TaskScheduler,
     }
 }
 
@@ -1157,11 +1165,16 @@ fn core_effect_requires_high_impact_ack(core: CoreEffect) -> bool {
 }
 
 fn is_std_effect_symbol(path: &[String]) -> bool {
-    path.len() == 3 && path[0] == "std" && path[1] == "effects"
+    path.len() == 3
+        && path[0] == "std"
+        && matches!(path[1].as_str(), "effects" | "task")
 }
 
 fn is_std_effect_action_symbol(path: &[String]) -> bool {
-    path.len() == 5 && path[0] == "std" && path[1] == "effects" && path[2] == "actions"
+    path.len() == 5
+        && path[0] == "std"
+        && matches!(path[1].as_str(), "effects" | "task")
+        && path[2] == "actions"
 }
 
 fn action_returns_never(output: &StdType) -> bool {

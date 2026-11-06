@@ -328,6 +328,9 @@ fn receiver_head(store: &TypeStore, ty: TypeId) -> ReceiverHead {
         Type::ResourceHandle(_) => 22,
         Type::IntegerLiteral { .. } => 23,
         Type::Existential { .. } => 24,
+        Type::Task(_) => 25,
+        Type::SchedulerHandle => 26,
+        Type::Continuation(_) => 27,
         Type::Refined { base, .. } => return receiver_head(store, *base),
     };
     ReceiverHead::Family(family)

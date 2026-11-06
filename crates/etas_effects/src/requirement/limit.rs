@@ -54,6 +54,7 @@ pub enum LimitKind {
     Cost,
     WallTime,
     Attempts,
+    Concurrency,
 }
 
 #[derive(
@@ -78,9 +79,11 @@ pub enum LimitBudgetKind {
 impl LimitKind {
     pub const fn budget_kind(self) -> LimitBudgetKind {
         match self {
-            Self::Iterations | Self::Tokens | Self::ContextTokens | Self::Attempts => {
-                LimitBudgetKind::Count
-            }
+            Self::Iterations
+            | Self::Tokens
+            | Self::ContextTokens
+            | Self::Attempts
+            | Self::Concurrency => LimitBudgetKind::Count,
             Self::Cost => LimitBudgetKind::Money,
             Self::WallTime => LimitBudgetKind::Duration,
         }

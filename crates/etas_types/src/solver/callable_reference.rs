@@ -103,6 +103,17 @@ pub(super) fn validate_bindings<E>(
                     }
                     pending.extend(handler.result);
                 }
+                Some(crate::Type::Task(task)) => {
+                    pending.push(task.output);
+                    extend_row_types(&mut pending, &task.effects);
+                }
+                Some(crate::Type::Continuation(continuation)) => {
+                    pending.push(continuation.action_output);
+                    pending.extend(continuation.handled_answer);
+                    if let Some(row) = &continuation.residual_effects {
+                        extend_row_types(&mut pending, row);
+                    }
+                }
                 Some(crate::Type::Applied { args, .. }) => pending.extend(args.iter().copied()),
                 Some(crate::Type::ResourceHandle(handle)) => match handle {
                     crate::ResourceHandleType::MemoryRegion { schema } => pending.push(*schema),
@@ -119,6 +130,7 @@ pub(super) fn validate_bindings<E>(
                     | crate::Type::Enum(_)
                     | crate::Type::Named(_)
                     | crate::Type::Nominal(_)
+                    | crate::Type::SchedulerHandle
                     | crate::Type::Prompt
                     | crate::Type::PromptPart
                     | crate::Type::MemoryPlace(_),

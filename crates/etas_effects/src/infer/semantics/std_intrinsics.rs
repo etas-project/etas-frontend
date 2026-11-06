@@ -915,6 +915,9 @@ impl EffectSemantics<'_> {
                 IntrinsicRuntimeRequirement::Checkpoint => {
                     summary.require_runtime(crate::RuntimeRequirementReason::Checkpoint);
                 }
+                IntrinsicRuntimeRequirement::TaskScheduler => {
+                    summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+                }
             }
         }
         Some(summary)
@@ -1457,7 +1460,9 @@ mod tests {
             params: Vec::new(),
             output: etas_std::StdType::parse("unit"),
             public_effects: Vec::new(),
+            public_effect_tail: None,
             requested_actions: Vec::new(),
+            requested_action_tail: None,
             source_method: None,
         };
         let row = etas_types::EffectRowRef {

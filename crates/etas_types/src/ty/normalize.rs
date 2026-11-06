@@ -191,6 +191,17 @@ fn type_contains_where(
                 }
                 pending.extend(handler.result);
             }
+            Type::Task(task) => {
+                pending.push(task.output);
+                push_effect_row_types(&task.effects, &mut pending);
+            }
+            Type::Continuation(continuation) => {
+                pending.push(continuation.action_output);
+                pending.extend(continuation.handled_answer);
+                if let Some(row) = &continuation.residual_effects {
+                    push_effect_row_types(row, &mut pending);
+                }
+            }
             Type::ResourceHandle(ResourceHandleType::MemoryRegion { schema }) => {
                 pending.push(*schema);
             }

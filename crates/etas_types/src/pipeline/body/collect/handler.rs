@@ -1,7 +1,8 @@
 use etas_hir::{HirHandlerArmId, HirStmt, ResolveResult, SymbolDef};
 
 use crate::{
-    EffectRef, EffectRowRef, HandlerProducedEffects, HandlerType, SymbolTypeFact, Type, TypeId,
+    ContinuationType, EffectRef, EffectRowRef, HandlerProducedEffects, HandlerType, SymbolTypeFact,
+    Type, TypeId,
     pipeline::{
         body::collect::{
             action_selector::{
@@ -166,8 +167,23 @@ pub(super) fn collect_handler_for_requests<E>(
                 collect_pattern(ctx, pat, ty)?;
             }
         }
+        let resume_ty = action_signature
+            .as_ref()
+            .map(|signature| signature.output)
+            .unwrap_or_else(|| ctx.fresh_type_var());
         if let Some(continuation) = arm.continuation {
-            let continuation_ty = ctx.fresh_type_var();
+            let residual_effects = match &expected_produced {
+                HandlerProducedEffects::Infer => None,
+                HandlerProducedEffects::Explicit(row) => Some(row.clone()),
+            };
+            let continuation_ty = ctx
+                .ctx
+                .interner
+                .intern(Type::Continuation(ContinuationType {
+                    action_output: resume_ty,
+                    handled_answer: expected_result,
+                    residual_effects: residual_effects.clone(),
+                }));
             collect_pattern(ctx, continuation, continuation_ty)?;
             if action_signature.as_ref().is_some_and(|signature| {
                 matches!(
@@ -181,11 +197,20 @@ pub(super) fn collect_handler_for_requests<E>(
                     message: "a never-returning action cannot bind a continuation".into(),
                 });
             }
+            if let etas_hir::HirPat::Binding { symbol, .. } = ctx.ctx.hir.pats[continuation] {
+                ctx.state.provisional.continuation_bindings.insert(
+                    symbol,
+                    crate::ContinuationBindingFact {
+                        arm: *handler,
+                        symbol,
+                        owner_scope: arm.scope,
+                        action_output: resume_ty,
+                        answer: expected_result,
+                        residual_effects,
+                    },
+                );
+            }
         }
-        let resume_ty = action_signature
-            .as_ref()
-            .map(|signature| signature.output)
-            .unwrap_or_else(|| ctx.fresh_type_var());
         ctx.state.handler_resume_stack.push(resume_ty);
         ctx.state.handler_finish_stack.push(expected_result);
         ctx.state.handler_finish_candidates.push(Vec::new());
