@@ -101,8 +101,9 @@ pub use etas_syntax::DumpOptions;
 use etas_syntax::dump_parse;
 
 pub use passes::{
-    BranchFact, ConcurrencyFacts, ConcurrencySiteFact, ResourceConflict, ResourceGuardPlan,
-    SchedulingDecision, TaskScopeFact,
+    AwaitSiteId, BranchFact, ConcurrencyFacts, ConcurrencyPlanFact, ConcurrencySiteFact,
+    ContinuationTransferFact, ContinuationTransferId, ResourceConflict, ResourceGuardPlan,
+    SchedulingDecision, TaskAwaitFact, TaskScopeFact, TaskSiteId, TaskStartFact,
 };
 
 pub struct Frontend;

@@ -23,13 +23,10 @@ flow main() -> i32 {
         .types
         .generic_instantiations
         .values()
-        .find(|fact| {
-            fact.effect_row_bindings
-                .iter()
-                .any(|(name, _)| name == "E")
-        })
+        .find(|fact| fact.effect_row_bindings.iter().any(|(name, _)| name == "E"))
         .expect("park has a checked task effect-row binding");
     assert!(park.deferred_effect_row_obligations.is_empty());
+    assert_eq!(checked.concurrency.continuation_transfers.len(), 1);
 }
 
 #[test]

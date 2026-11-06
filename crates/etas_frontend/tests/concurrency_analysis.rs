@@ -28,6 +28,16 @@ flow main() -> i32 {
         .expect("task scope fact");
     assert_eq!(scope.branches.len(), 2);
     assert_eq!(scope.decision, SchedulingDecision::Concurrent);
+    assert_eq!(checked.concurrency.starts.len(), 2);
+    assert_eq!(checked.concurrency.awaits.len(), 2);
+    assert!(
+        checked
+            .concurrency
+            .awaits
+            .values()
+            .all(|fact| fact.task.is_some())
+    );
+    assert_eq!(checked.concurrency.plans.len(), 1);
 }
 
 #[test]
