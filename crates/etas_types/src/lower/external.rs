@@ -9,8 +9,8 @@ pub use package_type::{package_effect_arg_input, package_effect_row_input, packa
 use crate::{
     EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FieldType,
     FlowType, HandlerProducedEffects, HandlerType, NamedTypeRef, NominalTypeRef, PrimitiveType,
-    RecordType, ResourceHandleType, TrustWrapper, Type, TypeConstructorId, TypeId, TypeOutput,
-    TypeStore, pipeline::context::TypePipelineContext,
+    RecordType, ResourceHandleType, TaskType, TrustWrapper, Type, TypeConstructorId, TypeId,
+    TypeOutput, TypeStore, pipeline::context::TypePipelineContext,
 };
 
 pub fn lower_external_action_signature(
@@ -510,6 +510,12 @@ pub fn lower_external_type(
                 output,
                 effects,
             }))
+        }
+        crate::ExternalTypeInput::Task { output, effects } => {
+            let output = lower_external_type(ctx, span, output);
+            let effects = lower_external_effect_row(ctx, span, effects);
+            ctx.interner
+                .intern(Type::Task(TaskType { output, effects }))
         }
         crate::ExternalTypeInput::Handler {
             handled,

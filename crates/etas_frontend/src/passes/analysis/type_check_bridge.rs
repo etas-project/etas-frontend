@@ -800,6 +800,10 @@ pub(super) fn convert_external_type(
             output: Box::new(convert_external_type(output)),
             effects: effects.as_ref().map(convert_external_effect_row),
         },
+        ProjectExternalTypeInput::Task { output, effects } => etas_types::ExternalTypeInput::Task {
+            output: Box::new(convert_external_type(output)),
+            effects: convert_external_effect_row(effects),
+        },
         ProjectExternalTypeInput::Handler {
             handled,
             produced,

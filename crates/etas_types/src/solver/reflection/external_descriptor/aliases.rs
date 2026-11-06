@@ -102,6 +102,10 @@ impl ExternalDescriptorMatcher<'_> {
                     self.substitute_alias_row(row, substitutions, depth + 1)?;
                 }
             }
+            Ty::Task { output, effects } => {
+                self.substitute_alias_type(output, substitutions, depth + 1)?;
+                self.substitute_alias_row(effects, substitutions, depth + 1)?;
+            }
             Ty::Handler {
                 handled,
                 produced,
@@ -222,6 +226,10 @@ impl ExternalDescriptorMatcher<'_> {
                     if let Some(row) = effects {
                         self.append_row_types(row, &mut pending, next)?;
                     }
+                }
+                Ty::Task { output, effects } => {
+                    pending.push((output, next));
+                    self.append_row_types(effects, &mut pending, next)?;
                 }
                 Ty::Handler {
                     handled,

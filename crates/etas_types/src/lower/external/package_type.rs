@@ -174,6 +174,15 @@ impl Projection {
                         .transpose()?,
                 }
             }
+            TypeKind::Task => Ty::Task {
+                output: single(self)?,
+                effects: self.row(
+                    ty.effects
+                        .as_ref()
+                        .ok_or_else(|| error("external task type is missing latent effects"))?,
+                    depth + 1,
+                )?,
+            },
             TypeKind::Handler => Ty::Handler {
                 handled: self.row(
                     ty.effects

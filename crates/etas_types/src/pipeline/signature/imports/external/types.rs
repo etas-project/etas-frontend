@@ -142,6 +142,10 @@ fn references(root: &Ty) -> BTreeSet<Vec<String>> {
                     row_types(row, &mut pending);
                 }
             }
+            Ty::Task { output, effects } => {
+                pending.push(output);
+                row_types(effects, &mut pending);
+            }
             Ty::Handler {
                 handled,
                 produced,

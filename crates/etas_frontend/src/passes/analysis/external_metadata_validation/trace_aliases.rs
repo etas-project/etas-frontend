@@ -257,6 +257,16 @@ impl<'a> TraceAliasComparator<'a> {
                 },
             ) => self.types(a, b)? && self.ty(x, y)? && self.optional_row(e, f)?,
             (
+                Type::Task {
+                    output: a,
+                    effects: x,
+                },
+                Type::Task {
+                    output: b,
+                    effects: y,
+                },
+            ) => self.ty(a, b)? && self.row(x, y)?,
+            (
                 Type::Handler {
                     handled: a,
                     produced: x,

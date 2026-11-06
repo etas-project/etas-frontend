@@ -505,6 +505,11 @@ impl Encoder {
                             tasks.push(Task::Type(output));
                             tasks.extend(input.iter().rev().map(Task::Type));
                         }
+                        Type::Task { output, effects } => {
+                            self.byte(29);
+                            tasks.push(Task::Row(effects));
+                            tasks.push(Task::Type(output));
+                        }
                         Type::Handler {
                             handled,
                             produced,

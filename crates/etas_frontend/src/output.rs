@@ -980,6 +980,10 @@ pub enum ProjectExternalTypeInput {
         output: Box<ProjectExternalTypeInput>,
         effects: Option<ProjectExternalEffectRowInput>,
     },
+    Task {
+        output: Box<ProjectExternalTypeInput>,
+        effects: ProjectExternalEffectRowInput,
+    },
     Handler {
         handled: ProjectExternalEffectRowInput,
         produced: Option<ProjectExternalEffectRowInput>,

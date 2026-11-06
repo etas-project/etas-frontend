@@ -217,6 +217,14 @@ impl ExternalDescriptorMatcher<'_> {
                 }
             }
             (
+                ExternalTypeInput::Task { output, effects },
+                TypeInfo::Task {
+                    output: expected_output,
+                    effects: expected_effects,
+                },
+            ) => Ok(self.ty(output, *expected_output, scope, depth + 1)?
+                && self.row(effects, *expected_effects, scope, depth + 1)?),
+            (
                 _,
                 TypeInfo::Builtin {
                     constructor,

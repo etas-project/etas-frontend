@@ -2104,6 +2104,10 @@ fn validate_type_semantics(
             }
             Ok(())
         }
+        ProjectExternalTypeInput::Task { output, effects } => {
+            validate_type_semantics(output, scope, allow_unbound_vars)?;
+            validate_effect_row(effects, scope)
+        }
         ProjectExternalTypeInput::Handler {
             handled,
             produced,
@@ -2336,6 +2340,15 @@ fn validate_type_resource_bounds_with_budget(
                             *nodes,
                         )?;
                     }
+                }
+                ProjectExternalTypeInput::Task { output, effects } => {
+                    push_type_graph_node(&mut stack, TypeGraphNode::Type(output), next, *nodes)?;
+                    push_type_graph_node(
+                        &mut stack,
+                        TypeGraphNode::EffectRow(effects),
+                        next,
+                        *nodes,
+                    )?;
                 }
                 ProjectExternalTypeInput::Handler {
                     handled,

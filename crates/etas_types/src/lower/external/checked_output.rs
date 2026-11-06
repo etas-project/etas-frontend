@@ -4,8 +4,8 @@ use super::{
 };
 use crate::{
     EffectArgRef, EffectRef, EffectRowRef, FieldType, FlowType, HandlerProducedEffects,
-    HandlerType, NamedTypeRef, RecordType, ResourceHandleType, Type, TypeConstructorId, TypeId,
-    TypeOutput,
+    HandlerType, NamedTypeRef, RecordType, ResourceHandleType, TaskType, Type, TypeConstructorId,
+    TypeId, TypeOutput,
 };
 use std::collections::HashMap;
 
@@ -325,6 +325,10 @@ impl<'a> CheckedExternalTypeResolver<'a> {
                     .as_ref()
                     .map(|row| self.effect_row(row))
                     .transpose()?,
+            })),
+            crate::ExternalTypeInput::Task { output, effects } => Ok(Type::Task(TaskType {
+                output: self.type_id(output)?,
+                effects: self.effect_row(effects)?,
             })),
             crate::ExternalTypeInput::Handler {
                 handled,

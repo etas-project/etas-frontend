@@ -366,6 +366,10 @@ pub enum ExternalTypeInput {
         output: Box<ExternalTypeInput>,
         effects: Option<ExternalEffectRowInput>,
     },
+    Task {
+        output: Box<ExternalTypeInput>,
+        effects: ExternalEffectRowInput,
+    },
     Handler {
         handled: ExternalEffectRowInput,
         produced: Option<ExternalEffectRowInput>,
