@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_core::{Diagnostic, Span};
-use etas_hir::{HirBlockId, HirExprId, HirHandlerArmId, HirItemId, HirStmtId, SymbolId};
+use etas_hir::{HirBlockId, HirExprId, HirHandlerArmId, HirItemId, HirStmtId, ScopeId, SymbolId};
 
 use crate::{
     EffectRow, EffectSummary, EffectUnit, InterpreterSupportFacts, RequirementFacts,
@@ -117,6 +117,10 @@ pub struct EffectFacts {
     pub latent_effects: HashMap<HirExprId, LatentEffectFact>,
     pub std_callable_values: HashMap<HirExprId, StdCallableEffectFact>,
     pub std_action_calls: HashMap<HirExprId, StdActionCallFact>,
+    #[serde(default)]
+    pub task_calls: HashMap<HirExprId, TaskCallFact>,
+    #[serde(default)]
+    pub continuation_transfers: HashMap<HirExprId, ContinuationTransferFact>,
     pub public_contracts: Vec<PublicEffectContract>,
     pub trace_specs: TraceSpecFacts,
     pub requirements: RequirementFacts,
@@ -464,6 +468,52 @@ pub struct StdActionCallFact {
     pub parameters: Vec<etas_types::TypeId>,
     pub output: etas_types::TypeId,
     pub invocation: crate::Effect,
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum TaskCallKind {
+    Run,
+    Start,
+    Await,
+    Requeue,
+    Park,
+    Join,
+    TryJoin,
+    Collect,
+    Race,
+    MapConcurrent,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct TaskCallFact {
+    pub kind: TaskCallKind,
+    pub call: HirExprId,
+    pub owner_scope: ScopeId,
+    pub job: Option<HirExprId>,
+    pub output: etas_types::TypeId,
+    pub effects: EffectRow,
+    pub behavior: EffectSummary,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ContinuationTransferFact {
+    pub call: HirExprId,
+    pub binder: SymbolId,
+    pub target: TransferTarget,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum TransferTarget {
+    Requeue,
+    Park { task: HirExprId },
 }
 
 #[derive(

@@ -155,6 +155,28 @@ flow main() -> i32 {
         .expect("checked task await");
     assert!(trace_contains_task_start(&summary.action_trace, start));
     assert!(trace_contains_task_await(&summary.action_trace, awaited));
+    let start_fact = output
+        .facts
+        .task_calls
+        .get(&start)
+        .expect("materialized task start fact");
+    assert_eq!(start_fact.kind, etas_effects::TaskCallKind::Start);
+    assert!(start_fact.effects.is_empty(), "{start_fact:#?}");
+    let await_fact = output
+        .facts
+        .task_calls
+        .get(&awaited)
+        .expect("materialized task await fact");
+    assert_eq!(await_fact.kind, etas_effects::TaskCallKind::Await);
+    assert_eq!(await_fact.owner_scope, start_fact.owner_scope);
+    assert!(await_fact.effects.is_empty());
+    assert!(
+        output
+            .facts
+            .task_calls
+            .values()
+            .any(|fact| fact.kind == etas_effects::TaskCallKind::Run)
+    );
     assert!(
         matches!(
             summary.support,
@@ -162,6 +184,51 @@ flow main() -> i32 {
         ),
         "{summary:#?}"
     );
+}
+
+#[test]
+fn scheduler_park_materializes_continuation_transfer_fact() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.task.{run, start, await, Scheduler};
+import std.task.scheduler.park;
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let task = start(() => { return 7; });
+        return handle { await(task) } with {
+            Async.await(waited) as k => { park(scheduler, waited, k); }
+        };
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:#?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+
+    let transfer = output
+        .facts
+        .continuation_transfers
+        .values()
+        .next()
+        .expect("materialized continuation transfer");
+    assert!(types.facts.continuation_bindings.contains_key(&transfer.binder));
+    assert!(matches!(
+        transfer.target,
+        etas_effects::TransferTarget::Park { .. }
+    ));
+    let park = output
+        .facts
+        .task_calls
+        .get(&transfer.call)
+        .expect("materialized park task fact");
+    assert_eq!(park.kind, etas_effects::TaskCallKind::Park);
 }
 
 #[test]
@@ -200,6 +267,16 @@ flow main() -> unit {
         action: CONSOLE_STDOUT_WRITE_ACTION,
     });
     assert!(summary.requested_actions.effects.contains(&console));
+    let start = output
+        .facts
+        .task_calls
+        .values()
+        .find(|fact| fact.kind == etas_effects::TaskCallKind::Start)
+        .expect("materialized task start fact");
+    assert!(
+        start.behavior.requested_actions.effects.contains(&console),
+        "{start:#?}"
+    );
     assert_ne!(summary.action_trace, ActionTraceDomain::Empty);
     assert!(matches!(
         summary.support,

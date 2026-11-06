@@ -71,7 +71,9 @@ impl BodyEffectOutput {
             try_captures,
             latent_effects,
             std_callable_values,
-            std_action_calls
+            std_action_calls,
+            task_calls,
+            continuation_transfers
         );
         for (stmt, fact) in &output.facts.stmt_effects {
             let owner = index

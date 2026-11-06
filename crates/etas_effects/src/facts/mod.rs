@@ -15,14 +15,15 @@ pub mod support_facts;
 
 pub use body::BodyEffectOutput;
 pub use effect_facts::{
-    EffectAcknowledgement, EffectAnalysisOutput, EffectComponentConvergence,
-    EffectConvergenceStatus, EffectFacts, EffectMaterializationInputs, EffectOutput,
-    ErrorConversionFact, FinishSummary, HandleApplicationFact, HandlerActionFact, HandlerArmFact,
-    HandlerCompletionSummary, HandlerValueFact, HandlerValueRef, LatentEffectBodyRef,
-    LatentEffectContract, LatentEffectFact, PerformedActionFact, PublicEffectContract,
-    PublicEffectContractSource, PublicEffectValue, QualifiedName, RequirementFactsForContract,
-    ResumeSummary, StdActionCallFact, StdCallableEffectFact, TraceSpecClauseFact,
-    TraceSpecConformanceModelFact, TraceSpecFacts, TryCaptureFact,
+    ContinuationTransferFact, EffectAcknowledgement, EffectAnalysisOutput,
+    EffectComponentConvergence, EffectConvergenceStatus, EffectFacts, EffectMaterializationInputs,
+    EffectOutput, ErrorConversionFact, FinishSummary, HandleApplicationFact, HandlerActionFact,
+    HandlerArmFact, HandlerCompletionSummary, HandlerValueFact, HandlerValueRef,
+    LatentEffectBodyRef, LatentEffectContract, LatentEffectFact, PerformedActionFact,
+    PublicEffectContract, PublicEffectContractSource, PublicEffectValue, QualifiedName,
+    RequirementFactsForContract, ResumeSummary, StdActionCallFact, StdCallableEffectFact,
+    TaskCallFact, TaskCallKind, TraceSpecClauseFact, TraceSpecConformanceModelFact, TraceSpecFacts,
+    TransferTarget, TryCaptureFact,
 };
 pub use projector::EffectFactProjector;
 pub use requirement_facts::RequirementFacts;

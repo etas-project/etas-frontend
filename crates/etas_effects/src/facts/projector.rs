@@ -64,6 +64,7 @@ impl EffectFactProjector {
             &mut diagnostics,
             &mut latent_realizations,
         )?;
+        materialize_task_calls(hir, types, registry, &mut facts, &mut diagnostics)?;
 
         for (item, hir_item) in hir.items.iter() {
             if reachable_items.is_some_and(|reachable| !reachable.contains(&item)) {
@@ -137,6 +138,327 @@ impl EffectFactProjector {
         }
 
         Ok(EffectOutput { facts, diagnostics })
+    }
+}
+
+fn materialize_task_calls(
+    hir: &etas_hir::HirProgram,
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    facts: &mut EffectFacts,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<(), EffectPipelineError> {
+    use etas_hir::{HirExpr, HirNodeRef, ResolveResult};
+
+    let view = etas_hir::HirTreeView::new(hir);
+    let run_callbacks = types
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .filter(|(_, fact)| fact.intrinsic == etas_std::intrinsic::task::RUN)
+        .filter_map(|(call, _)| argument(hir, *call, 0))
+        .collect::<std::collections::HashSet<_>>();
+
+    for (call, intrinsic) in &types.facts.std_intrinsic_calls {
+        let Some(kind) = task_call_kind(intrinsic.intrinsic) else {
+            continue;
+        };
+        let span = hir
+            .exprs
+            .get(*call)
+            .map(|expr| expr.span(&hir.blocks))
+            .ok_or(EffectPipelineError::MissingExprFact { expr: *call })?;
+        let Some(output) = types.facts.expr_types.get(call).copied() else {
+            diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                "structured task call has no checked output type",
+            ));
+            continue;
+        };
+        let Some(behavior) = facts.expr_effects.get(call).cloned() else {
+            diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                "structured task call has no checked effect summary",
+            ));
+            continue;
+        };
+        let job = match kind {
+            crate::TaskCallKind::Run | crate::TaskCallKind::Start => argument(hir, *call, 0),
+            crate::TaskCallKind::MapConcurrent => call_arguments(hir, *call).last().copied(),
+            _ => None,
+        };
+        let owner_scope = match kind {
+            crate::TaskCallKind::Run => job
+                .and_then(|job| match hir.exprs.get(job) {
+                    Some(HirExpr::Lambda { scope, .. }) => Some(*scope),
+                    _ => None,
+                })
+                .or_else(|| view.enclosing_scope(HirNodeRef::Expr(*call))),
+            crate::TaskCallKind::Start => types
+                .facts
+                .task_owners
+                .get(call)
+                .map(|owner| owner.owner_scope)
+                .or_else(|| task_owner_scope(view.index(), hir, *call, &run_callbacks)),
+            _ => task_owner_scope(view.index(), hir, *call, &run_callbacks),
+        };
+        let Some(owner_scope) = owner_scope else {
+            diagnostics.push(Diagnostic::effect_check(
+                EffectDiagnosticCode::IncompleteEffectFacts,
+                span,
+                "structured task call has no checked scheduler owner scope",
+            ));
+            continue;
+        };
+        let effects = task_call_effects(hir, types, registry, facts, *call, kind);
+        facts.task_calls.insert(
+            *call,
+            crate::TaskCallFact {
+                kind,
+                call: *call,
+                owner_scope,
+                job,
+                output,
+                effects,
+                behavior,
+            },
+        );
+
+        let continuation_index = match kind {
+            crate::TaskCallKind::Requeue => Some(1),
+            crate::TaskCallKind::Park => Some(2),
+            _ => None,
+        };
+        let Some(continuation) = continuation_index.and_then(|index| argument(hir, *call, index))
+        else {
+            continue;
+        };
+        let Some(HirExpr::Path(path)) = hir.exprs.get(continuation) else {
+            continue;
+        };
+        let ResolveResult::Resolved(binder) = path.resolution else {
+            continue;
+        };
+        if !types.facts.continuation_bindings.contains_key(&binder) {
+            continue;
+        }
+        let target = match kind {
+            crate::TaskCallKind::Requeue => crate::TransferTarget::Requeue,
+            crate::TaskCallKind::Park => {
+                let Some(task) = argument(hir, *call, 1) else {
+                    continue;
+                };
+                crate::TransferTarget::Park { task }
+            }
+            _ => unreachable!("only continuation transfer calls have a continuation index"),
+        };
+        facts.continuation_transfers.insert(
+            *call,
+            crate::ContinuationTransferFact {
+                call: *call,
+                binder,
+                target,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn task_call_kind(intrinsic: u32) -> Option<crate::TaskCallKind> {
+    Some(match intrinsic {
+        etas_std::intrinsic::task::RUN => crate::TaskCallKind::Run,
+        etas_std::intrinsic::task::START => crate::TaskCallKind::Start,
+        etas_std::intrinsic::task::AWAIT => crate::TaskCallKind::Await,
+        etas_std::intrinsic::task::REQUEUE => crate::TaskCallKind::Requeue,
+        etas_std::intrinsic::task::PARK => crate::TaskCallKind::Park,
+        etas_std::intrinsic::task::JOIN_TUPLE | etas_std::intrinsic::task::JOIN_ARRAY => {
+            crate::TaskCallKind::Join
+        }
+        etas_std::intrinsic::task::TRY_JOIN => crate::TaskCallKind::TryJoin,
+        etas_std::intrinsic::task::COLLECT => crate::TaskCallKind::Collect,
+        etas_std::intrinsic::task::RACE => crate::TaskCallKind::Race,
+        etas_std::intrinsic::task::MAP_CONCURRENT
+        | etas_std::intrinsic::task::MAP_CONCURRENT_COLLECT => crate::TaskCallKind::MapConcurrent,
+        _ => return None,
+    })
+}
+
+fn task_call_effects(
+    hir: &etas_hir::HirProgram,
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    facts: &EffectFacts,
+    call: etas_hir::HirExprId,
+    kind: crate::TaskCallKind,
+) -> EffectRow {
+    if let Some(row) = facts.generic_effect_rows.get(&call).and_then(|rows| {
+        rows.iter()
+            .find_map(|(name, row)| (name == "E").then(|| row.clone()))
+    }) {
+        return row;
+    }
+    let args = call_arguments(hir, call);
+    let selected = match kind {
+        crate::TaskCallKind::Run
+        | crate::TaskCallKind::Start
+        | crate::TaskCallKind::Await
+        | crate::TaskCallKind::Join
+        | crate::TaskCallKind::TryJoin
+        | crate::TaskCallKind::Collect
+        | crate::TaskCallKind::Race => args.get(..1).unwrap_or_default(),
+        crate::TaskCallKind::Park => args.get(1..2).unwrap_or_default(),
+        crate::TaskCallKind::MapConcurrent => args.as_slice(),
+        crate::TaskCallKind::Requeue => &[],
+    };
+    let mut effects = EffectRow::empty();
+    let mut visited = std::collections::HashSet::new();
+    for argument in selected {
+        if let Some(ty) = types.facts.expr_types.get(argument).copied() {
+            collect_task_effects(types, registry, ty, &mut effects, &mut visited);
+        }
+    }
+    effects
+}
+
+fn collect_task_effects(
+    types: &etas_types::TypeOutput,
+    registry: &EffectRegistry,
+    ty: etas_types::TypeId,
+    effects: &mut EffectRow,
+    visited: &mut std::collections::HashSet<etas_types::TypeId>,
+) {
+    if !visited.insert(ty) {
+        return;
+    }
+    match types.store.get(ty) {
+        Some(etas_types::Type::Task(task)) => {
+            effects.union_assign(&row_from_type_ref(registry, &task.effects));
+        }
+        Some(etas_types::Type::Function(flow)) => {
+            if let Some(row) = &flow.effects {
+                effects.union_assign(&row_from_type_ref(registry, row));
+            }
+        }
+        Some(etas_types::Type::Tuple(items)) => {
+            for item in items {
+                collect_task_effects(types, registry, *item, effects, visited);
+            }
+        }
+        Some(
+            etas_types::Type::Array(inner)
+            | etas_types::Type::List(inner)
+            | etas_types::Type::Set(inner)
+            | etas_types::Type::Slice(inner)
+            | etas_types::Type::Option(inner)
+            | etas_types::Type::Schema(inner)
+            | etas_types::Type::Message(inner),
+        ) => collect_task_effects(types, registry, *inner, effects, visited),
+        Some(etas_types::Type::Result { ok, err }) => {
+            collect_task_effects(types, registry, *ok, effects, visited);
+            collect_task_effects(types, registry, *err, effects, visited);
+        }
+        Some(etas_types::Type::Record(record)) => {
+            for field in &record.fields {
+                collect_task_effects(types, registry, field.ty, effects, visited);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn call_arguments(
+    hir: &etas_hir::HirProgram,
+    call: etas_hir::HirExprId,
+) -> Vec<etas_hir::HirExprId> {
+    match hir.exprs.get(call) {
+        Some(etas_hir::HirExpr::Call { args, .. }) => {
+            args.iter().filter_map(argument_expr).collect()
+        }
+        Some(etas_hir::HirExpr::MethodCall { receiver, args, .. }) => std::iter::once(*receiver)
+            .chain(args.iter().filter_map(argument_expr))
+            .collect(),
+        _ => vec![],
+    }
+}
+
+fn argument(
+    hir: &etas_hir::HirProgram,
+    call: etas_hir::HirExprId,
+    index: usize,
+) -> Option<etas_hir::HirExprId> {
+    call_arguments(hir, call).get(index).copied()
+}
+
+fn argument_expr(argument: &etas_hir::HirArg) -> Option<etas_hir::HirExprId> {
+    match argument {
+        etas_hir::HirArg::Positional(expr) | etas_hir::HirArg::Named { value: expr, .. } => {
+            Some(*expr)
+        }
+    }
+}
+
+fn task_owner_scope(
+    index: &etas_hir::HirTreeIndex,
+    hir: &etas_hir::HirProgram,
+    expr: etas_hir::HirExprId,
+    run_callbacks: &std::collections::HashSet<etas_hir::HirExprId>,
+) -> Option<etas_hir::ScopeId> {
+    use etas_hir::{HirBodyKind, HirExpr, HirOwner};
+
+    let mut body = body_containing_expr(index, expr)?;
+    loop {
+        body = match body.kind {
+            HirBodyKind::Lambda(lambda) => {
+                if run_callbacks.contains(&lambda) {
+                    let HirExpr::Lambda { scope, .. } = hir.exprs[lambda] else {
+                        return None;
+                    };
+                    return Some(scope);
+                }
+                body_containing_expr(index, lambda)?
+            }
+            HirBodyKind::HandlerArm(arm) => {
+                let HirOwner::Expr(handler) = *index.handler_arm_owner.get(&arm)? else {
+                    return None;
+                };
+                body_containing_expr(index, handler)?
+            }
+            HirBodyKind::MatchArm { expr, .. } | HirBodyKind::StageLimit { expr, .. } => {
+                body_containing_expr(index, expr)?
+            }
+            HirBodyKind::Flow
+            | HirBodyKind::Tool
+            | HirBodyKind::Agent
+            | HirBodyKind::TopLevelLet
+            | HirBodyKind::ImplFlow(_)
+            | HirBodyKind::AnnotationArg { .. } => return None,
+        };
+    }
+}
+
+fn body_containing_expr(
+    index: &etas_hir::HirTreeIndex,
+    expr: etas_hir::HirExprId,
+) -> Option<etas_hir::HirBodyRef> {
+    use etas_hir::HirOwner;
+
+    let mut owner = *index.expr_owner.get(&expr)?;
+    loop {
+        owner = match owner {
+            HirOwner::Body(body) => return Some(body),
+            HirOwner::Expr(expr) => *index.expr_owner.get(&expr)?,
+            HirOwner::Block(block) => *index.block_owner.get(&block)?,
+            HirOwner::Stmt(stmt) => {
+                let block = *index.stmt_block.get(&stmt)?;
+                *index.block_owner.get(&block)?
+            }
+            HirOwner::HandlerArm(_)
+            | HirOwner::Item(_)
+            | HirOwner::Module(_)
+            | HirOwner::Pattern(_) => return None,
+        };
     }
 }
 
