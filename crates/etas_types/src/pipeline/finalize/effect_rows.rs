@@ -165,6 +165,28 @@ pub fn materialize_effect_row_instantiations(
                 std_calls.insert(patch.call, fact);
             }
             method_calls.insert(patch.call, method);
+        } else if let Some(call) = output.facts.std_intrinsic_calls.get(&patch.call) {
+            let types = fact
+                .type_bindings
+                .iter()
+                .cloned()
+                .collect::<HashMap<_, _>>();
+            for ty in call
+                .signature
+                .params
+                .iter()
+                .copied()
+                .chain(std::iter::once(call.signature.output))
+                .chain(std::iter::once(call.callable_type))
+            {
+                crate::TypeSubstitutionEngine::materializing(&mut interner, &types, None)
+                    .with_effect_arguments(&rows)
+                    .substitute(ty)
+                    .map_err(|_| EffectRowMaterializationError {
+                        call: patch.call,
+                        reason: "checked intrinsic ABI could not materialize its solved effect rows",
+                    })?;
+            }
         }
     }
     // Validate the whole batch before publishing any completed checked facts.
@@ -199,7 +221,7 @@ mod tests {
     use super::*;
     use crate::{
         DeferredEffectRowObligation, EffectRef, GenericInstantiationFact, PrimitiveType,
-        TypeInterner,
+        TypeInterner, facts::CheckedStdCallFact,
     };
 
     fn pending() -> TypeOutput {
@@ -280,6 +302,68 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn solved_rows_materialize_direct_std_call_abi() {
+        let mut output = pending();
+        let mut interner = TypeInterner::from_store(output.store.as_ref().clone());
+        let string = output.facts.generic_instantiations[&HirExprId(3)].type_bindings[0].1;
+        let callback = output.facts.expr_types[&HirExprId(4)];
+        let task = interner.intern(crate::Type::Task(crate::TaskType {
+            output: string,
+            effects: EffectRowRef {
+                effects: vec![],
+                tail: Some("E".into()),
+            },
+        }));
+        let callable = interner.intern(crate::Type::Function(crate::FlowType {
+            input: vec![callback],
+            output: task,
+            effects: Some(EffectRowRef {
+                effects: vec![],
+                tail: Some("E".into()),
+            }),
+        }));
+        output.store = Arc::new(interner.into_store());
+        Arc::make_mut(&mut output.facts).std_intrinsic_calls.insert(
+            HirExprId(3),
+            CheckedStdCallFact {
+                qualified_path: vec!["std".into(), "task".into(), "start".into()],
+                intrinsic: 0,
+                overload: 0,
+                callable_type: callable,
+                signature: crate::CallableSignature {
+                    params: vec![callback],
+                    output: task,
+                    effects: Some(EffectRowRef {
+                        effects: vec![],
+                        tail: Some("E".into()),
+                    }),
+                    generic_params: vec![],
+                    requested_actions: None,
+                },
+            },
+        );
+
+        materialize_effect_row_instantiations(&mut output, &[patch("E")]).unwrap();
+
+        let call = &output.facts.std_intrinsic_calls[&HirExprId(3)];
+        let types = output.facts.generic_instantiations[&HirExprId(3)]
+            .type_bindings
+            .iter()
+            .cloned()
+            .collect::<HashMap<_, _>>();
+        let rows = patch("E").bindings.into_iter().collect::<HashMap<_, _>>();
+        let specialized = crate::TypeSubstitutionEngine::existing(&output.store, &types)
+            .with_effect_arguments(&rows)
+            .substitute(call.signature.output)
+            .unwrap();
+        assert!(matches!(
+            output.store.get(specialized),
+            Some(crate::Type::Task(task)) if task.effects.tail.is_none()
+        ));
+        assert!(!output.facts.expr_types.contains_key(&HirExprId(3)));
     }
 
     #[test]
