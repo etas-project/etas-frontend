@@ -914,6 +914,48 @@ impl EffectSemantics<'_> {
                 }
                 summary
             }
+            Some(etas_std::LoweringHint::Task(
+                operation @ (etas_std::StdTaskIntrinsic::Run | etas_std::StdTaskIntrinsic::Start),
+            )) => {
+                let mut summary = self.summary_from_std_flow(call, symbol, flow, span);
+                let argument = match operation {
+                    etas_std::StdTaskIntrinsic::Run => "body",
+                    etas_std::StdTaskIntrinsic::Start => "job",
+                    _ => unreachable!("matched run or start"),
+                };
+                let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(call) else {
+                    return Some(
+                        self.reject_effect_state(
+                            span,
+                            format!("task {operation:?} requires a checked {argument} argument"),
+                            state.clone(),
+                        )
+                        .summary,
+                    );
+                };
+                let Some(job) = args.first().and_then(arg_expr) else {
+                    return Some(
+                        self.reject_effect_state(
+                            span,
+                            format!("task {operation:?} requires a checked {argument} argument"),
+                            state.clone(),
+                        )
+                        .summary,
+                    );
+                };
+                match self.latent_summary_for_expr(state, job, argument) {
+                    Ok(job) => {
+                        summary.seq_assign(&job);
+                    }
+                    Err(error) => {
+                        return Some(
+                            self.reject_effect_state(span, error.to_string(), state.clone())
+                                .summary,
+                        );
+                    }
+                }
+                summary
+            }
             Some(etas_std::LoweringHint::ActionReducer {
                 reducer, stable_id, ..
             }) => {

@@ -118,6 +118,49 @@ flow main() -> i32 {
     );
 }
 
+#[test]
+fn task_run_and_start_contribute_the_job_requested_actions_immediately() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.io.println;
+import std.task.{run, start, Scheduler};
+flow main() -> unit {
+    run((scheduler: Scheduler) => {
+        let dropped = start(() => {
+            println("started")?;
+        });
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:#?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+
+    let summary = output
+        .facts
+        .item_effects
+        .values()
+        .next()
+        .expect("main effect summary");
+    let console = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.requested_actions.effects.contains(&console));
+    assert_ne!(summary.action_trace, ActionTraceDomain::Empty);
+    assert!(matches!(
+        summary.support,
+        InterpreterSupport::RequiresInterpreterOrchestration(_)
+    ));
+}
+
 fn is_approval_request_effect(effect: &Effect) -> bool {
     matches!(
         effect,
