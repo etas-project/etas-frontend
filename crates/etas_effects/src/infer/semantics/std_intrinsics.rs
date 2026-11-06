@@ -861,7 +861,10 @@ impl EffectSemantics<'_> {
             .facts
             .generic_instantiations
             .get(&call)
-            .is_some_and(|fact| !fact.deferred_effect_row_obligations.is_empty())
+            .is_some_and(|fact| {
+                !fact.effect_row_bindings.is_empty()
+                    || !fact.deferred_effect_row_obligations.is_empty()
+            })
             && let Err(error) = self.checked_call_generic_values(call, state)
         {
             return Some(
