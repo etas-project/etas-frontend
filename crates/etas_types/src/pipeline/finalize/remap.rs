@@ -231,6 +231,19 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
                 handler.result = handler.result.map(|ty| self.ty(ty));
                 Type::Handler(handler)
             }
+            Type::Task(mut task) => {
+                task.output = self.ty(task.output);
+                task.effects = self.effect_row(task.effects);
+                Type::Task(task)
+            }
+            Type::Continuation(mut continuation) => {
+                continuation.action_output = self.ty(continuation.action_output);
+                continuation.handled_answer = continuation.handled_answer.map(|ty| self.ty(ty));
+                continuation.residual_effects = continuation
+                    .residual_effects
+                    .map(|row| self.effect_row(row));
+                Type::Continuation(continuation)
+            }
             Type::Nominal(mut nominal) => {
                 nominal.representation = nominal.representation.map(|ty| self.ty(ty));
                 Type::Nominal(nominal)
@@ -283,6 +296,7 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
             | Type::IntegerLiteral { .. }
             | Type::Enum(_)
             | Type::Named(_)
+            | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
             | Type::MemoryPlace(_) => ty,
@@ -655,6 +669,18 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         for arg in &mut fact.selectors {
             *arg = remapper.effect_arg(arg.clone());
         }
+    }
+    for fact in facts.continuation_bindings.values_mut() {
+        fact.action_output = remapper.ty(fact.action_output);
+        fact.answer = fact.answer.map(|answer| remapper.ty(answer));
+        fact.residual_effects = fact
+            .residual_effects
+            .take()
+            .map(|row| remapper.effect_row(row));
+    }
+    for fact in facts.task_owners.values_mut() {
+        fact.output = remapper.ty(fact.output);
+        fact.effects = remapper.effect_row(fact.effects.clone());
     }
     for fact in facts.deferred_handler_instantiations.values_mut() {
         if let Some(overload) = &mut fact.overload {

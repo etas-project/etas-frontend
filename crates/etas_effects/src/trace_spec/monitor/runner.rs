@@ -126,6 +126,25 @@ impl<'a> SingleComponentMonitor<'a> {
             ActionTraceDomain::Empty => TraceRun::known(states),
             ActionTraceDomain::Event(event) => self.step_event(states, event, matcher),
             ActionTraceDomain::ParameterCall { .. } => TraceRun::unknown(),
+            ActionTraceDomain::TaskAwait { .. } => TraceRun::known(states),
+            ActionTraceDomain::TaskStart { body, .. } => {
+                let actions = body.action_set();
+                if body.has_parameter_calls() || unknown_needs_order(&actions) {
+                    TraceRun::unknown()
+                } else {
+                    TraceRun::known(states)
+                }
+            }
+            ActionTraceDomain::Parallel(branches) => {
+                let actions = trace.action_set();
+                if branches.iter().any(ActionTraceDomain::has_parameter_calls)
+                    || unknown_needs_order(&actions)
+                {
+                    TraceRun::unknown()
+                } else {
+                    TraceRun::known(states)
+                }
+            }
             ActionTraceDomain::Seq(parts) => {
                 let mut current = states;
                 let mut incomplete = false;

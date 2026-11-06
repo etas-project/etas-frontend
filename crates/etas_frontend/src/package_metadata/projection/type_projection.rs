@@ -285,7 +285,12 @@ impl<'a> TypeProjection<'a> {
                     })
                     .collect::<Result<Vec<_>, PackageMetadataError>>()?;
             }
-            Type::Refined { .. } | Type::Schema(_) | Type::MemoryPlace(_) => {
+            Type::Refined { .. }
+            | Type::Schema(_)
+            | Type::MemoryPlace(_)
+            | Type::Task(_)
+            | Type::SchedulerHandle
+            | Type::Continuation(_) => {
                 return Err(PackageMetadataError::UnsupportedType {
                     ty,
                     reason: format!("{ty_value:?} has no published metadata schema yet"),

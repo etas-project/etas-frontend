@@ -450,7 +450,10 @@ impl LowerCtx {
                     .patterns
                     .iter()
                     .map(|pat| self.lower_pattern(pat, handler_scope, item_id))
-                    .collect();
+                    .collect::<Vec<_>>();
+                let continuation = arm.continuation.as_ref().map(|name| {
+                    self.lower_pattern(&ast::Pattern::Ident(name.clone()), handler_scope, item_id)
+                });
                 self.pattern_binding = previous_binding;
                 let effect = self.lower_effect_ref(&arm.effect, scope, item_id);
                 let handler = HirHandlerArm {
@@ -461,6 +464,7 @@ impl LowerCtx {
                         .map(|arg| self.lower_generic_arg(arg, handler_scope, item_id))
                         .collect(),
                     patterns,
+                    continuation,
                     body: self.lower_handler_arm_body(&arm.body, handler_scope, item_id),
                     scope: handler_scope,
                     span: arm.span,

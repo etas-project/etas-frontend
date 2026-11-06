@@ -76,6 +76,7 @@ flow limit() -> Limit { return Tokens(32); }
                 "Cost",
                 "WallTime",
                 "Attempts",
+                "Concurrency",
             ][..],
         ),
     ] {
@@ -111,7 +112,10 @@ flow ordinary(value: Command) -> unit { return; }
     let output = check_program(&hir);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let known = &output.facts.known_std_types;
-    assert_eq!(known.runtime_types.len(), 19);
+    assert_eq!(known.runtime_types.len(), 22);
+    for role in [Role::Task, Role::Scheduler, Role::Continuation] {
+        assert!(known.runtime_type(role).is_some());
+    }
     let signature = output
         .facts
         .item_signatures

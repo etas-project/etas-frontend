@@ -1056,6 +1056,9 @@ impl<'a> Dump<'a> {
                     for arg in &handler.generic_args {
                         this.generic_arg(arg);
                     }
+                    if let Some(continuation) = handler.continuation {
+                        this.pat_id("Continuation", continuation);
+                    }
                     this.block_id("Body", handler.body);
                 },
             );

@@ -51,6 +51,8 @@ impl BodyPipelineState {
 pub struct ProvisionalFacts {
     pub agent_method_calls: HashMap<HirExprId, SymbolId>,
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, crate::CheckedHandlerActionFact>,
+    pub continuation_bindings: HashMap<SymbolId, crate::ContinuationBindingFact>,
+    pub task_owners: HashMap<HirExprId, crate::TaskOwnerFact>,
     pub expr_types: HashMap<HirExprId, TypeId>,
     pub expr_memory_places: HashMap<HirExprId, TypeId>,
     pub field_projections: HashMap<HirExprId, Vec<crate::FieldProjectionFact>>,

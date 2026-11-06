@@ -140,6 +140,19 @@ pub fn checked_type_graph(
                     walker.edge(result, child_depth)?;
                 }
             }
+            Type::Task(task) => {
+                walker.edge(task.output, child_depth)?;
+                walker.row(&task.effects, child_depth)?;
+            }
+            Type::Continuation(continuation) => {
+                walker.edge(continuation.action_output, child_depth)?;
+                if let Some(answer) = continuation.handled_answer {
+                    walker.edge(answer, child_depth)?;
+                }
+                if let Some(row) = &continuation.residual_effects {
+                    walker.row(row, child_depth)?;
+                }
+            }
             Type::Applied { constructor, args } => {
                 walker.edge(TypeId(constructor.0), child_depth)?;
                 for arg in args {
@@ -161,6 +174,7 @@ pub fn checked_type_graph(
             | Type::IntegerLiteral { .. }
             | Type::Var(_)
             | Type::Named(_)
+            | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
             | Type::MemoryPlace(_) => {}

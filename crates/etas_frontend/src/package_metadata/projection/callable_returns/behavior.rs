@@ -26,6 +26,7 @@ pub(in crate::package_metadata::projection) fn behavior(
                     InterpreterFeatureKind::Retry => I::Retry,
                     InterpreterFeatureKind::Checkpoint => I::Checkpoint,
                     InterpreterFeatureKind::WorkflowOrchestration => I::WorkflowOrchestration,
+                    InterpreterFeatureKind::TaskScheduler => I::TaskScheduler,
                 })
                 .collect(),
         ),

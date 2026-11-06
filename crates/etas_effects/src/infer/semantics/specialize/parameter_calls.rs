@@ -200,7 +200,9 @@ impl EffectSemantics<'_> {
                     target.merge_request_footprint_without_escaping_or_trace(&source_summary);
                 }
             }
-            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => {
+            ActionTraceDomain::Seq(items)
+            | ActionTraceDomain::Choice(items)
+            | ActionTraceDomain::Parallel(items) => {
                 for item in items {
                     self.merge_parameter_call_summaries_inner(
                         target,
@@ -211,7 +213,7 @@ impl EffectSemantics<'_> {
                     )?;
                 }
             }
-            ActionTraceDomain::Repeat(item) => {
+            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
                 self.merge_parameter_call_summaries_inner(
                     target,
                     item,
@@ -248,6 +250,7 @@ impl EffectSemantics<'_> {
             }
             ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
+            | ActionTraceDomain::TaskAwait { .. }
             | ActionTraceDomain::UnknownOrder(_) => {}
         }
         Ok(())

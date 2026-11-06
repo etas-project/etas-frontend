@@ -68,6 +68,10 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
         .extend(body.definition_operations);
     facts.handler_actions.extend(body.handler_actions);
     facts
+        .continuation_bindings
+        .extend(body.continuation_bindings);
+    facts.task_owners.extend(body.task_owners);
+    facts
         .deferred_handler_instantiations
         .extend(body.deferred_handler_instantiations);
     facts.expr_memory_places.extend(body.expr_memory_places);

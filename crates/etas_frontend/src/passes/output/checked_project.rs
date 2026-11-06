@@ -9,7 +9,7 @@ use crate::{CheckedProgramData, ProjectContext, SourceBundle};
 
 use crate::passes::artifacts::{
     CALLABLE_INSTANTIATIONS, CHECKED_PROJECT, CHECKED_REFLECTION_TARGETS,
-    CHECKED_STD_LIBRARY_IMPLEMENTATIONS, DEFINITION_SOURCES, EFFECT_OUTPUT,
+    CHECKED_STD_LIBRARY_IMPLEMENTATIONS, CONCURRENCY_FACTS, DEFINITION_SOURCES, EFFECT_OUTPUT,
     GENERIC_EFFECT_BINDINGS, HANDLER_INSTANTIATIONS, HIR_OUTPUT, INTERPRETER_SUPPORT, MODULE_INDEX,
     PROJECT_ENTRY, REACHABILITY_FACTS, RESIDUAL_BACKEND_SUPPORT, RESOLVED_IMPORTS,
     TOP_LEVEL_LET_FACTS, TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT, VALIDATED_ITEM_ANNOTATIONS,
@@ -30,6 +30,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 TYPE_OUTPUT,
                 CHECKED_REFLECTION_TARGETS,
                 EFFECT_OUTPUT,
+                CONCURRENCY_FACTS,
                 VERIFIED_RESIDUAL_PLANS,
                 RESIDUAL_BACKEND_SUPPORT,
                 INTERPRETER_SUPPORT,
@@ -93,6 +94,9 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 .effects
                 .as_ref()
                 .expect("effect output should exist");
+            let Some(concurrency) = context.concurrency.as_ref() else {
+                return PassResult::failed("checked project is missing concurrency facts");
+            };
             let Some(checked_std_library_implementations) =
                 context.checked_std_library_implementations.as_ref()
             else {
@@ -201,6 +205,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 types: types.facts.clone(),
                 type_store: types.store.clone(),
                 effects: effects.facts.clone(),
+                concurrency: concurrency.clone(),
                 effect_registry: effect_artifacts.registry.clone(),
                 external_tool_schemas: environment
                     .external_public_metadata

@@ -91,6 +91,9 @@ pub enum Type {
     Enum(EnumTypeRef),
     Function(FlowType),
     Handler(HandlerType),
+    Task(TaskType),
+    SchedulerHandle,
+    Continuation(ContinuationType),
     Named(NamedTypeRef),
     Nominal(NominalTypeRef),
     Applied {
@@ -164,6 +167,23 @@ pub struct HandlerType {
     pub handled: EffectRowRef,
     pub produced: HandlerProducedEffects,
     pub result: Option<TypeId>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct TaskType {
+    pub output: TypeId,
+    pub effects: EffectRowRef,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ContinuationType {
+    pub action_output: TypeId,
+    pub handled_answer: Option<TypeId>,
+    pub residual_effects: Option<EffectRowRef>,
 }
 
 #[derive(

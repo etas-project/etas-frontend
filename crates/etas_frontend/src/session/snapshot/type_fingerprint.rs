@@ -162,6 +162,22 @@ impl<'a> Graph<'a> {
                     .map(|result| self.reference(result))
                     .transpose()?;
             }
+            Type::Task(task) => {
+                task.output = self.reference(task.output)?;
+                task.effects = self.row(task.effects.clone())?;
+            }
+            Type::Continuation(continuation) => {
+                continuation.action_output = self.reference(continuation.action_output)?;
+                continuation.handled_answer = continuation
+                    .handled_answer
+                    .map(|answer| self.reference(answer))
+                    .transpose()?;
+                continuation.residual_effects = continuation
+                    .residual_effects
+                    .clone()
+                    .map(|row| self.row(row))
+                    .transpose()?;
+            }
             Type::Nominal(nominal) => {
                 nominal.representation = nominal
                     .representation
@@ -190,6 +206,7 @@ impl<'a> Graph<'a> {
             | Type::Var(_)
             | Type::Enum(_)
             | Type::Named(_)
+            | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
             | Type::MemoryPlace(_) => {}

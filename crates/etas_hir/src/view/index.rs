@@ -306,6 +306,9 @@ impl HirTreeIndexBuilder<'_> {
             for pat in &arm_data.patterns {
                 self.index_pat(*pat, HirOwner::HandlerArm(arm));
             }
+            if let Some(continuation) = arm_data.continuation {
+                self.index_pat(continuation, HirOwner::HandlerArm(arm));
+            }
             let body = HirBodyRef::new(item_id, HirBodyKind::HandlerArm(arm));
             self.insert_body(
                 item_id,

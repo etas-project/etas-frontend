@@ -33,7 +33,8 @@ impl EffectSemantics<'_> {
         if let Some(state) = self.std_command_wrapper_call(site, state.clone()) {
             return state;
         }
-        if let Some(summary) = self.std_flow_summary(site.call, site.callee_expr, site.span) {
+        if let Some(summary) = self.std_flow_summary(site.call, site.callee_expr, site.span, &state)
+        {
             state.summary.seq_assign(&summary);
             return state;
         }
@@ -127,7 +128,11 @@ impl EffectSemantics<'_> {
             return false;
         };
         std_decl_is_pure_call_support(&decl.decl)
-            || matches!(&decl.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty())
+            || matches!(&decl.decl, StdDecl::Flow(flow)
+                if flow.public_effects.is_empty()
+                    && flow.public_effect_tail.is_none()
+                    && flow.requested_actions.is_empty()
+                    && flow.requested_action_tail.is_none())
     }
 
     pub(crate) fn partially_resolved_std_method_call(
@@ -711,7 +716,10 @@ impl EffectSemantics<'_> {
                 && matches!(
                     &symbol.decl,
                     StdDecl::Flow(flow)
-                        if flow.public_effects.is_empty() && flow.requested_actions.is_empty()
+                        if flow.public_effects.is_empty()
+                            && flow.public_effect_tail.is_none()
+                            && flow.requested_actions.is_empty()
+                            && flow.requested_action_tail.is_none()
                 )
         })
     }
@@ -814,22 +822,19 @@ impl EffectSemantics<'_> {
         call: HirExprId,
         callee: HirExprId,
         span: Span,
+        state: &EffectState,
     ) -> Option<crate::EffectSummary> {
-        let symbol = self.callee_symbol(callee)?;
-        let path = self
-            .types
-            .facts
-            .std_intrinsic_calls
-            .get(&call)
+        let selected = self.types.facts.std_intrinsic_calls.get(&call);
+        let path = selected
             .map(|fact| fact.qualified_path.clone())
             .or_else(|| self.std_qualified_path_for_expr(callee))?;
+        let symbol = self.callee_symbol(callee);
         let decl = self
             .std_registry
             .lookup_qualified(&path.iter().map(String::as_str).collect::<Vec<_>>())?;
         let StdDecl::Flow(_) = &decl.decl else {
             return None;
         };
-        let selected = self.types.facts.std_intrinsic_calls.get(&call);
         if selected.is_none() && self.std_registry.flow_declarations(decl.id).count() > 1 {
             return Some(
                 self.reject_effect_state(
@@ -851,6 +856,22 @@ impl EffectSemantics<'_> {
                 .summary,
             );
         };
+        if self
+            .types
+            .facts
+            .generic_instantiations
+            .get(&call)
+            .is_some_and(|fact| {
+                !fact.effect_row_bindings.is_empty()
+                    || !fact.deferred_effect_row_obligations.is_empty()
+            })
+            && let Err(error) = self.checked_call_generic_values(call, state)
+        {
+            return Some(
+                self.reject_effect_state(span, error.to_string(), state.clone())
+                    .summary,
+            );
+        }
         let mut summary = match decl
             .intrinsic
             .as_ref()
@@ -875,6 +896,75 @@ impl EffectSemantics<'_> {
                     summary.support = crate::InterpreterSupport::Rejected(
                         crate::FrontendRejectionReason::UnresolvedEffect,
                     );
+                }
+                summary
+            }
+            Some(etas_std::LoweringHint::Task(etas_std::StdTaskIntrinsic::Await)) => {
+                let mut summary = self.summary_from_std_flow(call, symbol, flow, span);
+                summary
+                    .action_trace
+                    .seq_assign(crate::ActionTraceDomain::TaskAwait { task_site: call });
+                if let Err(reason) = self.record_std_action_call(
+                    call,
+                    decl.intrinsic.as_ref().map(|intrinsic| intrinsic.id.0),
+                    &summary,
+                ) {
+                    self.diagnostics.push(Diagnostic::effect_check(
+                        EffectDiagnosticCode::IncompleteEffectFacts,
+                        span,
+                        reason,
+                    ));
+                    summary.support = crate::InterpreterSupport::Rejected(
+                        crate::FrontendRejectionReason::UnresolvedEffect,
+                    );
+                }
+                summary
+            }
+            Some(etas_std::LoweringHint::Task(
+                operation @ (etas_std::StdTaskIntrinsic::Run | etas_std::StdTaskIntrinsic::Start),
+            )) => {
+                let mut summary = self.summary_from_std_flow(call, symbol, flow, span);
+                let argument = match operation {
+                    etas_std::StdTaskIntrinsic::Run => "body",
+                    etas_std::StdTaskIntrinsic::Start => "job",
+                    _ => unreachable!("matched run or start"),
+                };
+                let Some(HirExpr::Call { args, .. }) = self.hir.exprs.get(call) else {
+                    return Some(
+                        self.reject_effect_state(
+                            span,
+                            format!("task {operation:?} requires a checked {argument} argument"),
+                            state.clone(),
+                        )
+                        .summary,
+                    );
+                };
+                let Some(job) = args.first().and_then(arg_expr) else {
+                    return Some(
+                        self.reject_effect_state(
+                            span,
+                            format!("task {operation:?} requires a checked {argument} argument"),
+                            state.clone(),
+                        )
+                        .summary,
+                    );
+                };
+                match self.latent_summary_for_expr(state, job, argument) {
+                    Ok(mut job) => {
+                        if *operation == etas_std::StdTaskIntrinsic::Start {
+                            job.action_trace = crate::ActionTraceDomain::TaskStart {
+                                task_site: call,
+                                body: Box::new(job.action_trace),
+                            };
+                        }
+                        summary.seq_assign(&job);
+                    }
+                    Err(error) => {
+                        return Some(
+                            self.reject_effect_state(span, error.to_string(), state.clone())
+                                .summary,
+                        );
+                    }
                 }
                 summary
             }
@@ -915,6 +1005,9 @@ impl EffectSemantics<'_> {
                 IntrinsicRuntimeRequirement::Checkpoint => {
                     summary.require_runtime(crate::RuntimeRequirementReason::Checkpoint);
                 }
+                IntrinsicRuntimeRequirement::TaskScheduler => {
+                    summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+                }
             }
         }
         Some(summary)
@@ -946,7 +1039,7 @@ impl EffectSemantics<'_> {
             let produced = self
                 .specialize_std_effect_row(call, flow, &produced, span)
                 .ok_or("reducer default-handler row could not be instantiated")?;
-            let produced = self.row_from_type_ref(&produced);
+            let produced = self.specialize_solved_std_row(call, self.row_from_type_ref(&produced));
             let action = {
                 let mut actions = summary.requested_actions.effects.iter();
                 let action = actions
@@ -979,7 +1072,7 @@ impl EffectSemantics<'_> {
     fn summary_from_std_flow(
         &mut self,
         call: HirExprId,
-        symbol: etas_hir::SymbolId,
+        symbol: Option<etas_hir::SymbolId>,
         flow: &etas_std::FlowDecl,
         span: Span,
     ) -> crate::EffectSummary {
@@ -1009,7 +1102,8 @@ impl EffectSemantics<'_> {
             let Some(row) = self.specialize_std_effect_row(call, flow, row, span) else {
                 return summary;
             };
-            self.apply_public_row_to_summary(&mut summary, &self.row_from_type_ref(&row), span);
+            let row = self.specialize_solved_std_row(call, self.row_from_type_ref(&row));
+            self.apply_public_row_to_summary(&mut summary, &row, span);
         }
         let Some(requested_actions) = &signature.requested_actions else {
             if !flow.requested_actions.is_empty() {
@@ -1029,7 +1123,8 @@ impl EffectSemantics<'_> {
         else {
             return summary;
         };
-        let requested_actions = self.row_from_type_ref(&requested_actions);
+        let requested_actions =
+            self.specialize_solved_std_row(call, self.row_from_type_ref(&requested_actions));
         for action_ref in requested_actions.effects.iter().cloned() {
             self.apply_requested_action_to_summary_with_source(
                 &mut summary,
@@ -1044,7 +1139,7 @@ impl EffectSemantics<'_> {
     fn summary_from_std_action_forwarder(
         &mut self,
         call: HirExprId,
-        symbol: etas_hir::SymbolId,
+        symbol: Option<etas_hir::SymbolId>,
         flow: &etas_std::FlowDecl,
         action_id: u32,
         span: Span,
@@ -1084,8 +1179,9 @@ impl EffectSemantics<'_> {
             .as_ref()
             .and_then(|row| self.specialize_std_effect_row(call, flow, row, span))
             .and_then(|row| {
-                (row.tail.is_none() && row.effects.len() == 1)
-                    .then(|| self.effect_from_type_ref(&row.effects[0]))
+                let row = self.specialize_solved_std_row(call, self.row_from_type_ref(&row));
+                (row.open.is_none() && row.effects.len() == 1)
+                    .then(|| row.effects.iter().next().cloned())
                     .flatten()
             });
         let effect = match requested {
@@ -1125,10 +1221,13 @@ impl EffectSemantics<'_> {
                     ));
                     return summary;
                 };
-                crate::EffectRow {
-                    effects: effects.into_iter().collect(),
-                    open: row.tail.as_deref().map(crate::effect_var_id_from_name),
-                }
+                self.specialize_solved_std_row(
+                    call,
+                    crate::EffectRow {
+                        effects: effects.into_iter().collect(),
+                        open: row.tail.as_deref().map(crate::effect_var_id_from_name),
+                    },
+                )
             }
             (None, true) => crate::EffectRow::empty(),
             (None, false) => {
@@ -1180,14 +1279,14 @@ impl EffectSemantics<'_> {
     fn checked_std_flow_signature(
         &self,
         call: HirExprId,
-        symbol: etas_hir::SymbolId,
+        symbol: Option<etas_hir::SymbolId>,
     ) -> Option<etas_types::CallableSignature> {
         if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&call) {
             return Some(fact.signature.clone());
         }
         match self
             .type_symbols
-            .symbol_fact(self.hir, &self.types.facts, symbol)?
+            .symbol_fact(self.hir, &self.types.facts, symbol?)?
         {
             SymbolTypeFact::Flow { signature } => Some(signature.clone()),
             _ => None,
@@ -1284,6 +1383,28 @@ impl EffectSemantics<'_> {
             }
         }
         Some(specialized)
+    }
+
+    fn specialize_solved_std_row(
+        &self,
+        call: HirExprId,
+        mut row: crate::EffectRow,
+    ) -> crate::EffectRow {
+        let Some(open) = row.open else {
+            return row;
+        };
+        let rows = self.generic_effect_rows.borrow();
+        let Some((_, binding)) = rows
+            .get(&call)
+            .into_iter()
+            .flatten()
+            .find(|(name, _)| crate::effect_var_id_from_name(name) == open)
+        else {
+            return row;
+        };
+        row.effects.union_assign(&binding.effects);
+        row.open = binding.open;
+        row
     }
 
     pub(crate) fn type_id_for_external_effect_path(&self, path: &[String]) -> Option<TypeId> {
@@ -1457,7 +1578,9 @@ mod tests {
             params: Vec::new(),
             output: etas_std::StdType::parse("unit"),
             public_effects: Vec::new(),
+            public_effect_tail: None,
             requested_actions: Vec::new(),
+            requested_action_tail: None,
             source_method: None,
         };
         let row = etas_types::EffectRowRef {

@@ -1,6 +1,35 @@
 use etas_frontend::{Frontend, ProjectInput, SourceInput};
 
 #[test]
+fn scheduler_park_materializes_the_handler_scoped_task_row() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app.main;
+import std.task.{run, start, await, Scheduler};
+import std.task.scheduler.park;
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let task = start(() => { return 7; });
+        return handle { await(task) } with {
+            Async.await(waited) as k => { park(scheduler, waited, k); }
+        };
+    });
+}
+"#,
+    )));
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.expect("checked scheduler park project");
+    let park = checked
+        .types
+        .generic_instantiations
+        .values()
+        .find(|fact| fact.effect_row_bindings.iter().any(|(name, _)| name == "E"))
+        .expect("park has a checked task effect-row binding");
+    assert!(park.deferred_effect_row_obligations.is_empty());
+    assert_eq!(checked.concurrency.continuation_transfers.len(), 1);
+}
+
+#[test]
 fn deferred_row_equations_preserve_instantiated_nominal_type_arguments() {
     let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
         r#"

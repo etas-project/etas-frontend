@@ -271,6 +271,7 @@ pub struct HirHandlerArm {
     pub action: ResolvedActionRef,
     pub generic_args: Vec<HirGenericArg>,
     pub patterns: Vec<HirPatId>,
+    pub continuation: Option<HirPatId>,
     pub body: HirBlockId,
     pub scope: ScopeId,
     pub span: Span,

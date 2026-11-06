@@ -5312,6 +5312,88 @@ flow raise_http_error(error: HttpError) -> never ![Error<HttpError>] {
 }
 
 #[test]
+fn check_program_accepts_module_qualified_handler_result_type() {
+    let wire = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+module wire;
+
+public type TransportResponse = {
+  received: bool,
+  status: i32,
+  headers: string,
+  body: string,
+};
+public type Result = { value: i32 };
+
+public effect Boundary {
+  action exchange(body: string, timeout_ms: i32) -> TransportResponse;
+}
+
+public flow run() -> Result ![Boundary] {
+  let response = perform Boundary.exchange("body", 1);
+  return Result { value = response.status };
+}
+"#,
+    ));
+    let safety = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(1),
+        None,
+        r#"
+
+module safety;
+
+import wire;
+import wire as w;
+import wire.{Boundary, TransportResponse, Result, run};
+
+public flow main(args: Array<string>) -> i32 ![] {
+  let boundary: ![Boundary for wire.Result] = handler {
+    Boundary.exchange(body, timeout_ms) => {
+      resume TransportResponse {
+        received = false,
+        status = 7,
+        headers = "",
+        body = "",
+      };
+    }
+  };
+  let result = run() with boundary;
+  let aliased_boundary: ![Boundary for w.Result] = handler {
+    Boundary.exchange(body, timeout_ms) => {
+      resume TransportResponse {
+        received = false,
+        status = 8,
+        headers = "",
+        body = "",
+      };
+    }
+  };
+  let aliased_result = run() with aliased_boundary;
+  return result.value + aliased_result.value;
+}
+"#,
+    ));
+    let wire_parts = [&wire.value];
+    let safety_parts = [&safety.value];
+    let modules = [
+        etas_hir::HirProjectModule {
+            parts: &wire_parts,
+            namespace: None,
+        },
+        etas_hir::HirProjectModule {
+            parts: &safety_parts,
+            namespace: None,
+        },
+    ];
+    let hir = etas_hir::lower_project(&modules);
+    let output = check_program(&hir);
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+}
+
+#[test]
 fn check_program_specializes_handler_action_selector_payload_type() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),

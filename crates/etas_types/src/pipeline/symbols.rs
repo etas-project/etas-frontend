@@ -8,6 +8,7 @@ use crate::{SymbolTypeFact, TypeFacts, TypeId};
 pub struct TypeSymbolIndex {
     import_targets: HashMap<SymbolId, SymbolId>,
     canonical_paths: HashMap<Vec<String>, SymbolId>,
+    source_alias_paths: HashMap<(etas_core::SourceId, String), Option<Vec<String>>>,
 }
 
 impl TypeSymbolIndex {
@@ -19,6 +20,22 @@ impl TypeSymbolIndex {
                 .map(|(alias, target)| (*alias, *target)),
         );
         for symbol in hir.symbols.iter() {
+            if let SymbolDef::ImportAlias {
+                path,
+                origin: etas_hir::ImportAliasOrigin::SourceImport,
+            } = &symbol.def
+            {
+                let key = (symbol.definition_span.source, symbol.name.clone());
+                index
+                    .source_alias_paths
+                    .entry(key)
+                    .and_modify(|existing| {
+                        if existing.as_ref().is_some_and(|existing| existing != path) {
+                            *existing = None;
+                        }
+                    })
+                    .or_insert_with(|| Some(path.clone()));
+            }
             if hir.agent_methods.contains_key(&symbol.id) {
                 continue;
             }
@@ -142,6 +159,26 @@ impl TypeSymbolIndex {
             };
             current = target;
         }
+    }
+
+    pub fn canonical_path(&self, hir: &HirProgram, path: &[String]) -> Option<SymbolId> {
+        let symbol = self.canonical_paths.get(path).copied()?;
+        self.canonical_symbol(hir, symbol)
+    }
+
+    pub fn canonical_import_path(
+        &self,
+        hir: &HirProgram,
+        source: etas_core::SourceId,
+        prefix: &str,
+        remaining: impl IntoIterator<Item = String>,
+    ) -> Option<SymbolId> {
+        let mut path = self
+            .source_alias_paths
+            .get(&(source, prefix.to_owned()))?
+            .clone()?;
+        path.extend(remaining);
+        self.canonical_path(hir, &path)
     }
 
     pub fn symbol_fact<'a>(

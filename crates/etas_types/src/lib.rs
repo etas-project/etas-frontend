@@ -35,16 +35,16 @@ pub use facts::{
     CallableGenericParamKind, CallableSignature, CallableSpecSatisfactionFact,
     CheckedAgentInferenceFact, CheckedHandlerActionFact, CheckedIndexKind, CheckedReflectionFact,
     CheckedReflectionTarget, CheckedSliceKind, CheckedSpecBound, CheckedSpecRef,
-    CheckedStdSpecImplFact, DeferredEffectRowObligation, DeferredHandlerInstantiation,
-    DeferredHandlerOverload, EffectActionArgKind, EffectActionSignature, EffectRowEquation,
-    EnumLayoutFact, EnumVariantLayoutFact, ExternalCallableSpecSatisfactionFact,
-    ExternalSpecIdentity, ExternalTraceSpecConformanceFact, ExternalTraceSpecConformanceTarget,
-    FieldProjectionFact, FlowSignature, GenericInstantiationFact, HandlerTypeBinding,
-    ItemSignature, KnownStdTypes, ResourceHandleFact, SpecFacts, SpecImplFact, SpecImplMethodFact,
-    SpecKind, SpecMethodFact, SpecMethodIdentity, SpecSignature, SpecSuperBoundFact,
-    SymbolTypeFact, ToolSignature, TopLevelLetSignature, TraceSpecConformanceFact,
-    TraceSpecConformanceTarget, TryExprTypeFact, TypeFacts, TypeParamBoundFact,
-    TypeSpecSatisfactionFact,
+    CheckedStdSpecImplFact, ContinuationBindingFact, DeferredEffectRowObligation,
+    DeferredHandlerInstantiation, DeferredHandlerOverload, EffectActionArgKind,
+    EffectActionSignature, EffectRowEquation, EnumLayoutFact, EnumVariantLayoutFact,
+    ExternalCallableSpecSatisfactionFact, ExternalSpecIdentity, ExternalTraceSpecConformanceFact,
+    ExternalTraceSpecConformanceTarget, FieldProjectionFact, FlowSignature,
+    GenericInstantiationFact, HandlerTypeBinding, ItemSignature, KnownStdTypes, ResourceHandleFact,
+    SpecFacts, SpecImplFact, SpecImplMethodFact, SpecKind, SpecMethodFact, SpecMethodIdentity,
+    SpecSignature, SpecSuperBoundFact, SymbolTypeFact, TaskOwnerFact, ToolSignature,
+    TopLevelLetSignature, TraceSpecConformanceFact, TraceSpecConformanceTarget, TryExprTypeFact,
+    TypeFacts, TypeParamBoundFact, TypeSpecSatisfactionFact,
 };
 pub use pipeline::finalize::{
     EffectRowMaterializationError, HandlerInstantiationProof, HandlerRequestProof,
@@ -60,9 +60,9 @@ pub use solver::{
     select_external_methods,
 };
 pub use ty::{
-    EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef, FieldType, FlowType,
+    ContinuationType, EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef, FieldType, FlowType,
     HandlerProducedEffects, HandlerType, MemoryPlaceType, NamedTypeRef, NominalTypeRef,
-    PrimitiveType, RecordType, RefinementId, ResourceHandleType, TrustWrapper, Type,
+    PrimitiveType, RecordType, RefinementId, ResourceHandleType, TaskType, TrustWrapper, Type,
     TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore, TypeSubstitutionBudget,
     TypeSubstitutionEngine, TypeSubstitutionError, TypeVarId, applied_representation,
     nominal_representation_parts, record_fields_with_applied_params, substitute_effect_row_params,
@@ -92,9 +92,11 @@ pub fn run_signature_pipeline(input: SignaturePipelineInput<'_>) -> TypeOutput {
 
 pub use pipeline::body::instantiation::{
     check_instantiated_body_delta, check_instantiated_body_delta_controlled,
+    check_instantiated_body_delta_revision, check_instantiated_body_delta_revision_controlled,
 };
 pub use pipeline::{
-    check_body_delta, check_body_delta_controlled, finalize::finalize_body_deltas,
+    check_body_delta, check_body_delta_controlled, check_body_delta_revision,
+    check_body_delta_revision_controlled, finalize::finalize_body_deltas,
     finalize::finalize_body_deltas_with_application, infer_callable_outputs,
     infer_callable_outputs_controlled,
 };

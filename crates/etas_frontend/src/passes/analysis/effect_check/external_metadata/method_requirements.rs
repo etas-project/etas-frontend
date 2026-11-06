@@ -21,6 +21,7 @@ pub(super) fn lower(
                     K::Cost => L::Cost,
                     K::WallTime => L::WallTime,
                     K::Attempts => L::Attempts,
+                    K::Concurrency => L::Concurrency,
                 };
                 etas_effects::LimitRequirement {
                     kind,

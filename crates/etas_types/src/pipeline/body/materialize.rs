@@ -18,6 +18,14 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
+    if let Err(error) = materialize_generic_type_instances(ctx, &mut state) {
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            ctx.hir.items[state.item].span(),
+            format!("generic call result materialization failed: {error}"),
+        ));
+        return;
+    }
     if let Err(error) = materialize_callable_references(ctx, &mut state) {
         ctx.diagnostics.push(Diagnostic::type_check(
             TypeDiagnosticCode::IncompleteTypeFacts,
@@ -34,6 +42,8 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         ));
         return;
     }
+    continuation::record_task_owners(ctx, &mut state);
+    continuation::validate_uses(ctx, &state);
     let definition_operations = match reflection::materialize(ctx, &state) {
         Ok(facts) => facts,
         Err(error) => {
@@ -112,6 +122,12 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .handler_actions
         .extend(state.provisional.handler_actions);
     ctx.signature_facts
+        .continuation_bindings
+        .extend(state.provisional.continuation_bindings);
+    ctx.signature_facts
+        .task_owners
+        .extend(state.provisional.task_owners);
+    ctx.signature_facts
         .deferred_handler_instantiations
         .extend(state.solver_report.deferred_handler_instantiations);
     ctx.signature_facts
@@ -155,8 +171,113 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .extend(state.provisional.item_signatures);
 }
 
+mod continuation;
 mod methods;
 mod reflection;
+
+fn materialize_generic_type_instances(
+    ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
+    state: &mut BodyPipelineState,
+) -> Result<(), crate::TypeSubstitutionError> {
+    let instantiations = state
+        .solver_report
+        .generic_instantiations
+        .iter()
+        .map(|(expr, fact)| (*expr, fact.clone()))
+        .collect::<Vec<_>>();
+    let mut replacements = std::collections::HashMap::new();
+    for (expr, fact) in instantiations {
+        let source = state
+            .provisional
+            .expr_types
+            .get(&expr)
+            .or_else(|| state.solver_report.inferred_expr_types.get(&expr))
+            .copied()
+            .or_else(|| {
+                state
+                    .solver_report
+                    .std_intrinsic_calls
+                    .get(&expr)
+                    .map(|call| call.signature.output)
+            });
+        let Some(source) = source else {
+            continue;
+        };
+        let types = fact.type_bindings.into_iter().collect();
+        let rows = fact.effect_row_bindings.into_iter().collect();
+        let materialized = crate::TypeSubstitutionEngine::materializing(
+            &mut ctx.interner,
+            &types,
+            Some(&state.solver_report.substitutions),
+        )
+        .with_effect_arguments(&rows)
+        .substitute(source)?;
+        if materialized != source {
+            replacements.insert(source, materialized);
+        }
+    }
+    if replacements.is_empty() {
+        return Ok(());
+    }
+
+    let names = std::collections::HashMap::new();
+    let remap = |ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, ty| {
+        crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &names, None)
+            .with_type_parameters(&replacements)
+            .substitute(ty)
+    };
+    for ty in state
+        .provisional
+        .expr_types
+        .values_mut()
+        .chain(state.solver_report.inferred_expr_types.values_mut())
+        .chain(state.provisional.stmt_types.values_mut())
+        .chain(state.provisional.pat_types.values_mut())
+    {
+        *ty = remap(ctx, *ty)?;
+    }
+    for fact in state.provisional.symbol_types.values_mut() {
+        match fact {
+            crate::SymbolTypeFact::Param { ty }
+            | crate::SymbolTypeFact::Local { ty, .. }
+            | crate::SymbolTypeFact::Field { ty }
+            | crate::SymbolTypeFact::Value { ty }
+            | crate::SymbolTypeFact::TopLevelLet { ty, .. } => *ty = remap(ctx, *ty)?,
+            _ => {}
+        }
+    }
+    for fact in state.solver_report.std_intrinsic_calls.values_mut() {
+        fact.callable_type = remap(ctx, fact.callable_type)?;
+        for ty in fact
+            .signature
+            .params
+            .iter_mut()
+            .chain(std::iter::once(&mut fact.signature.output))
+        {
+            *ty = remap(ctx, *ty)?;
+        }
+    }
+    for fact in state.provisional.handler_actions.values_mut() {
+        fact.output = remap(ctx, fact.output)?;
+        for ty in &mut fact.params {
+            *ty = remap(ctx, *ty)?;
+        }
+    }
+    for fact in state.provisional.continuation_bindings.values_mut() {
+        fact.action_output = remap(ctx, fact.action_output)?;
+        fact.answer = fact.answer.map(|answer| remap(ctx, answer)).transpose()?;
+        fact.residual_effects = fact
+            .residual_effects
+            .take()
+            .map(|row| {
+                crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &names, None)
+                    .with_type_parameters(&replacements)
+                    .substitute_effect_row(row)
+            })
+            .transpose()?;
+    }
+    Ok(())
+}
 
 fn materialize_callable_references(
     ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
@@ -302,6 +423,30 @@ fn apply_solver_substitutions(
                 *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
             }
         }
+    }
+    for fact in state.provisional.continuation_bindings.values_mut() {
+        fact.action_output = substitute_type(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            fact.action_output,
+        )?;
+        fact.answer = fact
+            .answer
+            .map(|answer| substitute_type(ctx, &substitutions, &named_substitutions, answer))
+            .transpose()?;
+        fact.residual_effects = fact
+            .residual_effects
+            .take()
+            .map(|row| {
+                crate::substitute_effect_row_params(
+                    &mut ctx.interner,
+                    row,
+                    &named_substitutions,
+                    &substitutions,
+                )
+            })
+            .transpose()?;
     }
     for fact in state
         .solver_report

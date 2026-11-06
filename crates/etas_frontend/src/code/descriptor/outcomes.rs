@@ -378,6 +378,9 @@ fn finite_trace_paths(
                 pending.push(Step::Choice(parts.len()));
                 pending.extend(parts.iter().rev().map(Step::Visit));
             }
+            Step::Visit(
+                Trace::Parallel(_) | Trace::TaskStart { .. } | Trace::TaskAwait { .. },
+            ) => return None,
             Step::Visit(Trace::Repeat(_) | Trace::UnknownOrder(_) | Trace::Widened { .. }) => {
                 return None;
             }

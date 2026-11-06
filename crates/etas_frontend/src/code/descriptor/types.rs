@@ -45,6 +45,10 @@ impl DefinitionDescriptorProjector<'_> {
                         etas_types::HandlerProducedEffects::Explicit(_)
                     ))
             }
+            Type::Task(task) => {
+                self.ensure_row(&task.effects)?;
+                2
+            }
             Type::Map { .. } | Type::Result { .. } | Type::Store { .. } => 2,
             _ => 1,
         };
@@ -160,6 +164,12 @@ impl DefinitionDescriptorProjector<'_> {
                         .transpose()?,
                 });
             }
+            Type::Task(task) => {
+                return Ok(TypeInfo::Task {
+                    output: self.type_ref(task.output, scope)?,
+                    effects: self.row_ref(task.effects, scope)?,
+                });
+            }
             builtin @ (Type::Array(_)
             | Type::List(_)
             | Type::Map { .. }
@@ -189,6 +199,8 @@ impl DefinitionDescriptorProjector<'_> {
             Type::IntegerLiteral { .. }
             | Type::Var(_)
             | Type::Refined { .. }
+            | Type::SchedulerHandle
+            | Type::Continuation(_)
             | Type::MemoryPlace(_)
             | Type::ResourceHandle(ResourceHandleType::Other { .. }) => {
                 return Err(ProjectionError::UnresolvedType(source));

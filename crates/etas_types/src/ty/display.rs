@@ -100,6 +100,22 @@ pub fn display_type(store: &TypeStore, ty: TypeId) -> String {
         }
         Some(Type::Function(_)) => "function".to_owned(),
         Some(Type::Handler(_)) => "handler".to_owned(),
+        Some(Type::Task(task)) => {
+            let effects = task
+                .effects
+                .effects
+                .iter()
+                .map(|effect| effect.name.as_str())
+                .chain(task.effects.tail.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Task<{}, ![{effects}]>", display_type(store, task.output))
+        }
+        Some(Type::SchedulerHandle) => "Scheduler".to_owned(),
+        Some(Type::Continuation(continuation)) => format!(
+            "Continuation<{}>",
+            display_type(store, continuation.action_output)
+        ),
         Some(Type::Record(record)) => {
             let fields = record
                 .fields

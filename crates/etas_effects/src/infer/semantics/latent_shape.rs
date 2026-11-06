@@ -163,6 +163,9 @@ fn children(types: &TypeOutput, ty: TypeId, value: &Type) -> Vec<TypeId> {
         | Type::Var(_)
         | Type::Range { .. }
         | Type::Handler(_)
+        | Type::Task(_)
+        | Type::SchedulerHandle
+        | Type::Continuation(_)
         | Type::Named(_)
         | Type::Prompt
         | Type::PromptPart

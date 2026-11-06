@@ -25,14 +25,15 @@ pub use effect::{
     effect_var_id_from_name,
 };
 pub use facts::{
-    BodyEffectOutput, EffectAcknowledgement, EffectAnalysisOutput, EffectComponentConvergence,
-    EffectConvergenceStatus, EffectFacts, EffectMaterializationInputs, EffectOutput,
-    ErrorConversionFact, FinishSummary, HandleApplicationFact, HandlerActionFact, HandlerArmFact,
-    HandlerCompletionSummary, HandlerValueFact, HandlerValueRef, InterpreterSupportFacts,
-    LatentEffectBodyRef, LatentEffectContract, LatentEffectFact, PerformedActionFact,
-    PublicEffectContract, PublicEffectContractSource, PublicEffectValue, QualifiedName,
-    RequirementFacts, RequirementFactsForContract, ResumeSummary, StdCallableEffectFact,
-    TraceSpecClauseFact, TraceSpecFacts, TryCaptureFact,
+    BodyEffectOutput, ContinuationTransferFact, EffectAcknowledgement, EffectAnalysisOutput,
+    EffectComponentConvergence, EffectConvergenceStatus, EffectFacts, EffectMaterializationInputs,
+    EffectOutput, ErrorConversionFact, FinishSummary, HandleApplicationFact, HandlerActionFact,
+    HandlerArmFact, HandlerCompletionSummary, HandlerValueFact, HandlerValueRef,
+    InterpreterSupportFacts, LatentEffectBodyRef, LatentEffectContract, LatentEffectFact,
+    PerformedActionFact, PublicEffectContract, PublicEffectContractSource, PublicEffectValue,
+    QualifiedName, RequirementFacts, RequirementFactsForContract, ResumeSummary,
+    StdCallableEffectFact, TaskCallFact, TaskCallKind, TraceSpecClauseFact, TraceSpecFacts,
+    TransferTarget, TryCaptureFact,
 };
 pub use infer::{
     ActionEvent, ActionEventSource, ActionRequestInstance, ActionTraceDomain, CallableAnalysisKind,

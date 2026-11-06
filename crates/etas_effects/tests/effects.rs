@@ -72,6 +72,218 @@ fn local_only() -> InterpreterSupport {
     InterpreterSupport::LocalOnly
 }
 
+fn trace_contains_task_start(trace: &ActionTraceDomain, site: etas_hir::HirExprId) -> bool {
+    match trace {
+        ActionTraceDomain::TaskStart { task_site, .. } => *task_site == site,
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => parts
+            .iter()
+            .any(|part| trace_contains_task_start(part, site)),
+        ActionTraceDomain::Repeat(inner) => trace_contains_task_start(inner, site),
+        _ => false,
+    }
+}
+
+fn trace_contains_task_await(trace: &ActionTraceDomain, site: etas_hir::HirExprId) -> bool {
+    match trace {
+        ActionTraceDomain::TaskAwait { task_site } => *task_site == site,
+        ActionTraceDomain::TaskStart { body, .. } | ActionTraceDomain::Repeat(body) => {
+            trace_contains_task_await(body, site)
+        }
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => parts
+            .iter()
+            .any(|part| trace_contains_task_await(part, site)),
+        _ => false,
+    }
+}
+
+#[test]
+fn structured_task_rows_are_solved_across_start_await_and_run() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.task.{run, start, await, Scheduler};
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let task = start(() => { return 42; });
+        return await(task);
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:#?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+
+    for (call, fact) in &types.facts.generic_instantiations {
+        if !fact.deferred_effect_row_obligations.is_empty() {
+            assert!(
+                output.facts.generic_effect_rows.contains_key(call),
+                "deferred rows were not solved for {call:?}: {fact:#?}"
+            );
+        }
+    }
+    let summary = output
+        .facts
+        .item_effects
+        .values()
+        .next()
+        .expect("main effect summary");
+    let start = types
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .find_map(|(call, fact)| {
+            (fact.intrinsic == etas_std::intrinsic::task::START).then_some(*call)
+        })
+        .expect("checked task start");
+    let awaited = types
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .find_map(|(call, fact)| {
+            (fact.intrinsic == etas_std::intrinsic::task::AWAIT).then_some(*call)
+        })
+        .expect("checked task await");
+    assert!(trace_contains_task_start(&summary.action_trace, start));
+    assert!(trace_contains_task_await(&summary.action_trace, awaited));
+    let start_fact = output
+        .facts
+        .task_calls
+        .get(&start)
+        .expect("materialized task start fact");
+    assert_eq!(start_fact.kind, etas_effects::TaskCallKind::Start);
+    assert!(start_fact.effects.is_empty(), "{start_fact:#?}");
+    let await_fact = output
+        .facts
+        .task_calls
+        .get(&awaited)
+        .expect("materialized task await fact");
+    assert_eq!(await_fact.kind, etas_effects::TaskCallKind::Await);
+    assert_eq!(await_fact.owner_scope, start_fact.owner_scope);
+    assert!(await_fact.effects.is_empty());
+    assert!(
+        output
+            .facts
+            .task_calls
+            .values()
+            .any(|fact| fact.kind == etas_effects::TaskCallKind::Run)
+    );
+    assert!(
+        matches!(
+            summary.support,
+            InterpreterSupport::RequiresInterpreterOrchestration(_)
+        ),
+        "{summary:#?}"
+    );
+}
+
+#[test]
+fn scheduler_park_materializes_continuation_transfer_fact() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.task.{run, start, await, Scheduler};
+import std.task.scheduler.park;
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let task = start(() => { return 7; });
+        return handle { await(task) } with {
+            Async.await(waited) as k => { park(scheduler, waited, k); }
+        };
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:#?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+
+    let transfer = output
+        .facts
+        .continuation_transfers
+        .values()
+        .next()
+        .expect("materialized continuation transfer");
+    assert!(types.facts.continuation_bindings.contains_key(&transfer.binder));
+    assert!(matches!(
+        transfer.target,
+        etas_effects::TransferTarget::Park { .. }
+    ));
+    let park = output
+        .facts
+        .task_calls
+        .get(&transfer.call)
+        .expect("materialized park task fact");
+    assert_eq!(park.kind, etas_effects::TaskCallKind::Park);
+}
+
+#[test]
+fn task_run_and_start_contribute_the_job_requested_actions_immediately() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.io.println;
+import std.task.{run, start, Scheduler};
+flow main() -> unit {
+    run((scheduler: Scheduler) => {
+        let dropped = start(() => {
+            println("started")?;
+        });
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:#?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+
+    let summary = output
+        .facts
+        .item_effects
+        .values()
+        .next()
+        .expect("main effect summary");
+    let console = Effect::Action(ActionRef {
+        tag: CONSOLE_TAG,
+        action: CONSOLE_STDOUT_WRITE_ACTION,
+    });
+    assert!(summary.requested_actions.effects.contains(&console));
+    let start = output
+        .facts
+        .task_calls
+        .values()
+        .find(|fact| fact.kind == etas_effects::TaskCallKind::Start)
+        .expect("materialized task start fact");
+    assert!(
+        start.behavior.requested_actions.effects.contains(&console),
+        "{start:#?}"
+    );
+    assert_ne!(summary.action_trace, ActionTraceDomain::Empty);
+    assert!(matches!(
+        summary.support,
+        InterpreterSupport::RequiresInterpreterOrchestration(_)
+    ));
+}
+
 fn is_approval_request_effect(effect: &Effect) -> bool {
     matches!(
         effect,
@@ -124,13 +336,17 @@ fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
     match trace {
         ActionTraceDomain::Empty => false,
         ActionTraceDomain::Event(event) => is_agentic_infer_effect(&event.action),
-        ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => {
             parts.iter().any(trace_has_agentic_infer)
         }
-        ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer(inner),
+        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
+            trace_has_agentic_infer(inner)
+        }
         ActionTraceDomain::UnknownOrder(actions) => actions.iter().any(is_agentic_infer_effect),
         ActionTraceDomain::Widened { actions, .. } => actions.iter().any(is_agentic_infer_effect),
-        ActionTraceDomain::ParameterCall { .. } => false,
+        ActionTraceDomain::ParameterCall { .. } | ActionTraceDomain::TaskAwait { .. } => false,
     }
 }
 
@@ -140,12 +356,16 @@ fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEvent
         ActionTraceDomain::Event(event) => {
             is_agentic_infer_effect(&event.action) && event.source == source
         }
-        ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => parts
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => parts
             .iter()
             .any(|part| trace_has_agentic_infer_source(part, source.clone())),
-        ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer_source(inner, source),
+        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
+            trace_has_agentic_infer_source(inner, source)
+        }
         ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => false,
-        ActionTraceDomain::ParameterCall { .. } => false,
+        ActionTraceDomain::ParameterCall { .. } | ActionTraceDomain::TaskAwait { .. } => false,
     }
 }
 
@@ -6474,11 +6694,15 @@ flow main() -> unit ![Console.stdout_write] {
             ActionTraceDomain::ParameterCall {
                 parameter: actual, ..
             } => usize::from(actual == parameter),
-            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => items
+            ActionTraceDomain::Seq(items)
+            | ActionTraceDomain::Choice(items)
+            | ActionTraceDomain::Parallel(items) => items
                 .iter()
                 .map(|item| count_parameter_calls(item, parameter))
                 .sum(),
-            ActionTraceDomain::Repeat(item) => count_parameter_calls(item, parameter),
+            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+                count_parameter_calls(item, parameter)
+            }
             ActionTraceDomain::Widened {
                 parameter_calls, ..
             } => parameter_calls
@@ -6487,6 +6711,7 @@ flow main() -> unit ![Console.stdout_write] {
                 .count(),
             ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
+            | ActionTraceDomain::TaskAwait { .. }
             | ActionTraceDomain::UnknownOrder(_) => 0,
         }
     }
@@ -6547,17 +6772,22 @@ flow main() -> unit ![Console.stdout_write] {
             etas_effects::ActionTraceDomain::Empty => 0,
             etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
             etas_effects::ActionTraceDomain::Seq(items)
-            | etas_effects::ActionTraceDomain::Choice(items) => {
+            | etas_effects::ActionTraceDomain::Choice(items)
+            | etas_effects::ActionTraceDomain::Parallel(items) => {
                 items.iter().map(|item| count_stdout(item, stdout)).sum()
             }
-            etas_effects::ActionTraceDomain::Repeat(item) => count_stdout(item, stdout),
+            etas_effects::ActionTraceDomain::Repeat(item)
+            | etas_effects::ActionTraceDomain::TaskStart { body: item, .. } => {
+                count_stdout(item, stdout)
+            }
             etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
                 usize::from(actions.contains(stdout))
             }
             etas_effects::ActionTraceDomain::Widened { actions, .. } => {
                 usize::from(actions.contains(stdout))
             }
-            etas_effects::ActionTraceDomain::ParameterCall { .. } => 0,
+            etas_effects::ActionTraceDomain::ParameterCall { .. }
+            | etas_effects::ActionTraceDomain::TaskAwait { .. } => 0,
         }
     }
     assert_eq!(

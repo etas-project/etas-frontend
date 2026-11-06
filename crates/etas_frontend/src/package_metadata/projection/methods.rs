@@ -131,6 +131,7 @@ impl ProjectMetadataProjection<'_> {
                                 K::Cost => M::Cost,
                                 K::WallTime => M::WallTime,
                                 K::Attempts => M::Attempts,
+                                K::Concurrency => M::Concurrency,
                             },
                             value: limit.value.as_ref().map(|value| match value {
                                 V::Count(count) => W::Count(*count),

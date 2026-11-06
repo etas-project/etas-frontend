@@ -1084,6 +1084,16 @@ fn type_label(types: &etas_types::TypeStore, ty: etas_types::TypeId) -> String {
             format!("{input} -> {}", type_label(types, flow.output))
         }
         Some(etas_types::Type::Handler(_)) => "handler".to_owned(),
+        Some(etas_types::Type::Task(task)) => {
+            format!("Task[{}]", type_label(types, task.output))
+        }
+        Some(etas_types::Type::SchedulerHandle) => "Scheduler".to_owned(),
+        Some(etas_types::Type::Continuation(continuation)) => {
+            format!(
+                "Continuation[{}]",
+                type_label(types, continuation.action_output)
+            )
+        }
         Some(etas_types::Type::Named(named)) => named.name,
         Some(etas_types::Type::Nominal(nominal)) => nominal.name,
         Some(etas_types::Type::Applied { constructor, args }) => {

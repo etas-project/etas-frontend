@@ -282,6 +282,13 @@ impl DefinitionDescriptorProjector<'_> {
                         handlers,
                     )?)
                 }
+                ActionTraceDomain::TaskAwait { .. } => TraceInfo::Empty,
+                ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::Parallel(_) => {
+                    TraceInfo::UnknownOrder(self.analysis_row(
+                        &EffectRow::closed(trace.action_set()),
+                        scope,
+                    )?)
+                }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     self.ensure_edges(parts.len())?;
                     self.ensure_nodes(parts.len())?;

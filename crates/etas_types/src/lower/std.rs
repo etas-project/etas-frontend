@@ -1,14 +1,15 @@
 use etas_std::{
-    StdDecl, StdEffectRef, StdPrimitiveType, StdRegistry, StdStaticArg, StdSymbol, StdSymbolKind,
-    StdType, TypeDeclKind,
+    StdDecl, StdEffectRef, StdEffectRowExpr, StdGenericParamKind, StdPrimitiveType, StdRegistry,
+    StdStaticArg, StdSymbol, StdSymbolKind, StdType, TypeDeclKind,
 };
 
 use crate::{
     CallableGenericParam, CallableGenericParamKind, CallableSignature, CheckedSpecBound,
-    CheckedSpecRef, CheckedStdSpecImplFact, EffectActionArgKind, EffectActionSignature,
-    EffectArgRef, EffectRef, EffectRowRef, FieldType, NamedTypeRef, NominalTypeRef, PrimitiveType,
-    RecordType, ResourceHandleType, SpecSignature, SymbolTypeFact, TrustWrapper, Type,
-    TypeConstructorId, TypeId, pipeline::context::TypePipelineContext,
+    CheckedSpecRef, CheckedStdSpecImplFact, ContinuationType, EffectActionArgKind,
+    EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FieldType, NamedTypeRef,
+    NominalTypeRef, PrimitiveType, RecordType, ResourceHandleType, SpecSignature, SymbolTypeFact,
+    TaskType, TrustWrapper, Type, TypeConstructorId, TypeId,
+    pipeline::context::TypePipelineContext,
 };
 
 pub fn lower_std_decl(
@@ -146,16 +147,18 @@ pub fn lower_std_flow_signature(
             .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
             .collect(),
         output: lower_std_type_with_scope(ctx, registry, &flow.output, scope),
-        effects: Some(std_effect_row_with_scope(
+        effects: Some(std_effect_row_parts_with_scope(
             ctx,
             registry,
             &flow.public_effects,
+            flow.public_effect_tail.as_deref(),
             scope,
         )),
-        requested_actions: Some(std_effect_row_with_scope(
+        requested_actions: Some(std_effect_row_parts_with_scope(
             ctx,
             registry,
             &flow.requested_actions,
+            flow.requested_action_tail.as_deref(),
             scope,
         )),
     }
@@ -189,7 +192,10 @@ pub(super) fn lower_std_generic_params(
     params
         .iter()
         .map(|param| CallableGenericParam {
-            kind: CallableGenericParamKind::Type,
+            kind: match param.kind {
+                StdGenericParamKind::Type => CallableGenericParamKind::Type,
+                StdGenericParamKind::EffectRow => CallableGenericParamKind::Effect,
+            },
             subject: ctx.interner.intern(Type::Named(NamedTypeRef {
                 source_parameter: None,
                 name: param.name.clone(),
@@ -235,13 +241,13 @@ pub fn lower_std_effect_action_signature(
         selector_defaults: vec![None; selector_len],
         returns_never: matches!(action.output, StdType::Primitive(StdPrimitiveType::Never)),
         default_handler_effects: action.default_handler_effects.as_ref().map(|effects| {
-            EffectRowRef {
-                effects: effects
-                    .iter()
-                    .map(|effect| lower_std_effect_ref(ctx, registry, effect, None))
-                    .collect(),
-                tail: None,
-            }
+            std_effect_row_parts_with_scope(
+                ctx,
+                registry,
+                effects,
+                action.default_handler_effect_tail.as_deref(),
+                None,
+            )
         }),
     }
 }
@@ -373,6 +379,13 @@ fn lower_std_type_decl_with_name(
     if let Some(ty) = &decl.canonical_type {
         return lower_std_type_with_scope(ctx, registry, ty, scope.as_deref());
     }
+    if let Some(ty) = lower_task_runtime_type_decl(ctx, decl) {
+        if !ctx.signature_facts.type_generics.contains_key(&ty) {
+            let params = lower_std_generic_params(ctx, registry, &decl.params);
+            ctx.signature_facts.type_generics.insert(ty, params);
+        }
+        return ty;
+    }
     lower_std_type_constructor(
         ctx,
         registry,
@@ -380,6 +393,40 @@ fn lower_std_type_decl_with_name(
         decl,
         scope.as_deref(),
     )
+}
+
+fn lower_task_runtime_type_decl(
+    ctx: &mut TypePipelineContext<'_>,
+    decl: &etas_std::TypeDecl,
+) -> Option<TypeId> {
+    let named_parameter = |ctx: &mut TypePipelineContext<'_>, index: usize| {
+        ctx.interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: decl.params[index].name.clone(),
+        }))
+    };
+    match decl.runtime_role? {
+        etas_std::RuntimeTypeRole::Task => {
+            let output = named_parameter(ctx, 0);
+            Some(ctx.interner.intern(Type::Task(TaskType {
+                output,
+                effects: EffectRowRef {
+                    effects: Vec::new(),
+                    tail: Some(decl.params[1].name.clone()),
+                },
+            })))
+        }
+        etas_std::RuntimeTypeRole::Scheduler => Some(ctx.interner.intern(Type::SchedulerHandle)),
+        etas_std::RuntimeTypeRole::Continuation => {
+            let action_output = named_parameter(ctx, 0);
+            Some(ctx.interner.intern(Type::Continuation(ContinuationType {
+                action_output,
+                handled_answer: None,
+                residual_effects: None,
+            })))
+        }
+        _ => None,
+    }
 }
 
 pub fn lower_std_type(
@@ -514,18 +561,20 @@ fn lower_std_type_with_scope(
                 .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
                 .collect();
             let output = lower_std_type_with_scope(ctx, registry, output, scope);
-            let effects = Some(EffectRowRef {
-                effects: effects
-                    .iter()
-                    .map(|effect| lower_std_effect_ref(ctx, registry, effect, scope))
-                    .collect(),
-                tail: None,
-            });
+            let effects = Some(std_effect_row_expr_with_scope(
+                ctx, registry, effects, scope,
+            ));
             ctx.interner.intern(Type::Function(crate::FlowType {
                 input,
                 output,
                 effects,
             }))
+        }
+        StdType::Task { output, effects } => {
+            let output = lower_std_type_with_scope(ctx, registry, output, scope);
+            let effects = std_effect_row_expr_with_scope(ctx, registry, effects, scope);
+            ctx.interner
+                .intern(Type::Task(TaskType { output, effects }))
         }
         StdType::Schema(inner) => {
             let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
@@ -564,6 +613,19 @@ fn lower_std_type_with_scope(
         }
         StdType::Named(name) => lower_named_std_type_with_scope(ctx, registry, name, scope),
         StdType::NamedApplied { name, args } => {
+            if std_runtime_role(registry, name, scope)
+                == Some(etas_std::RuntimeTypeRole::Continuation)
+            {
+                let [output] = args.as_slice() else {
+                    unreachable!("validated Continuation declaration has one type argument")
+                };
+                let action_output = lower_std_type_with_scope(ctx, registry, output, scope);
+                return ctx.interner.intern(Type::Continuation(ContinuationType {
+                    action_output,
+                    handled_answer: None,
+                    residual_effects: None,
+                }));
+            }
             let constructor = lower_named_std_type_with_scope(ctx, registry, name, scope);
             let args = args
                 .iter()
@@ -601,12 +663,31 @@ fn std_effect_row_with_scope(
     effects: &[StdEffectRef],
     scope: Option<&[String]>,
 ) -> EffectRowRef {
+    std_effect_row_parts_with_scope(ctx, registry, effects, None, scope)
+}
+
+fn std_effect_row_expr_with_scope(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    row: &StdEffectRowExpr,
+    scope: Option<&[String]>,
+) -> EffectRowRef {
+    std_effect_row_parts_with_scope(ctx, registry, &row.effects, row.tail.as_deref(), scope)
+}
+
+fn std_effect_row_parts_with_scope(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    effects: &[StdEffectRef],
+    tail: Option<&str>,
+    scope: Option<&[String]>,
+) -> EffectRowRef {
     EffectRowRef {
         effects: effects
             .iter()
             .map(|effect| lower_std_effect_ref(ctx, registry, effect, scope))
             .collect(),
-        tail: None,
+        tail: tail.map(str::to_owned),
     }
 }
 
@@ -638,6 +719,10 @@ fn lower_named_std_type_with_scope(
         _ => {}
     }
 
+    if std_runtime_role(registry, name, scope) == Some(etas_std::RuntimeTypeRole::Scheduler) {
+        return ctx.interner.intern(Type::SchedulerHandle);
+    }
+
     if !name.contains('.')
         && let Some(scope) = scope
         && let Some((identity, decl)) = lookup_scoped_std_type_decl(registry, scope, name)
@@ -653,6 +738,22 @@ fn lower_named_std_type_with_scope(
         source_parameter: None,
         name: name.to_owned(),
     }))
+}
+
+fn std_runtime_role(
+    registry: &StdRegistry,
+    name: &str,
+    scope: Option<&[String]>,
+) -> Option<etas_std::RuntimeTypeRole> {
+    let declaration = if !name.contains('.') {
+        scope
+            .and_then(|scope| lookup_scoped_std_type_decl(registry, scope, name))
+            .or_else(|| lookup_std_type_decl(registry, name))
+    } else {
+        lookup_std_type_decl(registry, name)
+    }?
+    .1;
+    declaration.runtime_role
 }
 
 fn lookup_scoped_std_type_decl<'a>(

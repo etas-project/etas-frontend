@@ -803,6 +803,9 @@ impl EffectSemantics<'_> {
                     | Type::Var(_)
                     | Type::Function(_)
                     | Type::Handler(_)
+                    | Type::Task(_)
+                    | Type::SchedulerHandle
+                    | Type::Continuation(_)
                     | Type::Named(_)
                     | Type::Applied { .. }
                     | Type::Prompt

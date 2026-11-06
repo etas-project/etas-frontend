@@ -88,3 +88,46 @@ fn malformed_handler_completion_remains_rejected() {
         );
     }
 }
+
+#[test]
+fn never_returning_action_cannot_bind_a_continuation() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app.main;
+effect Stop { action halt() -> never; }
+flow main() -> i32 ![] {
+    return handle { perform Stop.halt() } with {
+        Stop.halt() as k => { finish 0; }
+    };
+}
+"#,
+    )));
+
+    assert!(output.checked.is_none());
+    assert!(output.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("never-returning action cannot bind a continuation")
+    }));
+}
+
+#[test]
+fn continuation_binding_is_available_in_its_handler_arm_scope() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app.main;
+effect Probe { action request() -> i32; }
+flow main() -> i32 ![] {
+    return handle { perform Probe.request() } with {
+        Probe.request() as k => {
+            let retained = k;
+            finish 7;
+        }
+    };
+}
+"#,
+    )));
+
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.checked.is_some());
+}

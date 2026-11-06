@@ -201,6 +201,28 @@ fn infer_type(
                 recurse!(expected, actual);
             }
         }
+        (Some(Type::Task(expected)), Some(Type::Task(actual))) => {
+            recurse!(expected.output, actual.output);
+            infer_row_binding(
+                inputs,
+                state,
+                Some(&expected.effects),
+                Some(&actual.effects),
+            );
+        }
+        (Some(Type::Continuation(expected)), Some(Type::Continuation(actual))) => {
+            recurse!(expected.action_output, actual.action_output);
+            if let (Some(expected), Some(actual)) = (expected.handled_answer, actual.handled_answer)
+            {
+                recurse!(expected, actual);
+            }
+            infer_row_binding(
+                inputs,
+                state,
+                expected.residual_effects.as_ref(),
+                actual.residual_effects.as_ref(),
+            );
+        }
         (Some(Type::Record(expected)), Some(Type::Record(actual))) => {
             for expected in &expected.fields {
                 if let Some(actual) = actual
@@ -640,6 +662,32 @@ fn types_equivalent(
                 (None, None) => true,
                 _ => false,
             }
+        }
+        (Some(Type::Task(lhs)), Some(Type::Task(rhs))) => {
+            recurse!(lhs.output, rhs.output)
+                && rows_equivalent(
+                    store,
+                    &lhs.effects,
+                    &rhs.effects,
+                    type_bindings,
+                    substitutions,
+                )
+        }
+        (Some(Type::SchedulerHandle), Some(Type::SchedulerHandle)) => true,
+        (Some(Type::Continuation(lhs)), Some(Type::Continuation(rhs))) => {
+            recurse!(lhs.action_output, rhs.action_output)
+                && match (lhs.handled_answer, rhs.handled_answer) {
+                    (Some(lhs), Some(rhs)) => recurse!(lhs, rhs),
+                    (None, None) => true,
+                    _ => false,
+                }
+                && match (&lhs.residual_effects, &rhs.residual_effects) {
+                    (Some(lhs), Some(rhs)) => {
+                        rows_equivalent(store, lhs, rhs, type_bindings, substitutions)
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
         }
         (
             Some(Type::Map {

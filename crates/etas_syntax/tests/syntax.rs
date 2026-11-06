@@ -942,6 +942,30 @@ flow main() -> unit {
 }
 
 #[test]
+fn parses_handler_continuation_binding_before_fat_arrow() {
+    let parsed = parse_program(source(
+        r#"
+effect Async {
+  action await(task: i32) -> i32;
+}
+
+flow main() -> i32 {
+  handle { perform Async.await(1) } with {
+    Async.await(task) as k => {
+      let retained = k;
+      finish task;
+    }
+  }
+}
+"#,
+    ));
+
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let dump = dump_ast(&parsed.value, DumpOptions::default());
+    assert!(dump.contains("continuation=k"), "{dump}");
+}
+
+#[test]
 fn parses_optional_semicolon_after_block_statements() {
     let parsed = parse_program(source(
         r#"

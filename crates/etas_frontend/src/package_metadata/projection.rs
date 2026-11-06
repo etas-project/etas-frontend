@@ -1808,6 +1808,16 @@ impl<'a> ProjectMetadataProjection<'a> {
             ActionTraceDomain::ParameterCall { target, .. } => MetadataActionTrace::ParameterCall {
                 parameter: self.callable_request_target(*target, parameters)?,
             },
+            ActionTraceDomain::TaskAwait { .. } => MetadataActionTrace::Empty,
+            ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::Parallel(_) => {
+                MetadataActionTrace::UnknownOrder(
+                    trace
+                        .action_set()
+                        .iter()
+                        .map(|action| self.summary_effect_ref_metadata(action, type_generic_names))
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
             ActionTraceDomain::Seq(children) => MetadataActionTrace::Seq(
                 children
                     .iter()

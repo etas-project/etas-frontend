@@ -1,4 +1,5 @@
 use super::*;
+use crate::CheckedSliceKind;
 use etas_core::{SourceId, Span, TextRange, TypeDiagnosticCode};
 
 #[test]
@@ -94,4 +95,34 @@ fn index_shape_propagation_rejects_missing_primitive_facts() {
     );
     assert!(inferred.substitutions.iter().next().is_none());
     assert!(inferred.index_facts.is_empty());
+}
+
+#[test]
+fn bytes_slice_returns_bytes_and_publishes_checked_sequence_fact() {
+    let mut types = crate::TypeInterner::new();
+    let base = types.primitive(PrimitiveType::Bytes);
+    let output = types.intern(Type::Var(crate::TypeVarId(0)));
+    let bound = types.intern(Type::IntegerLiteral { text: "0".into() });
+    let expr = etas_hir::HirExprId(3);
+    let report = index::solve_slice_access(
+        types.store(),
+        index::SliceAccessSolveInput {
+            spec_facts: &SpecFacts::default(),
+            expr,
+            base,
+            start: bound,
+            end: bound,
+            output,
+            origin: ConstraintOrigin {
+                span: Span::new(SourceId(7), TextRange::default()),
+            },
+            substitutions: &Substitution::default(),
+        },
+    );
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.substitutions.get(crate::TypeVarId(0)), Some(base));
+    assert!(matches!(
+        report.slice_facts.get(&expr),
+        Some(CheckedSliceKind::Sequence { base: fact_base, .. }) if *fact_base == base
+    ));
 }

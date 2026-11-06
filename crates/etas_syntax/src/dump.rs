@@ -1456,6 +1456,7 @@ impl AstDump for ast::HandlerArm {
     fn dump(&self, f: &mut AstDumpWriter) {
         let mut fields = Vec::new();
         push_name_field(f, &mut fields, "action", Some(&self.action));
+        push_name_field(f, &mut fields, "continuation", self.continuation.as_ref());
         f.node("HandlerArm", self.span, fields, |f| {
             self.effect.dump(f);
             for arg in &self.generic_args {

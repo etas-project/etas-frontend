@@ -32,6 +32,7 @@ pub(super) fn solve<E>(
         .map(|ty| resolve_known_substitutions(input.store, report, *ty))
         .collect::<Vec<_>>();
     let mut selected = None;
+    let mut single_candidate_failure = None;
     // Probe with independent result variables: an expected result must never
     // select an overload or recover an erased descriptor's generic contract.
     for (candidate, probe) in call.candidates.iter().zip(call.probes) {
@@ -58,9 +59,15 @@ pub(super) fn solve<E>(
                 return Ok(());
             }
             selected = Some(candidate);
+        } else if call.candidates.len() == 1 {
+            single_candidate_failure = Some(solved);
         }
     }
     let Some(candidate) = selected else {
+        if let Some(failure) = single_candidate_failure {
+            report.append(failure);
+            return Ok(());
+        }
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::TypeMismatch,
             span: call.origin.span,

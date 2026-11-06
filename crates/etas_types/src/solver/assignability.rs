@@ -100,7 +100,9 @@ fn is_length_input(store: &TypeStore, ty: TypeId) -> bool {
             | Some(Type::List(_))
             | Some(Type::Slice(_))
             | Some(Type::Map { .. })
-            | Some(Type::Primitive(PrimitiveType::String))
+            | Some(Type::Primitive(
+                PrimitiveType::String | PrimitiveType::Bytes
+            ))
     )
 }
 

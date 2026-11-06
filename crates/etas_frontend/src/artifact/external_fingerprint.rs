@@ -651,6 +651,7 @@ pub(crate) fn external_dependency_effects(
                 Requirement::SecretAccess => 15,
                 Requirement::Compiler => 16,
                 Requirement::RuntimeHandler => 17,
+                Requirement::TaskScheduler => 18,
             });
         }
     };

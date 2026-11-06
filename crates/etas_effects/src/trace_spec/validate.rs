@@ -1248,13 +1248,18 @@ fn validate_clauses(
 fn action_span(trace: &ActionTraceDomain, action: &Effect) -> Option<Span> {
     match trace {
         ActionTraceDomain::Event(event) if &event.action == action => Some(event.span),
-        ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => {
             parts.iter().find_map(|part| action_span(part, action))
         }
-        ActionTraceDomain::Repeat(inner) => action_span(inner, action),
+        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
+            action_span(inner, action)
+        }
         ActionTraceDomain::Empty
         | ActionTraceDomain::Event(_)
         | ActionTraceDomain::ParameterCall { .. }
+        | ActionTraceDomain::TaskAwait { .. }
         | ActionTraceDomain::UnknownOrder(_)
         | ActionTraceDomain::Widened { .. } => None,
     }

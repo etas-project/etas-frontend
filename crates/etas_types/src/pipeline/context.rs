@@ -190,6 +190,17 @@ impl<'a> TypePipelineContext<'a> {
         }
     }
 
+    pub(crate) fn for_body_with_view(
+        hir: &'a HirProgram,
+        view: etas_hir::HirTreeView<'a>,
+        base: &'a crate::SignatureEnvironment,
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Self {
+        let mut context = Self::for_body(hir, base, std_registry);
+        context.hir_view = Some(view);
+        context
+    }
+
     fn lookup<'b, K: std::hash::Hash + Eq + 'b, V>(
         &'b self,
         field: impl Fn(&TypeFacts) -> &HashMap<K, V>,
