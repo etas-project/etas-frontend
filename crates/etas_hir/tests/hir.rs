@@ -1849,6 +1849,48 @@ flow main() -> unit {
 }
 
 #[test]
+fn lowers_handler_continuation_as_a_scoped_local_binding() {
+    let hir = lower(
+        r#"
+effect Async {
+  action await(task: i32) -> i32;
+}
+
+flow main() -> i32 {
+  handle { perform Async.await(1) } with {
+    Async.await(task) as k => {
+      let retained = k;
+      finish task;
+    }
+  }
+}
+"#,
+    );
+
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let (arm_id, arm) = hir.handler_arms.iter().next().expect("handler arm");
+    let continuation = arm.continuation.expect("continuation binding");
+    let etas_hir::HirPat::Binding { symbol, .. } = hir.pats[continuation] else {
+        panic!("continuation local pattern");
+    };
+    let symbol = hir.symbols.get(symbol).expect("continuation symbol");
+    assert_eq!(symbol.name, "k");
+    assert_eq!(symbol.kind, SymbolKind::Local);
+    assert!(hir.source_map.pat_sources.contains_key(&continuation));
+    assert!(hir.source_map.symbol_sources.contains_key(&symbol.id));
+    assert_eq!(
+        HirTreeView::try_new(&hir)
+            .expect("continuation remains attached to the handler arm")
+            .index()
+            .pat_owner
+            .get(&continuation),
+        Some(&HirOwner::HandlerArm(arm_id))
+    );
+    let dump = dump_hir(&hir, HirDumpOptions::default());
+    assert!(dump.contains("Continuation"), "{dump}");
+}
+
+#[test]
 fn lowers_flow_trailing_handler_to_handle_expr() {
     let hir = lower(
         r#"

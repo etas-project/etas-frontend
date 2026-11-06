@@ -166,6 +166,22 @@ pub(super) fn collect_handler_for_requests<E>(
                 collect_pattern(ctx, pat, ty)?;
             }
         }
+        if let Some(continuation) = arm.continuation {
+            let continuation_ty = ctx.fresh_type_var();
+            collect_pattern(ctx, continuation, continuation_ty)?;
+            if action_signature.as_ref().is_some_and(|signature| {
+                matches!(
+                    ctx.ctx.interner.store().get(signature.output),
+                    Some(Type::Primitive(crate::PrimitiveType::Never))
+                )
+            }) {
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::HandlerCompletionRequired,
+                    span: ctx.ctx.hir.pats[continuation].span(),
+                    message: "a never-returning action cannot bind a continuation".into(),
+                });
+            }
+        }
         let resume_ty = action_signature
             .as_ref()
             .map(|signature| signature.output)

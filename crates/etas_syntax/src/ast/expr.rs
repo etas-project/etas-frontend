@@ -234,6 +234,7 @@ pub struct HandlerArm {
     pub action: Name,
     pub generic_args: Vec<GenericArg>,
     pub patterns: Vec<Pattern>,
+    pub continuation: Option<Name>,
     pub body: HandlerArmBody,
     pub span: Span,
 }

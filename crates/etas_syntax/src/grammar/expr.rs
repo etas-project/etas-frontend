@@ -748,6 +748,10 @@ impl Parser<'_> {
         self.expect_punct(Punct::LParen, "expected handler pattern list");
         let patterns = self.comma_list(Punct::RParen, |this| this.pattern());
         self.expect_punct(Punct::RParen, "expected `)` after handler patterns");
+        let continuation = self
+            .cursor
+            .eat_keyword(Keyword::As)
+            .map(|_| self.name("expected continuation binding after `as`"));
         self.expect_punct(Punct::FatArrow, "expected `=>` before handler body");
         let body = if self.cursor.at_punct(Punct::LBrace) {
             HandlerArmBody::Block(self.block())
@@ -770,6 +774,7 @@ impl Parser<'_> {
             action,
             generic_args,
             patterns,
+            continuation,
             body,
             span,
         }

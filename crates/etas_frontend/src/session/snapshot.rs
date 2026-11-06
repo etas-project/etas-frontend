@@ -1124,6 +1124,9 @@ impl BodySignatureReferenceCollector<'_> {
             for pat in &handler.patterns {
                 self.visit_pat_type_references(*pat);
             }
+            if let Some(continuation) = handler.continuation {
+                self.visit_pat_type_references(continuation);
+            }
         }
     }
 
