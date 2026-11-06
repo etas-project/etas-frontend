@@ -158,7 +158,7 @@ fn materialize_latent_effects(
         // Failed analysis retains its diagnostics, but cannot publish checked facts.
         std::collections::HashMap::new()
     } else {
-        contextual_rows::solved_contextual_rows(types, facts)?
+        contextual_rows::solved_contextual_rows(types, registry, facts)?
     };
     for (unit, summary) in facts.unit_effects.clone() {
         let EffectUnit::AnonymousFlow { value, body, .. } = unit else {

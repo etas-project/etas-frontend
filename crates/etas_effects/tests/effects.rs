@@ -72,6 +72,52 @@ fn local_only() -> InterpreterSupport {
     InterpreterSupport::LocalOnly
 }
 
+#[test]
+fn structured_task_rows_are_solved_across_start_await_and_run() {
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
+import std.task.{run, start, await, Scheduler};
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let task = start(() => { return 42; });
+        return await(task);
+    });
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:#?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+
+    for (call, fact) in &types.facts.generic_instantiations {
+        if !fact.deferred_effect_row_obligations.is_empty() {
+            assert!(
+                output.facts.generic_effect_rows.contains_key(call),
+                "deferred rows were not solved for {call:?}: {fact:#?}"
+            );
+        }
+    }
+    let summary = output
+        .facts
+        .item_effects
+        .values()
+        .next()
+        .expect("main effect summary");
+    assert!(
+        matches!(
+            summary.support,
+            InterpreterSupport::RequiresInterpreterOrchestration(_)
+        ),
+        "{summary:#?}"
+    );
+}
+
 fn is_approval_request_effect(effect: &Effect) -> bool {
     matches!(
         effect,

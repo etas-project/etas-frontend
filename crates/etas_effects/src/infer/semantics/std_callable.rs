@@ -123,7 +123,9 @@ impl EffectSemantics<'_> {
         }
         let span = self.hir.exprs[expr].span(&self.hir.blocks);
         let summary = match &declaration.decl {
-            StdDecl::Flow(_) => self.std_flow_summary(expr, expr, span),
+            StdDecl::Flow(_) => {
+                self.std_flow_summary(expr, expr, span, &super::state::EffectState::default())
+            }
             StdDecl::Type(ty)
                 if (declaration.kind == StdSymbolKind::Constructor
                     || ty.kind == TypeDeclKind::Wrapper)

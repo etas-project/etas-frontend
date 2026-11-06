@@ -171,6 +171,9 @@ impl EffectSemantics<'_> {
         expr: HirExprId,
         param: &str,
     ) -> Result<EffectSummary, EffectSpecializationError> {
+        if let Some(summary) = self.task_effect_summary(state, expr)? {
+            return Ok(summary);
+        }
         let Some(sources) = self.latent_sources_for_expr(state, expr) else {
             return Err(EffectSpecializationError::MissingLatentEffectBinding {
                 param: param.to_owned(),
@@ -185,6 +188,70 @@ impl EffectSemantics<'_> {
             })?
             .span(&self.hir.blocks);
         self.latent_summary_for_origins(sources, span, param)
+    }
+
+    fn task_effect_summary(
+        &self,
+        state: &EffectState,
+        expr: HirExprId,
+    ) -> Result<Option<EffectSummary>, EffectSpecializationError> {
+        let Some(origin) = self.task_origin(expr, &mut std::collections::HashSet::new()) else {
+            return Ok(None);
+        };
+        let Some(task) = self.types.facts.task_owners.get(&origin) else {
+            return Ok(None);
+        };
+        let checked = self.call_generic_bindings(origin);
+        let existing = checked
+            .effect_rows
+            .iter()
+            .map(|(name, row)| (name.clone(), self.row_from_type_ref(row)))
+            .collect::<BTreeMap<_, _>>();
+        let solved = self.solve_deferred_effect_row_obligations(
+            state,
+            &checked.deferred_effect_rows,
+            &existing,
+        )?;
+        let mut effects = self.row_from_type_ref(&task.effects);
+        if let Some(open) = effects.open
+            && let Some(binding) = solved
+                .iter()
+                .chain(existing.iter())
+                .find(|(name, _)| crate::effect_var_id_from_name(name) == open)
+                .map(|(_, row)| row)
+        {
+            effects.effects.union_assign(&binding.effects);
+            effects.open = binding.open;
+        }
+        let mut summary = EffectSummary::local();
+        summary.escaping_effects = effects;
+        Ok(Some(summary))
+    }
+
+    fn task_origin(
+        &self,
+        expr: HirExprId,
+        visited: &mut std::collections::HashSet<HirExprId>,
+    ) -> Option<HirExprId> {
+        if !visited.insert(expr) {
+            return None;
+        }
+        if self.types.facts.task_owners.contains_key(&expr) {
+            return Some(expr);
+        }
+        let etas_hir::HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
+            return None;
+        };
+        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+            return None;
+        };
+        let initializer = match &self.hir.symbols.get(symbol)?.def {
+            etas_hir::SymbolDef::Local { initializer, .. }
+            | etas_hir::SymbolDef::PatternBinding { initializer, .. } => *initializer,
+            etas_hir::SymbolDef::TopLevelLet { initializer, .. } => Some(*initializer),
+            _ => None,
+        }?;
+        self.task_origin(initializer, visited)
     }
 
     pub(crate) fn latent_summary_for_origins(

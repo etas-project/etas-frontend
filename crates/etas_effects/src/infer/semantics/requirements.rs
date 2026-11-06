@@ -132,7 +132,7 @@ impl EffectSemantics<'_> {
             }
             return combined;
         }
-        if let Some(summary) = self.std_flow_summary(expr, expr, span) {
+        if let Some(summary) = self.std_flow_summary(expr, expr, span, state) {
             return Some(summary);
         }
         let symbol = self.callee_symbol(expr)?;
