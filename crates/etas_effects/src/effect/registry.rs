@@ -1165,9 +1165,7 @@ fn core_effect_requires_high_impact_ack(core: CoreEffect) -> bool {
 }
 
 fn is_std_effect_symbol(path: &[String]) -> bool {
-    path.len() == 3
-        && path[0] == "std"
-        && matches!(path[1].as_str(), "effects" | "task")
+    path.len() == 3 && path[0] == "std" && matches!(path[1].as_str(), "effects" | "task")
 }
 
 fn is_std_effect_action_symbol(path: &[String]) -> bool {

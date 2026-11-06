@@ -22,6 +22,7 @@ pub(super) fn solved_contextual_rows(
         };
         if !facts.generic_effect_rows.contains_key(call) {
             let rows = solve_from_latent_units(
+                types,
                 registry,
                 facts,
                 &instantiation.deferred_effect_row_obligations,
@@ -50,16 +51,29 @@ pub(super) fn solved_contextual_rows(
 }
 
 fn solve_from_latent_units(
+    types: &etas_types::TypeOutput,
     registry: &EffectRegistry,
     facts: &EffectFacts,
     obligations: &[etas_types::DeferredEffectRowObligation],
 ) -> Option<Vec<(String, EffectRow)>> {
     let mut solved = std::collections::BTreeMap::<String, EffectRow>::new();
     for obligation in obligations {
-        let actual = facts.unit_effects.iter().find_map(|(unit, summary)| {
+        let source_row;
+        let actual = if let Some(actual) = facts.unit_effects.iter().find_map(|(unit, summary)| {
             matches!(unit, EffectUnit::AnonymousFlow { value, .. } if *value == obligation.source)
                 .then_some(&summary.escaping_effects)
-        })?;
+        }) {
+            actual
+        } else {
+            let ty = types.facts.expr_types.get(&obligation.source)?;
+            let row = match types.store.get(*ty)? {
+                etas_types::Type::Task(task) => &task.effects,
+                etas_types::Type::Function(flow) => flow.effects.as_ref()?,
+                _ => return None,
+            };
+            source_row = super::row_from_type_ref(registry, row);
+            &source_row
+        };
         let fixed = super::row_from_type_ref(registry, &obligation.fixed);
         if fixed.open.is_some()
             || fixed

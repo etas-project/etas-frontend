@@ -105,12 +105,27 @@ impl Pass<ProjectContext> for MaterializeGenericEffectRowsPass {
                             "deferred generic binder has multiple solved Effect rows".into()
                         );
                     }
+                    let scoped_parameters = fact
+                        .deferred_effect_row_obligations
+                        .iter()
+                        .filter(|obligation| obligation.param == name)
+                        .filter_map(|obligation| {
+                            let ty = types.facts.expr_types.get(&obligation.source)?;
+                            match types.store.get(*ty)? {
+                                etas_types::Type::Task(task) => task.effects.tail.clone(),
+                                etas_types::Type::Function(flow) => {
+                                    flow.effects.as_ref()?.tail.clone()
+                                }
+                                _ => None,
+                            }
+                        });
                     bindings.push((
                         name.to_owned(),
                         instantiation::checked_row(
                             row,
                             &artifacts.registry,
                             instantiation::signature(&types.facts, *owner),
+                            scoped_parameters,
                         )?,
                     ));
                 }
