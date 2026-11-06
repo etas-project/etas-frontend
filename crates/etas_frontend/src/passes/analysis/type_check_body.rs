@@ -65,7 +65,7 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
             .filter(|application| application.owner == item)
         {
             let result = match manager.execution_control() {
-                Some(control) => etas_types::check_instantiated_body_delta_controlled(
+                Some(control) => etas_types::check_instantiated_body_delta_revision_controlled(
                     &hir.hir,
                     base,
                     item,
@@ -73,7 +73,7 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
                     context.std_registry.clone(),
                     control,
                 ),
-                None => etas_types::check_instantiated_body_delta(
+                None => etas_types::check_instantiated_body_delta_revision(
                     &hir.hir,
                     base,
                     item,
@@ -103,7 +103,7 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
             );
         }
         let output = match manager.execution_control() {
-            Some(control) => match etas_types::check_body_delta_controlled(
+            Some(control) => match etas_types::check_body_delta_revision_controlled(
                 &hir.hir,
                 base,
                 item,
@@ -113,9 +113,12 @@ impl Pass<ProjectContext> for TypeCheckBodyPass {
                 Ok(output) => output,
                 Err(interruption) => return PassResult::interrupted(interruption),
             },
-            None => {
-                etas_types::check_body_delta(&hir.hir, base, item, context.std_registry.clone())
-            }
+            None => etas_types::check_body_delta_revision(
+                &hir.hir,
+                base,
+                item,
+                context.std_registry.clone(),
+            ),
         };
         context
             .diagnostics

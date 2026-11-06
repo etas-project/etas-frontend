@@ -11,10 +11,14 @@ mod resolution;
 mod source;
 
 pub(crate) use analysis::CheckedStandardLibraryImplementations;
+pub use analysis::concurrency::{
+    BranchFact, ConcurrencyFacts, ConcurrencySiteFact, ResourceConflict, ResourceGuardPlan,
+    SchedulingDecision, TaskScopeFact,
+};
 pub use analysis::{
-    AnalyzeLoopProgressPass, BindMethodOriginsPass, BuildSignatureFactsPass,
-    CheckStandardLibraryImplementationsPass, FinalizeTypeFactsPass, InferCallableOutputsPass,
-    MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
+    AnalyzeConcurrencyPass, AnalyzeLoopProgressPass, BindMethodOriginsPass,
+    BuildSignatureFactsPass, CheckStandardLibraryImplementationsPass, FinalizeTypeFactsPass,
+    InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
     PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
     RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
     ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,

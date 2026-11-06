@@ -122,6 +122,7 @@ mod tests {
             effect_body_outputs: Default::default(),
             effect_pipeline_artifacts: None,
             effects: None,
+            concurrency: None,
             entry: None,
             reachability: None,
             runtime_source_requirements: None,

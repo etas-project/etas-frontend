@@ -14,7 +14,7 @@ pub struct EffectFactProjector;
 
 impl EffectFactProjector {
     pub fn materialize(
-        hir: &etas_hir::HirProgram,
+        hir: &etas_hir::HirRevision,
         types: &etas_types::TypeOutput,
         registry: &EffectRegistry,
         mut analysis: EffectAnalysisOutput,
@@ -142,7 +142,7 @@ impl EffectFactProjector {
 }
 
 fn materialize_task_calls(
-    hir: &etas_hir::HirProgram,
+    hir: &etas_hir::HirRevision,
     types: &etas_types::TypeOutput,
     registry: &EffectRegistry,
     facts: &mut EffectFacts,
@@ -150,7 +150,7 @@ fn materialize_task_calls(
 ) -> Result<(), EffectPipelineError> {
     use etas_hir::{HirExpr, HirNodeRef, ResolveResult};
 
-    let view = etas_hir::HirTreeView::new(hir);
+    let view = hir.view();
     let run_callbacks = types
         .facts
         .std_intrinsic_calls

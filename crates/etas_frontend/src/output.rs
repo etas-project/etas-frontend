@@ -1169,6 +1169,7 @@ pub struct CheckOutput {
     pub hir: Option<HirOutput>,
     pub types: Option<TypeOutput>,
     pub effects: Option<SharedEffectOutput>,
+    pub concurrency: Option<Arc<crate::ConcurrencyFacts>>,
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -1195,6 +1196,7 @@ pub struct ProjectOutput {
     pub effect_body_outputs: HashMap<UnitId, Arc<etas_effects::BodyEffectOutput>>,
     pub effect_pipeline_artifacts: Option<Arc<EffectPipelineArtifacts>>,
     pub effects: Option<SharedEffectOutput>,
+    pub concurrency: Option<Arc<crate::ConcurrencyFacts>>,
     pub entry: Option<ProjectEntryFact>,
     pub reachability: Option<crate::ReachabilityFacts>,
     pub runtime_source_requirements: Option<crate::RuntimeSourceRequirements>,
@@ -1224,6 +1226,7 @@ impl ProjectOutput {
             hir: self.hir,
             types: self.types,
             effects: self.effects,
+            concurrency: self.concurrency,
         }
     }
 }
@@ -1254,6 +1257,7 @@ pub struct CheckedProgramData {
     pub types: Arc<TypeFacts>,
     pub type_store: Arc<TypeStore>,
     pub effects: Arc<EffectFacts>,
+    pub concurrency: Arc<crate::ConcurrencyFacts>,
     pub effect_registry: Arc<EffectRegistry>,
     pub external_tool_schemas: Vec<ProjectExternalToolSchemaInput>,
     pub entry_fact: ProjectEntryFact,

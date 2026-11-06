@@ -27,7 +27,25 @@ pub fn check_instantiated_body_delta(
     arguments: &[CallableGenericArg],
     std_registry: Arc<etas_std::StdRegistry>,
 ) -> Result<InstantiatedBodyOutput, BodyInstantiationError> {
-    check(hir, base, item, arguments, std_registry, None)
+    check(hir, None, base, item, arguments, std_registry, None)
+}
+
+pub fn check_instantiated_body_delta_revision<'a>(
+    hir: &'a etas_hir::HirRevision,
+    base: &'a SignatureEnvironment,
+    item: HirItemId,
+    arguments: &[CallableGenericArg],
+    std_registry: Arc<etas_std::StdRegistry>,
+) -> Result<InstantiatedBodyOutput, BodyInstantiationError> {
+    check(
+        hir.program(),
+        Some(hir.view()),
+        base,
+        item,
+        arguments,
+        std_registry,
+        None,
+    )
 }
 
 pub fn check_instantiated_body_delta_controlled(
@@ -38,12 +56,40 @@ pub fn check_instantiated_body_delta_controlled(
     std_registry: Arc<etas_std::StdRegistry>,
     control: &dyn etas_utils::PipelineExecutionControl,
 ) -> Result<InstantiatedBodyOutput, BodyInstantiationError> {
-    check(hir, base, item, arguments, std_registry, Some(control))
+    check(
+        hir,
+        None,
+        base,
+        item,
+        arguments,
+        std_registry,
+        Some(control),
+    )
 }
 
-fn check(
-    hir: &HirProgram,
-    base: &SignatureEnvironment,
+pub fn check_instantiated_body_delta_revision_controlled<'a>(
+    hir: &'a etas_hir::HirRevision,
+    base: &'a SignatureEnvironment,
+    item: HirItemId,
+    arguments: &[CallableGenericArg],
+    std_registry: Arc<etas_std::StdRegistry>,
+    control: &dyn etas_utils::PipelineExecutionControl,
+) -> Result<InstantiatedBodyOutput, BodyInstantiationError> {
+    check(
+        hir.program(),
+        Some(hir.view()),
+        base,
+        item,
+        arguments,
+        std_registry,
+        Some(control),
+    )
+}
+
+fn check<'a>(
+    hir: &'a HirProgram,
+    view: Option<etas_hir::HirTreeView<'a>>,
+    base: &'a SignatureEnvironment,
     item: HirItemId,
     arguments: &[CallableGenericArg],
     std_registry: Arc<etas_std::StdRegistry>,
@@ -54,7 +100,10 @@ fn check(
             .checkpoint()
             .map_err(BodyInstantiationError::Interrupted)?;
     }
-    let mut ctx = TypePipelineContext::for_body(hir, base, std_registry);
+    let mut ctx = match view {
+        Some(view) => TypePipelineContext::for_body_with_view(hir, view, base, std_registry),
+        None => TypePipelineContext::for_body(hir, base, std_registry),
+    };
     let parameters = BodyParameters::prepare(&mut ctx, item, arguments)?;
     let ItemSignature::Flow(signature) = &parameters.signature else {
         return Err(BodyInstantiationError::UnsupportedOwner(item));

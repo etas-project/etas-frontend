@@ -2,14 +2,15 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
-    AdmitStandardLibrarySourcesPass, AnalyzeLoopProgressPass, ApplyResolvedImportsToHirPass,
-    BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass,
-    BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
-    CheckStandardLibraryImplementationsPass, CompleteEffectRuntimeReachabilityPass,
-    CompleteTypedAnalysisReachabilityPass, CompleteTypedRuntimeReachabilityPass,
-    ComputeAffectedModulesPass, ComputeDefinitionAnalysisReachabilityPass,
-    ComputeEntryReachabilityPass, ComputeModuleTopoOrderPass, DetectImportCyclesPass,
-    FinalizeProjectHirPass, FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
+    AdmitStandardLibrarySourcesPass, AnalyzeConcurrencyPass, AnalyzeLoopProgressPass,
+    ApplyResolvedImportsToHirPass, BindMethodOriginsPass, BuildCheckedProjectPass,
+    BuildImportGraphPass, BuildModuleCatalogPass, BuildModuleIndexPass, BuildSignatureFactsPass,
+    BuildSourceSetPass, BuildUnitTreePass, CheckStandardLibraryImplementationsPass,
+    CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,
+    CompleteTypedRuntimeReachabilityPass, ComputeAffectedModulesPass,
+    ComputeDefinitionAnalysisReachabilityPass, ComputeEntryReachabilityPass,
+    ComputeModuleTopoOrderPass, DetectImportCyclesPass, FinalizeProjectHirPass,
+    FinalizeTypeFactsPass, InferCallableOutputsPass, LowerModuleItemsPass,
     MaterializeGenericEffectRowsPass, NormalizeModuleImportsPass, ParseSourceFilePass,
     PredeclareProjectSymbolsPass, PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass,
     PrepareEffectRegistryPass, PrepareInvocationTypesPass, ResolveEntryItemPass,
@@ -119,6 +120,7 @@ fn semantic_pipeline(candidate: bool) -> Pipeline<ProjectContext> {
         .pass(CompleteTypedRuntimeReachabilityPass)
         .pass(PrepareDirectInvocationTypesPass)
         .pass(RunEffectPipelinePass)
+        .pass(AnalyzeConcurrencyPass)
         .pass(ValidateResidualBackendSupportPass)
         .pass(CompleteEffectRuntimeReachabilityPass)
         .pass(MaterializeGenericEffectRowsPass)
@@ -252,6 +254,12 @@ flow main() -> i64 {
         assert!(pass_position("PrepareEffectRegistryPass") < pass_position("TypeCheckBodyPass"));
         assert!(
             pass_position("RunEffectPipelinePass") < pass_position("ValidateEntryContractPass")
+        );
+        assert!(
+            pass_position("RunEffectPipelinePass") < pass_position("AnalyzeConcurrencyPass")
+        );
+        assert!(
+            pass_position("AnalyzeConcurrencyPass") < pass_position("VerifyInterpreterSupportPass")
         );
     }
 }

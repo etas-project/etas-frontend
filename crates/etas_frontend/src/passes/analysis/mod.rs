@@ -1,3 +1,4 @@
+pub(crate) mod concurrency;
 mod definition_sources;
 mod effect_check;
 mod external_metadata_validation;
@@ -13,6 +14,7 @@ mod annotations;
 mod loop_progress;
 mod top_level_let;
 pub use annotations::ValidateItemAnnotationsPass;
+pub use concurrency::AnalyzeConcurrencyPass;
 mod method_origins;
 mod standard_library;
 mod type_check;

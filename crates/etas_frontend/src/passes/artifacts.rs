@@ -46,6 +46,7 @@ pub(crate) const HANDLER_INSTANTIATIONS: ArtifactKey =
 pub(crate) const CALLABLE_INSTANTIATIONS: ArtifactKey =
     ArtifactKey::new("frontend", "callable_instantiations");
 pub(crate) const EFFECT_OUTPUT: ArtifactKey = ArtifactKey::new("frontend", "effect_facts");
+pub(crate) const CONCURRENCY_FACTS: ArtifactKey = ArtifactKey::new("frontend", "concurrency_facts");
 pub(crate) const VERIFIED_RESIDUAL_PLANS: ArtifactKey =
     ArtifactKey::new("frontend", "verified_residual_plans");
 pub(crate) const RESIDUAL_BACKEND_SUPPORT: ArtifactKey =

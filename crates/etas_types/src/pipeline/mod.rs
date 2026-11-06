@@ -72,6 +72,18 @@ pub fn check_body_delta(
     body_delta_output(ctx, base, item)
 }
 
+pub fn check_body_delta_revision<'a>(
+    hir: &'a etas_hir::HirRevision,
+    base: &'a crate::SignatureEnvironment,
+    item: etas_hir::HirItemId,
+    std_registry: std::sync::Arc<etas_std::StdRegistry>,
+) -> crate::BodyTypeOutput {
+    let mut ctx =
+        TypePipelineContext::for_body_with_view(hir.program(), hir.view(), base, std_registry);
+    body::run(&mut ctx, item);
+    body_delta_output(ctx, base, item)
+}
+
 pub fn check_body_delta_controlled(
     hir: &HirProgram,
     base: &crate::SignatureEnvironment,
@@ -80,6 +92,19 @@ pub fn check_body_delta_controlled(
     control: &dyn etas_utils::PipelineExecutionControl,
 ) -> Result<crate::BodyTypeOutput, etas_utils::PipelineInterruption> {
     let mut ctx = TypePipelineContext::for_body(hir, base, std_registry);
+    body::run_controlled(&mut ctx, item, control)?;
+    Ok(body_delta_output(ctx, base, item))
+}
+
+pub fn check_body_delta_revision_controlled<'a>(
+    hir: &'a etas_hir::HirRevision,
+    base: &'a crate::SignatureEnvironment,
+    item: etas_hir::HirItemId,
+    std_registry: std::sync::Arc<etas_std::StdRegistry>,
+    control: &dyn etas_utils::PipelineExecutionControl,
+) -> Result<crate::BodyTypeOutput, etas_utils::PipelineInterruption> {
+    let mut ctx =
+        TypePipelineContext::for_body_with_view(hir.program(), hir.view(), base, std_registry);
     body::run_controlled(&mut ctx, item, control)?;
     Ok(body_delta_output(ctx, base, item))
 }

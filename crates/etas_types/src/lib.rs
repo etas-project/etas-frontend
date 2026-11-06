@@ -92,9 +92,11 @@ pub fn run_signature_pipeline(input: SignaturePipelineInput<'_>) -> TypeOutput {
 
 pub use pipeline::body::instantiation::{
     check_instantiated_body_delta, check_instantiated_body_delta_controlled,
+    check_instantiated_body_delta_revision, check_instantiated_body_delta_revision_controlled,
 };
 pub use pipeline::{
-    check_body_delta, check_body_delta_controlled, finalize::finalize_body_deltas,
+    check_body_delta, check_body_delta_controlled, check_body_delta_revision,
+    check_body_delta_revision_controlled, finalize::finalize_body_deltas,
     finalize::finalize_body_deltas_with_application, infer_callable_outputs,
     infer_callable_outputs_controlled,
 };

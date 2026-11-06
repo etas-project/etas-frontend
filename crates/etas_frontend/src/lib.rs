@@ -100,6 +100,11 @@ use etas_hir::dump_hir as dump_hir_text;
 pub use etas_syntax::DumpOptions;
 use etas_syntax::dump_parse;
 
+pub use passes::{
+    BranchFact, ConcurrencyFacts, ConcurrencySiteFact, ResourceConflict, ResourceGuardPlan,
+    SchedulingDecision, TaskScopeFact,
+};
+
 pub struct Frontend;
 
 impl Frontend {
