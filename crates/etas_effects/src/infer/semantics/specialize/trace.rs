@@ -19,6 +19,8 @@ pub(crate) fn substitute_parameter_calls(
         Visit(&'a ActionTraceDomain),
         Seq(usize),
         Choice(usize),
+        Parallel(usize),
+        TaskStart(etas_hir::HirExprId),
         Repeat,
     }
     let mut pending = vec![Work::Visit(root)];
@@ -36,13 +38,20 @@ pub(crate) fn substitute_parameter_calls(
                         ParameterCallSubstitution::Trace(trace) => trace,
                     });
                 }
-                ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
-                    pending.push(if matches!(trace, ActionTraceDomain::Seq(_)) {
-                        Work::Seq(parts.len())
-                    } else {
-                        Work::Choice(parts.len())
+                ActionTraceDomain::Seq(parts)
+                | ActionTraceDomain::Choice(parts)
+                | ActionTraceDomain::Parallel(parts) => {
+                    pending.push(match trace {
+                        ActionTraceDomain::Seq(_) => Work::Seq(parts.len()),
+                        ActionTraceDomain::Choice(_) => Work::Choice(parts.len()),
+                        ActionTraceDomain::Parallel(_) => Work::Parallel(parts.len()),
+                        _ => unreachable!("matched compound trace"),
                     });
                     pending.extend(parts.iter().rev().map(Work::Visit));
+                }
+                ActionTraceDomain::TaskStart { task_site, body } => {
+                    pending.push(Work::TaskStart(*task_site));
+                    pending.push(Work::Visit(body));
                 }
                 ActionTraceDomain::Repeat(part) => {
                     pending.push(Work::Repeat);
@@ -71,14 +80,19 @@ pub(crate) fn substitute_parameter_calls(
                 }
                 ActionTraceDomain::Empty
                 | ActionTraceDomain::Event(_)
+                | ActionTraceDomain::TaskAwait { .. }
                 | ActionTraceDomain::UnknownOrder(_) => values.push(trace.clone()),
             },
-            Work::Seq(count) | Work::Choice(count) => {
+            Work::Seq(count) | Work::Choice(count) | Work::Parallel(count) => {
                 let start = values
                     .len()
                     .checked_sub(count)
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
                 let parts = values.split_off(start);
+                if matches!(work, Work::Parallel(_)) {
+                    values.push(ActionTraceDomain::Parallel(parts));
+                    continue;
+                }
                 let mut parts = parts.into_iter();
                 let mut trace = parts.next().unwrap_or_default();
                 for part in parts {
@@ -95,6 +109,15 @@ pub(crate) fn substitute_parameter_calls(
                     .pop()
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
                 values.push(value.repeat());
+            }
+            Work::TaskStart(task_site) => {
+                let body = values
+                    .pop()
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                values.push(ActionTraceDomain::TaskStart {
+                    task_site,
+                    body: Box::new(body),
+                });
             }
         }
     }

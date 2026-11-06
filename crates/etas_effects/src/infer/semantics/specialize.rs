@@ -826,7 +826,9 @@ impl EffectSemantics<'_> {
             ActionTraceDomain::Empty => Ok(false),
             ActionTraceDomain::Event(event) => self.effect_contains_named_type(&event.action, name),
             ActionTraceDomain::ParameterCall { .. } => Ok(false),
-            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => {
+            ActionTraceDomain::Seq(items)
+            | ActionTraceDomain::Choice(items)
+            | ActionTraceDomain::Parallel(items) => {
                 for item in items {
                     if self.action_trace_contains_named_type(item, name)? {
                         return Ok(true);
@@ -834,7 +836,10 @@ impl EffectSemantics<'_> {
                 }
                 Ok(false)
             }
-            ActionTraceDomain::Repeat(item) => self.action_trace_contains_named_type(item, name),
+            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+                self.action_trace_contains_named_type(item, name)
+            }
+            ActionTraceDomain::TaskAwait { .. } => Ok(false),
             ActionTraceDomain::UnknownOrder(actions) => {
                 for effect in actions.iter() {
                     if self.effect_contains_named_type(effect, name)? {

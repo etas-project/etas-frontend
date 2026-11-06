@@ -270,6 +270,17 @@ pub enum ActionTraceDomain {
         parameter: String,
         span: Span,
     },
+    /// Branches whose actions may overlap in one structured task scope.
+    Parallel(Vec<ActionTraceDomain>),
+    /// Behavior attributed to a child at the source `std.task.start` site.
+    TaskStart {
+        task_site: etas_hir::HirExprId,
+        body: Box<ActionTraceDomain>,
+    },
+    /// A dependency edge introduced by awaiting a structured task handle.
+    TaskAwait {
+        task_site: etas_hir::HirExprId,
+    },
     Seq(Vec<ActionTraceDomain>),
     Choice(Vec<ActionTraceDomain>),
     Repeat(Box<ActionTraceDomain>),
@@ -327,9 +338,14 @@ impl ActionTraceDomain {
         while let Some(trace) = pending.pop() {
             match trace {
                 Self::UnknownOrder(_) | Self::Widened { .. } => return true,
-                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
-                Self::Repeat(inner) => pending.push(inner),
-                Self::Empty | Self::Event(_) | Self::ParameterCall { .. } => {}
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Empty
+                | Self::Event(_)
+                | Self::ParameterCall { .. }
+                | Self::TaskAwait { .. } => {}
             }
         }
         false
@@ -343,9 +359,15 @@ impl ActionTraceDomain {
                 Self::Widened {
                     parameter_calls, ..
                 } if !parameter_calls.is_empty() => return true,
-                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
-                Self::Repeat(inner) => pending.push(inner),
-                Self::Empty | Self::Event(_) | Self::UnknownOrder(_) | Self::Widened { .. } => {}
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Empty
+                | Self::Event(_)
+                | Self::TaskAwait { .. }
+                | Self::UnknownOrder(_)
+                | Self::Widened { .. } => {}
             }
         }
         false
@@ -392,11 +414,14 @@ impl ActionTraceDomain {
                 return count;
             }
             match trace {
-                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
-                Self::Repeat(inner) => pending.push(inner),
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
                 Self::Empty
                 | Self::Event(_)
                 | Self::ParameterCall { .. }
+                | Self::TaskAwait { .. }
                 | Self::UnknownOrder(_)
                 | Self::Widened { .. } => {}
             }
@@ -409,10 +434,14 @@ impl ActionTraceDomain {
         while let Some(trace) = pending.pop() {
             match trace {
                 Self::Repeat(_) => return true,
-                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::TaskStart { body, .. } => pending.push(body),
                 Self::Empty
                 | Self::Event(_)
                 | Self::ParameterCall { .. }
+                | Self::TaskAwait { .. }
                 | Self::UnknownOrder(_)
                 | Self::Widened { .. } => {}
             }
@@ -442,9 +471,11 @@ impl ActionTraceDomain {
                 Self::Event(event) => {
                     actions.insert(event.action.clone());
                 }
-                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
-                Self::Repeat(inner) => pending.push(inner),
-                Self::Empty | Self::ParameterCall { .. } => {}
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Empty | Self::ParameterCall { .. } | Self::TaskAwait { .. } => {}
             }
         }
     }
@@ -485,9 +516,11 @@ impl ActionTraceDomain {
                         );
                     }
                 }
-                Self::Seq(parts) | Self::Choice(parts) => pending.extend(parts),
-                Self::Repeat(inner) => pending.push(inner),
-                Self::Empty | Self::Event(_) | Self::UnknownOrder(_) => {}
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Empty | Self::Event(_) | Self::TaskAwait { .. } | Self::UnknownOrder(_) => {}
             }
         }
     }
@@ -531,17 +564,17 @@ impl ActionTraceDomain {
                         );
                     }
                 }
-                Self::Seq(parts) | Self::Choice(parts) => {
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts.into_iter().rev());
                 }
-                Self::Repeat(inner) => pending.push(*inner),
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(*inner),
                 Self::Event(event) => {
                     actions.insert(event.action);
                 }
                 Self::UnknownOrder(set) => {
                     actions.union_assign(&set);
                 }
-                Self::Empty => {}
+                Self::Empty | Self::TaskAwait { .. } => {}
             }
         }
     }

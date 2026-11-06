@@ -485,6 +485,8 @@ impl<'a> Relocation<'a> {
             Visit(&'t ActionTraceDomain),
             Seq(usize),
             Choice(usize),
+            Parallel(usize),
+            TaskStart(etas_hir::HirExprId),
             Repeat,
         }
         let mut work = vec![Work::Visit(root)];
@@ -509,13 +511,25 @@ impl<'a> Relocation<'a> {
                         parameter: parameter.clone(),
                         span: *span,
                     }),
-                    ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
-                        work.push(if matches!(trace, ActionTraceDomain::Seq(_)) {
-                            Work::Seq(parts.len())
-                        } else {
-                            Work::Choice(parts.len())
+                    ActionTraceDomain::Seq(parts)
+                    | ActionTraceDomain::Choice(parts)
+                    | ActionTraceDomain::Parallel(parts) => {
+                        work.push(match trace {
+                            ActionTraceDomain::Seq(_) => Work::Seq(parts.len()),
+                            ActionTraceDomain::Choice(_) => Work::Choice(parts.len()),
+                            ActionTraceDomain::Parallel(_) => Work::Parallel(parts.len()),
+                            _ => unreachable!("matched compound trace"),
                         });
                         work.extend(parts.iter().rev().map(Work::Visit));
+                    }
+                    ActionTraceDomain::TaskStart { task_site, body } => {
+                        work.push(Work::TaskStart(*task_site));
+                        work.push(Work::Visit(body));
+                    }
+                    ActionTraceDomain::TaskAwait { task_site } => {
+                        values.push(ActionTraceDomain::TaskAwait {
+                            task_site: *task_site,
+                        })
                     }
                     ActionTraceDomain::Repeat(inner) => {
                         work.push(Work::Repeat);
@@ -549,16 +563,17 @@ impl<'a> Relocation<'a> {
                             .collect::<Result<_, ProjectionError>>()?,
                     }),
                 },
-                Work::Seq(count) | Work::Choice(count) => {
+                Work::Seq(count) | Work::Choice(count) | Work::Parallel(count) => {
                     let start = values
                         .len()
                         .checked_sub(count)
                         .ok_or_else(|| invalid("frozen trace relocation lost child nodes"))?;
                     let parts = values.split_off(start);
-                    values.push(if matches!(task, Work::Seq(_)) {
-                        ActionTraceDomain::Seq(parts)
-                    } else {
-                        ActionTraceDomain::Choice(parts)
+                    values.push(match task {
+                        Work::Seq(_) => ActionTraceDomain::Seq(parts),
+                        Work::Choice(_) => ActionTraceDomain::Choice(parts),
+                        Work::Parallel(_) => ActionTraceDomain::Parallel(parts),
+                        _ => unreachable!("matched compound trace"),
                     });
                 }
                 Work::Repeat => {
@@ -566,6 +581,15 @@ impl<'a> Relocation<'a> {
                         .pop()
                         .ok_or_else(|| invalid("frozen repeat trace has no child"))?;
                     values.push(ActionTraceDomain::Repeat(Box::new(inner)));
+                }
+                Work::TaskStart(task_site) => {
+                    let body = values
+                        .pop()
+                        .ok_or_else(|| invalid("frozen task trace has no child"))?;
+                    values.push(ActionTraceDomain::TaskStart {
+                        task_site,
+                        body: Box::new(body),
+                    });
                 }
             }
         }

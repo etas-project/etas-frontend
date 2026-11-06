@@ -898,6 +898,9 @@ impl EffectSemantics<'_> {
             }
             Some(etas_std::LoweringHint::Task(etas_std::StdTaskIntrinsic::Await)) => {
                 let mut summary = self.summary_from_std_flow(call, symbol, flow, span);
+                summary
+                    .action_trace
+                    .seq_assign(crate::ActionTraceDomain::TaskAwait { task_site: call });
                 if let Err(reason) = self.record_std_action_call(
                     call,
                     decl.intrinsic.as_ref().map(|intrinsic| intrinsic.id.0),
@@ -944,7 +947,13 @@ impl EffectSemantics<'_> {
                     );
                 };
                 match self.latent_summary_for_expr(state, job, argument) {
-                    Ok(job) => {
+                    Ok(mut job) => {
+                        if *operation == etas_std::StdTaskIntrinsic::Start {
+                            job.action_trace = crate::ActionTraceDomain::TaskStart {
+                                task_site: call,
+                                body: Box::new(job.action_trace),
+                            };
+                        }
                         summary.seq_assign(&job);
                     }
                     Err(error) => {

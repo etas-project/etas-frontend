@@ -93,12 +93,16 @@ impl CallableSummaryPlan {
                 ActionTraceDomain::Widened {
                     parameter_calls, ..
                 } => calls.extend(parameter_calls.iter().map(|call| (call.target, call.span))),
-                ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
+                ActionTraceDomain::Seq(parts)
+                | ActionTraceDomain::Choice(parts)
+                | ActionTraceDomain::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                ActionTraceDomain::Repeat(inner) => pending.push(inner),
+                ActionTraceDomain::Repeat(inner)
+                | ActionTraceDomain::TaskStart { body: inner, .. } => pending.push(inner),
                 ActionTraceDomain::Empty
                 | ActionTraceDomain::Event(_)
+                | ActionTraceDomain::TaskAwait { .. }
                 | ActionTraceDomain::UnknownOrder(_) => {}
             }
         }

@@ -72,6 +72,34 @@ fn local_only() -> InterpreterSupport {
     InterpreterSupport::LocalOnly
 }
 
+fn trace_contains_task_start(trace: &ActionTraceDomain, site: etas_hir::HirExprId) -> bool {
+    match trace {
+        ActionTraceDomain::TaskStart { task_site, .. } => *task_site == site,
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => parts
+            .iter()
+            .any(|part| trace_contains_task_start(part, site)),
+        ActionTraceDomain::Repeat(inner) => trace_contains_task_start(inner, site),
+        _ => false,
+    }
+}
+
+fn trace_contains_task_await(trace: &ActionTraceDomain, site: etas_hir::HirExprId) -> bool {
+    match trace {
+        ActionTraceDomain::TaskAwait { task_site } => *task_site == site,
+        ActionTraceDomain::TaskStart { body, .. } | ActionTraceDomain::Repeat(body) => {
+            trace_contains_task_await(body, site)
+        }
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => parts
+            .iter()
+            .any(|part| trace_contains_task_await(part, site)),
+        _ => false,
+    }
+}
+
 #[test]
 fn structured_task_rows_are_solved_across_start_await_and_run() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
@@ -109,6 +137,24 @@ flow main() -> i32 {
         .values()
         .next()
         .expect("main effect summary");
+    let start = types
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .find_map(|(call, fact)| {
+            (fact.intrinsic == etas_std::intrinsic::task::START).then_some(*call)
+        })
+        .expect("checked task start");
+    let awaited = types
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .find_map(|(call, fact)| {
+            (fact.intrinsic == etas_std::intrinsic::task::AWAIT).then_some(*call)
+        })
+        .expect("checked task await");
+    assert!(trace_contains_task_start(&summary.action_trace, start));
+    assert!(trace_contains_task_await(&summary.action_trace, awaited));
     assert!(
         matches!(
             summary.support,
@@ -213,13 +259,17 @@ fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
     match trace {
         ActionTraceDomain::Empty => false,
         ActionTraceDomain::Event(event) => is_agentic_infer_effect(&event.action),
-        ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => {
             parts.iter().any(trace_has_agentic_infer)
         }
-        ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer(inner),
+        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
+            trace_has_agentic_infer(inner)
+        }
         ActionTraceDomain::UnknownOrder(actions) => actions.iter().any(is_agentic_infer_effect),
         ActionTraceDomain::Widened { actions, .. } => actions.iter().any(is_agentic_infer_effect),
-        ActionTraceDomain::ParameterCall { .. } => false,
+        ActionTraceDomain::ParameterCall { .. } | ActionTraceDomain::TaskAwait { .. } => false,
     }
 }
 
@@ -229,12 +279,16 @@ fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEvent
         ActionTraceDomain::Event(event) => {
             is_agentic_infer_effect(&event.action) && event.source == source
         }
-        ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => parts
+        ActionTraceDomain::Seq(parts)
+        | ActionTraceDomain::Choice(parts)
+        | ActionTraceDomain::Parallel(parts) => parts
             .iter()
             .any(|part| trace_has_agentic_infer_source(part, source.clone())),
-        ActionTraceDomain::Repeat(inner) => trace_has_agentic_infer_source(inner, source),
+        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
+            trace_has_agentic_infer_source(inner, source)
+        }
         ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => false,
-        ActionTraceDomain::ParameterCall { .. } => false,
+        ActionTraceDomain::ParameterCall { .. } | ActionTraceDomain::TaskAwait { .. } => false,
     }
 }
 
@@ -6563,11 +6617,15 @@ flow main() -> unit ![Console.stdout_write] {
             ActionTraceDomain::ParameterCall {
                 parameter: actual, ..
             } => usize::from(actual == parameter),
-            ActionTraceDomain::Seq(items) | ActionTraceDomain::Choice(items) => items
+            ActionTraceDomain::Seq(items)
+            | ActionTraceDomain::Choice(items)
+            | ActionTraceDomain::Parallel(items) => items
                 .iter()
                 .map(|item| count_parameter_calls(item, parameter))
                 .sum(),
-            ActionTraceDomain::Repeat(item) => count_parameter_calls(item, parameter),
+            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+                count_parameter_calls(item, parameter)
+            }
             ActionTraceDomain::Widened {
                 parameter_calls, ..
             } => parameter_calls
@@ -6576,6 +6634,7 @@ flow main() -> unit ![Console.stdout_write] {
                 .count(),
             ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
+            | ActionTraceDomain::TaskAwait { .. }
             | ActionTraceDomain::UnknownOrder(_) => 0,
         }
     }
@@ -6636,17 +6695,22 @@ flow main() -> unit ![Console.stdout_write] {
             etas_effects::ActionTraceDomain::Empty => 0,
             etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
             etas_effects::ActionTraceDomain::Seq(items)
-            | etas_effects::ActionTraceDomain::Choice(items) => {
+            | etas_effects::ActionTraceDomain::Choice(items)
+            | etas_effects::ActionTraceDomain::Parallel(items) => {
                 items.iter().map(|item| count_stdout(item, stdout)).sum()
             }
-            etas_effects::ActionTraceDomain::Repeat(item) => count_stdout(item, stdout),
+            etas_effects::ActionTraceDomain::Repeat(item)
+            | etas_effects::ActionTraceDomain::TaskStart { body: item, .. } => {
+                count_stdout(item, stdout)
+            }
             etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
                 usize::from(actions.contains(stdout))
             }
             etas_effects::ActionTraceDomain::Widened { actions, .. } => {
                 usize::from(actions.contains(stdout))
             }
-            etas_effects::ActionTraceDomain::ParameterCall { .. } => 0,
+            etas_effects::ActionTraceDomain::ParameterCall { .. }
+            | etas_effects::ActionTraceDomain::TaskAwait { .. } => 0,
         }
     }
     assert_eq!(
