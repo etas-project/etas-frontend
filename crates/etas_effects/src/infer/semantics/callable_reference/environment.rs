@@ -133,7 +133,13 @@ impl EffectSemantics<'_> {
         let params = self
             .native_generic_params(owner)
             .ok_or_else(|| invalid("referenced callable has no generic interface"))?;
-        if params.is_empty() {
+        if params.is_empty()
+            && !self
+                .types
+                .facts
+                .bound_method_values
+                .contains_key(&reference.value)
+        {
             return Ok(None);
         }
         let (types, rows) = self.reference_environment_bindings(&reference)?;
@@ -203,7 +209,11 @@ impl EffectSemantics<'_> {
             id,
             CallableEnvironment {
                 owner: application_owner,
-                parameters: Default::default(),
+                parameters: reference
+                    .environment
+                    .map(|id| self.callable_environment(id).map(|env| env.parameters))
+                    .transpose()?
+                    .unwrap_or_default(),
                 generics,
             },
         )?;

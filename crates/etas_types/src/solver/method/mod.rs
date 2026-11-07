@@ -8,6 +8,7 @@ mod select;
 #[derive(Clone, Copy)]
 pub(super) struct Input<'a> {
     pub expr: &'a etas_hir::HirExprId,
+    pub binding: &'a Option<crate::facts::BoundMethodReceiver>,
     pub method: &'a str,
     pub selection: &'a crate::method::MethodSelection,
     pub argument_names: &'a [Option<String>],

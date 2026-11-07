@@ -21,6 +21,9 @@ pub(super) fn invalidate_replaced_expressions(
         .checked_method_calls
         .retain(|expr, _| !expressions.contains(expr));
     facts
+        .bound_method_values
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
         .agent_method_calls
         .retain(|expr, _| !expressions.contains(expr));
     facts

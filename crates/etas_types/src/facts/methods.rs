@@ -3,6 +3,23 @@ use crate::{
     method::{MethodEvidence, MethodReceiver, MethodTarget},
 };
 
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum BoundMethodReceiver {
+    Expr(etas_hir::HirExprId),
+    Path {
+        symbol: etas_hir::SymbolId,
+        fields: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct CheckedBoundMethodValueFact {
+    pub receiver: BoundMethodReceiver,
+    pub method: CheckedMethodCallFact,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalMethodFact {
     pub span: etas_core::Span,

@@ -17,6 +17,26 @@ pub(super) fn solve<E>(
         .declaration_facts
         .methods
         .applicable(input.store, args[0], call.method);
+    if call.binding.is_some() {
+        let field = crate::solver::field::solve_field_access(
+            input.store,
+            input.known_std_types,
+            args[0],
+            call.method,
+            resolve_known_substitutions(input.store, report, *call.output),
+            *call.origin,
+            &report.substitutions,
+        );
+        if !field
+            .failures
+            .iter()
+            .any(|failure| failure.code == etas_core::TypeDiagnosticCode::UnknownField)
+            || applicable.is_empty()
+        {
+            report.append(field);
+            return Ok(());
+        }
+    }
     let mut matches = Vec::new();
     let mut failures = Vec::new();
     let mut inaccessible = None;
@@ -162,28 +182,51 @@ pub(super) fn solve<E>(
         if component {
             signature.params.remove(0);
         }
-        signature.output = *call.output;
-        let slots = selected.slots[1..]
-            .iter()
-            .map(|slot| if component { slot - 1 } else { *slot })
-            .collect();
-        selected.report.checked_method_calls.insert(
-            *call.expr,
-            crate::facts::CheckedMethodCallFact {
-                target: entry.target.clone(),
-                receiver: entry.receiver,
-                receiver_type: args[0],
-                signature,
-                argument_slots: slots,
-                owner_bindings: owner_bindings.clone(),
-                instantiation: bindings,
-                evidence: evidence.clone(),
-            },
-        );
-        if let MethodTarget::Standard {
-            operation: etas_std::FlowSourceMethodOperation::CheckedIndex,
-            ..
-        } = &entry.target
+        if call.binding.is_none() {
+            signature.output = *call.output;
+        }
+        let slots = if call.binding.is_some() {
+            let MethodReceiver::Value { slot } = entry.receiver else {
+                unreachable!()
+            };
+            (0..signature.params.len() as u32)
+                .filter(|index| *index != slot)
+                .collect()
+        } else {
+            selected.slots[1..]
+                .iter()
+                .map(|slot| if component { slot - 1 } else { *slot })
+                .collect()
+        };
+        let fact = crate::facts::CheckedMethodCallFact {
+            target: entry.target.clone(),
+            receiver: entry.receiver,
+            receiver_type: args[0],
+            signature,
+            argument_slots: slots,
+            owner_bindings: owner_bindings.clone(),
+            instantiation: bindings,
+            evidence: evidence.clone(),
+        };
+        if let Some(receiver) = call.binding {
+            selected.report.bound_method_values.insert(
+                *call.expr,
+                crate::facts::CheckedBoundMethodValueFact {
+                    receiver: receiver.clone(),
+                    method: fact,
+                },
+            );
+        } else {
+            selected
+                .report
+                .checked_method_calls
+                .insert(*call.expr, fact);
+        }
+        if call.binding.is_none()
+            && let MethodTarget::Standard {
+                operation: etas_std::FlowSourceMethodOperation::CheckedIndex,
+                ..
+            } = &entry.target
         {
             access.push(TypeConstraint::IndexAccess {
                 expr: *call.expr,

@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn bound_method_creation_is_pure_and_invocation_keeps_its_body_effect() {
+    let source = r#"
+effect Audit { action hit() -> unit; }
+type Counter = { number: i32 };
+impl Counter {
+    flow bump(self, value: i32) -> i32 ![Audit] {
+        perform Audit.hit();
+        return self.number + value;
+    }
+}
+flow make() -> (i32) -> i32 ![Audit] {
+    let counter = Counter { number = 7 };
+    let method: (i32) -> i32 ![Audit] = counter.bump;
+    return method;
+}
+flow main() -> i32 ![Audit] {
+    let method = make();
+    return method(3);
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(source));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let creation = &output.facts.item_effects[&flow_item(&hir, "make")];
+    assert!(
+        creation.requested_actions.effects.is_empty(),
+        "{creation:?}"
+    );
+    let invocation = &output.facts.item_effects[&flow_item(&hir, "main")];
+    assert_eq!(
+        invocation.requested_actions.effects.len(),
+        1,
+        "{invocation:?}"
+    );
+    assert_eq!(
+        invocation.action_trace.action_set(),
+        invocation.requested_actions.effects
+    );
+}
+
+#[test]
 fn method_owner_and_local_binders_specialize_distinct_effects_and_trace_events() {
     assert_owner_effects(
         include_str!("../fixtures/method_resolution/owner_binders.es"),

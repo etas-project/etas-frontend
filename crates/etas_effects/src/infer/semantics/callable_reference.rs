@@ -14,6 +14,57 @@ fn invalid(reason: &str) -> EffectSpecializationError {
 }
 
 impl EffectSemantics<'_> {
+    pub(super) fn bound_method_source(
+        &self,
+        state: &super::state::EffectState,
+        value: HirExprId,
+    ) -> Option<LatentSource> {
+        use crate::facts::{CallableEnvironment, CallableEnvironmentId};
+        use etas_types::{
+            facts::BoundMethodReceiver,
+            method::{MethodReceiver, MethodTarget},
+        };
+        let fact = self.types.facts.bound_method_values.get(&value)?;
+        let MethodTarget::Source { callable, .. } = fact.method.target else {
+            return None;
+        };
+        let MethodReceiver::Value { slot } = fact.method.receiver else {
+            unreachable!()
+        };
+        let unit = EffectUnit::Item(callable);
+        let receiver = *self.unit_params(unit)?.get(slot as usize)?;
+        let sources = match &fact.receiver {
+            BoundMethodReceiver::Expr(expr) => self.latent_payload_sources(state, *expr),
+            BoundMethodReceiver::Path { symbol, .. } => {
+                self.latent_sources_for_symbol(state, *symbol)
+            }
+        }
+        .unwrap_or_default();
+        let site = self.callable_environment_site(value).ok()?;
+        let environment = CallableEnvironmentId {
+            origin: site,
+            application: site,
+        };
+        self.record_callable_environment(
+            environment,
+            CallableEnvironment {
+                owner: state.owner?,
+                parameters: [(
+                    crate::ParameterCallTarget::Native(receiver),
+                    sources.into_iter().collect(),
+                )]
+                .into(),
+                generics: self.lexical_generic_values(state.owner?).ok()?,
+            },
+        )
+        .ok()?;
+        Some(LatentSource::Reference {
+            unit,
+            value,
+            environment: Some(environment),
+        })
+    }
+
     pub(super) fn reference_summary(
         &self,
         source: LatentSource,
@@ -110,6 +161,21 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn collect_callable_references(&mut self) {
+        for (value, fact) in &self.types.facts.bound_method_values {
+            if let etas_types::method::MethodTarget::Source { callable, .. } = fact.method.target
+                && let Some(key) =
+                    self.callable_reference_key(CallableReferenceTarget::Source(callable), *value)
+            {
+                self.callable_references.insert(
+                    key,
+                    LatentSource::Reference {
+                        unit: EffectUnit::Item(callable),
+                        value: *value,
+                        environment: None,
+                    },
+                );
+            }
+        }
         for expr in self.types.facts.expr_types.keys() {
             if !matches!(self.hir.exprs.get(*expr), Some(HirExpr::Path(_))) {
                 continue;

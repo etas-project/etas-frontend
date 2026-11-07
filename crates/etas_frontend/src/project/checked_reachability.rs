@@ -320,6 +320,13 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
             .types
             .checked_method_calls
             .get(&expression.id())
+            .or_else(|| {
+                self.checked
+                    .types
+                    .bound_method_values
+                    .get(&expression.id())
+                    .map(|value| &value.method)
+            })
         {
             match method.target {
                 etas_types::method::MethodTarget::Source { callable, .. }

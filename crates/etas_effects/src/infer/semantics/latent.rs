@@ -58,6 +58,12 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Option<Vec<LatentSource>> {
+        if self.types.facts.bound_method_values.contains_key(&expr) {
+            return Some(vec![
+                self.bound_method_source(state, expr)
+                    .unwrap_or(LatentSource::Unavailable { expr }),
+            ]);
+        }
         if let Some(sources) = self.definition_contract_sources(state, expr) {
             return Some(sources);
         }
@@ -198,7 +204,7 @@ impl EffectSemantics<'_> {
         known.then(|| merged.into_iter().collect())
     }
 
-    fn latent_payload_sources(
+    pub(super) fn latent_payload_sources(
         &self,
         state: &EffectState,
         expr: HirExprId,

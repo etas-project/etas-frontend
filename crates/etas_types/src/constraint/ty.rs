@@ -145,6 +145,7 @@ pub enum TypeConstraint {
     },
     MethodCall {
         expr: etas_hir::HirExprId,
+        binding: Option<crate::facts::BoundMethodReceiver>,
         method: String,
         selection: crate::method::MethodSelection,
         argument_names: Vec<Option<String>>,

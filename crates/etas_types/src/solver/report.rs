@@ -16,6 +16,7 @@ pub struct SolverReport {
     pub agent_inferences: HashMap<HirExprId, crate::CheckedAgentInferenceFact>,
     pub agent_method_calls: HashMap<HirExprId, etas_hir::SymbolId>,
     pub checked_method_calls: HashMap<HirExprId, crate::facts::CheckedMethodCallFact>,
+    pub bound_method_values: HashMap<HirExprId, crate::facts::CheckedBoundMethodValueFact>,
     pub std_intrinsic_calls: HashMap<HirExprId, crate::facts::CheckedStdCallFact>,
     pub action_calls: HashMap<HirExprId, crate::facts::CheckedActionCallFact>,
     pub generic_instantiations: HashMap<HirExprId, crate::GenericInstantiationFact>,
@@ -50,6 +51,7 @@ impl SolverReport {
         self.agent_inferences.extend(other.agent_inferences);
         self.agent_method_calls.extend(other.agent_method_calls);
         self.checked_method_calls.extend(other.checked_method_calls);
+        self.bound_method_values.extend(other.bound_method_values);
         self.std_intrinsic_calls.extend(other.std_intrinsic_calls);
         self.action_calls.extend(other.action_calls);
         self.index_facts.extend(other.index_facts);

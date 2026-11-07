@@ -399,6 +399,7 @@ impl TypeSolver {
                 }
                 TypeConstraint::MethodCall {
                     expr,
+                    binding,
                     method,
                     selection,
                     argument_names,
@@ -413,6 +414,7 @@ impl TypeSolver {
                 } => {
                     let invocation = method::Input {
                         expr,
+                        binding,
                         method,
                         selection,
                         argument_names,

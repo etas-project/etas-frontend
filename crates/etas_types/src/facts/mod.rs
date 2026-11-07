@@ -31,7 +31,7 @@ pub use expressions::{
 };
 pub use impl_methods::TypeImplMethodFact;
 pub use inference::CheckedAgentInferenceFact;
-pub use methods::CheckedMethodCallFact;
+pub use methods::{BoundMethodReceiver, CheckedBoundMethodValueFact, CheckedMethodCallFact};
 pub use reflection::{CheckedReflectionFact, CheckedReflectionTarget};
 pub use signatures::{
     AgentEntrySignature, AgentSignature, CallableGenericParam, CallableGenericParamKind,
@@ -58,6 +58,8 @@ pub struct TypeFacts {
     pub methods: std::sync::Arc<crate::method::MethodIndex>,
     #[serde(default)]
     pub checked_method_calls: HashMap<HirExprId, CheckedMethodCallFact>,
+    #[serde(default)]
+    pub bound_method_values: HashMap<HirExprId, methods::CheckedBoundMethodValueFact>,
     #[serde(default)]
     pub canonical_specs: CanonicalSpecFacts,
     pub type_impl_methods: HashMap<SymbolId, TypeImplMethodFact>,
