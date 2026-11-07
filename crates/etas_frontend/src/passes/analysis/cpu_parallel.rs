@@ -12,6 +12,8 @@ use etas_utils::{
 use crate::ProjectContext;
 use crate::passes::artifacts::{CPU_PARALLEL_ELIGIBILITY, EFFECT_OUTPUT, HIR_OUTPUT, TYPE_OUTPUT};
 
+mod work;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct CpuParallelEligibilityFacts {
     pub callables: HashMap<HirItemId, CpuParallelEligibilityFact>,
@@ -22,6 +24,9 @@ pub struct CpuParallelEligibilityFact {
     pub callable: HirItemId,
     pub eligible: bool,
     pub rejection: Option<CpuParallelRejection>,
+    /// Approximate HIR operations, including literal bounded loops and known
+    /// callees. Recursive or dynamic work stays unknown and can run inline.
+    pub estimated_work: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -57,6 +62,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
             return PassResult::failed("CPU parallel eligibility requires checked HIR and types");
         };
         let mut dependencies = HashMap::new();
+        let work = work::estimate(&hir.view());
         let mut callables: HashMap<_, _> = effects
             .facts
             .item_effects
@@ -84,6 +90,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                         callable: *callable,
                         eligible: rejection.is_none(),
                         rejection,
+                        estimated_work: work.get(callable).copied().flatten(),
                     },
                 )
             })
