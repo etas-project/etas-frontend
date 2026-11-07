@@ -74,7 +74,7 @@ impl EffectSemantics<'_> {
             .callable_reference_for_source(source)
             .ok_or_else(|| invalid("callable reference has no checked signature"))?;
         let summary = match source {
-            LatentSource::Reference { unit, .. } => {
+            LatentSource::Reference { unit, value, .. } => {
                 let summary = self
                     .latent_leaf_summary(LatentSource::Unit(unit), span)
                     .ok_or_else(|| invalid("referenced source callable has no solved summary"))?;
@@ -85,11 +85,21 @@ impl EffectSemantics<'_> {
                     .collect::<Vec<_>>();
                 self.require_effect_type_bindings(unit, &summary, &reference.type_bindings)?;
                 self.require_effect_row_bindings(unit, &summary, &rows)?;
-                self.specialize_summary_with_bindings(
+                let owner_bindings = self
+                    .types
+                    .facts
+                    .bound_method_values
+                    .get(&value)
+                    .into_iter()
+                    .flat_map(|fact| fact.method.owner_bindings.iter().copied())
+                    .collect();
+                self.specialize_summary_with_residual_bindings(
                     &summary,
                     &[],
                     &reference.type_bindings,
+                    &owner_bindings,
                     &rows,
+                    None,
                 )?
             }
             LatentSource::StdReference { value, .. } => self

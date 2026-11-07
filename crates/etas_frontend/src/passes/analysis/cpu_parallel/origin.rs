@@ -69,14 +69,15 @@ impl CallableOrigins {
         let item = hir.items.get(item)?;
         let symbol = item.symbol()?;
         // Methods have an implementation-owned CallableId and receiver contract.
-        if types.type_impl_methods.contains_key(&symbol)
-            || types.agent_methods.contains_key(&symbol)
-        {
+        if types.agent_methods.contains_key(&symbol) {
             return None;
         }
         match self.0.get(&item.span().source)?.as_ref()? {
             ModuleOwner::Program => Some(CpuCallableOrigin::Program),
             ModuleOwner::Package { package, module } => {
+                if types.type_impl_methods.contains_key(&symbol) {
+                    return None;
+                }
                 let identity = DefinitionKey::new(
                     *package,
                     module.clone(),

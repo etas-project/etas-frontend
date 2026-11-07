@@ -126,6 +126,13 @@ pub struct TypeFacts {
 }
 
 impl TypeFacts {
+    pub fn selected_method(&self, expr: etas_hir::HirExprId) -> Option<&CheckedMethodCallFact> {
+        self.checked_method_calls.get(&expr).or_else(|| {
+            self.bound_method_values
+                .get(&expr)
+                .map(|value| &value.method)
+        })
+    }
     /// The producer ABI before an implicit, checked existential pack.
     pub fn expression_producer_type(&self, expression: HirExprId) -> Option<TypeId> {
         self.existential_packs

@@ -124,6 +124,7 @@ pub(crate) fn prepare_from_targets(
     } = input;
     if types.facts.generic_instantiations.is_empty()
         && types.facts.checked_method_calls.is_empty()
+        && types.facts.bound_method_values.is_empty()
         && types.facts.existential_packs.is_empty()
         && seeds.is_empty()
     {
@@ -140,13 +141,14 @@ pub(crate) fn prepare_from_targets(
         .generic_instantiations
         .keys()
         .chain(types.facts.checked_method_calls.keys())
+        .chain(types.facts.bound_method_values.keys())
         .chain(types.facts.existential_packs.keys())
     {
         if hir.program().is_expr_optimized_out(*call) {
             continue;
         }
         if targets.get(call).is_none_or(BTreeSet::is_empty)
-            && !types.facts.checked_method_calls.contains_key(call)
+            && types.facts.selected_method(*call).is_none()
             && !types.facts.existential_packs.contains_key(call)
             && super::targets::external_signature(hir, types, *call).is_none()
         {
@@ -302,7 +304,7 @@ pub(crate) fn prepare_from_targets(
                     method_bodies.extend(dictionary.bodies);
                     pending.extend(dictionary.applications);
                 }
-                if let Some(method) = types.facts.checked_method_calls.get(call)
+                if let Some(method) = types.facts.selected_method(*call)
                     && matches!(
                         method.target,
                         etas_types::method::MethodTarget::BoundSpec { .. }
@@ -330,7 +332,7 @@ pub(crate) fn prepare_from_targets(
                     method_bodies.extend(pack.bodies);
                     pending.extend(pack.applications);
                 }
-                let fact = match types.facts.checked_method_calls.get(call) {
+                let fact = match types.facts.selected_method(*call) {
                     Some(method) => &method.instantiation,
                     None => match types.facts.generic_instantiations.get(call) {
                         Some(fact) => fact,
@@ -345,17 +347,13 @@ pub(crate) fn prepare_from_targets(
                 for item in targets.get(call).into_iter().flatten() {
                     let target_signature = signature(&types.facts, *item)
                         .ok_or("native generic target has no checked signature".to_owned())?;
-                    let method_fact = match types
-                        .facts
-                        .checked_method_calls
-                        .get(call)
-                        .map(|fact| &fact.target)
-                    {
-                        Some(etas_types::method::MethodTarget::BoundSpec { member, .. }) => {
-                            Some(witnesses.instantiation(member, target_signature, fact)?)
-                        }
-                        _ => None,
-                    };
+                    let method_fact =
+                        match types.facts.selected_method(*call).map(|fact| &fact.target) {
+                            Some(etas_types::method::MethodTarget::BoundSpec {
+                                member, ..
+                            }) => Some(witnesses.instantiation(member, target_signature, fact)?),
+                            _ => None,
+                        };
                     let arguments = bind_call(
                         &mut substitution,
                         target_signature,
@@ -366,8 +364,7 @@ pub(crate) fn prepare_from_targets(
                         arguments,
                         owner_bindings: types
                             .facts
-                            .checked_method_calls
-                            .get(call)
+                            .selected_method(*call)
                             .into_iter()
                             .flat_map(|fact| &fact.owner_bindings)
                             .map(|(parameter, argument)| {
@@ -375,7 +372,7 @@ pub(crate) fn prepare_from_targets(
                             })
                             .collect::<Result<_, etas_types::TypeSubstitutionError>>()?,
                     });
-                    if types.facts.checked_method_calls.contains_key(call) {
+                    if types.facts.selected_method(*call).is_some() {
                         method_bodies.insert(*item);
                     }
                 }

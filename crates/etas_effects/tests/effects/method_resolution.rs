@@ -54,6 +54,26 @@ fn method_owner_and_local_binders_specialize_distinct_effects_and_trace_events()
 }
 
 #[test]
+fn bound_method_owner_and_local_binders_keep_distinct_effects() {
+    assert_owner_effects(
+        r#"
+effect Probe { action hit<T>() -> unit; }
+flow emit<T>(value: T) -> unit ![Probe.hit<T>] { perform Probe.hit<T>(); return; }
+type Container<T> = { value: T };
+impl Container<T> {
+    flow both<T>(self, other: T) -> unit { emit(self.value); emit(other); return; }
+}
+flow main() -> unit {
+    let selected: (string) -> unit ![Probe.hit<i32>, Probe.hit<string>] = Container<i32> { value = 7 }.both;
+    selected("other");
+    return;
+}
+"#,
+        &["main"],
+    );
+}
+
+#[test]
 fn returned_method_closure_keeps_owner_and_shadowing_local_effect_binders() {
     assert_owner_effects(
         include_str!("../fixtures/method_resolution/captured_owner_binders.es"),

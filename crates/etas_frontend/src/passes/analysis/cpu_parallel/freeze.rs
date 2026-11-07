@@ -25,7 +25,7 @@ impl CpuFreezeContract {
         self.parameters
             .iter()
             .chain(std::iter::once(&self.output))
-            .all(|ty| freezable_type(store, *ty, &parameters))
+            .all(|ty| freezable_type(store, *ty, &parameters, &mut HashSet::new()))
     }
 
     pub fn is_materialized(
@@ -39,25 +39,41 @@ impl CpuFreezeContract {
             .all(|ty| {
                 substitution
                     .substitute(*ty)
-                    .is_ok_and(|ty| freezable_type(store, ty, &HashSet::new()))
+                    .is_ok_and(|ty| freezable_type(store, ty, &HashSet::new(), &mut HashSet::new()))
             })
     }
 }
 
-fn freezable_type(store: &TypeStore, ty: TypeId, parameters: &HashSet<TypeId>) -> bool {
+fn freezable_type(
+    store: &TypeStore,
+    ty: TypeId,
+    parameters: &HashSet<TypeId>,
+    visited: &mut HashSet<TypeId>,
+) -> bool {
     if parameters.contains(&ty) {
+        return true;
+    }
+    if !visited.insert(ty) {
         return true;
     }
     match store.get(ty) {
         Some(Type::Primitive(_) | Type::IntegerLiteral { .. }) => true,
-        Some(Type::Array(inner) | Type::Option(inner)) => freezable_type(store, *inner, parameters),
+        Some(Type::Array(inner) | Type::Option(inner)) => {
+            freezable_type(store, *inner, parameters, visited)
+        }
         Some(Type::Tuple(parts)) => parts
             .iter()
-            .all(|ty| freezable_type(store, *ty, parameters)),
+            .all(|ty| freezable_type(store, *ty, parameters, visited)),
         Some(Type::Record(record)) => record
             .fields
             .iter()
-            .all(|field| freezable_type(store, field.ty, parameters)),
+            .all(|field| freezable_type(store, field.ty, parameters, visited)),
+        Some(Type::Nominal(_) | Type::Applied { .. }) => {
+            etas_types::ty::applied_representation_in_store(store, ty)
+                .ok()
+                .flatten()
+                .is_some_and(|ty| freezable_type(store, ty, parameters, visited))
+        }
         _ => false,
     }
 }
