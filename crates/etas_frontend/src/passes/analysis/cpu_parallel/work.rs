@@ -65,6 +65,37 @@ struct Counter<'a> {
     stack: Vec<u64>,
 }
 
+pub(super) fn estimate_closure(
+    view: &HirTreeView<'_>,
+    body: etas_hir::HirLambdaBody,
+    items: &HashMap<HirItemId, Option<u64>>,
+) -> Option<u64> {
+    let mut counter = Counter {
+        hir: view.program(),
+        work: Work::default(),
+        multiplier: 1,
+        stack: Vec::new(),
+    };
+    match body {
+        etas_hir::HirLambdaBody::Expr(expr) => etas_hir::walk_expr(view, expr, &mut counter),
+        etas_hir::HirLambdaBody::Block(block) => etas_hir::walk_block(view, block, &mut counter),
+    }
+    if counter.work.unknown {
+        return None;
+    }
+    counter
+        .work
+        .calls
+        .iter()
+        .try_fold(counter.work.local, |total, (item, count)| {
+            items
+                .get(item)
+                .copied()
+                .flatten()
+                .map(|work| total.saturating_add(work.saturating_mul(*count)))
+        })
+}
+
 impl<'view, 'hir> HirVisitor<'view, 'hir> for Counter<'_> {
     fn enter_stmt(&mut self, stmt: StmtView<'view, 'hir>) {
         self.stack.push(self.multiplier);

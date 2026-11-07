@@ -1,4 +1,5 @@
 pub mod alias;
+pub mod closures;
 pub mod context;
 pub mod interprocedural;
 pub mod intraprocedural;
