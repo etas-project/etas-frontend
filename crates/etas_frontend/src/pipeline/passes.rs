@@ -132,8 +132,6 @@ fn semantic_pipeline(
         .pass(CompleteTypedRuntimeReachabilityPass)
         .pass(PrepareDirectInvocationTypesPass)
         .pass(RunEffectPipelinePass)
-        .pass(AnalyzeConcurrencyPass)
-        .pass(AnalyzeCpuParallelEligibilityPass)
         .pass(ValidateResidualBackendSupportPass)
         .pass(CompleteEffectRuntimeReachabilityPass)
         .pass(MaterializeGenericEffectRowsPass)
@@ -141,6 +139,8 @@ fn semantic_pipeline(
         .pass(ValidateHandlerInstantiationsPass)
         .pass(AnalyzeLoopProgressPass)
         .group(optimization_pipeline(plan))
+        .pass(AnalyzeConcurrencyPass)
+        .pass(AnalyzeCpuParallelEligibilityPass)
         .pass(VerifyInterpreterSupportPass);
     if !candidate {
         pipeline.push_pass(ValidateEntryContractPass);

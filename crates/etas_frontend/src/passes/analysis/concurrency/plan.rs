@@ -13,10 +13,13 @@ use super::{
 };
 
 pub(super) fn analyze(
-    hir: &etas_hir::HirProgram,
+    view: &etas_hir::HirTreeView<'_>,
     effects: &EffectFacts,
     registry: &EffectRegistry,
+    types: &etas_types::TypeFacts,
+    standard: &etas_std::StdRegistry,
 ) -> ConcurrencyFacts {
+    let hir = view.program();
     let owners = ownership::task_scopes(effects.task_calls.values());
     let mut scope_facts = HashMap::new();
     let mut sites = HashMap::new();
@@ -154,6 +157,8 @@ pub(super) fn analyze(
         })
         .collect();
 
+    let (resource_callables, resource_closures) =
+        super::resource::analyze(view, types, standard, effects);
     ConcurrencyFacts {
         sites,
         owners: scope_facts,
@@ -161,6 +166,8 @@ pub(super) fn analyze(
         awaits,
         continuation_transfers,
         plans,
+        resource_callables,
+        resource_closures,
     }
 }
 

@@ -1,13 +1,14 @@
 mod conflict;
 mod ownership;
 mod plan;
+mod resource;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use etas_core::{SourceId, Span};
 use etas_effects::{Effect, EffectRow, EffectSet, EffectSummary, TaskCallKind};
-use etas_hir::{HirExprId, ScopeId, SymbolId};
+use etas_hir::{HirExprId, HirItemId, ScopeId, SymbolId};
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
     PreservedArtifacts,
@@ -26,6 +27,41 @@ pub struct ConcurrencyFacts {
     pub awaits: HashMap<HirExprId, TaskAwaitFact>,
     pub continuation_transfers: HashMap<HirExprId, ContinuationTransferFact>,
     pub plans: HashMap<ScopeId, ConcurrencyPlanFact>,
+    pub resource_callables: HashMap<HirItemId, ResourceGuardCallablePlan>,
+    pub resource_closures: HashMap<HirExprId, ResourceGuardCallablePlan>,
+}
+
+/// Read-only selectors evaluated by the coordinator before task admission.
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub enum ResourceValueSelector {
+    Expr(HirExprId),
+    SymbolPath {
+        symbol: SymbolId,
+        fields: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct RuntimeResourceSelector {
+    pub store: ResourceValueSelector,
+    /// None acquires the entire Store (scan/query/clear and similar operations).
+    pub key: Option<HirExprId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ResourceGuardCall {
+    pub callable: HirItemId,
+    pub arguments: Vec<HirExprId>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct ResourceGuardCallablePlan {
+    pub parameters: Vec<SymbolId>,
+    pub resources: Vec<RuntimeResourceSelector>,
+    pub calls: Vec<ResourceGuardCall>,
+    pub complete: bool,
+    /// Memory effects whose resource footprint is not represented above.
+    pub opaque_memory: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
@@ -159,6 +195,7 @@ impl Pass<ProjectContext> for AnalyzeConcurrencyPass {
                 EFFECT_OUTPUT,
                 HIR_OUTPUT,
                 PREPARED_EFFECT_REGISTRY,
+                crate::passes::artifacts::TYPE_OUTPUT,
             ]))
             .produces(ArtifactSet::one(CONCURRENCY_FACTS))
     }
@@ -179,9 +216,11 @@ impl Pass<ProjectContext> for AnalyzeConcurrencyPass {
             return PassResult::failed("concurrency analysis requires checked HIR");
         };
         context.concurrency = Some(Arc::new(plan::analyze(
-            &hir.hir,
+            &hir.view(),
             &effects.facts,
             &artifacts.registry,
+            &context.types.as_ref().expect("checked types").facts,
+            &context.std_registry,
         )));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(CONCURRENCY_FACTS))
     }
