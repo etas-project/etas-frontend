@@ -136,7 +136,7 @@ flow main() -> i32 { return identity(7); }
         .callables
         .values()
         .find(|fact| {
-            checked.hir.items[fact.callable]
+            checked.hir.items[fact.owner]
                 .symbol()
                 .is_some_and(|symbol| checked.symbols.get(symbol).unwrap().name == "identity")
         })
@@ -154,6 +154,63 @@ flow main() -> i32 { return identity(7); }
         etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &bindings);
     assert!(contract.is_materialized(&checked.type_store, &mut substitution));
     assert_eq!(contract.parameters, vec![contract.output]);
+}
+
+#[test]
+fn generic_closure_has_its_own_frozen_capture_and_work_contract() {
+    let output = check(
+        r#"
+type Config<T> = { fallback: T, valid: bool };
+flow make<T>(fallback: T) -> ((T) -> T ![]) {
+    let config = Config<T> { fallback = fallback, valid = true };
+    let values = [fallback];
+    return (value: T) => {
+        let snapshot = values;
+        var step = 0;
+        while step < 20000 limit Iterations(20000) { step = step + 1; }
+        if config.valid { return value; }
+        return config.fallback;
+    };
+}
+flow main() -> i32 { let mapper = make(99); return mapper(7); }
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let fact = checked
+        .cpu_parallel
+        .closures
+        .values()
+        .find(|fact| {
+            checked.hir.items[fact.owner]
+                .symbol()
+                .is_some_and(|symbol| checked.symbols.get(symbol).unwrap().name == "make")
+        })
+        .unwrap();
+    assert!(fact.eligible, "{fact:?}");
+    assert!(fact.estimated_work.unwrap() >= 10000);
+    let contract = fact.freeze_contract.as_ref().unwrap();
+    assert_eq!(contract.captures.len(), 2);
+    assert!(
+        contract
+            .captures
+            .windows(2)
+            .all(|pair| pair[0].symbol < pair[1].symbol)
+    );
+    let bindings = checked
+        .types
+        .generic_instantiations
+        .values()
+        .find(|instance| !instance.type_bindings.is_empty())
+        .unwrap()
+        .type_bindings
+        .iter()
+        .cloned()
+        .collect();
+    let mut substitution =
+        etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &bindings);
+    assert!(contract.is_materialized(&checked.type_store, &mut substitution));
+    assert!(!checked.cpu_parallel.callables[&fact.owner].eligible);
 }
 
 #[test]
@@ -278,7 +335,7 @@ flow main() -> i32 { return wrapper(1); }
             .callables
             .values()
             .find(|fact| {
-                checked.hir.items[fact.callable]
+                checked.hir.items[fact.owner]
                     .symbol()
                     .is_some_and(|symbol| checked.hir.symbols.get(symbol).unwrap().name == name)
             })

@@ -113,8 +113,8 @@ pub use passes::{
     TaskStartFact,
 };
 pub use passes::{
-    CpuCallableOrigin, CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
-    CpuParallelRejection,
+    CpuCallableOrigin, CpuCaptureContract, CpuFreezeContract, CpuParallelEligibilityFact,
+    CpuParallelEligibilityFacts, CpuParallelRejection,
 };
 
 pub struct Frontend;

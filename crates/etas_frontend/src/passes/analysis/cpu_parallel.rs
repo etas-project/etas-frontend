@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use etas_effects::{ActionTraceDomain, EffectSummary, RequestInstantiationSummary};
-use etas_hir::{ExprView, HirExpr, HirItem, HirItemId, HirVisitor, ResolveResult, walk_item};
+use etas_hir::{
+    ExprView, HirExpr, HirExprId, HirItem, HirItemId, HirVisitor, ResolveResult, walk_item,
+};
 use etas_types::ItemSignature;
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -15,20 +17,23 @@ use crate::passes::artifacts::{
     VALIDATED_EXTERNAL_ENVIRONMENT,
 };
 
+mod closures;
 mod freeze;
 mod origin;
 mod work;
-pub use freeze::CpuFreezeContract;
+pub use freeze::{CpuCaptureContract, CpuFreezeContract};
 pub use origin::CpuCallableOrigin;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct CpuParallelEligibilityFacts {
     pub callables: HashMap<HirItemId, CpuParallelEligibilityFact>,
+    pub closures: HashMap<HirExprId, CpuParallelEligibilityFact>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct CpuParallelEligibilityFact {
-    pub callable: HirItemId,
+    /// Source item that owns the callable's code and generic context.
+    pub owner: HirItemId,
     pub eligible: bool,
     pub rejection: Option<CpuParallelRejection>,
     pub freeze_contract: Option<CpuFreezeContract>,
@@ -102,6 +107,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                         let contract = CpuFreezeContract {
                             parameters: signature.params.clone(),
                             output: signature.output,
+                            captures: Vec::new(),
                         };
                         let mut parameters = signature.generic_params.clone();
                         if let Some(method) = hir.hir.items[*callable]
@@ -125,7 +131,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                 (
                     *callable,
                     CpuParallelEligibilityFact {
-                        callable: *callable,
+                        owner: *callable,
                         eligible: rejection.is_none(),
                         rejection,
                         freeze_contract,
@@ -155,7 +161,15 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                 fact.rejection = Some(CpuParallelRejection::NonFreezableCapture);
             }
         }
-        context.cpu_parallel = Some(Arc::new(CpuParallelEligibilityFacts { callables }));
+        let closures =
+            match closures::analyze(hir, types, &effects.facts, &origins, &callables, &work) {
+                Ok(closures) => closures,
+                Err(reason) => return PassResult::failed(reason),
+            };
+        context.cpu_parallel = Some(Arc::new(CpuParallelEligibilityFacts {
+            callables,
+            closures,
+        }));
         PassResult::changed(
             PreservedArtifacts::All,
             ArtifactSet::one(CPU_PARALLEL_ELIGIBILITY),
@@ -194,6 +208,9 @@ fn rejection(summary: &EffectSummary) -> Option<CpuParallelRejection> {
     if summary.action_trace.has_parameter_calls() {
         return Some(CpuParallelRejection::DynamicCode);
     }
+    if !summary.residual_checks.is_empty() {
+        return Some(CpuParallelRejection::DynamicCode);
+    }
     None
 }
 
@@ -205,16 +222,38 @@ struct CallableCaptures<'a> {
 
 impl<'view, 'hir> HirVisitor<'view, 'hir> for CallableCaptures<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
-        let HirExpr::Path(path) = expr.data() else {
-            return;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return;
+        match expr.data() {
+            HirExpr::Path(path) => self.read(&path.resolution),
+            HirExpr::Reflect(reflection) => self.read(&reflection.target.root_path().resolution),
+            HirExpr::Record(record) => {
+                for field in &record.fields {
+                    if let etas_hir::HirFieldInit::Shorthand { resolution, .. } = field {
+                        self.read(resolution);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl CallableCaptures<'_> {
+    fn read(&mut self, resolution: &ResolveResult) {
+        let symbol = match resolution {
+            ResolveResult::Resolved(symbol) => *symbol,
+            ResolveResult::PartiallyResolved(partial) => match partial.resolved_prefix {
+                Some(symbol) => symbol,
+                None => return,
+            },
+            _ => return,
         };
         let Some(item) = self
             .hir
             .canonical_source_symbol(symbol)
             .and_then(|symbol| self.hir.symbols.get(symbol))
+            .filter(|symbol| {
+                !etas_hir_analysis::closures::is_runtime_local(symbol.kind, &symbol.def)
+            })
             .and_then(|symbol| symbol.defining_item)
         else {
             return;

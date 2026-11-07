@@ -23,6 +23,22 @@ enum ModuleOwner {
 }
 
 impl CallableOrigins {
+    pub(super) fn closure_owner(
+        &self,
+        hir: &HirProgram,
+        owner: HirItemId,
+        types: &etas_types::TypeFacts,
+    ) -> Option<CpuCallableOrigin> {
+        match self.0.get(&hir.items.get(owner)?.span().source)?.as_ref()? {
+            ModuleOwner::Program => Some(CpuCallableOrigin::Program),
+            ModuleOwner::Package { .. }
+                if matches!(hir.items.get(owner), Some(etas_hir::HirItem::Flow(_))) =>
+            {
+                self.callable(hir, owner, types)
+            }
+            _ => None,
+        }
+    }
     pub(super) fn new(context: &ProjectContext) -> Option<Self> {
         let sources = context.sources.as_ref()?;
         let modules = context.modules.as_ref()?;

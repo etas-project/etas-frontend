@@ -9,6 +9,13 @@ use etas_types::{
 pub struct CpuFreezeContract {
     pub parameters: Vec<TypeId>,
     pub output: TypeId,
+    pub captures: Vec<CpuCaptureContract>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub struct CpuCaptureContract {
+    pub symbol: etas_hir::SymbolId,
+    pub ty: TypeId,
 }
 
 impl CpuFreezeContract {
@@ -25,6 +32,7 @@ impl CpuFreezeContract {
         self.parameters
             .iter()
             .chain(std::iter::once(&self.output))
+            .chain(self.captures.iter().map(|capture| &capture.ty))
             .all(|ty| freezable_type(store, *ty, &parameters, &mut HashSet::new()))
     }
 
@@ -36,6 +44,7 @@ impl CpuFreezeContract {
         self.parameters
             .iter()
             .chain(std::iter::once(&self.output))
+            .chain(self.captures.iter().map(|capture| &capture.ty))
             .all(|ty| {
                 substitution
                     .substitute(*ty)
