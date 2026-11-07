@@ -15,16 +15,18 @@ pub(crate) use analysis::CheckedStandardLibraryImplementations;
 pub use analysis::concurrency::{
     AwaitSiteId, BranchFact, ConcurrencyFacts, ConcurrencyPlanFact, ConcurrencySiteFact,
     ContinuationTransferFact, ContinuationTransferId, ResourceConflict, ResourceGuardPlan,
-    SchedulingDecision, TaskAwaitFact, TaskScopeFact, TaskSiteId, TaskStartFact,
+    SchedulingDecision, TaskAwaitFact, TaskBranchFact, TaskBranchShape, TaskScopeFact, TaskSiteId,
+    TaskStartFact,
 };
 pub use analysis::{
-    AnalyzeConcurrencyPass, AnalyzeLoopProgressPass, BindMethodOriginsPass,
-    BuildSignatureFactsPass, CheckStandardLibraryImplementationsPass, FinalizeTypeFactsPass,
-    InferCallableOutputsPass, MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
-    PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
-    RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
-    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
-    ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
+    AnalyzeConcurrencyPass, AnalyzeCpuParallelEligibilityPass, AnalyzeLoopProgressPass,
+    BindMethodOriginsPass, BuildSignatureFactsPass, CheckStandardLibraryImplementationsPass,
+    CpuParallelEligibilityFact, CpuParallelEligibilityFacts, CpuParallelRejection,
+    FinalizeTypeFactsPass, InferCallableOutputsPass, MaterializeGenericEffectRowsPass,
+    PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
+    PrepareInvocationTypesPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass,
+    RunEffectPipelinePass, TypeCheckBodyPass, ValidateExternalEnvironmentPass,
+    ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
 pub use dependency::{
     CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,

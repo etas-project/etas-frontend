@@ -39,6 +39,8 @@ ProjectInput + ProjectEnvironmentInput
   -> collect/solve/materialize type facts
   -> infer/materialize effect and requested-action facts
   -> validate loop progress, interpreter support, and entry contract
+  -> analyze structured task branches and resource conflicts
+  -> classify CPU-parallel eligibility from checked effects, types, and captures
   -> build CheckedProject and optional ProjectSemanticSnapshot
 ```
 

@@ -3,7 +3,7 @@ use etas_utils::{Pipeline, UnitOrder, UnitSelector};
 use crate::passes::artifacts::TYPE_OUTPUT;
 use crate::passes::{
     AdmitStandardLibrarySourcesPass, AgentEffectLegalityPass, AnalyzeConcurrencyPass,
-    AnalyzeLoopProgressPass,
+    AnalyzeCpuParallelEligibilityPass, AnalyzeLoopProgressPass,
     ApplyQualityContextBudgetPolicyPass, ApplyResolvedImportsToHirPass, BatchStorageSemijoinPass,
     BindMethodOriginsPass, BuildCheckedProjectPass, BuildImportGraphPass, BuildModuleCatalogPass,
     BuildModuleIndexPass, BuildSignatureFactsPass, BuildSourceSetPass, BuildUnitTreePass,
@@ -133,6 +133,7 @@ fn semantic_pipeline(
         .pass(PrepareDirectInvocationTypesPass)
         .pass(RunEffectPipelinePass)
         .pass(AnalyzeConcurrencyPass)
+        .pass(AnalyzeCpuParallelEligibilityPass)
         .pass(ValidateResidualBackendSupportPass)
         .pass(CompleteEffectRuntimeReachabilityPass)
         .pass(MaterializeGenericEffectRowsPass)
@@ -432,9 +433,7 @@ flow main() -> i64 {
         assert!(
             pass_position("RunEffectPipelinePass") < pass_position("ValidateEntryContractPass")
         );
-        assert!(
-            pass_position("RunEffectPipelinePass") < pass_position("AnalyzeConcurrencyPass")
-        );
+        assert!(pass_position("RunEffectPipelinePass") < pass_position("AnalyzeConcurrencyPass"));
         assert!(
             pass_position("AnalyzeConcurrencyPass") < pass_position("VerifyInterpreterSupportPass")
         );

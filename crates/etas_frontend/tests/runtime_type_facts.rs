@@ -9,13 +9,16 @@ fn checked_native_roles_are_preserved_by_frontend_materialization() {
         .as_ref()
         .unwrap_or_else(|| panic!("{:?}", output.diagnostics));
     let known = &checked.types.known_std_types;
-    assert_eq!(known.runtime_types.len(), 19);
+    assert_eq!(known.runtime_types.len(), 22);
     for (role, ty) in &known.runtime_types {
         assert!(checked.type_store.get(*ty).is_some());
         assert_eq!(known.runtime_role(&checked.type_store, *ty), Some(*role));
     }
     assert!(known.runtime_type(Role::CommandResult).is_some());
     assert!(known.runtime_type(Role::JsonValue).is_some());
+    assert!(known.runtime_type(Role::Task).is_some());
+    assert!(known.runtime_type(Role::Scheduler).is_some());
+    assert!(known.runtime_type(Role::Continuation).is_some());
 }
 
 #[test]

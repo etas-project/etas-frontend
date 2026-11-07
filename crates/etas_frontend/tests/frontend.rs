@@ -9626,11 +9626,15 @@ flow main() -> unit ![Console.stdout_write] {
         match trace {
             etas_effects::ActionTraceDomain::Event(event) => usize::from(&event.action == stdout),
             etas_effects::ActionTraceDomain::Seq(children)
-            | etas_effects::ActionTraceDomain::Choice(children) => children
+            | etas_effects::ActionTraceDomain::Choice(children)
+            | etas_effects::ActionTraceDomain::Parallel(children) => children
                 .iter()
                 .map(|child| count_stdout(child, stdout))
                 .sum(),
-            etas_effects::ActionTraceDomain::Repeat(child) => count_stdout(child, stdout),
+            etas_effects::ActionTraceDomain::Repeat(child)
+            | etas_effects::ActionTraceDomain::TaskStart { body: child, .. } => {
+                count_stdout(child, stdout)
+            }
             etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
                 usize::from(actions.contains(stdout))
             }
@@ -9638,6 +9642,7 @@ flow main() -> unit ![Console.stdout_write] {
                 usize::from(actions.contains(stdout))
             }
             etas_effects::ActionTraceDomain::Empty
+            | etas_effects::ActionTraceDomain::TaskAwait { .. }
             | etas_effects::ActionTraceDomain::ParameterCall { .. } => 0,
         }
     }

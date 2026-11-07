@@ -7,9 +7,9 @@ use etas_effects::{
 use etas_hir::{HirArg, HirExpr, HirPat, HirStmt, ResolveResult};
 
 use super::{
-    AwaitSiteId, BranchFact, ConcurrencyFacts, ConcurrencyPlanFact, ConcurrencySiteFact,
+    AwaitSiteId, ConcurrencyFacts, ConcurrencyPlanFact, ConcurrencySiteFact,
     ContinuationTransferFact, ContinuationTransferId, SchedulingDecision, TaskAwaitFact,
-    TaskScopeFact, TaskSiteId, TaskStartFact, conflict, ownership,
+    TaskBranchFact, TaskScopeFact, TaskSiteId, TaskStartFact, conflict, ownership,
 };
 
 pub(super) fn analyze(
@@ -24,19 +24,25 @@ pub(super) fn analyze(
     let mut plans = HashMap::new();
 
     for (owner_scope, calls) in owners {
-        let task_calls = ownership::task_branches(&calls);
-        let branches = task_calls
+        let task_branches = ownership::task_branches(hir, effects, &calls);
+        let branches = task_branches
             .iter()
-            .map(|call| BranchFact {
-                task_site: call.call,
-                effects: call.effects.clone(),
-                actions: call.behavior.action_trace.action_set(),
+            .enumerate()
+            .map(|(source_index, branch)| TaskBranchFact {
+                id: task_site_id(call_span(hir, branch.expr)),
+                source_index,
+                task_site: branch.expr,
+                effects: branch.effects.clone(),
+                behavior: branch.behavior.clone(),
+                actions: branch.behavior.action_trace.action_set(),
+                shape: branch.shape,
             })
             .collect::<Vec<_>>();
-        let incomplete = task_calls.iter().any(|call| {
-            call.effects.open.is_some()
-                || call.behavior.requested_actions.open.is_some()
-                || call.behavior.action_trace.has_parameter_calls()
+        let incomplete = task_branches.iter().any(|branch| {
+            branch.incomplete
+                || branch.effects.open.is_some()
+                || branch.behavior.requested_actions.open.is_some()
+                || branch.behavior.action_trace.has_parameter_calls()
         });
         let rejected = calls
             .iter()
@@ -57,9 +63,9 @@ pub(super) fn analyze(
             decision: decision.clone(),
             concurrency_limit,
         };
-        let stable_branches = task_calls
+        let stable_branches = task_branches
             .iter()
-            .map(|call| task_site_id(call_span(hir, call.call)))
+            .map(|branch| task_site_id(call_span(hir, branch.expr)))
             .collect::<Vec<_>>();
         plans.insert(
             owner_scope,

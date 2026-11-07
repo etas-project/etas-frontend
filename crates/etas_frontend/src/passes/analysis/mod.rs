@@ -1,4 +1,5 @@
 pub(crate) mod concurrency;
+mod cpu_parallel;
 mod definition_sources;
 mod effect_check;
 mod external_metadata_validation;
@@ -15,6 +16,10 @@ mod loop_progress;
 mod top_level_let;
 pub use annotations::ValidateItemAnnotationsPass;
 pub use concurrency::AnalyzeConcurrencyPass;
+pub use cpu_parallel::{
+    AnalyzeCpuParallelEligibilityPass, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
+    CpuParallelRejection,
+};
 mod method_origins;
 mod standard_library;
 mod type_check;

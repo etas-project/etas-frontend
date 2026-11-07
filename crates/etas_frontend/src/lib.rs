@@ -108,8 +108,10 @@ use etas_syntax::dump_parse;
 pub use passes::{
     AwaitSiteId, BranchFact, ConcurrencyFacts, ConcurrencyPlanFact, ConcurrencySiteFact,
     ContinuationTransferFact, ContinuationTransferId, ResourceConflict, ResourceGuardPlan,
-    SchedulingDecision, TaskAwaitFact, TaskScopeFact, TaskSiteId, TaskStartFact,
+    SchedulingDecision, TaskAwaitFact, TaskBranchFact, TaskBranchShape, TaskScopeFact, TaskSiteId,
+    TaskStartFact,
 };
+pub use passes::{CpuParallelEligibilityFact, CpuParallelEligibilityFacts, CpuParallelRejection};
 
 pub struct Frontend;
 

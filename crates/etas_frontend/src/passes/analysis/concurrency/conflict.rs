@@ -34,7 +34,8 @@ pub(super) fn scheduling_decision(
     }
     let mut guards = Vec::new();
     for (index, left) in branches.iter().enumerate() {
-        for right in &branches[index + 1..] {
+        let repeated = left.shape == super::TaskBranchShape::MapperInvocation;
+        for right in branches[index + 1..].iter().chain(repeated.then_some(left)) {
             match branch_conflict(left, right, registry) {
                 PairConflict::Disjoint => {}
                 PairConflict::Known => return SchedulingDecision::Serialize,
@@ -229,12 +230,20 @@ mod tests {
 
     fn branch(site: u32, resource: u32) -> BranchFact {
         BranchFact {
+            id: super::super::TaskSiteId {
+                source: etas_core::SourceId(0),
+                start: site,
+                end: site + 1,
+            },
+            source_index: site as usize,
             task_site: HirExprId(site),
             effects: EffectRow::empty(),
+            behavior: etas_effects::EffectSummary::default(),
             actions: EffectSet::one(Effect::Applied {
                 tag: EffectTagId(1024),
                 args: vec![TypeId(resource)],
             }),
+            shape: super::super::TaskBranchShape::ExplicitStart,
         }
     }
 

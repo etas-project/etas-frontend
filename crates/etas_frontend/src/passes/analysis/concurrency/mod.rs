@@ -33,7 +33,7 @@ pub struct ConcurrencySiteFact {
     pub kind: TaskCallKind,
     pub owner_scope: ScopeId,
     pub decision: SchedulingDecision,
-    pub branches: Vec<BranchFact>,
+    pub branches: Vec<TaskBranchFact>,
     pub concurrency_limit: Option<u32>,
 }
 
@@ -41,16 +41,31 @@ pub struct ConcurrencySiteFact {
 pub struct TaskScopeFact {
     pub owner_scope: ScopeId,
     pub sites: Vec<HirExprId>,
-    pub branches: Vec<BranchFact>,
+    pub branches: Vec<TaskBranchFact>,
     pub decision: SchedulingDecision,
     pub concurrency_limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
-pub struct BranchFact {
+pub struct TaskBranchFact {
+    pub id: TaskSiteId,
+    pub source_index: usize,
     pub task_site: HirExprId,
     pub effects: EffectRow,
+    pub behavior: EffectSummary,
     pub actions: EffectSet,
+    pub shape: TaskBranchShape,
+}
+
+pub type BranchFact = TaskBranchFact;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+pub enum TaskBranchShape {
+    ExplicitStart,
+    TupleElement,
+    ArrayElement,
+    MapperInvocation,
+    Dynamic,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]

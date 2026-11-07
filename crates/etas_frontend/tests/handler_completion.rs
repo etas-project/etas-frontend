@@ -116,14 +116,15 @@ fn continuation_binding_is_available_in_its_handler_arm_scope() {
     let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
         r#"
 module app.main;
+import std.task.{run, Scheduler};
+import std.task.scheduler.requeue;
 effect Probe { action request() -> i32; }
 flow main() -> i32 ![] {
-    return handle { perform Probe.request() } with {
-        Probe.request() as k => {
-            let retained = k;
-            finish 7;
-        }
-    };
+    return run((scheduler: Scheduler) => {
+        return handle { perform Probe.request() } with {
+            Probe.request() as k => { requeue(scheduler, k, 7); }
+        };
+    });
 }
 "#,
     )));

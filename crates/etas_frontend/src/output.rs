@@ -1371,6 +1371,7 @@ pub struct CheckedProgramData {
     pub type_store: Arc<TypeStore>,
     pub effects: Arc<EffectFacts>,
     pub concurrency: Arc<crate::ConcurrencyFacts>,
+    pub cpu_parallel: Arc<crate::CpuParallelEligibilityFacts>,
     pub effect_registry: Arc<EffectRegistry>,
     pub external_tool_schemas: Vec<ProjectExternalToolSchemaInput>,
     pub entry_fact: ProjectEntryFact,
