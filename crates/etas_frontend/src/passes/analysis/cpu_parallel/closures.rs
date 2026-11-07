@@ -11,6 +11,7 @@ pub(super) fn analyze(
     origins: &origin::CallableOrigins,
     callables: &HashMap<HirItemId, CpuParallelEligibilityFact>,
     item_work: &HashMap<HirItemId, Option<u64>>,
+    registry: &etas_std::StdRegistry,
 ) -> Result<HashMap<HirExprId, CpuParallelEligibilityFact>, String> {
     let view = hir.view();
     let layouts = etas_hir_analysis::closures::analyze_closures(&view)?;
@@ -85,14 +86,19 @@ pub(super) fn analyze(
         }
         let mut reads = CallableCaptures {
             hir: &hir.hir,
+            registry,
             dependencies: Vec::new(),
             has_global: false,
+            has_boundary: false,
         };
         match body {
             HirLambdaBody::Expr(body) => walk_expr(&view, *body, &mut reads),
             HirLambdaBody::Block(body) => walk_block(&view, *body, &mut reads),
         }
         let rejection = rejection(summary).or_else(|| {
+            if reads.has_boundary {
+                return Some(CpuParallelRejection::MutableRuntimeResource);
+            }
             if origin.is_none() {
                 return Some(CpuParallelRejection::DynamicCode);
             }

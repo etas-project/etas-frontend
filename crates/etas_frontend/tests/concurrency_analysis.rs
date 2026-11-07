@@ -9,9 +9,10 @@ fn independent_task_branches_are_planned_concurrently() {
     let output = check(
         r#"
 import std.task.{run, start, await, Scheduler};
+import std.runtime.checkpoint;
 flow main() -> i32 {
     return run((scheduler: Scheduler) => {
-        let left = start(() => { return 20; });
+        let left = start(() => { checkpoint("left"); return 20; });
         let right = start(() => { return 22; });
         return await(left) + await(right);
     });
@@ -38,6 +39,16 @@ flow main() -> i32 {
             .all(|fact| fact.task.is_some())
     );
     assert_eq!(checked.concurrency.plans.len(), 1);
+    assert_eq!(
+        checked
+            .cpu_parallel
+            .closures
+            .values()
+            .filter(|fact| fact.eligible)
+            .count(),
+        1,
+        "pure sibling qualifies while checkpoint stays on the coordinator"
+    );
 }
 
 #[test]

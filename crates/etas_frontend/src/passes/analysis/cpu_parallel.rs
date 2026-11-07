@@ -96,8 +96,10 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
             .map(|(callable, summary)| {
                 let mut captures = CallableCaptures {
                     hir: &hir.hir,
+                    registry: &context.std_registry,
                     dependencies: Vec::new(),
                     has_global: false,
+                    has_boundary: false,
                 };
                 walk_item(&hir.view(), *callable, &mut captures);
                 dependencies.insert(*callable, captures.dependencies);
@@ -122,6 +124,9 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                     _ => (None, false),
                 };
                 let rejection = rejection(summary).or_else(|| {
+                    if captures.has_boundary {
+                        return Some(CpuParallelRejection::MutableRuntimeResource);
+                    }
                     if freeze_contract.is_none() || origin.is_none() {
                         return Some(CpuParallelRejection::DynamicCode);
                     }
@@ -161,11 +166,18 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                 fact.rejection = Some(CpuParallelRejection::NonFreezableCapture);
             }
         }
-        let closures =
-            match closures::analyze(hir, types, &effects.facts, &origins, &callables, &work) {
-                Ok(closures) => closures,
-                Err(reason) => return PassResult::failed(reason),
-            };
+        let closures = match closures::analyze(
+            hir,
+            types,
+            &effects.facts,
+            &origins,
+            &callables,
+            &work,
+            &context.std_registry,
+        ) {
+            Ok(closures) => closures,
+            Err(reason) => return PassResult::failed(reason),
+        };
         context.cpu_parallel = Some(Arc::new(CpuParallelEligibilityFacts {
             callables,
             closures,
@@ -216,8 +228,10 @@ fn rejection(summary: &EffectSummary) -> Option<CpuParallelRejection> {
 
 struct CallableCaptures<'a> {
     hir: &'a etas_hir::HirProgram,
+    registry: &'a etas_std::StdRegistry,
     dependencies: Vec<HirItemId>,
     has_global: bool,
+    has_boundary: bool,
 }
 
 impl<'view, 'hir> HirVisitor<'view, 'hir> for CallableCaptures<'_> {
@@ -247,15 +261,28 @@ impl CallableCaptures<'_> {
             },
             _ => return,
         };
-        let Some(item) = self
+        let Some(symbol) = self
             .hir
             .canonical_source_symbol(symbol)
             .and_then(|symbol| self.hir.symbols.get(symbol))
-            .filter(|symbol| {
-                !etas_hir_analysis::closures::is_runtime_local(symbol.kind, &symbol.def)
-            })
-            .and_then(|symbol| symbol.defining_item)
         else {
+            return;
+        };
+        if let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def {
+            self.has_boundary |= self
+                .registry
+                .lookup_qualified(path)
+                .and_then(|symbol| symbol.intrinsic.as_ref())
+                .is_some_and(|intrinsic| {
+                    intrinsic.purity != etas_std::IntrinsicPurity::Pure
+                        || intrinsic.runtime_requirement
+                            != etas_std::IntrinsicRuntimeRequirement::None
+                });
+        }
+        if etas_hir_analysis::closures::is_runtime_local(symbol.kind, &symbol.def) {
+            return;
+        }
+        let Some(item) = symbol.defining_item else {
             return;
         };
         match self.hir.items.get(item) {
