@@ -112,7 +112,10 @@ pub use passes::{
     SchedulingDecision, TaskAwaitFact, TaskBranchFact, TaskBranchShape, TaskScopeFact, TaskSiteId,
     TaskStartFact,
 };
-pub use passes::{CpuParallelEligibilityFact, CpuParallelEligibilityFacts, CpuParallelRejection};
+pub use passes::{
+    CpuCallableOrigin, CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
+    CpuParallelRejection,
+};
 
 pub struct Frontend;
 

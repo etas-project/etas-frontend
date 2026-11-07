@@ -22,12 +22,13 @@ pub use analysis::concurrency::{
 pub use analysis::{
     AnalyzeConcurrencyPass, AnalyzeCpuParallelEligibilityPass, AnalyzeLoopProgressPass,
     BindMethodOriginsPass, BuildSignatureFactsPass, CheckStandardLibraryImplementationsPass,
-    CpuParallelEligibilityFact, CpuParallelEligibilityFacts, CpuParallelRejection,
-    FinalizeTypeFactsPass, InferCallableOutputsPass, MaterializeGenericEffectRowsPass,
-    PrepareBodyTypeEnvironmentPass, PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass,
-    PrepareInvocationTypesPass, RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass,
-    RunEffectPipelinePass, TypeCheckBodyPass, ValidateExternalEnvironmentPass,
-    ValidateHandlerInstantiationsPass, ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
+    CpuCallableOrigin, CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
+    CpuParallelRejection, FinalizeTypeFactsPass, InferCallableOutputsPass,
+    MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
+    PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
+    RetainDefinitionSourcesPass, ReuseTypeBodyFactsPass, RunEffectPipelinePass, TypeCheckBodyPass,
+    ValidateExternalEnvironmentPass, ValidateHandlerInstantiationsPass,
+    ValidateItemAnnotationsPass, ValidateTopLevelLetPass,
 };
 pub use dependency::{
     CompleteEffectRuntimeReachabilityPass, CompleteTypedAnalysisReachabilityPass,

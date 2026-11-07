@@ -122,6 +122,98 @@ flow main() -> i32 { return add_one(41); }
 }
 
 #[test]
+fn generic_cpu_callable_carries_a_materialized_freeze_contract() {
+    let output = check(
+        r#"
+flow identity<T>(value: T) -> T { return value; }
+flow main() -> i32 { return identity(7); }
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let fact = checked
+        .cpu_parallel
+        .callables
+        .values()
+        .find(|fact| {
+            checked.hir.items[fact.callable]
+                .symbol()
+                .is_some_and(|symbol| checked.symbols.get(symbol).unwrap().name == "identity")
+        })
+        .unwrap();
+    assert!(fact.eligible, "{fact:?}");
+    let contract = fact.freeze_contract.as_ref().unwrap();
+    let instance = checked
+        .types
+        .generic_instantiations
+        .values()
+        .find(|instance| !instance.type_bindings.is_empty())
+        .unwrap();
+    let bindings = instance.type_bindings.iter().cloned().collect();
+    let mut substitution =
+        etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &bindings);
+    assert!(contract.is_materialized(&checked.type_store, &mut substitution));
+    assert_eq!(contract.parameters, vec![contract.output]);
+}
+
+#[test]
+fn package_cpu_callable_keeps_its_definition_owner() {
+    use etas_frontend::{
+        CpuCallableOrigin, ExternalPackageId, ProjectDependencySourcePackage,
+        ProjectExternalPackageInput, SourceKind,
+    };
+    let package = etas_code::PackageKey::from_canonical_fingerprint(
+        etas_code::CodeFingerprint::of_bytes("etas.test.cpu-package", b"workers"),
+    );
+    let dependency = ExternalPackageId(7);
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
+        "module app.main; import dependency.jobs.burn; flow main() -> i32 { return burn(7); }",
+    ));
+    input.sources.push(SourceInput { id: etas_core::SourceId(1), path: None,
+        text: "module dependency.jobs; public flow burn(value: i32) -> i32 { var step = 0; while step < 20000 limit Iterations(20000) { step = step + 1; } return value; }".into(),
+        kind: SourceKind::DependencySourceOverlay { package: dependency, import_root: "dependency".into() } });
+    input
+        .environment
+        .external_packages
+        .push(ProjectExternalPackageInput {
+            id: dependency,
+            name: "workers".into(),
+            version: "1.0.0".into(),
+            edition: "2026".into(),
+            import_root: "dependency".into(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
+        });
+    input
+        .environment
+        .dependency_source_packages
+        .push(ProjectDependencySourcePackage {
+            package: dependency,
+            import_root: "dependency".into(),
+            definition_package: package,
+        });
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let fact = checked
+        .cpu_parallel
+        .callables
+        .values()
+        .find(|fact| matches!(&fact.origin, Some(CpuCallableOrigin::Package(_))))
+        .unwrap();
+    assert!(fact.eligible, "{fact:?}");
+    assert!(fact.estimated_work.unwrap() > 10000);
+    let Some(CpuCallableOrigin::Package(identity)) = &fact.origin else {
+        unreachable!();
+    };
+    let identity = identity.as_declaration().unwrap();
+    assert_eq!(identity.package(), package);
+    assert_eq!(identity.module(), &["dependency", "jobs"]);
+    assert_eq!(identity.declaration(), &["burn"]);
+}
+
+#[test]
 fn memory_tasks_publish_runtime_key_selectors() {
     let output = check(
         r#"
