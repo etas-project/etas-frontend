@@ -17,8 +17,8 @@ mod top_level_let;
 pub use annotations::ValidateItemAnnotationsPass;
 pub use concurrency::AnalyzeConcurrencyPass;
 pub use cpu_parallel::{
-    AnalyzeCpuParallelEligibilityPass, CpuFreezeContract, CpuParallelEligibilityFact,
-    CpuParallelEligibilityFacts, CpuParallelRejection,
+    AnalyzeCpuParallelEligibilityPass, CpuCallableOrigin, CpuFreezeContract,
+    CpuParallelEligibilityFact, CpuParallelEligibilityFacts, CpuParallelRejection,
 };
 mod method_origins;
 mod standard_library;

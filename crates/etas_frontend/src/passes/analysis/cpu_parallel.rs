@@ -10,11 +10,16 @@ use etas_utils::{
 };
 
 use crate::ProjectContext;
-use crate::passes::artifacts::{CPU_PARALLEL_ELIGIBILITY, EFFECT_OUTPUT, HIR_OUTPUT, TYPE_OUTPUT};
+use crate::passes::artifacts::{
+    CPU_PARALLEL_ELIGIBILITY, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_INDEX, SOURCE_SET, TYPE_OUTPUT,
+    VALIDATED_EXTERNAL_ENVIRONMENT,
+};
 
 mod freeze;
+mod origin;
 mod work;
 pub use freeze::CpuFreezeContract;
+pub use origin::CpuCallableOrigin;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct CpuParallelEligibilityFacts {
@@ -27,6 +32,7 @@ pub struct CpuParallelEligibilityFact {
     pub eligible: bool,
     pub rejection: Option<CpuParallelRejection>,
     pub freeze_contract: Option<CpuFreezeContract>,
+    pub origin: Option<CpuCallableOrigin>,
     /// Approximate HIR operations, including literal bounded loops and known
     /// callees. Recursive or dynamic work stays unknown and can run inline.
     pub estimated_work: Option<u64>,
@@ -48,7 +54,14 @@ pub struct AnalyzeCpuParallelEligibilityPass;
 impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("AnalyzeCpuParallelEligibilityPass", PassKind::Analysis)
-            .requires(ArtifactSet::from([EFFECT_OUTPUT, HIR_OUTPUT, TYPE_OUTPUT]))
+            .requires(ArtifactSet::from([
+                EFFECT_OUTPUT,
+                HIR_OUTPUT,
+                TYPE_OUTPUT,
+                MODULE_INDEX,
+                SOURCE_SET,
+                VALIDATED_EXTERNAL_ENVIRONMENT,
+            ]))
             .produces(ArtifactSet::one(CPU_PARALLEL_ELIGIBILITY))
     }
 
@@ -65,6 +78,11 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
             return PassResult::failed("CPU parallel eligibility requires checked HIR and types");
         };
         let mut dependencies = HashMap::new();
+        let Some(origins) = origin::CallableOrigins::new(context) else {
+            return PassResult::failed(
+                "CPU eligibility requires checked source and package ownership",
+            );
+        };
         let work = work::estimate(&hir.view());
         let mut callables: HashMap<_, _> = effects
             .facts
@@ -78,6 +96,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                 };
                 walk_item(&hir.view(), *callable, &mut captures);
                 dependencies.insert(*callable, captures.dependencies);
+                let origin = origins.callable(&hir.hir, *callable, &types.facts);
                 let (freeze_contract, supported) = match types.facts.item_signatures.get(callable) {
                     Some(ItemSignature::Flow(signature)) => {
                         let contract = CpuFreezeContract {
@@ -91,7 +110,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                     _ => (None, false),
                 };
                 let rejection = rejection(summary).or_else(|| {
-                    if freeze_contract.is_none() {
+                    if freeze_contract.is_none() || origin.is_none() {
                         return Some(CpuParallelRejection::DynamicCode);
                     }
                     (captures.has_global || !supported)
@@ -104,6 +123,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                         eligible: rejection.is_none(),
                         rejection,
                         freeze_contract,
+                        origin,
                         estimated_work: work.get(callable).copied().flatten(),
                     },
                 )

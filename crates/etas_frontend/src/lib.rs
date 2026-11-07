@@ -113,7 +113,7 @@ pub use passes::{
     TaskStartFact,
 };
 pub use passes::{
-    CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
+    CpuCallableOrigin, CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
     CpuParallelRejection,
 };
 

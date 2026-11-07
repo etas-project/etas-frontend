@@ -22,7 +22,7 @@ pub use analysis::concurrency::{
 pub use analysis::{
     AnalyzeConcurrencyPass, AnalyzeCpuParallelEligibilityPass, AnalyzeLoopProgressPass,
     BindMethodOriginsPass, BuildSignatureFactsPass, CheckStandardLibraryImplementationsPass,
-    CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
+    CpuCallableOrigin, CpuFreezeContract, CpuParallelEligibilityFact, CpuParallelEligibilityFacts,
     CpuParallelRejection, FinalizeTypeFactsPass, InferCallableOutputsPass,
     MaterializeGenericEffectRowsPass, PrepareBodyTypeEnvironmentPass,
     PrepareDirectInvocationTypesPass, PrepareEffectRegistryPass, PrepareInvocationTypesPass,
