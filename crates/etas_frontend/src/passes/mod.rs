@@ -14,7 +14,8 @@ mod source;
 pub(crate) use analysis::CheckedStandardLibraryImplementations;
 pub use analysis::concurrency::{
     AwaitSiteId, BranchFact, ConcurrencyFacts, ConcurrencyPlanFact, ConcurrencySiteFact,
-    ContinuationTransferFact, ContinuationTransferId, ResourceConflict, ResourceGuardPlan,
+    ContinuationTransferFact, ContinuationTransferId, ResourceConflict, ResourceGuardCall,
+    ResourceGuardCallablePlan, ResourceGuardPlan, ResourceValueSelector, RuntimeResourceSelector,
     SchedulingDecision, TaskAwaitFact, TaskBranchFact, TaskBranchShape, TaskScopeFact, TaskSiteId,
     TaskStartFact,
 };

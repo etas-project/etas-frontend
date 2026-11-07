@@ -113,7 +113,8 @@ fn effect_conflict(left: &Effect, right: &Effect, registry: &EffectRegistry) -> 
                 EffectConflict::Guard
             }
         }
-        (Effect::Error(left), Effect::Error(right)) if left == right => EffectConflict::Known,
+        // Typed error selection belongs to the task combinator, not a resource lock.
+        (Effect::Error(_), Effect::Error(_)) => EffectConflict::Disjoint,
         (Effect::Var(_), _) | (_, Effect::Var(_)) => EffectConflict::Known,
         _ => EffectConflict::Disjoint,
     }
@@ -129,11 +130,17 @@ fn action_conflict(
     if left.tag != right.tag {
         return EffectConflict::Disjoint;
     }
+    if left.tag == etas_effects::ERROR_TAG {
+        return EffectConflict::Disjoint;
+    }
     if left.tag == MEMORY_TAG
         && left.action == MEMORY_READ_ACTION
         && right.action == MEMORY_READ_ACTION
     {
         return EffectConflict::Disjoint;
+    }
+    if left.tag == MEMORY_TAG {
+        return EffectConflict::Guard;
     }
     let (Some(left_args), Some(right_args)) = (left_args, right_args) else {
         return EffectConflict::Known;

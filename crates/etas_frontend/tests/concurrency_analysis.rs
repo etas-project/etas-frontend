@@ -122,6 +122,45 @@ flow main() -> i32 { return add_one(41); }
 }
 
 #[test]
+fn memory_tasks_publish_runtime_key_selectors() {
+    let output = check(
+        r#"
+import std.task.{map_concurrent, run, Scheduler};
+alias Schema = MemoryRegion<{ Papers: Store<string, string> }>;
+let Memory = std.memory.region<Schema>(stable_id = "resources", store = "test");
+flow write(key: string) -> string {
+    Memory.Papers.put(key, key);
+    return key;
+}
+flow main() -> unit {
+    run((scheduler: Scheduler) => { return map_concurrent(["a", "b"], write); });
+    return;
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    assert!(
+        checked
+            .concurrency
+            .sites
+            .values()
+            .any(|site| matches!(site.decision, SchedulingDecision::RuntimeGuard(_))),
+        "{:#?}",
+        checked.concurrency.sites
+    );
+    let plan = checked
+        .concurrency
+        .resource_callables
+        .values()
+        .find(|plan| !plan.resources.is_empty())
+        .unwrap();
+    assert!(plan.complete, "{plan:#?}");
+    assert_eq!(plan.resources.len(), 1);
+    assert!(plan.resources[0].key.is_some());
+}
+
+#[test]
 fn cpu_work_estimates_distinguish_leaf_bounded_and_recursive_calls() {
     let output = check(
         r#"
