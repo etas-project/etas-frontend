@@ -131,9 +131,15 @@ impl EffectSemantics<'_> {
             return Ok(None);
         };
         let params = self
-            .native_generic_params(owner)
+            .native_generic_interface(owner)
             .ok_or_else(|| invalid("referenced callable has no generic interface"))?;
-        if params.is_empty() {
+        if params.is_empty()
+            && !self
+                .types
+                .facts
+                .bound_method_values
+                .contains_key(&reference.value)
+        {
             return Ok(None);
         }
         let (types, rows) = self.reference_environment_bindings(&reference)?;
@@ -146,16 +152,33 @@ impl EffectSemantics<'_> {
             .unwrap_or(reference.owner);
         let row_arguments = self.type_row_arguments(&rows, Some(application_owner))?;
         let mut generics = std::collections::BTreeMap::new();
-        for (position, param) in params.iter().enumerate() {
+        for (parameter, param) in params {
             use crate::facts::{CallableGenericParameter as P, CallableGenericValue as V};
             let value = match param.kind {
                 etas_types::CallableGenericParamKind::Type => {
-                    let ty = reference
-                        .type_bindings
-                        .iter()
-                        .find(|(name, _)| name == &param.name)
-                        .ok_or_else(|| invalid("reference is missing its checked type argument"))?
-                        .1;
+                    let ty = if matches!(parameter, P::Native { owner: declaration, .. } if declaration != owner)
+                    {
+                        self.types
+                            .facts
+                            .selected_method(reference.value)
+                            .and_then(|method| {
+                                method.owner_bindings.iter().find_map(|(subject, value)| {
+                                    (*subject == param.subject).then_some(*value)
+                                })
+                            })
+                            .ok_or_else(|| {
+                                invalid("method reference is missing its checked owner argument")
+                            })?
+                    } else {
+                        reference
+                            .type_bindings
+                            .iter()
+                            .find(|(name, _)| name == &param.name)
+                            .ok_or_else(|| {
+                                invalid("reference is missing its checked type argument")
+                            })?
+                            .1
+                    };
                     V::Type(
                         etas_types::TypeSubstitutionEngine::existing(
                             &self.types.store,
@@ -181,13 +204,7 @@ impl EffectSemantics<'_> {
                     )?)
                 }
             };
-            generics.insert(
-                P::Native {
-                    owner,
-                    position: position as u32,
-                },
-                value,
-            );
+            generics.insert(parameter, value);
         }
         let value = reference_value(source)
             .ok_or_else(|| invalid("reference has no checked creation expression"))?;
@@ -203,7 +220,11 @@ impl EffectSemantics<'_> {
             id,
             CallableEnvironment {
                 owner: application_owner,
-                parameters: Default::default(),
+                parameters: reference
+                    .environment
+                    .map(|id| self.callable_environment(id).map(|env| env.parameters))
+                    .transpose()?
+                    .unwrap_or_default(),
                 generics,
             },
         )?;

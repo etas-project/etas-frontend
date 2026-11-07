@@ -15,6 +15,7 @@ pub(super) struct SelectedMethodCall<'a> {
     pub args: &'a [HirArg],
     pub selection: MethodSelection,
     pub expected: Option<TypeId>,
+    pub binding: Option<(TypeId, crate::facts::BoundMethodReceiver)>,
 }
 
 pub fn collect_method_call<E>(
@@ -54,8 +55,46 @@ pub fn collect_method_call<E>(
                 MethodSelection::Unqualified
             },
             expected,
+            binding: None,
         },
     )
+}
+
+pub(super) fn has_bindable_method<E>(ctx: &BodyCollectContext<'_, '_, E>, method: &str) -> bool {
+    ctx.ctx.methods().member(method).any(|(_, entry)| {
+        matches!(entry.receiver, MethodReceiver::Value { .. })
+            && !matches!(entry.target, crate::method::MethodTarget::Standard { .. })
+    })
+}
+
+pub(super) fn collect_bound_method<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    expr: HirExprId,
+    receiver_type: TypeId,
+    receiver: crate::facts::BoundMethodReceiver,
+    method: &str,
+    expected: Option<TypeId>,
+) -> TypeId {
+    let receiver_expr = match receiver {
+        crate::facts::BoundMethodReceiver::Expr(expr) => expr,
+        _ => expr,
+    };
+    // The receiver was already collected and there are no invocation arguments.
+    // This construction cannot enter a fallible expression traversal.
+    collect_selected(
+        ctx,
+        SelectedMethodCall {
+            expr,
+            receiver: receiver_expr,
+            method,
+            generic_args: &[],
+            args: &[],
+            selection: MethodSelection::Unqualified,
+            expected,
+            binding: Some((receiver_type, receiver)),
+        },
+    )
+    .unwrap_or_else(|_| unreachable!("binding an already typed receiver is infallible"))
 }
 
 pub(super) fn collect_selected<E>(
@@ -70,8 +109,11 @@ pub(super) fn collect_selected<E>(
         args,
         selection,
         expected,
+        binding,
     } = call;
-    ctx.checkpoint()?;
+    if binding.is_none() {
+        ctx.checkpoint()?;
+    }
     let span = ctx.ctx.hir.exprs[expr].span(&ctx.ctx.hir.blocks);
     if generic_args
         .iter()
@@ -117,6 +159,12 @@ pub(super) fn collect_selected<E>(
     let mut candidates = Vec::with_capacity(entries.len());
     let mut candidate_hints = Vec::with_capacity(entries.len());
     for (index, entry) in entries {
+        if binding.is_some()
+            && (!matches!(entry.receiver, MethodReceiver::Value { .. })
+                || matches!(entry.target, crate::method::MethodTarget::Standard { .. }))
+        {
+            continue;
+        }
         let owner_count = entry.owner_params.len();
         let mut signature = entry.signature.clone();
         signature
@@ -203,14 +251,36 @@ pub(super) fn collect_selected<E>(
             effects: signature.effects.clone(),
         };
         let mut ty = ctx.ctx.interner.intern(Type::Function(flow.clone()));
+        if binding.is_some() {
+            let MethodReceiver::Value { slot } = entry.receiver else {
+                unreachable!()
+            };
+            let receiver = flow.input[slot as usize];
+            let mut inputs = flow.input.clone();
+            inputs.remove(slot as usize);
+            let bound = ctx.ctx.interner.intern(Type::Function(FlowType {
+                input: inputs,
+                ..flow.clone()
+            }));
+            ty = ctx.ctx.interner.intern(Type::Function(FlowType {
+                input: vec![receiver],
+                output: bound,
+                effects: Some(crate::EffectRowRef {
+                    effects: Vec::new(),
+                    tail: None,
+                }),
+            }));
+        }
         let mut inputs = signature.params.clone();
-        if let Some(instantiated) = super::callable_instantiation::signature_hints(
-            ctx,
-            ty,
-            &signature.generic_params,
-            &checked_generic_args,
-            span,
-        ) {
+        if binding.is_none()
+            && let Some(instantiated) = super::callable_instantiation::signature_hints(
+                ctx,
+                ty,
+                &signature.generic_params,
+                &checked_generic_args,
+                span,
+            )
+        {
             inputs = instantiated.input;
             // Callback rows stay schematic until their latent sources solve.
             // An explicit result is still available to the next chain link.
@@ -247,6 +317,7 @@ pub(super) fn collect_selected<E>(
     let hints = common_inputs(&candidate_hints);
     let receiver_ty = match associated_receiver {
         Some(ty) => ctx.record_expr_type(receiver, ty),
+        None if binding.is_some() => binding.as_ref().unwrap().0,
         None => super::expr::collect_expr(
             ctx,
             receiver,
@@ -267,10 +338,15 @@ pub(super) fn collect_selected<E>(
                 .copied(),
         )?);
     }
-    let output = ctx.fresh_type_var();
+    let output = if binding.is_some() {
+        expected.unwrap_or_else(|| ctx.fresh_type_var())
+    } else {
+        ctx.fresh_type_var()
+    };
     let probes = candidates.iter().map(|_| ctx.fresh_type_var()).collect();
     ctx.emit(TypeConstraint::MethodCall {
         expr,
+        binding: binding.map(|(_, receiver)| receiver),
         method: method.into(),
         selection,
         probes,

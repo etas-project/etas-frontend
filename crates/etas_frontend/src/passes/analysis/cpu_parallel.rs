@@ -103,8 +103,14 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                             parameters: signature.params.clone(),
                             output: signature.output,
                         };
-                        let supported =
-                            contract.supports_template(&types.store, &signature.generic_params);
+                        let mut parameters = signature.generic_params.clone();
+                        if let Some(method) = hir.hir.items[*callable]
+                            .symbol()
+                            .and_then(|symbol| types.facts.type_impl_methods.get(&symbol))
+                        {
+                            parameters.extend(method.owner_params.iter().cloned());
+                        }
+                        let supported = contract.supports_template(&types.store, &parameters);
                         (Some(contract), supported)
                     }
                     _ => (None, false),

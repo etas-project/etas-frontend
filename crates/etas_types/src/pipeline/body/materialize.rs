@@ -103,6 +103,18 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .checked_method_calls
         .extend(state.solver_report.checked_method_calls);
+    for expr in state.solver_report.bound_method_values.keys() {
+        if let Some(projections) = state.provisional.field_projections.get_mut(expr) {
+            projections.pop();
+        }
+    }
+    state
+        .provisional
+        .field_projections
+        .retain(|_, projections| !projections.is_empty());
+    ctx.signature_facts
+        .bound_method_values
+        .extend(state.solver_report.bound_method_values);
     ctx.signature_facts
         .existential_packs
         .extend(state.solver_report.existential_packs);
@@ -517,7 +529,13 @@ fn apply_solver_substitutions(
             }
         }
     }
-    for fact in state.solver_report.checked_method_calls.values_mut() {
+    for fact in state.solver_report.checked_method_calls.values_mut().chain(
+        state
+            .solver_report
+            .bound_method_values
+            .values_mut()
+            .map(|value| &mut value.method),
+    ) {
         fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
     }
     for fact in state.solver_report.existential_packs.values_mut() {

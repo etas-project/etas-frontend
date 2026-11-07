@@ -81,6 +81,9 @@ impl<E> BodyCollectContext<'_, '_, E> {
         let request = match &constraint {
             crate::TypeConstraint::Callable { call, .. } => Some(*call),
             crate::TypeConstraint::MethodCall {
+                binding: Some(_), ..
+            } => None,
+            crate::TypeConstraint::MethodCall {
                 expr, candidates, ..
             } => {
                 let pure = !candidates.is_empty()

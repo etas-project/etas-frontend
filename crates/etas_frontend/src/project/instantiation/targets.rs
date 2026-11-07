@@ -36,7 +36,13 @@ pub(crate) fn direct_targets(
     types: &TypeOutput,
 ) -> Result<HashMap<HirExprId, BTreeSet<HirItemId>>, String> {
     let mut targets = HashMap::<_, BTreeSet<_>>::new();
-    for (expr, method) in &types.facts.checked_method_calls {
+    for (expr, method) in types.facts.checked_method_calls.iter().chain(
+        types
+            .facts
+            .bound_method_values
+            .iter()
+            .map(|(expr, value)| (expr, &value.method)),
+    ) {
         if let MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } =
             method.target
         {

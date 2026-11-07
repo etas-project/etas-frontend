@@ -19,7 +19,9 @@ pub(super) fn probe(
         report: SolverReport::default(),
         slots: Vec::new(),
     };
-    super::operation::validate(input.store, &entry.target, call, args, &mut result.report);
+    if call.binding.is_none() {
+        super::operation::validate(input.store, &entry.target, call, args, &mut result.report);
+    }
     if !result.report.is_solved() {
         return result;
     }
@@ -32,6 +34,9 @@ pub(super) fn probe(
         unreachable!()
     };
     let mut names = entry.parameter_names.clone();
+    if call.binding.is_some() {
+        names = vec![None];
+    }
     if entry.receiver == crate::method::MethodReceiver::Associated {
         names.insert(0, None);
     }

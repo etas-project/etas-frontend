@@ -13,6 +13,37 @@ fn check(source: &str) -> etas_types::TypeOutput {
 }
 
 #[test]
+fn source_method_values_bind_receiver_and_keep_callable_types() {
+    let output = check(
+        r#"
+type Counter = { number: i32 };
+impl Counter {
+    flow compute(self, amount: i32) -> i32 { return self.number + amount; }
+    flow echo<T>(self, value: T) -> T { return value; }
+}
+flow main() -> i32 {
+    let counter = Counter { number = 7 };
+    let selected: (i32) -> i32 ![] = counter.compute;
+    let generic: (i32) -> i32 ![] = counter.echo;
+    return selected(generic(3));
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert_eq!(output.facts.bound_method_values.len(), 2);
+    for (expr, value) in &output.facts.bound_method_values {
+        assert!(matches!(value.method.target, MethodTarget::Source { .. }));
+        let etas_types::Type::Function(function) =
+            output.store.get(output.facts.expr_types[expr]).unwrap()
+        else {
+            panic!("bound function type");
+        };
+        assert_eq!(function.input.len(), 1);
+        assert_eq!(value.method.signature.params.len(), 2);
+    }
+}
+
+#[test]
 fn inherent_spec_and_generic_calls_share_checked_targets() {
     let output = check(include_str!("fixtures/method_resolution/mixed.es"));
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);

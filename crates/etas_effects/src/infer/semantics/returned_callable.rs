@@ -218,7 +218,7 @@ impl EffectSemantics<'_> {
             return Ok(false);
         };
         let params = self
-            .unit_params(callee)
+            .invocation_params(callee, environment)?
             .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
         let targets = params
             .iter()

@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "etas_effects"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "etas_builtin",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "etas_frontend"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "etas_types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bincode",
  "blake3",

@@ -228,40 +228,60 @@ pub fn collect_expr<E>(
             } else {
                 let base_ty = collect_expr(ctx, base, None)?;
                 let hint = super::field::declared_field_hint(ctx, base_ty, &field, span);
-                let output = expected.or(hint).unwrap_or_else(|| ctx.fresh_type_var());
-                record_field_memory_place(ctx, expr, base, &field);
-                if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field, span) {
-                    ctx.state.provisional.field_projections.insert(
+                if hint.is_none() && super::method_call::has_bindable_method(ctx, &field) {
+                    let output = super::method_call::collect_bound_method(
+                        ctx,
                         expr,
-                        vec![crate::FieldProjectionFact {
-                            receiver: base_ty,
-                            field: field.clone(),
-                            output: field_ty,
-                        }],
+                        base_ty,
+                        crate::facts::BoundMethodReceiver::Expr(base),
+                        &field,
+                        expected,
                     );
-                    ctx.emit(TypeConstraint::Assignable {
-                        from: field_ty,
-                        to: output,
-                        origin: ConstraintOrigin { span },
-                        reason: AssignabilityReason::Other,
-                    });
-                    field_ty
-                } else {
                     ctx.state.provisional.field_projections.insert(
                         expr,
                         vec![crate::FieldProjectionFact {
                             receiver: base_ty,
-                            field: field.clone(),
+                            field,
                             output,
                         }],
                     );
-                    ctx.emit(TypeConstraint::FieldAccess {
-                        base: base_ty,
-                        field,
-                        output,
-                        origin: ConstraintOrigin { span },
-                    });
                     output
+                } else {
+                    let output = expected.or(hint).unwrap_or_else(|| ctx.fresh_type_var());
+                    record_field_memory_place(ctx, expr, base, &field);
+                    if let Some(field_ty) = std_declared_field_type(ctx, base_ty, &field, span) {
+                        ctx.state.provisional.field_projections.insert(
+                            expr,
+                            vec![crate::FieldProjectionFact {
+                                receiver: base_ty,
+                                field: field.clone(),
+                                output: field_ty,
+                            }],
+                        );
+                        ctx.emit(TypeConstraint::Assignable {
+                            from: field_ty,
+                            to: output,
+                            origin: ConstraintOrigin { span },
+                            reason: AssignabilityReason::Other,
+                        });
+                        field_ty
+                    } else {
+                        ctx.state.provisional.field_projections.insert(
+                            expr,
+                            vec![crate::FieldProjectionFact {
+                                receiver: base_ty,
+                                field: field.clone(),
+                                output,
+                            }],
+                        );
+                        ctx.emit(TypeConstraint::FieldAccess {
+                            base: base_ty,
+                            field,
+                            output,
+                            origin: ConstraintOrigin { span },
+                        });
+                        output
+                    }
                 }
             }
         }
@@ -804,7 +824,7 @@ fn collect_path<E>(
             }
             if let Some(mut current) = symbol_value_type(ctx, symbol) {
                 let mut projections = Vec::with_capacity(partial.remaining.len());
-                for member in &partial.remaining {
+                for (member_index, member) in partial.remaining.iter().enumerate() {
                     if let Some(field_ty) = std_declared_field_type(ctx, current, member, path.span)
                     {
                         projections.push(crate::FieldProjectionFact {
@@ -815,8 +835,31 @@ fn collect_path<E>(
                         current = field_ty;
                         continue;
                     }
-                    let output = super::field::declared_field_hint(ctx, current, member, path.span)
-                        .unwrap_or_else(|| ctx.fresh_type_var());
+                    let hint = super::field::declared_field_hint(ctx, current, member, path.span);
+                    if member_index + 1 == partial.remaining.len()
+                        && hint.is_none()
+                        && super::method_call::has_bindable_method(ctx, member)
+                    {
+                        let output = super::method_call::collect_bound_method(
+                            ctx,
+                            expr,
+                            current,
+                            crate::facts::BoundMethodReceiver::Path {
+                                symbol,
+                                fields: partial.remaining[..member_index].to_vec(),
+                            },
+                            member,
+                            expected,
+                        );
+                        projections.push(crate::FieldProjectionFact {
+                            receiver: current,
+                            field: member.clone(),
+                            output,
+                        });
+                        current = output;
+                        continue;
+                    }
+                    let output = hint.unwrap_or_else(|| ctx.fresh_type_var());
                     ctx.emit(TypeConstraint::FieldAccess {
                         base: current,
                         field: member.clone(),

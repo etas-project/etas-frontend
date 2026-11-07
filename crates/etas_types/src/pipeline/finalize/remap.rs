@@ -610,7 +610,12 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
                 .with_remapped_types(remapper.target.store(), methods),
         );
     }
-    for fact in facts.checked_method_calls.values_mut() {
+    for fact in facts.checked_method_calls.values_mut().chain(
+        facts
+            .bound_method_values
+            .values_mut()
+            .map(|value| &mut value.method),
+    ) {
         fact.try_map_types(|ty| Ok::<_, std::convert::Infallible>(remapper.ty(ty)))
             .unwrap_or_else(|never| match never {});
     }

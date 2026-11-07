@@ -283,7 +283,7 @@ impl EffectSemantics<'_> {
         summary: &EffectSummary,
         environment: Option<crate::facts::CallableEnvironmentId>,
     ) -> Result<EffectSummary, EffectSpecializationError> {
-        let Some(params) = self.unit_params(callee) else {
+        let Some(params) = self.invocation_params(callee, environment)? else {
             return Ok(summary.clone());
         };
         if !matches!(
@@ -567,6 +567,25 @@ impl EffectSemantics<'_> {
             etas_hir::HirItem::Tool(tool) => Some(tool.params.clone()),
             _ => None,
         }
+    }
+
+    pub(crate) fn invocation_params(
+        &self,
+        unit: EffectUnit,
+        environment: Option<crate::facts::CallableEnvironmentId>,
+    ) -> Result<Option<Vec<etas_hir::SymbolId>>, EffectSpecializationError> {
+        let Some(mut params) = self.unit_params(unit) else {
+            return Ok(None);
+        };
+        if let Some(id) = environment {
+            let captured = self.callable_environment(id)?;
+            params.retain(|symbol| {
+                !captured
+                    .parameters
+                    .contains_key(&ParameterCallTarget::Native(*symbol))
+            });
+        }
+        Ok(Some(params))
     }
 
     pub(crate) fn specialize_effect_row(

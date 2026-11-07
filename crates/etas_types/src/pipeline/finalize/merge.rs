@@ -58,6 +58,7 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     facts.expr_types.extend(body.expr_types);
     facts.agent_method_calls.extend(body.agent_method_calls);
     facts.checked_method_calls.extend(body.checked_method_calls);
+    facts.bound_method_values.extend(body.bound_method_values);
     facts.existential_packs.extend(body.existential_packs);
     facts.reflections.extend(body.reflections);
     facts.agent_inferences.extend(body.agent_inferences);
