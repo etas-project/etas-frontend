@@ -122,6 +122,45 @@ flow main() -> i32 { return add_one(41); }
 }
 
 #[test]
+fn cpu_work_estimates_distinguish_leaf_bounded_and_recursive_calls() {
+    let output = check(
+        r#"
+flow tiny(value: i32) -> i32 { return value + 1; }
+flow bounded(value: i32) -> i32 {
+    var index = 0;
+    while index < 2000 limit Iterations(2000) { index = tiny(index); }
+    return value;
+}
+flow wrapper(value: i32) -> i32 { return bounded(value); }
+flow recursive(value: i32) -> i32 {
+    if value == 0 { return 0; }
+    return recursive(value - 1);
+}
+flow main() -> i32 { return wrapper(1); }
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let cost = |name: &str| {
+        let fact = checked
+            .cpu_parallel
+            .callables
+            .values()
+            .find(|fact| {
+                checked.hir.items[fact.callable]
+                    .symbol()
+                    .is_some_and(|symbol| checked.hir.symbols.get(symbol).unwrap().name == name)
+            })
+            .unwrap();
+        fact.estimated_work
+    };
+    assert!(cost("tiny").unwrap() < 32);
+    assert!(cost("bounded").unwrap() >= 20000);
+    assert!(cost("wrapper").unwrap() > cost("bounded").unwrap());
+    assert_eq!(cost("recursive"), None);
+}
+
+#[test]
 fn standard_array_combinators_keep_each_source_branch() {
     for combinator in ["join", "try_join", "collect", "race"] {
         let output_type = match combinator {
