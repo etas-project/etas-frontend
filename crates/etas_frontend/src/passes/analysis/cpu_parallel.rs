@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use etas_effects::{ActionTraceDomain, EffectSummary, RequestInstantiationSummary};
 use etas_hir::{ExprView, HirExpr, HirItem, HirItemId, HirVisitor, ResolveResult, walk_item};
-use etas_types::{ItemSignature, Type, TypeId, TypeStore};
+use etas_types::ItemSignature;
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
     PreservedArtifacts,
@@ -12,7 +12,9 @@ use etas_utils::{
 use crate::ProjectContext;
 use crate::passes::artifacts::{CPU_PARALLEL_ELIGIBILITY, EFFECT_OUTPUT, HIR_OUTPUT, TYPE_OUTPUT};
 
+mod freeze;
 mod work;
+pub use freeze::CpuFreezeContract;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct CpuParallelEligibilityFacts {
@@ -24,6 +26,7 @@ pub struct CpuParallelEligibilityFact {
     pub callable: HirItemId,
     pub eligible: bool,
     pub rejection: Option<CpuParallelRejection>,
+    pub freeze_contract: Option<CpuFreezeContract>,
     /// Approximate HIR operations, including literal bounded loops and known
     /// callees. Recursive or dynamic work stays unknown and can run inline.
     pub estimated_work: Option<u64>,
@@ -75,13 +78,23 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                 };
                 walk_item(&hir.view(), *callable, &mut captures);
                 dependencies.insert(*callable, captures.dependencies);
+                let (freeze_contract, supported) = match types.facts.item_signatures.get(callable) {
+                    Some(ItemSignature::Flow(signature)) => {
+                        let contract = CpuFreezeContract {
+                            parameters: signature.params.clone(),
+                            output: signature.output,
+                        };
+                        let supported =
+                            contract.supports_template(&types.store, &signature.generic_params);
+                        (Some(contract), supported)
+                    }
+                    _ => (None, false),
+                };
                 let rejection = rejection(summary).or_else(|| {
-                    let Some(ItemSignature::Flow(signature)) =
-                        types.facts.item_signatures.get(callable)
-                    else {
+                    if freeze_contract.is_none() {
                         return Some(CpuParallelRejection::DynamicCode);
-                    };
-                    (captures.has_global || !freezable_type(&types.store, signature.output))
+                    }
+                    (captures.has_global || !supported)
                         .then_some(CpuParallelRejection::NonFreezableCapture)
                 });
                 (
@@ -90,6 +103,7 @@ impl Pass<ProjectContext> for AnalyzeCpuParallelEligibilityPass {
                         callable: *callable,
                         eligible: rejection.is_none(),
                         rejection,
+                        freeze_contract,
                         estimated_work: work.get(callable).copied().flatten(),
                     },
                 )
@@ -155,19 +169,6 @@ fn rejection(summary: &EffectSummary) -> Option<CpuParallelRejection> {
         return Some(CpuParallelRejection::DynamicCode);
     }
     None
-}
-
-fn freezable_type(store: &TypeStore, ty: TypeId) -> bool {
-    match store.get(ty) {
-        Some(Type::Primitive(_) | Type::IntegerLiteral { .. }) => true,
-        Some(Type::Array(inner) | Type::Option(inner)) => freezable_type(store, *inner),
-        Some(Type::Tuple(parts)) => parts.iter().all(|ty| freezable_type(store, *ty)),
-        Some(Type::Record(record)) => record
-            .fields
-            .iter()
-            .all(|field| freezable_type(store, field.ty)),
-        _ => false,
-    }
 }
 
 struct CallableCaptures<'a> {

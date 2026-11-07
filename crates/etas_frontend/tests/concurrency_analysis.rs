@@ -122,6 +122,41 @@ flow main() -> i32 { return add_one(41); }
 }
 
 #[test]
+fn generic_cpu_callable_carries_a_materialized_freeze_contract() {
+    let output = check(
+        r#"
+flow identity<T>(value: T) -> T { return value; }
+flow main() -> i32 { return identity(7); }
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let fact = checked
+        .cpu_parallel
+        .callables
+        .values()
+        .find(|fact| {
+            checked.hir.items[fact.callable]
+                .symbol()
+                .is_some_and(|symbol| checked.symbols.get(symbol).unwrap().name == "identity")
+        })
+        .unwrap();
+    assert!(fact.eligible, "{fact:?}");
+    let contract = fact.freeze_contract.as_ref().unwrap();
+    let instance = checked
+        .types
+        .generic_instantiations
+        .values()
+        .find(|instance| !instance.type_bindings.is_empty())
+        .unwrap();
+    let bindings = instance.type_bindings.iter().cloned().collect();
+    let mut substitution =
+        etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &bindings);
+    assert!(contract.is_materialized(&checked.type_store, &mut substitution));
+    assert_eq!(contract.parameters, vec![contract.output]);
+}
+
+#[test]
 fn memory_tasks_publish_runtime_key_selectors() {
     let output = check(
         r#"
