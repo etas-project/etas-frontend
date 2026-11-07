@@ -176,6 +176,11 @@ impl EffectSemantics<'_> {
                 && let Some(key) =
                     self.callable_reference_key(CallableReferenceTarget::Source(callable), *value)
             {
+                self.inputs
+                    .native_call_targets
+                    .entry(*value)
+                    .or_default()
+                    .insert(EffectUnit::Item(callable));
                 self.callable_references.insert(
                     key,
                     LatentSource::Reference {

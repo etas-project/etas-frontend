@@ -54,4 +54,19 @@ flow main() -> i32 {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     let checked = output.checked.unwrap();
     assert_eq!(checked.types.bound_method_values.len(), 2);
+    let method = checked
+        .types
+        .bound_method_values
+        .values()
+        .find(|value| !value.method.instantiation.type_bindings.is_empty())
+        .unwrap();
+    let etas_types::method::MethodTarget::Source { callable, .. } = method.method.target else {
+        unreachable!()
+    };
+    assert!(
+        !checked
+            .checked_callable_applications(callable)
+            .unwrap()
+            .is_empty()
+    );
 }
