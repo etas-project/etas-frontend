@@ -15,7 +15,7 @@ pub(super) fn analyze(
     let view = hir.view();
     let layouts = etas_hir_analysis::closures::analyze_closures(&view)?;
     let mut closures = HashMap::new();
-    for (unit, summary) in &effects.unit_effects {
+    for unit in effects.unit_effects.keys() {
         let EffectUnit::AnonymousFlow {
             owner, value: expr, ..
         } = *unit
@@ -25,6 +25,11 @@ pub(super) fn analyze(
         let Some(HirExpr::Lambda { body, .. }) = hir.hir.exprs.get(expr) else {
             continue;
         };
+        let summary = &effects
+            .latent_effects
+            .get(&expr)
+            .ok_or("CPU closure has no checked latent effects")?
+            .summary;
         let layout = layouts
             .get(&expr)
             .ok_or("anonymous CPU callable has no capture layout")?;
