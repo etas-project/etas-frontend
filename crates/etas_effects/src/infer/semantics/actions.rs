@@ -137,7 +137,9 @@ impl EffectSemantics<'_> {
             );
         }
         if let Some(request) = request_instance {
+            performed.with_direct_behavior(|summary| summary.handler_requests = request.clone());
             performed.handler_requests = request;
+            performed.refresh_default_behavior();
         }
         state.summary.seq_assign(&performed);
         self.inputs.performed_actions.insert(

@@ -63,6 +63,7 @@ impl FrozenDefinitionEnvironment {
                 etas_code::DefinitionKind::Agent,
                 etas_hir::HirItem::Agent(_)
             ) | (etas_code::DefinitionKind::Flow, etas_hir::HirItem::Flow(_))
+                | (etas_code::DefinitionKind::Tool, etas_hir::HirItem::Tool(_))
         );
         if !valid_kind {
             return Err(ProjectionError::Invalid(
@@ -145,16 +146,19 @@ impl FrozenDefinitionEnvironment {
                 .map(|fingerprint| fingerprint.as_bytes().as_slice()),
         );
         let generic_flow = match decl {
-            etas_hir::HirItem::Flow(_) => match checked.types.item_signatures.get(&declaration) {
-                Some(etas_types::ItemSignature::Flow(signature)) => {
-                    !signature.generic_params.is_empty()
+            etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_) => {
+                match checked.types.item_signatures.get(&declaration) {
+                    Some(
+                        etas_types::ItemSignature::Flow(signature)
+                        | etas_types::ItemSignature::Tool(signature),
+                    ) => !signature.generic_params.is_empty(),
+                    _ => {
+                        return Err(ProjectionError::Invalid(
+                            "frozen flow has no checked signature".into(),
+                        ));
+                    }
                 }
-                _ => {
-                    return Err(ProjectionError::Invalid(
-                        "frozen flow has no checked signature".into(),
-                    ));
-                }
-            },
+            }
             _ => false,
         };
         let (fingerprint, generic_environment_context) = if generic_flow {

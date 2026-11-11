@@ -87,6 +87,9 @@ fn collect_call_inner<E>(
     }
     let checked_generic_args = lower_callable_generic_args(ctx, generic_args);
     if let Some(candidates) = super::std_member::std_overload_candidates(ctx, callee) {
+        for candidate in &candidates {
+            super::agent_context::constrain(ctx, candidate, span);
+        }
         let arg_tys = collect_call_args(ctx, args, None)?;
         let output = select_call_output(ctx, None, expected, span);
         let callee_type = ctx.fresh_type_var();
@@ -165,6 +168,9 @@ fn collect_call_inner<E>(
         return Ok(output);
     }
     let callable_candidate = collect_callable_callee(ctx, callee, callable_signature.is_some())?;
+    if let Some(candidate) = &callable_candidate {
+        super::agent_context::constrain(ctx, candidate, span);
+    }
     let intrinsic_candidate = callable_candidate.as_ref().and_then(|candidate| {
         matches!(
             candidate.operation,
@@ -273,6 +279,18 @@ fn collect_std_qualified_call<E>(
         return Ok(None);
     };
     let candidate = std_qualified_path_callable_candidate(ctx, path, true);
+    if let Some(candidate) = &candidate {
+        super::agent_context::constrain(ctx, candidate, span);
+    }
+    let intrinsic_candidate = candidate
+        .as_ref()
+        .filter(|candidate| {
+            matches!(
+                candidate.operation,
+                crate::CallableCandidateOperation::StdIntrinsic { .. }
+            )
+        })
+        .cloned();
     let (callee_ty, generic_params) = if let Some(candidate) = candidate {
         (candidate.ty, candidate.signature.generic_params)
     } else {
@@ -306,16 +324,31 @@ fn collect_std_qualified_call<E>(
         arg_count: arg_tys.len(),
         span,
     });
-    ctx.emit(TypeConstraint::Callable {
-        call: Some(call),
-        callee: callee_ty,
-        generic_params,
-        generic_args: checked_generic_args.to_vec(),
-        arg_exprs: call_arg_exprs(args),
-        args: arg_tys,
-        output,
-        origin: ConstraintOrigin { span },
-    });
+    if let Some(candidate) = intrinsic_candidate {
+        let probe = ctx.fresh_type_var();
+        ctx.emit(TypeConstraint::OverloadedCall {
+            expr: call,
+            callee: callee_ty,
+            candidates: vec![candidate],
+            probes: vec![probe],
+            generic_args: checked_generic_args.to_vec(),
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+    } else {
+        ctx.emit(TypeConstraint::Callable {
+            call: Some(call),
+            callee: callee_ty,
+            generic_params,
+            generic_args: checked_generic_args.to_vec(),
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+    }
     Ok(Some(output))
 }
 
@@ -938,7 +971,8 @@ fn apply_type_var_substitution<E>(
         | Type::SchedulerHandle
         | Type::Prompt
         | Type::PromptPart
-        | Type::MemoryPlace(MemoryPlaceType { .. }) => ty,
+        | Type::MemoryPlace(MemoryPlaceType { .. })
+        | Type::AgentContext(_) => ty,
     }
 }
 

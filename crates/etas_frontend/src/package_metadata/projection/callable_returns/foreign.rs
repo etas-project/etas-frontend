@@ -251,6 +251,7 @@ impl Builder<'_, '_> {
                 target,
                 ParameterCallTarget::SpecMethod { .. }
                     | ParameterCallTarget::MetadataSpecMethod { .. }
+                    | ParameterCallTarget::AgentTools(_)
             ) {
                 // The trace projection serializes the checked method descriptor,
                 // not a positional callback label.

@@ -99,6 +99,7 @@ pub fn display_type(store: &TypeStore, ty: TypeId) -> String {
             format!("ResourceHandle<{name}<{args}>>")
         }
         Some(Type::Function(_)) => "function".to_owned(),
+        Some(Type::AgentContext(method)) => format!("agent method context {method}"),
         Some(Type::Handler(_)) => "handler".to_owned(),
         Some(Type::Task(task)) => {
             let effects = task

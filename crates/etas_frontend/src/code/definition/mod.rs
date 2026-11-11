@@ -43,3 +43,4 @@ pub(crate) use sources::DefinitionSourceCaptureInput;
 pub use sources::{BodyExposure, DefinitionSourceUnit, DefinitionSources};
 
 pub use store::{DefinitionCatalog, StaticReflectionView};
+pub(crate) use tools::declared_tools;

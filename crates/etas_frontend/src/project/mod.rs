@@ -1,14 +1,16 @@
 mod callable_application;
 mod callable_graph;
+mod method_requirements;
 pub use callable_application::{
     AppliedCallableBehavior, CallableApplicationError, CallableBehaviorError,
     CheckedCallableApplication,
 };
+pub(crate) use method_requirements::lower as lower_method_requirements;
 mod checked_reachability;
 pub(crate) use callable_graph::{
     lower_callable_graph, lower_callable_graph_in_scope, lower_callable_objects,
     lower_callable_objects_in_scope, lower_callable_request_target,
-    lower_callable_request_target_in_scope, lower_package_effect_row,
+    lower_callable_request_target_in_scope, lower_default_behavior,
 };
 mod context;
 mod dependency_namespaces;

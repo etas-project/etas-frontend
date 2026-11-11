@@ -21,7 +21,11 @@ impl EffectSemantics<'_> {
                 registry: self.registry,
                 types: &self.types.store,
             };
-            callback.subtract_handled_effects(&coverage, &intercepted);
+            callback
+                .subtract_handled_effects(&coverage, &intercepted)
+                .map_err(
+                    |reason| EffectSpecializationError::InvalidCallableEnvironment { reason },
+                )?;
             callback.default_actions =
                 coverage.subtract_handled(&callback.default_actions, &intercepted);
         }

@@ -301,6 +301,12 @@ pub fn lower_external_type(
     ty: &crate::ExternalTypeInput,
 ) -> TypeId {
     match ty {
+        crate::ExternalTypeInput::AgentContext(method) => {
+            ctx.interner
+                .intern(Type::AgentContext(crate::AgentContextRef::Portable(
+                    Box::new(method.clone()),
+                )))
+        }
         crate::ExternalTypeInput::Existential { bounds } => {
             let bounds = bounds
                 .iter()

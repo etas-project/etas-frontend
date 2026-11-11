@@ -11,6 +11,7 @@ pub(crate) fn map_trace<M: SummaryMapper>(
         Choice(usize),
         Parallel(usize),
         TaskStart(etas_hir::HirExprId),
+        DefaultHandler(EffectSet),
         Repeat,
     }
     let mut work = vec![Work::Visit(root)];
@@ -19,6 +20,14 @@ pub(crate) fn map_trace<M: SummaryMapper>(
         mapper.checkpoint()?;
         match next {
             Work::Visit(trace) => match trace {
+                ActionTraceDomain::DefaultHandler { guards, body } => {
+                    if let Some(guards) = mapper.default_guards(guards)? {
+                        work.push(Work::DefaultHandler(guards));
+                        work.push(Work::Visit(body));
+                    } else {
+                        values.push(ActionTraceDomain::Empty);
+                    }
+                }
                 ActionTraceDomain::Seq(parts)
                 | ActionTraceDomain::Choice(parts)
                 | ActionTraceDomain::Parallel(parts) => {
@@ -62,7 +71,9 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                     let mut calls = Vec::new();
                     for parameter in parameter_calls {
                         mapper.checkpoint()?;
-                        calls.push(parameter.clone());
+                        let mut parameter = parameter.clone();
+                        parameter.target = mapper.parameter_target(parameter.target)?;
+                        calls.push(parameter);
                     }
                     values.push(ActionTraceDomain::Widened {
                         actions: actions
@@ -75,9 +86,16 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                         parameter_calls: calls,
                     });
                 }
-                ActionTraceDomain::Empty
-                | ActionTraceDomain::ParameterCall { .. }
-                | ActionTraceDomain::TaskAwait { .. } => {
+                ActionTraceDomain::ParameterCall {
+                    target,
+                    parameter,
+                    span,
+                } => values.push(ActionTraceDomain::ParameterCall {
+                    target: mapper.parameter_target(*target)?,
+                    parameter: parameter.clone(),
+                    span: *span,
+                }),
+                ActionTraceDomain::Empty | ActionTraceDomain::TaskAwait { .. } => {
                     values.push(trace.clone())
                 }
             },
@@ -104,6 +122,17 @@ pub(crate) fn map_trace<M: SummaryMapper>(
                     task_site,
                     body: Box::new(body),
                 });
+            }
+            Work::DefaultHandler(guards) => {
+                let body = values.pop().ok_or_else(|| mapper.invalid_structure())?;
+                if body == ActionTraceDomain::Empty {
+                    values.push(body);
+                } else {
+                    values.push(ActionTraceDomain::DefaultHandler {
+                        guards,
+                        body: Box::new(body),
+                    });
+                }
             }
         }
     }

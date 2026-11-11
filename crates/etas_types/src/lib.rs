@@ -60,14 +60,14 @@ pub use solver::{
     select_external_methods,
 };
 pub use ty::{
-    ContinuationType, EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef, FieldType, FlowType,
-    HandlerProducedEffects, HandlerType, MemoryPlaceType, NamedTypeRef, NominalTypeRef,
-    PrimitiveType, RecordType, RefinementId, ResourceHandleType, TaskType, TrustWrapper, Type,
-    TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore, TypeSubstitutionBudget,
-    TypeSubstitutionEngine, TypeSubstitutionError, TypeVarId, applied_representation,
-    nominal_representation_parts, record_fields_with_applied_params, substitute_effect_row_params,
-    substitute_named_params, substitute_named_params_in_store, substitute_type_params,
-    type_contains_named_param, type_contains_source_parameter,
+    AgentContextRef, ContinuationType, EffectArgRef, EffectRef, EffectRowRef, EnumTypeRef,
+    FieldType, FlowType, HandlerProducedEffects, HandlerType, MemoryPlaceType, NamedTypeRef,
+    NominalTypeRef, PrimitiveType, RecordType, RefinementId, ResourceHandleType, TaskType,
+    TrustWrapper, Type, TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore,
+    TypeSubstitutionBudget, TypeSubstitutionEngine, TypeSubstitutionError, TypeVarId,
+    applied_representation, nominal_representation_parts, record_fields_with_applied_params,
+    substitute_effect_row_params, substitute_named_params, substitute_named_params_in_store,
+    substitute_type_params, type_contains_named_param, type_contains_source_parameter,
 };
 
 pub fn check_program(hir: &etas_hir::HirProgram) -> TypeOutput {

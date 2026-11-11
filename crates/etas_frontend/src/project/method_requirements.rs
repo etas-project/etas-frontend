@@ -3,10 +3,18 @@ use etas_package_metadata::{
     MethodLimitKind as K, MethodLimitValue as V, MethodTraceRequirement as T,
 };
 use etas_types::TypeOutput;
+use etas_types::lower::external::CheckedExternalTypeResolver;
 
-pub(super) fn lower(
+pub(crate) fn lower(
     value: &etas_package_metadata::MethodRequirements,
     types: &TypeOutput,
+) -> Result<ExternalMethodRequirements, String> {
+    lower_in_scope(value, &CheckedExternalTypeResolver::new(types))
+}
+
+pub(super) fn lower_in_scope(
+    value: &etas_package_metadata::MethodRequirements,
+    resolver: &CheckedExternalTypeResolver<'_>,
 ) -> Result<ExternalMethodRequirements, String> {
     use etas_effects::{LimitKind as L, LimitValue as W};
     Ok(ExternalMethodRequirements {
@@ -40,17 +48,17 @@ pub(super) fn lower(
         trace_requirements: value
             .trace_requirements
             .iter()
-            .map(|value| trace(value, types))
+            .map(|value| trace(value, resolver))
             .collect::<Result<_, _>>()?,
         trace_obligations: value
             .trace_obligations
             .iter()
-            .map(|value| trace(value, types))
+            .map(|value| trace(value, resolver))
             .collect::<Result<_, _>>()?,
     })
 }
 
-fn trace(value: &T, types: &TypeOutput) -> Result<R, String> {
+fn trace(value: &T, resolver: &CheckedExternalTypeResolver<'_>) -> Result<R, String> {
     use etas_effects::ExternalTraceSpecClauseKind as K;
     Ok(match value {
         T::Reference(name) => R::Reference(name.clone()),
@@ -73,22 +81,22 @@ fn trace(value: &T, types: &TypeOutput) -> Result<R, String> {
                 pattern: clause
                     .pattern
                     .as_ref()
-                    .map(|row| lower_row(row, types))
+                    .map(|row| lower_row(row, resolver))
                     .transpose()?,
                 guard: clause
                     .guard
                     .as_ref()
-                    .map(|row| lower_row(row, types))
+                    .map(|row| lower_row(row, resolver))
                     .transpose()?,
                 target: clause
                     .target
                     .as_ref()
-                    .map(|row| lower_row(row, types))
+                    .map(|row| lower_row(row, resolver))
                     .transpose()?,
                 obligation: clause
                     .obligation
                     .as_ref()
-                    .map(|row| lower_row(row, types))
+                    .map(|row| lower_row(row, resolver))
                     .transpose()?,
             })
         }
@@ -97,9 +105,9 @@ fn trace(value: &T, types: &TypeOutput) -> Result<R, String> {
 
 fn lower_row(
     value: &etas_package_metadata::EffectRow,
-    types: &TypeOutput,
+    resolver: &CheckedExternalTypeResolver<'_>,
 ) -> Result<etas_effects::ExternalTraceSpecEffectRowMetadata, String> {
-    let row = crate::project::lower_package_effect_row(value, types)?;
+    let row = super::callable_graph::row(value, resolver)?;
     if row.tail.is_some() {
         return Err("published method trace pattern must be closed".into());
     }

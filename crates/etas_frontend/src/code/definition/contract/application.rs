@@ -154,7 +154,7 @@ impl FrozenDefinitionContract {
         };
         Self::capture_with_application(
             catalog,
-            FrozenContractOwner::Flow {
+            FrozenContractOwner::CallableDeclaration {
                 identity,
                 entry: callable.clone(),
             },

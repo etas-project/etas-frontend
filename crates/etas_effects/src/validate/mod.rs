@@ -1142,6 +1142,9 @@ fn type_label(types: &etas_types::TypeStore, ty: etas_types::TypeId) -> String {
                 format!("{name}[{args}]")
             }
         },
+        Some(etas_types::Type::AgentContext(method)) => {
+            format!("agent method context {method}")
+        }
         None => "<unknown>".to_owned(),
     }
 }

@@ -55,6 +55,17 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
             return;
         }
     };
+    let agent_controllers = match agent_controller::materialize(ctx, &state) {
+        Ok(facts) => facts,
+        Err(error) => {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                TypeDiagnosticCode::IncompleteTypeFacts,
+                ctx.hir.items[state.item].span(),
+                error,
+            ));
+            return;
+        }
+    };
     state
         .provisional
         .expr_types
@@ -91,6 +102,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
     ctx.signature_facts
         .definition_operations
         .extend(definition_operations);
+    ctx.signature_facts
+        .agent_controllers
+        .extend(agent_controllers);
     ctx.signature_facts
         .expr_types
         .extend(state.provisional.expr_types);
@@ -183,6 +197,7 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .extend(state.provisional.item_signatures);
 }
 
+mod agent_controller;
 mod continuation;
 mod methods;
 mod reflection;

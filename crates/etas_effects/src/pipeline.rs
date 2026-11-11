@@ -188,6 +188,7 @@ pub struct ExternalParameterRequestMetadata {
 )]
 pub enum ExternalCallableRequestTarget {
     Parameter(String),
+    AgentTools(etas_types::TypeId),
     SpecMethod(std::sync::Arc<ExternalSpecMethodInvocation>),
 }
 
@@ -245,9 +246,32 @@ pub struct ExternalSpecMethodCallableArgument {
     etas_core::RetainedSize,
 )]
 pub struct ExternalDefaultHandlerEffectsMetadata {
+    pub behavior: Option<ExternalDefaultBehaviorMetadata>,
     pub direct_effects: ExternalEffectRowMetadata,
     pub default_actions: ExternalEffectRowMetadata,
     pub handlers: Vec<ExternalDefaultHandlerContributionMetadata>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalDefaultBehaviorMetadata {
+    pub direct: ExternalEffectFootprintMetadata,
+    pub guarded: Vec<(Vec<ExternalEffectMetadata>, ExternalEffectFootprintMetadata)>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalEffectFootprintMetadata {
+    pub escaping_effects: ExternalEffectRowMetadata,
+    pub requested_actions: ExternalEffectRowMetadata,
+    pub default_actions: ExternalEffectRowMetadata,
+    pub handled_actions: ExternalEffectRowMetadata,
+    pub handler_requests: Option<ExternalRequestInstantiationMetadata>,
+    pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
+    pub behavior: etas_package_metadata::CallableValueBehavior,
+    pub requirements: ExternalMethodRequirements,
 }
 
 #[derive(
@@ -271,6 +295,10 @@ pub struct ExternalDefaultHandlerContributionMetadata {
 pub enum ExternalActionTraceMetadata {
     #[default]
     Empty,
+    DefaultHandler {
+        guards: Vec<ExternalEffectMetadata>,
+        body: Box<ExternalActionTraceMetadata>,
+    },
     Event {
         action: ExternalEffectMetadata,
         source: crate::ActionEventSource,

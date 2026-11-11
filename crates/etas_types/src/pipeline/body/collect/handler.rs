@@ -215,7 +215,14 @@ pub(super) fn collect_handler_for_requests<E>(
         ctx.state.handler_finish_stack.push(expected_result);
         ctx.state.handler_finish_candidates.push(Vec::new());
         ctx.state.handler_depth += 1;
+        let agent_context = super::agent_context::handler_context(ctx, &arm);
+        if let Some(context) = agent_context {
+            ctx.state.agent_contexts.push(context);
+        }
         let collected = collect_block(ctx, arm.body, None);
+        if agent_context.is_some() {
+            ctx.state.agent_contexts.pop();
+        }
         ctx.state.handler_depth -= 1;
         if let Some(candidates) = ctx.state.handler_finish_candidates.pop() {
             finishes.extend(candidates);

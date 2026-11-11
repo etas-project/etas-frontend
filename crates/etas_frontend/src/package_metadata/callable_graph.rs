@@ -107,6 +107,9 @@ pub(crate) fn checked_request_template(
     checked: &CheckedProject,
     item: etas_hir::HirItemId,
     summary: &etas_effects::EffectSummary,
+    identities: &crate::code::identity::DefinitionIdentityIndex,
 ) -> Result<Option<etas_package_metadata::RequestInstantiationTemplate>, PackageMetadataError> {
-    ProjectMetadataProjection::new(checked).item_request_template(item, summary)
+    ProjectMetadataProjection::new(checked)
+        .with_identities(Some(identities))
+        .item_request_template(item, summary)
 }

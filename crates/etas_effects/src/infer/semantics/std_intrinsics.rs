@@ -127,6 +127,13 @@ impl EffectSemantics<'_> {
         else {
             return false;
         };
+        if decl
+            .intrinsic
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.id.0 == etas_std::intrinsic::runtime::TOOL_INVOKE)
+        {
+            return false;
+        }
         std_decl_is_pure_call_support(&decl.decl)
             || matches!(&decl.decl, StdDecl::Flow(flow)
                 if flow.public_effects.is_empty()
@@ -197,6 +204,15 @@ impl EffectSemantics<'_> {
         mut state: EffectState,
     ) -> EffectState {
         if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr).cloned() {
+            if fact.intrinsic == etas_std::intrinsic::runtime::TOOL_INVOKE {
+                return match self.tool_invocation_summary(expr, span, &state) {
+                    Ok(summary) => {
+                        state.summary.seq_assign(&summary);
+                        state
+                    }
+                    Err(error) => self.incomplete_at(span, error, state),
+                };
+            }
             if self
                 .types
                 .facts
@@ -824,6 +840,21 @@ impl EffectSemantics<'_> {
         span: Span,
         state: &EffectState,
     ) -> Option<crate::EffectSummary> {
+        if self
+            .types
+            .facts
+            .std_intrinsic_calls
+            .get(&call)
+            .is_some_and(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_INVOKE)
+        {
+            return Some(match self.tool_invocation_summary(call, span, state) {
+                Ok(summary) => summary,
+                Err(error) => {
+                    self.incomplete_at(span, error, EffectState::default())
+                        .summary
+                }
+            });
+        }
         let selected = self.types.facts.std_intrinsic_calls.get(&call);
         let path = selected
             .map(|fact| fact.qualified_path.clone())

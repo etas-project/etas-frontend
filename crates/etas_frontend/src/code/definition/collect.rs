@@ -49,11 +49,12 @@ pub(super) fn build_exported(
         .callables
         .values()
         .filter(|callable| {
-            callable
-                .header
-                .id
-                .as_declaration()
-                .is_some_and(|identity| identity.kind() == etas_code::DefinitionKind::Flow)
+            callable.header.id.as_declaration().is_some_and(|identity| {
+                matches!(
+                    identity.kind(),
+                    etas_code::DefinitionKind::Flow | etas_code::DefinitionKind::Tool
+                )
+            })
         })
         .map(|callable| callable.header.clone())
         .collect::<Vec<_>>();

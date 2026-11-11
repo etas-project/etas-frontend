@@ -80,16 +80,29 @@ flow inspect() -> unit { let first = ^Worker.run; let second = ^Worker.explain; 
             .descriptors()
             .effect_row(callable.analysis.effects.requested.unwrap())
             .unwrap();
-        assert_eq!(row.effects.len(), 1);
-        let [
-            StaticEffectArgInfo::Callable(id),
-            StaticEffectArgInfo::Type(_),
-        ] = row.effects[0].arguments.as_slice()
-        else {
-            panic!("canonical method/output selectors: {row:?}");
-        };
-        assert_eq!(id, &callable.id);
-        selected.push(id.clone());
+        let mut actions = Vec::new();
+        for effect in &row.effects {
+            let etas_code::descriptor::EffectTargetInfo::Action { name, .. } = &effect.target
+            else {
+                panic!("agent action");
+            };
+            actions.push(name.as_str());
+            let [
+                StaticEffectArgInfo::Type(context),
+                StaticEffectArgInfo::Type(_),
+            ] = effect.arguments.as_slice()
+            else {
+                panic!("canonical method/output selectors: {row:?}");
+            };
+            let Some(TypeInfo::AgentContext(method)) = catalog.descriptors().type_info(*context)
+            else {
+                panic!("canonical agent context");
+            };
+            assert_eq!(etas_code::CallableId::method(method.clone()), callable.id);
+        }
+        actions.sort_unstable();
+        assert_eq!(actions, ["infer", "step"]);
+        selected.push(callable.id.clone());
     }
     assert_eq!(selected.len(), 2);
     assert_ne!(selected[0], selected[1]);

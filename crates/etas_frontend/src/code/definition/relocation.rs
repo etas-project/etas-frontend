@@ -48,9 +48,16 @@ impl NativeTypeCorrespondence {
                 })
                 .or_insert(ty);
         }
-        let declarations = native_type_declarations(source.type_store, source_identities)
-            .filter_map(|(ty, identity)| declarations.get(identity).map(|target| (ty, *target)))
-            .collect();
+        let mut declarations: HashMap<_, _> =
+            native_type_declarations(source.type_store, source_identities)
+                .filter_map(|(ty, identity)| declarations.get(identity).map(|target| (ty, *target)))
+                .collect();
+        let target_contexts = agent_context_types(target.type_store, target_identities)?;
+        for (method, source_type) in agent_context_types(source.type_store, source_identities)? {
+            if let Some(target_type) = target_contexts.get(&method) {
+                declarations.insert(source_type, *target_type);
+            }
+        }
         let from = source;
         let to = target;
         let mut tags = BTreeMap::new();
@@ -142,6 +149,37 @@ pub(super) fn native_type_declarations<'a>(
             .is_none()
             .then_some((ty, &declaration.identity))
     })
+}
+
+fn agent_context_types(
+    store: &etas_types::TypeStore,
+    identities: &DefinitionIdentityIndex,
+) -> Result<BTreeMap<etas_code::MethodId, TypeId>, ProjectionError> {
+    let mut contexts = BTreeMap::new();
+    for (ty, value) in store.iter() {
+        let (method, native) = match value {
+            etas_types::Type::AgentContext(etas_types::AgentContextRef::Source(symbol)) => (
+                identities
+                    .method(*symbol)
+                    .ok_or(ProjectionError::MissingCallable(*symbol))?
+                    .clone(),
+                true,
+            ),
+            etas_types::Type::AgentContext(etas_types::AgentContextRef::Portable(method)) => {
+                ((**method).clone(), false)
+            }
+            _ => continue,
+        };
+        contexts
+            .entry(method)
+            .and_modify(|previous| {
+                if native {
+                    *previous = ty;
+                }
+            })
+            .or_insert(ty);
+    }
+    Ok(contexts)
 }
 
 #[cfg(test)]

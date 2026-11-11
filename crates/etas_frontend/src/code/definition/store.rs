@@ -60,7 +60,7 @@ pub struct DefinitionCatalog {
 }
 
 impl DefinitionCatalog {
-    pub(crate) fn exported_descriptors(
+    pub fn exported_descriptors(
         checked: CheckedProgram,
         origins: &DefinitionOrigins,
         identities: DefinitionIdentityIndex,
@@ -214,7 +214,7 @@ impl DefinitionCatalog {
         self.freeze_contract(contract, item, None)
     }
 
-    fn freeze_contract(
+    pub(super) fn freeze_contract(
         &self,
         contract: Arc<super::FrozenDefinitionContract>,
         declaration: HirItemId,
@@ -228,6 +228,7 @@ impl DefinitionCatalog {
                 })
             })
             .transpose()?;
+        let body = body.filter(|item| !self.is_declared_host_tool(*item));
         let callable_owners = contract
             .callables()
             .map(|(id, _)| {
@@ -239,6 +240,7 @@ impl DefinitionCatalog {
             .collect::<Result<std::collections::BTreeMap<_, _>, ProjectionError>>()?;
         let callable_slots = callable_owners
             .iter()
+            .filter(|(_, item)| !self.is_declared_host_tool(**item))
             .map(|(id, item)| {
                 let slot = self
                     .checked
@@ -876,6 +878,10 @@ impl DefinitionCatalog {
             )
             .map(|identity| identity.content())
             .map_err(ProjectionError::Syntax)
+    }
+
+    pub(super) fn is_declared_host_tool(&self, item: HirItemId) -> bool {
+        matches!(self.checked.items.get(item), Some(etas_hir::HirItem::Tool(tool)) if matches!(tool.body, etas_hir::HirToolBody::Decl { .. }))
     }
 
     pub(super) fn add_selected_views(&mut self) -> Result<(), ProjectionError> {

@@ -9632,6 +9632,7 @@ flow main() -> unit ![Console.stdout_write] {
                 .map(|child| count_stdout(child, stdout))
                 .sum(),
             etas_effects::ActionTraceDomain::Repeat(child)
+            | etas_effects::ActionTraceDomain::DefaultHandler { body: child, .. }
             | etas_effects::ActionTraceDomain::TaskStart { body: child, .. } => {
                 count_stdout(child, stdout)
             }

@@ -303,7 +303,8 @@ fn contains_task_control(trace: &ActionTraceDomain) -> bool {
             ActionTraceDomain::Seq(parts)
             | ActionTraceDomain::Choice(parts)
             | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
-            ActionTraceDomain::Repeat(inner) => pending.push(inner),
+            ActionTraceDomain::Repeat(inner)
+            | ActionTraceDomain::DefaultHandler { body: inner, .. } => pending.push(inner),
             ActionTraceDomain::Empty
             | ActionTraceDomain::Event(_)
             | ActionTraceDomain::ParameterCall { .. }

@@ -122,6 +122,7 @@ impl Builder<'_, '_> {
                 target,
                 etas_effects::ParameterCallTarget::SpecMethod { .. }
                     | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::AgentTools(_)
             ) {
                 continue;
             }

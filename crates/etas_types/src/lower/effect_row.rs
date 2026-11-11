@@ -362,6 +362,9 @@ fn type_arg_from_path(
     ctx: &mut TypePipelineContext<'_>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<TypeId> {
+    if let Some(context) = super::type_ref::agent_context_ref(ctx, path) {
+        return Some(ctx.interner.intern(Type::AgentContext(context)));
+    }
     let symbol = resolved_static_type_selector_symbol(path, Some)?;
     if let Some(bound) = ctx.bound_type_parameter(symbol) {
         return Some(bound);

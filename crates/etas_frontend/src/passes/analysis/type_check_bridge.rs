@@ -708,6 +708,9 @@ pub(super) fn convert_external_type(
     ty: &ProjectExternalTypeInput,
 ) -> etas_types::ExternalTypeInput {
     match ty {
+        ProjectExternalTypeInput::AgentContext(method) => {
+            etas_types::ExternalTypeInput::AgentContext(method.clone())
+        }
         ProjectExternalTypeInput::Existential { bounds } => {
             etas_types::ExternalTypeInput::Existential {
                 bounds: bounds

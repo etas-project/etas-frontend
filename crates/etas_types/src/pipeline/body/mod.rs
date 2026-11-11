@@ -1,5 +1,6 @@
 pub mod collect {
     pub mod action_selector;
+    mod agent_context;
     pub mod agent_method;
     pub mod block;
     pub mod call;

@@ -50,8 +50,10 @@ impl DefinitionCatalog {
         }
         let mut bindings = required.clone();
         for (symbol, fact) in &self.checked.types.symbol_types {
-            if !matches!(fact, SymbolTypeFact::Flow { .. })
-                || self.callable_bindings.contains_key(symbol)
+            if !matches!(
+                fact,
+                SymbolTypeFact::Flow { .. } | SymbolTypeFact::Tool { .. }
+            ) || self.callable_bindings.contains_key(symbol)
             {
                 continue;
             }
@@ -90,6 +92,7 @@ impl DefinitionCatalog {
                 snapshots
                     .flows
                     .iter()
+                    .chain(&snapshots.tools)
                     .map(|snapshot| (&snapshot.identity, snapshot))
                     .collect::<BTreeMap<_, _>>()
             });

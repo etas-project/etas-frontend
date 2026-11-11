@@ -214,14 +214,7 @@ impl DefinitionDescriptorProjector<'_> {
                     etas_std::StdStaticArg::Path(path) => {
                         match self.identities.callable_path(&path)? {
                             Some(id) => StaticEffectArgInfo::Callable(id.clone()),
-                            None => StaticEffectArgInfo::Resource(
-                                self.identities
-                                    .path(&path)
-                                    .ok_or_else(|| {
-                                        ProjectionError::MissingIdentity(path.join("."))
-                                    })?
-                                    .clone(),
-                            ),
+                            None => self.identities.resource_path(&self.checked, &path)?,
                         }
                     }
                     etas_std::StdStaticArg::String(text) => {

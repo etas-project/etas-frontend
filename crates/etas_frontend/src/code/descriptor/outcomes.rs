@@ -362,6 +362,7 @@ fn finite_trace_paths(
         *budget = budget.checked_sub(1)?;
         match step {
             Step::Visit(Trace::Empty) => values.push(BTreeSet::from([vec![]])),
+            Step::Visit(Trace::DefaultHandler { body, .. }) => pending.push(Step::Visit(body)),
             Step::Visit(Trace::Event(event)) => {
                 values.push(BTreeSet::from([vec![FiniteTraceAtom::Action(
                     event.action.clone(),
@@ -378,9 +379,9 @@ fn finite_trace_paths(
                 pending.push(Step::Choice(parts.len()));
                 pending.extend(parts.iter().rev().map(Step::Visit));
             }
-            Step::Visit(
-                Trace::Parallel(_) | Trace::TaskStart { .. } | Trace::TaskAwait { .. },
-            ) => return None,
+            Step::Visit(Trace::Parallel(_) | Trace::TaskStart { .. } | Trace::TaskAwait { .. }) => {
+                return None;
+            }
             Step::Visit(Trace::Repeat(_) | Trace::UnknownOrder(_) | Trace::Widened { .. }) => {
                 return None;
             }

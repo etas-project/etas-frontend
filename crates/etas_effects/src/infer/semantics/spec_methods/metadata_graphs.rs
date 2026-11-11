@@ -37,7 +37,8 @@ fn enqueue(
         ExternalCallableRequestTarget::SpecMethod(method) => {
             Some((method.clone(), generics.to_vec(), span))
         }
-        ExternalCallableRequestTarget::Parameter(_) => None,
+        ExternalCallableRequestTarget::Parameter(_)
+        | ExternalCallableRequestTarget::AgentTools(_) => None,
     }));
 }
 

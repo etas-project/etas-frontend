@@ -177,6 +177,12 @@ impl Encoder {
                     self.byte(8);
                     match trace {
                         Trace::Empty => self.byte(0),
+                        Trace::DefaultHandler { guards, body } => {
+                            self.byte(8);
+                            self.number(guards.len());
+                            tasks.push(Task::Trace(body));
+                            tasks.extend(guards.iter().rev().map(Task::Effect));
+                        }
                         Trace::Event { action, source } => {
                             self.byte(1);
                             self.byte(match source {
@@ -397,6 +403,10 @@ impl Encoder {
                 Task::Type(ty) => {
                     self.byte(4);
                     match ty {
+                        Type::AgentContext(method) => {
+                            self.byte(30);
+                            self.0.update(method.fingerprint().as_bytes());
+                        }
                         Type::Existential { bounds } => {
                             self.byte(27);
                             self.number(bounds.len());
@@ -864,6 +874,10 @@ pub(crate) fn external_effect_summary(value: &crate::ProjectExternalEffectSummar
     encoder.text(&external_requests(&value.handler_requests));
     encoder.optional(value.default_handler_effects.is_some());
     if let Some(defaults) = &value.default_handler_effects {
+        encoder.optional(defaults.behavior.is_some());
+        if let Some(behavior) = &defaults.behavior {
+            encoder.0.update(behavior.fingerprint().as_bytes());
+        }
         encoder.encode(Task::Row(&defaults.direct_effects));
         encoder.encode(Task::Row(&defaults.default_actions));
         encoder.number(defaults.handlers.len());
@@ -1246,6 +1260,7 @@ mod tests {
         };
         let before = external_effect_summary(&summary);
         summary.default_handler_effects = Some(Defaults {
+            behavior: None,
             direct_effects: Row::default(),
             default_actions: Row::default(),
             handlers: vec![],

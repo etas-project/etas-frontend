@@ -28,7 +28,7 @@ pub struct FrozenDefinitionContract {
 #[derive(etas_core::RetainedSize)]
 enum FrozenContractOwner {
     Agent(AgentHeaderInfo),
-    Flow {
+    CallableDeclaration {
         identity: etas_code::DefinitionKey,
         entry: CallableId,
     },
@@ -38,19 +38,19 @@ impl FrozenContractOwner {
     fn identity(&self) -> &etas_code::DefinitionKey {
         match self {
             Self::Agent(header) => &header.identity,
-            Self::Flow { identity, .. } => identity,
+            Self::CallableDeclaration { identity, .. } => identity,
         }
     }
     fn entry(&self) -> Option<&CallableId> {
         match self {
             Self::Agent(header) => header.default_entry.as_ref(),
-            Self::Flow { entry, .. } => Some(entry),
+            Self::CallableDeclaration { entry, .. } => Some(entry),
         }
     }
     fn methods(&self) -> &[CallableId] {
         match self {
             Self::Agent(header) => &header.methods,
-            Self::Flow { .. } => &[],
+            Self::CallableDeclaration { .. } => &[],
         }
     }
 }
@@ -70,7 +70,7 @@ impl FrozenDefinitionContract {
             })?
             .clone();
         Ok(Arc::new(Self {
-            owner: FrozenContractOwner::Flow {
+            owner: FrozenContractOwner::CallableDeclaration {
                 identity,
                 entry: header.id.clone(),
             },
@@ -121,7 +121,7 @@ impl FrozenDefinitionContract {
             })?;
         Self::capture(
             catalog,
-            FrozenContractOwner::Flow {
+            FrozenContractOwner::CallableDeclaration {
                 identity: identity.clone(),
                 entry: header.id.clone(),
             },
@@ -133,6 +133,28 @@ impl FrozenDefinitionContract {
         owner: FrozenContractOwner,
     ) -> Result<Arc<Self>, ProjectionError> {
         Self::capture_with_application(catalog, owner, None)
+    }
+
+    pub(super) fn capture_tool(
+        catalog: &DefinitionCatalog,
+        header: &CallableHeaderInfo,
+    ) -> Result<Arc<Self>, ProjectionError> {
+        let identity = header
+            .id
+            .as_declaration()
+            .filter(|identity| identity.kind() == etas_code::DefinitionKind::Tool)
+            .ok_or_else(|| {
+                ProjectionError::Invalid(
+                    "tool snapshot requires a canonical tool declaration".into(),
+                )
+            })?;
+        Self::capture(
+            catalog,
+            FrozenContractOwner::CallableDeclaration {
+                identity: identity.clone(),
+                entry: header.id.clone(),
+            },
+        )
     }
 
     fn capture_with_application(
@@ -249,7 +271,7 @@ impl FrozenDefinitionContract {
                     },
                 ]
             }
-            FrozenContractOwner::Flow { identity, entry } => {
+            FrozenContractOwner::CallableDeclaration { identity, entry } => {
                 vec![identity.fingerprint(), entry.fingerprint()]
             }
         };
@@ -392,7 +414,7 @@ impl FrozenDefinitionContract {
     pub fn agent_header(&self) -> Option<&AgentHeaderInfo> {
         match &self.owner {
             FrozenContractOwner::Agent(header) => Some(header),
-            FrozenContractOwner::Flow { .. } => None,
+            FrozenContractOwner::CallableDeclaration { .. } => None,
         }
     }
     pub fn descriptors(&self) -> &DescriptorGraph {
@@ -554,8 +576,13 @@ fn request_instances_from_summary(
     let item = catalog
         .item_owner(id)
         .ok_or_else(|| ProjectionError::MissingIdentity("applied request contract owner".into()))?;
-    crate::package_metadata::checked_request_template(&catalog.checked, item, summary)
-        .map_err(|error| ProjectionError::Invalid(error.to_string()))?
-        .map(|template| latent_fingerprint::request_instances(catalog, &template))
-        .transpose()
+    crate::package_metadata::checked_request_template(
+        &catalog.checked,
+        item,
+        summary,
+        &catalog.identities,
+    )
+    .map_err(|error| ProjectionError::Invalid(error.to_string()))?
+    .map(|template| latent_fingerprint::request_instances(catalog, &template))
+    .transpose()
 }

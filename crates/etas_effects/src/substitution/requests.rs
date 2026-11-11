@@ -51,7 +51,7 @@ pub(crate) fn map_requests<M: SummaryMapper>(
     for parameter in parameters {
         mapper.checkpoint()?;
         mapped_parameters.insert(ParameterRequest {
-            target: parameter.target,
+            target: mapper.parameter_target(parameter.target)?,
             parameter: parameter.parameter.clone(),
             span: parameter.span,
             excluded: parameter

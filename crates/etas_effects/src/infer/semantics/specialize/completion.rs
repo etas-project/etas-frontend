@@ -70,7 +70,8 @@ impl EffectSemantics<'_> {
                         .and_then(|target| bindings.get(target))
                         .and_then(|binding| match binding {
                             TraceArgumentBinding::Expression(expr) => self.hir.exprs.get(*expr),
-                            TraceArgumentBinding::Origins(_) => None,
+                            TraceArgumentBinding::Origins(_)
+                            | TraceArgumentBinding::AgentTools(_) => None,
                         })
                         .and_then(|expression| {
                             super::super::argument_values::checked_literal_value(

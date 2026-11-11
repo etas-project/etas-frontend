@@ -156,13 +156,15 @@ fn std_method_candidate<E>(
             error: ctx.ctx.known_std_types().index_error,
         };
     }
-    if flow.source_method.as_ref().is_some_and(|method| {
-        method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
-            || (method.kind == FlowSourceMethodKind::TypeMember
-                && symbol.intrinsic.as_ref().is_some_and(|descriptor| {
-                    matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))
-                }))
-    }) {
+    if (flow.source_method.is_none() && symbol.intrinsic.is_some())
+        || flow.source_method.as_ref().is_some_and(|method| {
+            method.operation == etas_std::FlowSourceMethodOperation::CheckedIntrinsic
+                || (method.kind == FlowSourceMethodKind::TypeMember
+                    && symbol.intrinsic.as_ref().is_some_and(|descriptor| {
+                        matches!(descriptor.lowering, etas_std::LoweringHint::Collection(_))
+                    }))
+        })
+    {
         let descriptor = symbol.intrinsic.as_ref()?;
         candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
             qualified_path: symbol.qualified_path.clone(),
@@ -210,7 +212,16 @@ pub fn std_qualified_path_callable_candidate<E>(
     let registry = ctx.ctx.std_registry.clone();
     let symbol = registry.lookup_qualified(&segments)?;
     let fact = lower_std_symbol(ctx.ctx, &registry, etas_hir::SymbolId(0), symbol);
-    callable_candidate_from_fact(ctx, fact, instantiate_schematics)
+    let mut candidate = callable_candidate_from_fact(ctx, fact, instantiate_schematics)?;
+    if let Some(intrinsic) = &symbol.intrinsic {
+        candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
+            qualified_path: symbol.qualified_path.clone(),
+            intrinsic: intrinsic.id.0,
+            overload: 0,
+            has_receiver: false,
+        };
+    }
+    Some(candidate)
 }
 
 pub fn std_member_callable_signature_for_symbol<E>(

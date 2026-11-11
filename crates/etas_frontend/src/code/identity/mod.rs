@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 mod external_types;
+mod resources;
 
 use etas_code::{CallableId, DefinitionKey, DefinitionKind, MethodId, PackageKey};
 use etas_hir::{HirItem, HirModuleId, SymbolId};

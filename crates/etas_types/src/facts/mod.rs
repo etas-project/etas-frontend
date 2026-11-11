@@ -83,6 +83,8 @@ pub struct TypeFacts {
     pub reflections: HashMap<HirExprId, CheckedReflectionFact>,
     pub definition_operations: HashMap<HirExprId, reflection::CheckedDefinitionOperation>,
     pub agent_inferences: HashMap<HirExprId, CheckedAgentInferenceFact>,
+    #[serde(default)]
+    pub agent_controllers: HashMap<HirExprId, inference::CheckedAgentControllerFact>,
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, CheckedHandlerActionFact>,
     #[serde(default)]
     pub continuation_bindings: HashMap<SymbolId, ContinuationBindingFact>,

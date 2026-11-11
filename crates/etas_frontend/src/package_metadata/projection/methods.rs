@@ -109,14 +109,21 @@ impl ProjectMetadataProjection<'_> {
         &self,
         item: HirItemId,
     ) -> Result<etas_package_metadata::MethodRequirements, PackageMetadataError> {
-        use etas_effects::{LimitKind as K, LimitValue as V, RequirementFact};
-        use etas_package_metadata::{MethodLimitKind as M, MethodLimitValue as W};
         let summary = self
             .checked
             .effects
             .unit_effects
             .get(&etas_effects::EffectUnit::Item(item))
             .ok_or_else(|| invalid("published method has no solved behavior requirements"))?;
+        self.summary_requirements(summary)
+    }
+
+    pub(super) fn summary_requirements(
+        &self,
+        summary: &etas_effects::EffectSummary,
+    ) -> Result<etas_package_metadata::MethodRequirements, PackageMetadataError> {
+        use etas_effects::{LimitKind as K, LimitValue as V, RequirementFact};
+        use etas_package_metadata::{MethodLimitKind as M, MethodLimitValue as W};
         let mut requirements = etas_package_metadata::MethodRequirements::default();
         for requirement in summary.requirements.iter() {
             match requirement {

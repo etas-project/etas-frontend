@@ -16,6 +16,8 @@ use etas_hir::{
 };
 use etas_utils::JoinSemiLattice;
 
+#[path = "effects/agent_step.rs"]
+mod agent_step;
 #[path = "effects/callback_completion.rs"]
 mod callback_completion;
 #[path = "effects/callback_identity.rs"]
@@ -218,7 +220,12 @@ flow main() -> i32 {
         .values()
         .next()
         .expect("materialized continuation transfer");
-    assert!(types.facts.continuation_bindings.contains_key(&transfer.binder));
+    assert!(
+        types
+            .facts
+            .continuation_bindings
+            .contains_key(&transfer.binder)
+    );
     assert!(matches!(
         transfer.target,
         etas_effects::TransferTarget::Park { .. }
@@ -338,12 +345,10 @@ fn trace_has_agentic_infer(trace: &ActionTraceDomain) -> bool {
         ActionTraceDomain::Event(event) => is_agentic_infer_effect(&event.action),
         ActionTraceDomain::Seq(parts)
         | ActionTraceDomain::Choice(parts)
-        | ActionTraceDomain::Parallel(parts) => {
-            parts.iter().any(trace_has_agentic_infer)
-        }
-        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
-            trace_has_agentic_infer(inner)
-        }
+        | ActionTraceDomain::Parallel(parts) => parts.iter().any(trace_has_agentic_infer),
+        ActionTraceDomain::Repeat(inner)
+        | ActionTraceDomain::TaskStart { body: inner, .. }
+        | ActionTraceDomain::DefaultHandler { body: inner, .. } => trace_has_agentic_infer(inner),
         ActionTraceDomain::UnknownOrder(actions) => actions.iter().any(is_agentic_infer_effect),
         ActionTraceDomain::Widened { actions, .. } => actions.iter().any(is_agentic_infer_effect),
         ActionTraceDomain::ParameterCall { .. } | ActionTraceDomain::TaskAwait { .. } => false,
@@ -361,7 +366,9 @@ fn trace_has_agentic_infer_source(trace: &ActionTraceDomain, source: ActionEvent
         | ActionTraceDomain::Parallel(parts) => parts
             .iter()
             .any(|part| trace_has_agentic_infer_source(part, source.clone())),
-        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
+        ActionTraceDomain::Repeat(inner)
+        | ActionTraceDomain::TaskStart { body: inner, .. }
+        | ActionTraceDomain::DefaultHandler { body: inner, .. } => {
             trace_has_agentic_infer_source(inner, source)
         }
         ActionTraceDomain::UnknownOrder(_) | ActionTraceDomain::Widened { .. } => false,
@@ -819,12 +826,11 @@ flow main(input: string) -> string ![] {
                     action: AGENTIC_INFER_ACTION,
                 },
                 args: vec![
-                    etas_types::EffectArgRef::Path(vec![
-                        "app".to_owned(),
-                        "main".to_owned(),
-                        "Writer".to_owned(),
-                        "run".to_owned()
-                    ]),
+                    etas_types::EffectArgRef::Type(
+                        types.facts.agent_methods
+                            [&types.facts.agent_inferences.values().next().unwrap().method]
+                            .context_type
+                    ),
                     etas_types::EffectArgRef::Type(
                         types
                             .facts
@@ -852,12 +858,11 @@ flow main(input: string) -> string ![] {
                     action: AGENTIC_INFER_ACTION,
                 },
                 args: vec![
-                    etas_types::EffectArgRef::Path(vec![
-                        "app".to_owned(),
-                        "main".to_owned(),
-                        "Writer".to_owned(),
-                        "run".to_owned()
-                    ]),
+                    etas_types::EffectArgRef::Type(
+                        types.facts.agent_methods
+                            [&types.facts.agent_inferences.values().next().unwrap().method]
+                            .context_type
+                    ),
                     etas_types::EffectArgRef::Type(
                         types
                             .facts
@@ -6700,7 +6705,9 @@ flow main() -> unit ![Console.stdout_write] {
                 .iter()
                 .map(|item| count_parameter_calls(item, parameter))
                 .sum(),
-            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+            ActionTraceDomain::Repeat(item)
+            | ActionTraceDomain::TaskStart { body: item, .. }
+            | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 count_parameter_calls(item, parameter)
             }
             ActionTraceDomain::Widened {
@@ -6777,7 +6784,8 @@ flow main() -> unit ![Console.stdout_write] {
                 items.iter().map(|item| count_stdout(item, stdout)).sum()
             }
             etas_effects::ActionTraceDomain::Repeat(item)
-            | etas_effects::ActionTraceDomain::TaskStart { body: item, .. } => {
+            | etas_effects::ActionTraceDomain::TaskStart { body: item, .. }
+            | etas_effects::ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 count_stdout(item, stdout)
             }
             etas_effects::ActionTraceDomain::UnknownOrder(actions) => {
@@ -7762,7 +7770,7 @@ fn check_program_rejects_agent_public_agentic_infer_row() {
         etas_core::SourceId(0),
         None,
         r#"
-agent Reviewer(input: Prompt) -> string ![Agentic.infer<Reviewer, string>] {
+agent Reviewer(input: Prompt) -> string ![Agentic.infer<_, string>] {
     return perform infer<string>(input);
 }
 "#,

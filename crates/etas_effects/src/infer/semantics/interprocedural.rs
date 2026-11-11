@@ -321,21 +321,36 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
             }
             return dependencies.into_iter().collect();
         }
-        let Some(fact) = self.types.facts.agent_inferences.get(&expr) else {
-            return Vec::new();
-        };
-        match self.agent_model_tools(fact.agent) {
-            Some(tools) => tools
-                .into_iter()
-                .filter_map(|tool| match tool {
-                    super::inference::ModelToolSource::Item(item) => Some(EffectUnit::Item(item)),
-                    super::inference::ModelToolSource::External(_) => None,
-                })
-                .collect(),
-            // Discovery cannot supply a missing tool fact. The inference
-            // transfer rejects it when applying the checked summaries.
-            None => Vec::new(),
+        let mut agents = std::collections::BTreeSet::new();
+        if let Some(agent) = self
+            .types
+            .facts
+            .agent_inferences
+            .get(&expr)
+            .map(|fact| fact.agent)
+            .or_else(|| self.tool_invocation_agent(expr).ok().flatten())
+        {
+            agents.insert(agent);
         }
+        for (_, context) in self.call_generic_bindings(expr).types {
+            if let Some(etas_types::Type::AgentContext(etas_types::AgentContextRef::Source(method))) =
+                self.types.store.get(context)
+                && let Some(method) = self.types.facts.agent_methods.get(method)
+            {
+                agents.insert(method.agent);
+            }
+        }
+        let mut dependencies = std::collections::BTreeSet::new();
+        for agent in agents {
+            if let Some(tools) = self.agent_model_tools(agent) {
+                for tool in tools {
+                    if let super::inference::ModelToolSource::Item(item) = tool {
+                        dependencies.insert(EffectUnit::Item(item));
+                    }
+                }
+            }
+        }
+        dependencies.into_iter().collect()
     }
 
     fn direct_call(

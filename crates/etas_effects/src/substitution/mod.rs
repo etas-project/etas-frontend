@@ -75,7 +75,26 @@ pub(crate) trait SummaryMapper {
         }
     }
     fn ty(&mut self, ty: TypeId) -> Result<TypeId, Self::Error>;
+    fn parameter_target(
+        &mut self,
+        target: crate::ParameterCallTarget,
+    ) -> Result<crate::ParameterCallTarget, Self::Error> {
+        Ok(match target {
+            crate::ParameterCallTarget::AgentTools(context) => {
+                crate::ParameterCallTarget::AgentTools(self.ty(context)?)
+            }
+            other => other,
+        })
+    }
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error>;
+    fn default_guards(&mut self, guards: &EffectSet) -> Result<Option<EffectSet>, Self::Error> {
+        guards
+            .iter()
+            .cloned()
+            .map(|effect| self.effect(effect))
+            .collect::<Result<EffectSet, _>>()
+            .map(Some)
+    }
     fn event(
         &mut self,
         event: &crate::ActionEvent,

@@ -102,6 +102,11 @@ impl EffectState {
 
     pub(crate) fn mark_incomplete(&mut self) {
         self.incomplete = true;
+        self.summary.with_direct_behavior(|summary| {
+            summary.support.join_assign(&InterpreterSupport::Rejected(
+                FrontendRejectionReason::UnresolvedEffect,
+            ));
+        });
         self.summary
             .support
             .join_assign(&InterpreterSupport::Rejected(

@@ -299,7 +299,8 @@ impl<'a, 'b> TypeIdRemapper<'a, 'b> {
             | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
-            | Type::MemoryPlace(_) => ty,
+            | Type::MemoryPlace(_)
+            | Type::AgentContext(_) => ty,
         }
     }
 
@@ -662,6 +663,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         remapper.callable(&mut fact.signature);
     }
     for method in facts.agent_methods.values_mut() {
+        method.context_type = remapper.ty(method.context_type);
         method.component = remapper.ty(method.component);
         method.callable_type = remapper.ty(method.callable_type);
         remapper.callable(&mut method.callable);
@@ -714,6 +716,11 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     for fact in facts.agent_inferences.values_mut() {
         fact.output = remapper.ty(fact.output);
         fact.schema = remapper.ty(fact.schema);
+    }
+    for fact in facts.agent_controllers.values_mut() {
+        fact.context = remapper.ty(fact.context);
+        remapper.callable(&mut fact.step.signature);
+        remapper.callable(&mut fact.invoke.signature);
     }
     for fact in facts.reflections.values_mut() {
         fact.descriptor_type = remapper.ty(fact.descriptor_type);

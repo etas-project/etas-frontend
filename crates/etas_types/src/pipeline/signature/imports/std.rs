@@ -87,6 +87,9 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    ctx.signature_facts.known_std_types.code.tool_ref = registry
+        .lookup_qualified(&["std", "agent", "ToolRef"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.message = registry
         .lookup_qualified(&["std", "agent", "message", "Message"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));

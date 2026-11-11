@@ -10,6 +10,7 @@ use crate::{
 pub(crate) enum TraceArgumentBinding {
     Expression(HirExprId),
     Origins(std::collections::BTreeSet<LatentSource>),
+    AgentTools(TypeId),
 }
 
 pub(crate) type TraceArgumentBindings = BTreeMap<ParameterCallTarget, TraceArgumentBinding>;
@@ -42,6 +43,11 @@ impl EffectSemantics<'_> {
         if let Some(binding) = bindings.get(&target) {
             return Ok(Some(binding));
         }
+        if let ParameterCallTarget::AgentTools(context) = target
+            && self.agent_context_parameter(context, state.owner).is_some()
+        {
+            return Ok(None);
+        }
         // A caller's checked parameter remains symbolic until that lexical
         // call boundary is instantiated. Foreign unresolved captures are errors.
         if let ParameterCallTarget::Native(symbol) = target
@@ -65,6 +71,7 @@ impl EffectSemantics<'_> {
         state: &EffectState,
     ) -> Result<std::collections::BTreeSet<LatentSource>, EffectSpecializationError> {
         match binding {
+            TraceArgumentBinding::AgentTools(_) => Ok(Default::default()),
             TraceArgumentBinding::Expression(expr) => {
                 if !self.types.facts.expr_types.contains_key(expr) {
                     return Err(EffectSpecializationError::InvalidCallableEnvironment {
@@ -92,6 +99,9 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         match binding {
+            TraceArgumentBinding::AgentTools(context) => self
+                .agent_tool_summary(*context, span)
+                .map_err(|reason| EffectSpecializationError::InvalidCallableEnvironment { reason }),
             TraceArgumentBinding::Expression(expr) => {
                 self.latent_summary_for_expr(state, *expr, label)
             }
@@ -193,7 +203,9 @@ impl EffectSemantics<'_> {
                     *span,
                     &mut source_summary,
                 )?;
-                if inferred_parameters.contains(parameter_target) {
+                if inferred_parameters.contains(parameter_target)
+                    || matches!(parameter_target, ParameterCallTarget::AgentTools(_))
+                {
                     source_summary.action_trace = ActionTraceDomain::Empty;
                     target.seq_assign(&source_summary);
                 } else {
@@ -213,7 +225,9 @@ impl EffectSemantics<'_> {
                     )?;
                 }
             }
-            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+            ActionTraceDomain::Repeat(item)
+            | ActionTraceDomain::TaskStart { body: item, .. }
+            | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 self.merge_parameter_call_summaries_inner(
                     target,
                     item,
@@ -240,7 +254,9 @@ impl EffectSemantics<'_> {
                         call.span,
                         &mut source_summary,
                     )?;
-                    if inferred_parameters.contains(&call.target) {
+                    if inferred_parameters.contains(&call.target)
+                        || matches!(call.target, ParameterCallTarget::AgentTools(_))
+                    {
                         source_summary.action_trace = ActionTraceDomain::Empty;
                         target.seq_assign(&source_summary);
                     } else {

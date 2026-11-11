@@ -223,6 +223,9 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         ty: &crate::ExternalTypeInput,
     ) -> Result<Type, ExternalMetadataLoweringError> {
         match ty {
+            crate::ExternalTypeInput::AgentContext(method) => Ok(Type::AgentContext(
+                crate::AgentContextRef::Portable(Box::new(method.clone())),
+            )),
             crate::ExternalTypeInput::Existential { bounds } => Ok(Type::Existential {
                 bounds: bounds
                     .iter()

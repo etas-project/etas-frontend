@@ -9,6 +9,8 @@ use crate::{Effect, EffectRow, EffectSet, RequirementSet};
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct EffectSummary {
+    #[serde(default)]
+    pub default_behavior: Option<Box<super::DefaultBehavior>>,
     pub handler_requests: super::RequestInstantiationSummary,
     #[serde(default)]
     pub default_handler_effects: Option<super::DefaultHandlerEffects>,
@@ -33,6 +35,7 @@ pub struct EffectSummary {
 impl Default for EffectSummary {
     fn default() -> Self {
         Self {
+            default_behavior: None,
             handler_requests: Default::default(),
             default_handler_effects: None,
             exits: None,
@@ -57,9 +60,15 @@ impl EffectSummary {
     }
 
     pub fn require_runtime(&mut self, reason: RuntimeRequirementReason) {
-        self.determinism.join_assign(&Determinism::RuntimeMediated);
+        self.with_direct_behavior(|summary| summary.require_runtime(reason.clone()));
+        let determinism = if matches!(reason, RuntimeRequirementReason::Agentic) {
+            Determinism::NonDeterministic
+        } else {
+            Determinism::RuntimeMediated
+        };
+        self.determinism.join_assign(&determinism);
         if let Some(independent) = &mut self.independent_determinism {
-            independent.join_assign(&Determinism::RuntimeMediated);
+            independent.join_assign(&determinism);
         }
         self.support.join_assign(&InterpreterSupport::from(reason));
     }
@@ -70,6 +79,7 @@ impl EffectSummary {
     }
 
     pub fn record_escaping_effect_row(&mut self, row: EffectRow) {
+        self.with_direct_behavior(|summary| summary.record_escaping_effect_row(row.clone()));
         if let Some(effects) = &mut self.default_handler_effects {
             effects.direct.union_assign(&row);
             self.refresh_escaping_effects();
@@ -79,6 +89,7 @@ impl EffectSummary {
     }
 
     pub fn record_requested_action(&mut self, action: Effect) {
+        self.with_direct_behavior(|summary| summary.record_requested_action(action.clone()));
         if !action.is_action() {
             return;
         }
@@ -88,6 +99,7 @@ impl EffectSummary {
     }
 
     pub fn record_default_handled_action(&mut self, action: Effect) {
+        self.with_direct_behavior(|summary| summary.record_default_handled_action(action.clone()));
         if !action.is_action() {
             return;
         }
@@ -96,6 +108,7 @@ impl EffectSummary {
     }
 
     pub fn record_handled_action_row(&mut self, row: EffectRow) {
+        self.with_direct_behavior(|summary| summary.record_handled_action_row(row.clone()));
         self.handled_actions.union_assign(&row);
     }
 
@@ -117,7 +130,8 @@ impl EffectSummary {
     }
 
     pub fn seq_assign(&mut self, other: &Self) -> bool {
-        let mut changed = self.join_escaping_effects(other);
+        let mut changed = self.join_default_behavior(other);
+        changed |= self.join_escaping_effects(other);
         changed |= self.handler_requests.union_assign(&other.handler_requests);
         changed |= self
             .requested_actions
@@ -140,6 +154,7 @@ impl EffectSummary {
     }
 
     pub fn join_branch(&mut self, other: &Self) -> bool {
+        let behavior_changed = self.join_default_behavior(other);
         let exits_changed = match (&mut self.exits, &other.exits) {
             (Some(current), Some(other)) => current.join_assign(other),
             (None, Some(other)) => {
@@ -148,7 +163,8 @@ impl EffectSummary {
             }
             _ => false,
         };
-        let mut changed = self.join_escaping_effects(other);
+        let mut changed = behavior_changed;
+        changed |= self.join_escaping_effects(other);
         changed |= self.handler_requests.union_assign(&other.handler_requests);
         changed |= exits_changed;
         changed |= self
@@ -199,7 +215,7 @@ impl EffectSummary {
     }
 
     pub fn merge_request_footprint_without_escaping_or_trace(&mut self, other: &Self) -> bool {
-        let mut default_changed = false;
+        let mut default_changed = self.merge_default_footprint(other);
         // Escaping effects and trace placement belong to the enclosing checked
         // transfer. Do not reintroduce effects removed by its local handlers.
         if let Some(defaults) = &other.default_handler_effects {
@@ -237,7 +253,7 @@ impl EffectSummary {
     }
 }
 
-fn join_independent_determinism(
+pub(super) fn join_independent_determinism(
     left: &mut Option<Determinism>,
     right: Option<Determinism>,
 ) -> bool {
@@ -265,6 +281,10 @@ pub enum ActionTraceDomain {
     #[default]
     Empty,
     Event(ActionEvent),
+    DefaultHandler {
+        guards: EffectSet,
+        body: Box<ActionTraceDomain>,
+    },
     ParameterCall {
         target: ParameterCallTarget,
         parameter: String,
@@ -300,6 +320,9 @@ pub struct ParameterCallRef {
     pub span: Span,
 }
 
+type ParameterCallIndex = BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>;
+type WidenedTraceGroups = BTreeMap<EffectSet, (EffectSet, ParameterCallIndex)>;
+
 #[derive(
     Clone,
     Copy,
@@ -315,6 +338,7 @@ pub struct ParameterCallRef {
 )]
 pub enum ParameterCallTarget {
     Native(etas_hir::SymbolId),
+    AgentTools(etas_types::TypeId),
     SpecMethod {
         call: etas_hir::HirExprId,
         environment: crate::facts::CallableEnvironmentId,
@@ -341,7 +365,9 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Repeat(inner)
+                | Self::TaskStart { body: inner, .. }
+                | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
                 Self::Empty
                 | Self::Event(_)
                 | Self::ParameterCall { .. }
@@ -362,7 +388,9 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Repeat(inner)
+                | Self::TaskStart { body: inner, .. }
+                | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
                 Self::Empty
                 | Self::Event(_)
                 | Self::TaskAwait { .. }
@@ -396,9 +424,12 @@ impl ActionTraceDomain {
     }
 
     pub fn stabilize_for_fixpoint(self, current: Option<&Self>) -> Self {
+        // A stable Repeat is a regular trace, not evidence of fixpoint growth.
         let needs_widening = self.node_count() > Self::FIXPOINT_TRACE_NODE_LIMIT
-            || self.contains_repeat()
-            || current.is_some_and(Self::contains_repeat);
+            || current.is_some_and(|current| {
+                current != &self
+                    && (current.contains_repeat() || current.has_unordered_approximation())
+            });
         if !needs_widening {
             return self;
         }
@@ -417,7 +448,9 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Repeat(inner)
+                | Self::TaskStart { body: inner, .. }
+                | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
                 Self::Empty
                 | Self::Event(_)
                 | Self::ParameterCall { .. }
@@ -437,7 +470,9 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::TaskStart { body, .. } => pending.push(body),
+                Self::TaskStart { body, .. } | Self::DefaultHandler { body, .. } => {
+                    pending.push(body)
+                }
                 Self::Empty
                 | Self::Event(_)
                 | Self::ParameterCall { .. }
@@ -474,7 +509,9 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Repeat(inner)
+                | Self::TaskStart { body: inner, .. }
+                | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
                 Self::Empty | Self::ParameterCall { .. } | Self::TaskAwait { .. } => {}
             }
         }
@@ -519,19 +556,28 @@ impl ActionTraceDomain {
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
                     pending.extend(parts)
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(inner),
+                Self::Repeat(inner)
+                | Self::TaskStart { body: inner, .. }
+                | Self::DefaultHandler { body: inner, .. } => pending.push(inner),
                 Self::Empty | Self::Event(_) | Self::TaskAwait { .. } | Self::UnknownOrder(_) => {}
             }
         }
     }
 
-    fn collect_widened(
-        self,
-        actions: &mut EffectSet,
-        calls: &mut BTreeMap<(ParameterCallTarget, u32, u32, u32), ParameterCallRef>,
-    ) {
-        let mut pending = vec![self];
-        while let Some(trace) = pending.pop() {
+    fn collect_widened(self, groups: &mut WidenedTraceGroups) {
+        let mut pending = vec![(self, EffectSet::new())];
+        while let Some((trace, guards)) = pending.pop() {
+            if let Self::DefaultHandler {
+                guards: extra,
+                body,
+            } = trace
+            {
+                let mut guards = guards;
+                guards.union_assign(&extra);
+                pending.push((*body, guards));
+                continue;
+            }
+            let (actions, calls) = groups.entry(guards.clone()).or_default();
             match trace {
                 Self::ParameterCall {
                     target,
@@ -565,9 +611,11 @@ impl ActionTraceDomain {
                     }
                 }
                 Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
-                    pending.extend(parts.into_iter().rev());
+                    pending.extend(parts.into_iter().rev().map(|part| (part, guards.clone())));
                 }
-                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => pending.push(*inner),
+                Self::Repeat(inner) | Self::TaskStart { body: inner, .. } => {
+                    pending.push((*inner, guards))
+                }
                 Self::Event(event) => {
                     actions.insert(event.action);
                 }
@@ -575,21 +623,68 @@ impl ActionTraceDomain {
                     actions.union_assign(&set);
                 }
                 Self::Empty | Self::TaskAwait { .. } => {}
+                Self::DefaultHandler { .. } => unreachable!("default guard handled above"),
             }
         }
     }
 
     fn into_widened(self) -> Self {
-        let mut actions = EffectSet::default();
-        let mut calls = BTreeMap::new();
-        self.collect_widened(&mut actions, &mut calls);
-        if actions.is_empty() && calls.is_empty() {
-            Self::Empty
-        } else {
-            Self::Widened {
+        let mut groups = BTreeMap::new();
+        self.collect_widened(&mut groups);
+        let mut parts = Vec::new();
+        for (guards, (actions, calls)) in groups {
+            if actions.is_empty() && calls.is_empty() {
+                continue;
+            }
+            let body = Self::Widened {
                 actions,
                 parameter_calls: calls.into_values().collect(),
+            };
+            parts.push(if guards.is_empty() {
+                body
+            } else {
+                Self::DefaultHandler {
+                    guards,
+                    body: Box::new(body),
+                }
+            });
+        }
+        match parts.len() {
+            0 => Self::Empty,
+            1 => parts.pop().unwrap_or_default(),
+            _ => Self::Repeat(Box::new(Self::Choice(parts))),
+        }
+    }
+
+    fn has_default_handlers(&self) -> bool {
+        let mut pending = vec![self];
+        while let Some(trace) = pending.pop() {
+            match trace {
+                Self::DefaultHandler { .. } => return true,
+                Self::Seq(parts) | Self::Choice(parts) | Self::Parallel(parts) => {
+                    pending.extend(parts)
+                }
+                Self::Repeat(body) | Self::TaskStart { body, .. } => pending.push(body),
+                _ => {}
             }
+        }
+        false
+    }
+
+    // Guarded widening is a partition of the same unordered footprint domain.
+    // It must remain absorbing under joins, just like an unguarded Widened.
+    fn is_widened_partition(&self) -> bool {
+        let mut trace = self;
+        while let Self::Repeat(body) = trace {
+            trace = body;
+        }
+        match trace {
+            Self::Widened { .. } => true,
+            Self::DefaultHandler { body, .. } => matches!(body.as_ref(), Self::Widened { .. }),
+            Self::Choice(parts) => {
+                !parts.is_empty() && parts.iter().all(Self::is_widened_partition)
+            }
+            _ => false,
         }
     }
 
@@ -598,22 +693,14 @@ impl ActionTraceDomain {
     }
 
     fn merge_widened(left: Self, right: Self) -> Self {
-        let mut actions = EffectSet::default();
-        let mut calls = BTreeMap::new();
-        left.collect_widened(&mut actions, &mut calls);
-        right.collect_widened(&mut actions, &mut calls);
-        if actions.is_empty() && calls.is_empty() {
-            Self::Empty
-        } else {
-            Self::Widened {
-                actions,
-                parameter_calls: calls.into_values().collect(),
-            }
-        }
+        Self::Seq(vec![left, right]).into_widened()
     }
 
     fn seq(self, other: Self) -> Self {
         let trace = match (self, other) {
+            (left, right) if left.is_widened_partition() || right.is_widened_partition() => {
+                Self::merge_widened(left, right)
+            }
             (Self::Empty, right) => right,
             (left, Self::Empty) => left,
             (Self::UnknownOrder(mut left), Self::UnknownOrder(right)) => {
@@ -624,7 +711,10 @@ impl ActionTraceDomain {
                 Self::merge_widened(left, right)
             }
             (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                if matches!(right, Self::Widened { .. }) || !right.parameter_calls().is_empty() {
+                if right.has_default_handlers()
+                    || matches!(right, Self::Widened { .. })
+                    || !right.parameter_calls().is_empty()
+                {
                     Self::merge_widened(Self::UnknownOrder(left), right)
                 } else {
                     left.union_assign(&right.action_set());
@@ -652,6 +742,9 @@ impl ActionTraceDomain {
     fn choice(self, other: Self) -> Self {
         let trace = match (self, other) {
             (left, right) if left == right => left,
+            (left, right) if left.is_widened_partition() || right.is_widened_partition() => {
+                Self::merge_widened(left, right)
+            }
             (Self::UnknownOrder(mut left), Self::UnknownOrder(right)) => {
                 left.union_assign(&right);
                 Self::UnknownOrder(left)
@@ -660,7 +753,10 @@ impl ActionTraceDomain {
                 Self::merge_widened(left, right)
             }
             (Self::UnknownOrder(mut left), right) | (right, Self::UnknownOrder(mut left)) => {
-                if matches!(right, Self::Widened { .. }) || !right.parameter_calls().is_empty() {
+                if right.has_default_handlers()
+                    || matches!(right, Self::Widened { .. })
+                    || !right.parameter_calls().is_empty()
+                {
                     Self::merge_widened(Self::UnknownOrder(left), right)
                 } else {
                     left.union_assign(&right.action_set());
@@ -697,7 +793,7 @@ impl ActionTraceDomain {
     }
 
     fn widen_if_needed(self) -> Self {
-        if self.node_count() <= Self::FIXPOINT_TRACE_NODE_LIMIT && !self.contains_repeat() {
+        if self.node_count() <= Self::FIXPOINT_TRACE_NODE_LIMIT {
             return self;
         }
         self.into_widened()
@@ -848,7 +944,12 @@ where
 
 impl PartialOrder for EffectSummary {
     fn less_equal(&self, other: &Self) -> bool {
-        (self.exits.is_none() || self.exits == other.exits)
+        self.default_behavior.as_ref().is_none_or(|behavior| {
+            other
+                .default_behavior
+                .as_ref()
+                .is_some_and(|other| behavior.less_equal(other))
+        }) && (self.exits.is_none() || self.exits == other.exits)
             && self.handler_requests.less_equal(&other.handler_requests)
             && row_less_equal(&self.escaping_effects, &other.escaping_effects)
             && row_less_equal(
@@ -1543,7 +1644,10 @@ mod tests {
             span: Span::empty(SourceId(7), TextSize(11)),
         }));
 
-        let widened = trace.stabilize_for_fixpoint(None);
+        assert_eq!(trace.clone().stabilize_for_fixpoint(None), trace);
+        assert_eq!(trace.clone().stabilize_for_fixpoint(Some(&trace)), trace);
+        let previous = ActionTraceDomain::Repeat(Box::new(ActionTraceDomain::Empty));
+        let widened = trace.stabilize_for_fixpoint(Some(&previous));
 
         let ActionTraceDomain::Widened {
             actions,

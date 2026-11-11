@@ -11,6 +11,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
     mapper.checkpoint()?;
     // Do not clone the recursive trace before mapping it through the worklist.
     let mut result = EffectSummary {
+        default_behavior: None,
         handler_requests: map_requests(mapper, &source.handler_requests)?,
         default_handler_effects: None,
         exits: None,
@@ -26,6 +27,26 @@ pub(crate) fn map_summary<M: SummaryMapper>(
         independent_determinism: source.independent_determinism,
         support: source.support.clone(),
     };
+    if let Some(behavior) = &source.default_behavior {
+        let direct = crate::EffectFootprint::from_summary(&map_summary(
+            mapper,
+            &behavior.direct.clone().into_summary(),
+        )?);
+        let mut guarded = std::collections::BTreeMap::new();
+        for (guards, footprint) in &behavior.guarded {
+            let guards = guards
+                .iter()
+                .cloned()
+                .map(|effect| mapper.effect(effect))
+                .collect::<Result<crate::EffectSet, _>>()?;
+            let footprint = crate::EffectFootprint::from_summary(&map_summary(
+                mapper,
+                &footprint.clone().into_summary(),
+            )?);
+            guarded.insert(guards, footprint);
+        }
+        result.default_behavior = Some(Box::new(crate::DefaultBehavior { direct, guarded }));
+    }
     if let Some(defaults) = &source.default_handler_effects {
         let mut mapped = crate::DefaultHandlerEffects {
             direct: mapper.row(&defaults.direct)?,
@@ -65,7 +86,8 @@ pub(crate) fn map_summary<M: SummaryMapper>(
         for gap in &exits.gaps {
             mapper.checkpoint()?;
             let mut gap = gap.clone();
-            if let OutcomeAnalysisGap::ParameterCall { output, .. } = &mut gap {
+            if let OutcomeAnalysisGap::ParameterCall { target, output, .. } = &mut gap {
+                *target = mapper.parameter_target(*target)?;
                 *output = mapper.ty(*output)?;
             }
             mapped.gaps.insert(gap);
@@ -82,7 +104,7 @@ pub(crate) fn map_summary<M: SummaryMapper>(
         for exit in &exits.parameter_exits {
             mapper.checkpoint()?;
             mapped.record_parameter_exit(crate::ParameterExitFact {
-                target: exit.target,
+                target: mapper.parameter_target(exit.target)?,
                 output: mapper.ty(exit.output)?,
                 source: exit.source.clone(),
                 handler_free: exit.handler_free,

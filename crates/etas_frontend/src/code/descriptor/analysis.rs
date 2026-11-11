@@ -71,23 +71,23 @@ impl DefinitionDescriptorProjector<'_> {
                 outcomes: None,
             });
         };
-        // A generic behavioral dispatch does not yet identify its concrete
-        // requested actions. Portable effect metadata retains that evidence;
-        // this reflection view must not claim its partial sets are solved.
-        let deferred_method = |target| {
+        // Uninstantiated dispatch cannot advertise its partial sets as solved
+        // analysis. The effect summary retains its symbolic dependency.
+        let deferred_analysis = |target| {
             matches!(
                 target,
                 etas_effects::ParameterCallTarget::SpecMethod { .. }
                     | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::AgentTools(_)
             )
         };
         if summary
             .action_trace
             .parameter_calls()
             .iter()
-            .any(|call| deferred_method(call.target))
+            .any(|call| deferred_analysis(call.target))
             || matches!(&summary.handler_requests, etas_effects::RequestInstantiationSummary::Available { parameters, .. }
-                if parameters.iter().any(|request| deferred_method(request.target)))
+                if parameters.iter().any(|request| deferred_analysis(request.target)))
         {
             return Ok(CallableAnalysisInfo {
                 effects: EffectSummaryInfo {
@@ -257,6 +257,10 @@ impl DefinitionDescriptorProjector<'_> {
         while let Some((trace, target)) = work.pop() {
             let node = match trace {
                 ActionTraceDomain::Empty => TraceInfo::Empty,
+                ActionTraceDomain::DefaultHandler { body, .. } => {
+                    work.push((body, target));
+                    continue;
+                }
                 ActionTraceDomain::Event(event) => {
                     TraceInfo::Event(self.analysis_effect(&event.action, scope)?)
                 }
@@ -284,10 +288,9 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 ActionTraceDomain::TaskAwait { .. } => TraceInfo::Empty,
                 ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::Parallel(_) => {
-                    TraceInfo::UnknownOrder(self.analysis_row(
-                        &EffectRow::closed(trace.action_set()),
-                        scope,
-                    )?)
+                    TraceInfo::UnknownOrder(
+                        self.analysis_row(&EffectRow::closed(trace.action_set()), scope)?,
+                    )
                 }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     self.ensure_edges(parts.len())?;

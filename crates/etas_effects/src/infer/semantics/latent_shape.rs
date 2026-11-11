@@ -170,6 +170,7 @@ fn children(types: &TypeOutput, ty: TypeId, value: &Type) -> Vec<TypeId> {
         | Type::Prompt
         | Type::PromptPart
         | Type::MemoryPlace(_)
-        | Type::ResourceHandle(_) => Vec::new(),
+        | Type::ResourceHandle(_)
+        | Type::AgentContext(_) => Vec::new(),
     }
 }

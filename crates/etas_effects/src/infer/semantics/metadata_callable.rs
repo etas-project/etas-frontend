@@ -245,8 +245,7 @@ impl EffectSemantics<'_> {
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)]
         {
             let (requirements, obligations) = self.method_requirements(&method.requirements)?;
-            summary.requirements.union_assign(&requirements);
-            summary.trace_spec_obligations.union_assign(&obligations);
+            summary.record_requirements(&requirements, &obligations);
             if let Some(contract) = &method.callable_contract {
                 summary.exits = self.external_callback_outcomes(
                     contract,
@@ -776,7 +775,7 @@ pub(super) fn apply_metadata_behavior(
     true
 }
 
-mod behavior;
+pub(super) mod behavior;
 
 fn is_captured_parameter(
     target: crate::ParameterCallTarget,

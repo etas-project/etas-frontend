@@ -126,10 +126,11 @@ impl<'a> Relocation<'a> {
             let scope = projection::owner(id)?;
             let mappings = types.entry(scope).or_default();
             for (ty, declaration) in &from.identities.types {
-                if declaration.standard.is_some() {
-                    let target = standard_targets.get(&declaration.identity).ok_or_else(|| {
-                        invalid("standard summary type has no checked target declaration")
-                    })?;
+                // Unused source-only std instantiations need not be lowered in
+                // the candidate. A referenced, unmapped type still fails in ty().
+                if declaration.standard.is_some()
+                    && let Some(target) = standard_targets.get(&declaration.identity)
+                {
                     mappings.insert(*ty, *target);
                 }
             }
@@ -487,6 +488,7 @@ impl<'a> Relocation<'a> {
             Choice(usize),
             Parallel(usize),
             TaskStart(etas_hir::HirExprId),
+            DefaultHandler(etas_effects::EffectSet),
             Repeat,
         }
         let mut work = vec![Work::Visit(root)];
@@ -494,6 +496,15 @@ impl<'a> Relocation<'a> {
         while let Some(task) = work.pop() {
             match task {
                 Work::Visit(trace) => match trace {
+                    ActionTraceDomain::DefaultHandler { guards, body } => {
+                        work.push(Work::DefaultHandler(
+                            guards
+                                .iter()
+                                .map(|guard| self.effect(guard, scope))
+                                .collect::<Result<_, _>>()?,
+                        ));
+                        work.push(Work::Visit(body));
+                    }
                     ActionTraceDomain::Empty => values.push(ActionTraceDomain::Empty),
                     ActionTraceDomain::Event(event) => {
                         values.push(ActionTraceDomain::Event(ActionEvent {
@@ -507,7 +518,7 @@ impl<'a> Relocation<'a> {
                         parameter,
                         span,
                     } => values.push(ActionTraceDomain::ParameterCall {
-                        target: self.parameter_target(*target)?,
+                        target: self.parameter_target(*target, Some(scope))?,
                         parameter: parameter.clone(),
                         span: *span,
                     }),
@@ -555,7 +566,7 @@ impl<'a> Relocation<'a> {
                             .iter()
                             .map(|call| {
                                 Ok(etas_effects::infer::domain::ParameterCallRef {
-                                    target: self.parameter_target(call.target)?,
+                                    target: self.parameter_target(call.target, Some(scope))?,
                                     parameter: call.parameter.clone(),
                                     span: call.span,
                                 })
@@ -591,6 +602,15 @@ impl<'a> Relocation<'a> {
                         body: Box::new(body),
                     });
                 }
+                Work::DefaultHandler(guards) => {
+                    let body = values
+                        .pop()
+                        .ok_or_else(|| invalid("frozen default handler trace lost its body"))?;
+                    values.push(ActionTraceDomain::DefaultHandler {
+                        guards,
+                        body: Box::new(body),
+                    });
+                }
             }
         }
         if values.len() != 1 {
@@ -604,8 +624,14 @@ impl<'a> Relocation<'a> {
     fn parameter_target(
         &self,
         target: ParameterCallTarget,
+        scope: Option<&GenericOwner>,
     ) -> Result<ParameterCallTarget, ProjectionError> {
         match target {
+            ParameterCallTarget::AgentTools(context) => {
+                let scope = scope
+                    .ok_or_else(|| invalid("agent tool context has no checked relocation scope"))?;
+                Ok(ParameterCallTarget::AgentTools(self.ty(scope, context)?))
+            }
             ParameterCallTarget::Native(symbol) => self
                 .parameters
                 .get(&symbol)
@@ -781,7 +807,7 @@ impl<'a> Relocation<'a> {
                     }).collect::<Result<_, ProjectionError>>()?,
                     parameter_exits: exits.parameter_exits.iter().map(|exit| {
                         Ok(etas_effects::ParameterExitFact {
-                            target: self.parameter_target(exit.target)?,
+                            target: self.parameter_target(exit.target, Some(scope))?,
                             output: self.ty(scope, exit.output)?,
                             source: exit.source.clone(),
                             handler_free: exit.handler_free,
@@ -870,7 +896,7 @@ impl<'a> Relocation<'a> {
                         exits.gaps.iter().map(|gap| {
                             Ok(match gap {
                                 OutcomeAnalysisGap::ParameterCall { target, output, source } => OutcomeAnalysisGap::ParameterCall {
-                                    target: self.parameter_target(*target)?, output: self.ty(scope, *output)?, source: source.clone(),
+                                    target: self.parameter_target(*target, Some(scope))?, output: self.ty(scope, *output)?, source: source.clone(),
                                 },
                                 OutcomeAnalysisGap::Handler(source) => OutcomeAnalysisGap::Handler(source.clone()),
                                 _ => OutcomeAnalysisGap::FrozenCallee(span.into()),
@@ -881,6 +907,40 @@ impl<'a> Relocation<'a> {
             })
             .transpose()?;
         Ok(EffectSummary {
+            default_behavior: source
+                .default_behavior
+                .as_ref()
+                .map(|behavior| {
+                    let direct = etas_effects::EffectFootprint::from_summary(&self.summary(
+                        &behavior.direct.clone().into_summary(),
+                        scope,
+                        source_owner,
+                        None,
+                    )?);
+                    let guarded = behavior
+                        .guarded
+                        .iter()
+                        .map(|(guards, footprint)| {
+                            Ok((
+                                guards
+                                    .iter()
+                                    .map(|guard| self.effect(guard, scope))
+                                    .collect::<Result<_, _>>()?,
+                                etas_effects::EffectFootprint::from_summary(&self.summary(
+                                    &footprint.clone().into_summary(),
+                                    scope,
+                                    source_owner,
+                                    None,
+                                )?),
+                            ))
+                        })
+                        .collect::<Result<_, ProjectionError>>()?;
+                    Ok::<_, ProjectionError>(Box::new(etas_effects::DefaultBehavior {
+                        direct,
+                        guarded,
+                    }))
+                })
+                .transpose()?,
             handler_requests: match &source.handler_requests {
                 RequestInstantiationSummary::Unavailable => {
                     RequestInstantiationSummary::Unavailable
@@ -929,7 +989,7 @@ impl<'a> Relocation<'a> {
                         .iter()
                         .map(|parameter| {
                             Ok(ParameterRequest {
-                                target: self.parameter_target(parameter.target)?,
+                                target: self.parameter_target(parameter.target, Some(scope))?,
                                 parameter: parameter.parameter.clone(),
                                 span: parameter.span,
                                 excluded: parameter

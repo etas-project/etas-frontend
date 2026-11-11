@@ -25,13 +25,23 @@ pub(super) fn validate(
                     } => pending.extend(parameter_calls),
                     ProjectExternalActionTraceInput::Seq(parts)
                     | ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
-                    ProjectExternalActionTraceInput::Repeat(part) => traces.push(part),
+                    ProjectExternalActionTraceInput::Repeat(part)
+                    | ProjectExternalActionTraceInput::DefaultHandler { body: part, .. } => {
+                        traces.push(part)
+                    }
                     _ => {}
                 }
             }
             if let Some(requests) = &summary.handler_requests {
                 pending.extend(requests.parameters.iter().map(|request| &request.parameter));
             }
+            behavior_targets(
+                summary
+                    .default_handler_effects
+                    .as_ref()
+                    .and_then(|effects| effects.behavior.as_ref()),
+                &mut pending,
+            );
             if let Some(graph) = &summary.returned_callables {
                 graph_targets(graph, &mut pending);
             }
@@ -115,6 +125,7 @@ fn graph_targets<'a>(
     pending: &mut Vec<&'a CallableRequestTarget>,
 ) {
     for node in &graph.values {
+        behavior_targets(node.default_handler_effects.behavior.as_ref(), pending);
         if let Some(requests) = &node.handler_requests {
             pending.extend(requests.parameters.iter().map(|request| &request.parameter));
         }
@@ -126,8 +137,23 @@ fn graph_targets<'a>(
                     parameter_calls, ..
                 } => pending.extend(parameter_calls),
                 ActionTrace::Seq(parts) | ActionTrace::Choice(parts) => traces.extend(parts),
-                ActionTrace::Repeat(part) => traces.push(part),
+                ActionTrace::Repeat(part) | ActionTrace::DefaultHandler { body: part, .. } => {
+                    traces.push(part)
+                }
                 _ => {}
+            }
+        }
+    }
+}
+
+fn behavior_targets<'a>(
+    behavior: Option<&'a etas_package_metadata::DefaultBehavior>,
+    pending: &mut Vec<&'a CallableRequestTarget>,
+) {
+    if let Some(behavior) = behavior {
+        for footprint in behavior.footprints() {
+            if let Some(requests) = &footprint.handler_requests {
+                pending.extend(requests.parameters.iter().map(|request| &request.parameter));
             }
         }
     }

@@ -765,7 +765,7 @@ fn lookup_scoped_std_type_decl<'a>(
     path.push(name.to_owned());
     let symbol = registry.lookup_qualified(&path)?;
     match &symbol.decl {
-        StdDecl::Type(decl) => Some((path.join("."), decl)),
+        StdDecl::Type(decl) => Some((symbol.qualified_path.join("."), decl)),
         _ => None,
     }
 }
@@ -774,27 +774,21 @@ fn lookup_std_type_decl<'a>(
     registry: &'a StdRegistry,
     name: &str,
 ) -> Option<(String, &'a etas_std::TypeDecl)> {
-    let (identity, symbol) = if name.contains('.') {
+    let symbol = if name.contains('.') {
         let path = name.split('.').collect::<Vec<_>>();
-        (name.to_owned(), registry.lookup_qualified(&path)?)
+        registry.lookup_qualified(&path)?
     } else {
-        let symbol = registry
+        registry
             .lookup_prelude_in_namespace(name, etas_std::StdNamespace::Type)
             .and_then(|symbol| registry.symbol(symbol.id))
             .or_else(|| {
                 let mut matches = registry.symbols().filter(|symbol| symbol.name == name);
                 let first = matches.next()?;
                 matches.next().is_none().then_some(first)
-            })?;
-        let mut path = registry
-            .module(symbol.module)
-            .map_or_else(Vec::new, |module| module.path.clone());
-        path.push(symbol.name.clone());
-        let identity = path.join(".");
-        (identity, symbol)
+            })?
     };
     match &symbol.decl {
-        StdDecl::Type(decl) => Some((identity, decl)),
+        StdDecl::Type(decl) => Some((symbol.qualified_path.join("."), decl)),
         _ => None,
     }
 }

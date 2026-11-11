@@ -317,6 +317,7 @@ pub struct ExternalRecordFieldInput {
 
 #[derive(Clone, Debug)]
 pub enum ExternalTypeInput {
+    AgentContext(etas_code::MethodId),
     Existential {
         bounds: Vec<ExternalSpecBoundInput>,
     },

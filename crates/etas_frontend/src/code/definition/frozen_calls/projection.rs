@@ -27,7 +27,11 @@ impl Projection {
             .iter()
             .filter_map(|(ty, declaration)| declaration.standard.is_none().then_some(*ty))
             .chain(input.type_store.iter().filter_map(|(ty, value)| {
-                matches!(value, etas_types::Type::Primitive(_)).then_some(ty)
+                matches!(
+                    value,
+                    etas_types::Type::Primitive(_) | etas_types::Type::AgentContext(_)
+                )
+                .then_some(ty)
             }))
             .collect::<Vec<_>>();
         named.sort_unstable();

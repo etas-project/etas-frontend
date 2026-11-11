@@ -23,6 +23,7 @@ mod scope_tests;
 #[cfg(test)]
 mod source_origin_tests;
 
+mod default_behavior;
 mod dependencies;
 mod method_table;
 mod origins;
@@ -1700,6 +1701,13 @@ fn validate_effect_summaries(
                     .then_some(name.clone())
             })
             .collect::<Vec<_>>();
+        if let Some(behavior) = summary
+            .default_handler_effects
+            .as_ref()
+            .and_then(|defaults| defaults.behavior.as_ref())
+        {
+            default_behavior::validate(behavior, scope, parameter_names)?;
+        }
         validate_action_trace(
             &summary.action_trace,
             scope,
@@ -1839,6 +1847,15 @@ fn validate_action_trace_semantics(
     root_parameter_count: usize,
 ) -> Result<(), String> {
     match trace {
+        ProjectExternalActionTraceInput::DefaultHandler { guards, body } => {
+            if guards.is_empty() {
+                return Err("external default-handler trace has no guard".into());
+            }
+            for guard in guards {
+                validate_effect_ref(guard, scope)?;
+            }
+            validate_action_trace_semantics(body, scope, parameter_names, root_parameter_count)
+        }
         ProjectExternalActionTraceInput::Empty => Ok(()),
         ProjectExternalActionTraceInput::Event { action, .. } => validate_effect_ref(action, scope),
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
@@ -2127,6 +2144,7 @@ fn validate_type_semantics(
             validate_type_semantics(inner, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Prompt | ProjectExternalTypeInput::PromptPart => Ok(()),
+        ProjectExternalTypeInput::AgentContext(_) => Ok(()),
         ProjectExternalTypeInput::ResourceHandle { name, args } => {
             validate_name(name, "resource handle name")?;
             validate_types_semantics(args, scope, allow_unbound_vars)
@@ -2381,7 +2399,8 @@ fn validate_type_resource_bounds_with_budget(
                 ProjectExternalTypeInput::Trust { inner, .. } => {
                     push_type_graph_node(&mut stack, TypeGraphNode::Type(inner), next, *nodes)?;
                 }
-                ProjectExternalTypeInput::Primitive(_)
+                ProjectExternalTypeInput::AgentContext(_)
+                | ProjectExternalTypeInput::Primitive(_)
                 | ProjectExternalTypeInput::Var(_)
                 | ProjectExternalTypeInput::Parameter { .. }
                 | ProjectExternalTypeInput::Named(_)
@@ -2433,7 +2452,10 @@ fn validate_action_trace_resource_bounds(
             | ProjectExternalActionTraceInput::Choice(children) => {
                 stack.extend(children.iter().map(|child| (child, next)));
             }
-            ProjectExternalActionTraceInput::Repeat(child) => stack.push((child, next)),
+            ProjectExternalActionTraceInput::Repeat(child)
+            | ProjectExternalActionTraceInput::DefaultHandler { body: child, .. } => {
+                stack.push((child, next))
+            }
             ProjectExternalActionTraceInput::Empty
             | ProjectExternalActionTraceInput::Event { .. }
             | ProjectExternalActionTraceInput::ParameterCall { .. }

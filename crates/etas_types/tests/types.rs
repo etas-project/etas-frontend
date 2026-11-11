@@ -7,6 +7,131 @@ use etas_types::{
 };
 
 #[test]
+fn agent_step_inherits_method_identity_in_ordinary_flow_handlers_and_generic_helpers() {
+    let source = r#"
+module app;
+import std.agent.conversation;
+import std.agent.{StepResult, StepDecision};
+agent Writer(input: string) -> string {
+    return perform infer<string>(Prompt.new().data(input));
+}
+flow one<C, O>(history: Conversation, schema: Schema<O>) -> StepResult<C, O> {
+    return std.agent.step<C, O>(history, schema);
+}
+flow control(input: string) -> string {
+    return handle Writer.run(input) with {
+        Agentic.infer<Writer.run, string>(prompt, schema) => {
+            let history = conversation.from_prompt(prompt);
+            let first = std.agent.step(history, schema);
+            let second = one<Writer.run, string>(history, schema);
+            match second.decision {
+                StepDecision.Final(answer) => { resume answer; },
+                _ => { abort("no final answer"); },
+            };
+        }
+    };
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let hir = lower_program(&parsed.value);
+    let output = check_program(&hir);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let method = output
+        .facts
+        .agent_methods
+        .values()
+        .find(|method| method.name == "run")
+        .unwrap();
+    assert_eq!(
+        output.store.get(method.context_type),
+        Some(&Type::AgentContext(method.symbol.into()))
+    );
+    let calls = output
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .filter(|(_, call)| call.intrinsic == etas_std::intrinsic::runtime::AGENT_STEP)
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().any(|(expr, _)| {
+        output
+            .facts
+            .generic_instantiations
+            .get(expr)
+            .is_some_and(|fact| {
+                fact.type_bindings
+                    .iter()
+                    .any(|(name, ty)| name == "C" && *ty == method.context_type)
+            })
+    }));
+}
+
+#[test]
+fn agent_step_does_not_fabricate_a_context_in_an_ordinary_flow() {
+    let source = r#"
+module app;
+flow main(schema: Schema<string>) -> unit {
+    let history = std.agent.conversation.from_prompt(Prompt.new());
+    let step = std.agent.step(history, schema);
+    return;
+}
+"#;
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        source,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let output = check_program(&lower_program(&parsed.value));
+    assert!(
+        output.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("requires the current checked agent method")),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn tool_reference_accepts_only_a_native_tool_declaration() {
+    for (argument, accepted) in [
+        ("native", true),
+        ("ordinary", false),
+        ("\"native\"", false),
+        ("alias", false),
+    ] {
+        let source = format!(
+            r#"
+module app;
+tool native() -> unit ![] {{ return; }}
+flow ordinary() -> unit {{ return; }}
+flow main() -> std.agent.ToolRef {{
+    let alias = native;
+    return std.tool.reference({argument});
+}}
+"#
+        );
+        let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+            etas_core::SourceId(0),
+            None,
+            source,
+        ));
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let output = check_program(&lower_program(&parsed.value));
+        let errors = output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error);
+        assert_eq!(!errors, accepted, "{argument}: {:?}", output.diagnostics);
+    }
+}
+
+#[test]
 fn command_result_projects_registry_fields_from_the_canonical_native_type() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),

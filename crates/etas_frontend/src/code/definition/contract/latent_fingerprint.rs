@@ -95,6 +95,29 @@ impl Fingerprinter<'_> {
         }
         handlers.sort_unstable();
         parts.push(combine("etas.code.latent-default-handlers.v1", handlers));
+        if let Some(behavior) = &node.default_handler_effects.behavior {
+            let mut contributions = Vec::new();
+            for entry in &behavior.guarded {
+                let mut guards = entry
+                    .guards
+                    .iter()
+                    .map(|guard| self.effect(guard))
+                    .collect::<Result<Vec<_>, _>>()?;
+                guards.sort_unstable();
+                contributions.push(combine(
+                    "etas.code.latent-default-contribution.v1",
+                    [
+                        combine("etas.code.latent-default-guards.v1", guards),
+                        self.footprint(&entry.footprint)?,
+                    ],
+                ));
+            }
+            contributions.sort_unstable();
+            parts.push(combine(
+                "etas.code.latent-default-behavior.v1",
+                std::iter::once(self.footprint(&behavior.direct)?).chain(contributions),
+            ));
+        }
         parts.push(self.trace(&node.action_trace)?);
         parts.push(match &node.handler_requests {
             Some(template) => combine(
@@ -104,6 +127,87 @@ impl Fingerprinter<'_> {
             None => combine("etas.code.unavailable-request-instances.v1", []),
         });
         Ok(combine("etas.code.latent-node.v2", parts))
+    }
+
+    fn footprint(
+        &self,
+        footprint: &metadata::EffectFootprint,
+    ) -> Result<CodeFingerprint, ProjectionError> {
+        let mut parts = vec![
+            encoded("behavior", &footprint.behavior)?,
+            encoded("limits", &footprint.requirements.limits)?,
+        ];
+        for row in [
+            &footprint.escaping_effects,
+            &footprint.requested_actions,
+            &footprint.default_actions,
+            &footprint.handled_actions,
+        ] {
+            parts.push(self.row(row)?);
+        }
+        parts.push(match &footprint.handler_requests {
+            Some(requests) => combine(
+                "etas.code.latent-request-instances.v1",
+                self.requests(requests)?,
+            ),
+            None => combine("etas.code.unavailable-request-instances.v1", []),
+        });
+        parts.push(combine(
+            "etas.code.latent-residual-references.v1",
+            footprint
+                .residual_checks
+                .iter()
+                .map(|reference| reference.fingerprint()),
+        ));
+        for requirements in [
+            &footprint.requirements.trace_requirements,
+            &footprint.requirements.trace_obligations,
+        ] {
+            let mut traces = Vec::new();
+            for requirement in requirements {
+                use metadata::MethodTraceRequirement as R;
+                let fingerprint = match requirement {
+                    R::Reference(name) => encoded("reference", name)?,
+                    R::Limit(count) => encoded("limit", count)?,
+                    R::Clause(clause) => {
+                        let mut parts = vec![encoded("kind", &clause.kind)?];
+                        for row in [
+                            &clause.pattern,
+                            &clause.guard,
+                            &clause.target,
+                            &clause.obligation,
+                        ] {
+                            parts.push(match row {
+                                Some(row) => self.row(row)?,
+                                None => combine("etas.code.latent-no-pattern.v1", []),
+                            });
+                        }
+                        for bound in &clause.selector_bounds {
+                            let mut bound_parts = vec![
+                                encoded(
+                                    "binder",
+                                    &(&bound.binding, bound.operand, bound.argument),
+                                )?,
+                                self.effect(&metadata::EffectRef {
+                                    path: bound.effect_path.clone(),
+                                    args: vec![],
+                                })?,
+                                self.definition(&bound.spec_path)?,
+                            ];
+                            for ty in &bound.spec_args {
+                                bound_parts.push(self.ty(ty)?);
+                            }
+                            parts.push(combine("etas.code.latent-selector-bound.v1", bound_parts));
+                        }
+                        combine("etas.code.latent-trace-requirement.v1", parts)
+                    }
+                };
+                traces.push(fingerprint);
+            }
+            traces.sort_unstable();
+            parts.push(combine("etas.code.latent-trace-requirements.v1", traces));
+        }
+        Ok(combine("etas.code.latent-footprint.v1", parts))
     }
 
     fn requests(
@@ -255,7 +359,13 @@ impl Fingerprinter<'_> {
                         ),
                         None => combine(
                             "etas.code.latent-resource-selector.v1",
-                            [self.definition(&arg.path)?],
+                            [encoded(
+                                "resource",
+                                &self.catalog.identities.resource_path(
+                                    &self.catalog.checked.as_ref().into(),
+                                    &arg.path,
+                                )?,
+                            )?],
                         ),
                     });
                 }
@@ -273,6 +383,15 @@ impl Fingerprinter<'_> {
         use metadata::ActionTrace as T;
         let (tag, parts) = match trace {
             T::Empty => ("empty", Vec::new()),
+            T::DefaultHandler { guards, body } => {
+                let mut parts = guards
+                    .iter()
+                    .map(|guard| self.effect(guard))
+                    .collect::<Result<Vec<_>, _>>()?;
+                parts.sort_unstable();
+                parts.push(self.trace(body)?);
+                ("default-handler", parts)
+            }
             T::Event(event) => (
                 "event",
                 vec![
@@ -327,6 +446,9 @@ impl Fingerprinter<'_> {
         target: &metadata::CallableRequestTarget,
     ) -> Result<CodeFingerprint, ProjectionError> {
         match target {
+            metadata::CallableRequestTarget::AgentTools(context) => {
+                Ok(combine("etas.code.agent-tools.v1", [self.ty(context)?]))
+            }
             metadata::CallableRequestTarget::Parameter(parameter) => {
                 encoded("parameter", parameter)
             }

@@ -4,6 +4,11 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    AgentContext {
+        ty: TypeId,
+        active: Option<TypeId>,
+        span: Span,
+    },
     LambdaParameter {
         ty: TypeId,
         span: Span,

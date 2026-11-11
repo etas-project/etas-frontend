@@ -54,6 +54,11 @@ impl Projection {
         };
         let single = |this: &mut Self| this.ty(child(0)?, depth + 1).map(Box::new);
         Ok(match ty.kind {
+            TypeKind::AgentContext => Ty::AgentContext(
+                ty.agent_context
+                    .clone()
+                    .ok_or_else(|| error("agent context has no canonical method identity"))?,
+            ),
             TypeKind::Existential => Ty::Existential {
                 bounds: ty
                     .bounds

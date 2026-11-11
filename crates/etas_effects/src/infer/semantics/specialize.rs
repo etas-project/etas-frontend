@@ -388,6 +388,7 @@ impl EffectSemantics<'_> {
             &effect_row_bindings,
             residual_bindings.as_ref(),
         )?;
+        self.bind_agent_tool_arguments(&specialized, &mut trace_bindings, state)?;
         let param_types = params
             .iter()
             .map(|param| {
@@ -401,9 +402,10 @@ impl EffectSemantics<'_> {
             .collect::<Vec<_>>();
         let inferred_parameters =
             self.inferred_callback_parameters(&param_targets, &param_types)?;
+        let trace = specialized.action_trace.clone();
         self.merge_parameter_call_summaries(
             &mut specialized,
-            &summary.action_trace,
+            &trace,
             &trace_bindings,
             state,
             &inferred_parameters,
@@ -855,7 +857,9 @@ impl EffectSemantics<'_> {
                 }
                 Ok(false)
             }
-            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+            ActionTraceDomain::Repeat(item)
+            | ActionTraceDomain::TaskStart { body: item, .. }
+            | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 self.action_trace_contains_named_type(item, name)
             }
             ActionTraceDomain::TaskAwait { .. } => Ok(false),

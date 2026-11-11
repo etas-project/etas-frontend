@@ -51,6 +51,12 @@ pub(super) fn project(
             effect_names,
         )?,
         default_handler_effects: etas_package_metadata::DefaultHandlerEffects {
+            behavior: projection.default_behavior_metadata(
+                summary,
+                type_names,
+                effect_names,
+                labels,
+            )?,
             direct_effects: projection.effect_row_metadata(
                 summary.direct_escaping_effects(),
                 type_names,
@@ -65,6 +71,7 @@ pub(super) fn project(
                 .default_handler_effects
                 .iter()
                 .flat_map(|effects| &effects.handlers)
+                .filter(|handler| summary.default_actions.effects.contains(&handler.action))
                 .map(|handler| {
                     Ok(etas_package_metadata::DefaultHandlerContribution {
                         action: projection

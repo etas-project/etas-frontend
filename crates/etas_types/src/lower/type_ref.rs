@@ -144,6 +144,12 @@ fn lower_named_path(
     args: Vec<TypeId>,
     span: etas_core::Span,
 ) -> TypeId {
+    if let Some(method) = agent_context_ref(ctx, path) {
+        if !args.is_empty() {
+            return ctx.unknown_type(span, "agent method context does not accept type arguments");
+        }
+        return ctx.interner.intern(Type::AgentContext(method));
+    }
     let source_symbol = resolved_source_type_symbol(ctx, path);
     if let Some(symbol) = source_symbol {
         let canonical = ctx
@@ -361,6 +367,42 @@ fn lower_declared_path(
         }
         None => known_or_named_path(ctx, name, None, args, span),
     }
+}
+
+pub(crate) fn agent_context_ref(
+    ctx: &TypePipelineContext<'_>,
+    path: &etas_hir::ResolvedPath,
+) -> Option<crate::AgentContextRef> {
+    if let Some(symbol) = resolved_source_type_symbol(ctx, path)
+        .and_then(|symbol| ctx.symbols.canonical_symbol(ctx.hir, symbol))
+        && ctx.hir.agent_methods.contains_key(&symbol)
+    {
+        return Some(symbol.into());
+    }
+    let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
+        return None;
+    };
+    let [name] = partial.remaining.as_slice() else {
+        return None;
+    };
+    let owner = ctx
+        .symbols
+        .canonical_symbol(ctx.hir, partial.resolved_prefix?)?;
+    if let Some(method) = ctx.hir.agent_method(owner, name) {
+        return Some(method.symbol.into());
+    }
+    let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
+        ctx.external_agent_reflection(owner)?
+    else {
+        return None;
+    };
+    let methods = crate::select_external_methods(header).ok()??;
+    let crate::ExternalMethodSelection::Selected(callable) = methods.get(name)? else {
+        return None;
+    };
+    Some(crate::AgentContextRef::Portable(Box::new(
+        callable.as_method()?.clone(),
+    )))
 }
 
 fn resolved_source_type_symbol(

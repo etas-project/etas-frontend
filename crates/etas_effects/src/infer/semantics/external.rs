@@ -4,13 +4,14 @@ use crate::{external_trace::parameter_target, pipeline::ExternalActionTraceMetad
 
 fn request_label(target: &crate::ExternalCallableRequestTarget) -> &str {
     match target {
+        crate::ExternalCallableRequestTarget::AgentTools(_) => "agent tools",
         crate::ExternalCallableRequestTarget::Parameter(parameter) => parameter,
         crate::ExternalCallableRequestTarget::SpecMethod(method) => &method.method,
     }
 }
 
 impl EffectSemantics<'_> {
-    fn external_request_target(
+    pub(super) fn external_request_target(
         &self,
         target: &crate::ExternalCallableRequestTarget,
         parameters: &[(String, crate::ParameterCallTarget)],
@@ -18,6 +19,9 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<crate::ParameterCallTarget> {
         match target {
+            crate::ExternalCallableRequestTarget::AgentTools(context) => {
+                Some(crate::ParameterCallTarget::AgentTools(*context))
+            }
             crate::ExternalCallableRequestTarget::Parameter(label) => {
                 parameter_target(parameters, label)
             }
@@ -29,7 +33,7 @@ impl EffectSemantics<'_> {
 }
 
 impl EffectSemantics<'_> {
-    fn external_metadata_for_callable(
+    pub(super) fn external_metadata_for_callable(
         &self,
         callable: &etas_code::CallableId,
     ) -> Option<&crate::AnchoredExternalMetadata<crate::ExternalEffectSummaryMetadata>> {
@@ -374,13 +378,14 @@ impl EffectSemantics<'_> {
             &summary,
             &effect_row_bindings,
         )?;
-        let parameter_trace = summary.action_trace.clone();
         summary = self.specialize_summary_with_bindings(
             &summary,
             &bindings,
             &type_bindings,
             &effect_row_bindings,
         )?;
+        self.bind_agent_tool_arguments(&summary, &mut trace_bindings, state)?;
+        let parameter_trace = summary.action_trace.clone();
         let inferred_parameters =
             self.inferred_callback_parameters(&parameter_targets, &signature.input)?;
         self.merge_parameter_call_summaries(
@@ -643,10 +648,32 @@ impl EffectSemantics<'_> {
             return None;
         }
         summary.handler_requests = handler_requests;
+        if let Some(input) = metadata
+            .default_handler_effects
+            .and_then(|effects| effects.behavior.as_ref())
+        {
+            let behavior = self.external_default_behavior(
+                input,
+                metadata.parameter_targets,
+                metadata.generic_params,
+                span,
+            )?;
+            let aggregate = behavior.aggregate();
+            if aggregate.escaping_effects != summary.escaping_effects
+                || aggregate.requested_actions != summary.requested_actions
+                || aggregate.default_actions != summary.default_actions
+                || aggregate.handled_actions != summary.handled_actions
+                || aggregate.handler_requests != summary.handler_requests
+            {
+                return None;
+            }
+            aggregate.apply(&mut summary);
+            summary.default_behavior = Some(Box::new(behavior));
+        }
         Some(summary)
     }
 
-    fn external_effect_row_from_metadata(
+    pub(super) fn external_effect_row_from_metadata(
         &self,
         row: &crate::ExternalEffectRowMetadata,
     ) -> Option<EffectRow> {

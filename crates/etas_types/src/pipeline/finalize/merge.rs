@@ -62,6 +62,7 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     facts.existential_packs.extend(body.existential_packs);
     facts.reflections.extend(body.reflections);
     facts.agent_inferences.extend(body.agent_inferences);
+    facts.agent_controllers.extend(body.agent_controllers);
     facts.std_intrinsic_calls.extend(body.std_intrinsic_calls);
     facts.action_calls.extend(body.action_calls);
     facts

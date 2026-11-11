@@ -88,7 +88,11 @@ impl ProjectMetadataProjection<'_> {
                 .iter()
                 .map(|parameter| {
                     Ok(etas_package_metadata::ParameterRequestTemplate {
-                        parameter: self.callable_request_target(parameter.target, labels)?,
+                        parameter: self.callable_request_target(
+                            parameter.target,
+                            labels,
+                            type_names,
+                        )?,
                         excluded: parameter
                             .excluded
                             .iter()

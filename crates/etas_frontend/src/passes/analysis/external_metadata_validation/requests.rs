@@ -59,6 +59,9 @@ pub(super) fn validate_target(
         .validate_resources()
         .map_err(|error| error.to_string())?;
     let method = match target {
+        CallableRequestTarget::AgentTools(context) => {
+            return validate_metadata_type(context, scope);
+        }
         CallableRequestTarget::Parameter(parameter) => {
             return if parameters.contains(parameter) {
                 Ok(())
@@ -93,7 +96,7 @@ pub(super) fn validate_target(
     Ok(())
 }
 
-fn validate_metadata_type(
+pub(super) fn validate_metadata_type(
     ty: &etas_package_metadata::Type,
     scope: &GenericScope,
 ) -> Result<(), String> {
@@ -115,7 +118,7 @@ fn validate_metadata_type(
     Ok(())
 }
 
-fn validate_metadata_row(
+pub(super) fn validate_metadata_row(
     row: &etas_package_metadata::EffectRow,
     scope: &GenericScope,
 ) -> Result<(), String> {

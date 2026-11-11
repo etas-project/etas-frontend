@@ -82,13 +82,20 @@ impl Relocation<'_> {
                 .returned_items
                 .get(&source.owner)
                 .ok_or_else(|| invalid("captured environment has no canonical target owner"))?;
+            let generic_scope = self
+                .from
+                .callables
+                .iter()
+                .find(|(_, item)| **item == source.owner)
+                .map(|(id, _)| super::projection::owner(id))
+                .transpose()?;
             let mut parameters = BTreeMap::new();
             for (parameter, origins) in &source.parameters {
                 let parameter = match parameter {
                     ParameterCallTarget::Interface(_) if method_environments.contains(&id) => {
                         *parameter
                     }
-                    _ => self.parameter_target(*parameter)?,
+                    _ => self.parameter_target(*parameter, generic_scope.as_ref())?,
                 };
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
@@ -231,13 +238,6 @@ impl Relocation<'_> {
                 }
                 parameters.insert(parameter, relocated);
             }
-            let generic_scope = self
-                .from
-                .callables
-                .iter()
-                .find(|(_, item)| **item == source.owner)
-                .map(|(id, _)| super::projection::owner(id))
-                .transpose()?;
             let mut generics = BTreeMap::new();
             for (parameter, value) in source
                 .generics

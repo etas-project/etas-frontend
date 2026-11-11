@@ -144,7 +144,8 @@ impl<'a> TypeRepresentationMaterializer<'a> {
                 | Type::SchedulerHandle
                 | Type::Prompt
                 | Type::PromptPart
-                | Type::MemoryPlace(_) => {}
+                | Type::MemoryPlace(_)
+                | Type::AgentContext(_) => {}
             }
         }
         Ok(())
