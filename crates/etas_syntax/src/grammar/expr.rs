@@ -960,10 +960,27 @@ fn lambda_body_span(body: &LambdaBody) -> Span {
 pub(super) fn unquote_string(text: &str) -> String {
     let text = text.strip_prefix('"').unwrap_or(text);
     let text = text.strip_suffix('"').unwrap_or(text);
-    text.replace("\\\"", "\"")
-        .replace("\\n", "\n")
-        .replace("\\r", "\r")
-        .replace("\\t", "\t")
+    let mut decoded = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => decoded.push('"'),
+            Some('\\') => decoded.push('\\'),
+            Some('n') => decoded.push('\n'),
+            Some('r') => decoded.push('\r'),
+            Some('t') => decoded.push('\t'),
+            Some(other) => {
+                decoded.push('\\');
+                decoded.push(other);
+            }
+            None => decoded.push('\\'),
+        }
+    }
+    decoded
 }
 
 pub(super) fn unquote_char(text: &str) -> Option<char> {
