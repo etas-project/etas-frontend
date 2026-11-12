@@ -366,6 +366,50 @@ flow main() -> i32 {
 }
 
 #[test]
+fn dynamic_memory_keys_publish_a_store_wide_resource_guard() {
+    let output = check(
+        r#"
+import std.io.read_line;
+import std.task.{run, start, Scheduler};
+import std.text.from_i32;
+alias Schema = MemoryRegion<{ Values: Store<string, i32> }>;
+let Owner = std.memory.region<Schema>(stable_id = "owner-records", store = "owner");
+let Peer = std.memory.region<Schema>(stable_id = "peer-records", store = "peer");
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        Owner.Values.put("owner", 1);
+        let child = start(() => {
+            var index: i32 = 0;
+            while index < 2 limit Iterations(2) {
+                Peer.Values.put("part-" + from_i32(index), index);
+                index = index + 1;
+            }
+            return 0;
+        });
+        read_line();
+        return 0;
+    });
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let child = checked
+        .concurrency
+        .resource_closures
+        .values()
+        .find(|plan| plan.parameters.is_empty())
+        .expect("started child plan");
+    assert!(child.complete, "{child:#?}");
+    assert!(!child.opaque_memory, "{child:#?}");
+    assert_eq!(child.resources.len(), 1);
+    assert_eq!(
+        child.resources[0].key, None,
+        "computed keys must conservatively guard the whole Store"
+    );
+}
+
+#[test]
 fn cpu_work_estimates_distinguish_leaf_bounded_and_recursive_calls() {
     let output = check(
         r#"

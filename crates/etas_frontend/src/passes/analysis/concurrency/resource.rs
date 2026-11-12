@@ -186,21 +186,24 @@ impl<'a> Scanner<'a> {
                     fact.intrinsic,
                     MEMORY_KEYS | MEMORY_PAGE | MEMORY_SCAN | MEMORY_CLEAR
                 );
-            let key = keyed.then(|| args[0]);
+            let key = keyed
+                .then(|| args[0])
+                .filter(|expr| match &self.hir.exprs[*expr] {
+                    HirExpr::Literal(_) => true,
+                    HirExpr::Path(path) => {
+                        matches!(path.resolution, ResolveResult::Resolved(_))
+                            && read_only(self.hir, *expr, self.mutated)
+                    }
+                    _ => false,
+                });
             self.plan.complete &= match &store {
                 ResourceValueSelector::Expr(expr) => read_only(self.hir, *expr, self.mutated),
                 ResourceValueSelector::SymbolPath { symbol, .. } => {
                     immutable(self.hir, *symbol, self.mutated)
                 }
             };
-            self.plan.complete &= key.is_none_or(|expr| match &self.hir.exprs[expr] {
-                HirExpr::Literal(_) => true,
-                HirExpr::Path(path) => {
-                    matches!(path.resolution, ResolveResult::Resolved(_))
-                        && read_only(self.hir, expr, self.mutated)
-                }
-                _ => false,
-            });
+            // A dynamic or mutated key cannot be frozen at admission time. Guard
+            // the entire Store instead of broadening the whole invocation.
             self.plan
                 .resources
                 .push(RuntimeResourceSelector { store, key });
