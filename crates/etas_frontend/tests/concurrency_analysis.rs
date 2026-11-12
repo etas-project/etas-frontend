@@ -410,6 +410,164 @@ flow main() -> i32 {
 }
 
 #[test]
+fn collector_resource_plans_cover_insert_nested_calls_and_non_memory_perform() {
+    let output = check(
+        r#"
+import std.io.read_line;
+import std.task.{run, start, Scheduler};
+alias Schema = MemoryRegion<{ Values: Store<string, string> }>;
+let Memory = std.memory.region<Schema>(stable_id = "collector", store = "test");
+flow save(key: string, value: string) -> unit {
+    Memory.Values.insert(key, value);
+    return;
+}
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let child = start(() => {
+            save("prefix-" + read_line(), read_line());
+            perform Console.stdout_write("saved");
+            return 0;
+        });
+        return 0;
+    });
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let child = checked
+        .concurrency
+        .resource_closures
+        .values()
+        .find(|plan| plan.parameters.is_empty())
+        .unwrap();
+    assert!(child.complete && !child.opaque_memory, "{child:#?}");
+    assert_eq!(child.calls.len(), 1);
+    assert_eq!(child.calls[0].arguments, vec![None, None]);
+    let save = &checked.concurrency.resource_callables[&child.calls[0].callable];
+    assert!(save.complete && !save.opaque_memory, "{save:#?}");
+    assert_eq!(save.resources.len(), 1);
+    assert!(save.resources[0].key.is_some());
+}
+
+#[test]
+fn resource_scanner_visits_match_arms_and_handler_owned_task_bodies() {
+    let output = check(
+        r#"
+import std.task.{run, start, Scheduler};
+effect Register { action job() -> unit; }
+alias Schema = MemoryRegion<{ Values: Store<string, string> }>;
+let Memory = std.memory.region<Schema>(stable_id = "collector", store = "test");
+flow append() -> i32 {
+    match Some("value") {
+        Some(value) => { Memory.Values.insert("key", value); }
+        None() => {}
+    }
+    return 0;
+}
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        handle { perform Register.job(); } with {
+            Register.job() => {
+                let child = start(() => append());
+                resume ();
+            }
+        };
+        return 0;
+    });
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let child = checked
+        .concurrency
+        .resource_closures
+        .values()
+        .find(|plan| plan.parameters.is_empty())
+        .expect("handler-owned child plan");
+    assert!(child.complete && !child.opaque_memory, "{child:#?}");
+    assert_eq!(child.calls.len(), 1);
+    let append = &checked.concurrency.resource_callables[&child.calls[0].callable];
+    assert!(append.complete && !append.opaque_memory, "{append:#?}");
+    assert_eq!(
+        append.resources.len(),
+        1,
+        "match-arm insert must be guarded"
+    );
+}
+
+#[test]
+fn inherited_memory_handlers_keep_the_opaque_fallback() {
+    let output = check(
+        r#"
+import std.task.{run, start, Scheduler};
+effect Publish { action value() -> unit; }
+alias Schema = MemoryRegion<{ Values: Store<string, string> }>;
+let Memory = std.memory.region<Schema>(stable_id = "handler-memory", store = "test");
+flow send() -> i32 { perform Publish.value(); return 0; }
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        handle { let child = start(send); } with {
+            Publish.value() => { Memory.Values.put("key", "value"); resume (); }
+        };
+        return 0;
+    });
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    assert!(
+        checked
+            .concurrency
+            .resource_callables
+            .values()
+            .any(|plan| !plan.complete && plan.opaque_memory)
+    );
+}
+
+#[test]
+fn source_tools_and_memory_free_inference_have_resource_plans() {
+    let output = check(
+        r#"
+alias Schema = MemoryRegion<{ Values: Store<string, string> }>;
+let Memory = std.memory.region<Schema>(stable_id = "tool-memory", store = "test");
+tool save(value: string) -> unit ![Memory, Error<StorageError>, Error<MemoryConflict>] {
+    Memory.Values.insert(value, value);
+    return;
+}
+agent Ask(input: string) -> string { return perform infer<string>(Prompt.new()); }
+@tools([save])
+agent MemoryAsk(input: string) -> string ![Memory, Error<StorageError>, Error<MemoryConflict>] {
+    return perform infer<string>(Prompt.new());
+}
+flow main() -> unit { save("value"); return; }
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    for name in ["save", "Ask", "MemoryAsk"] {
+        let (item, _) = checked
+            .hir
+            .items
+            .iter()
+            .find(|(_, item)| {
+                item.symbol()
+                    .is_some_and(|symbol| checked.hir.symbols.get(symbol).unwrap().name == name)
+            })
+            .unwrap();
+        let plan = &checked.concurrency.resource_callables[&item];
+        if name == "MemoryAsk" {
+            assert!(!plan.complete && plan.opaque_memory, "{plan:#?}");
+            continue;
+        }
+        assert!(plan.complete && !plan.opaque_memory, "{name}: {plan:#?}");
+        assert_eq!(plan.resources.len(), usize::from(name == "save"));
+    }
+}
+
+#[test]
 fn cpu_work_estimates_distinguish_leaf_bounded_and_recursive_calls() {
     let output = check(
         r#"
