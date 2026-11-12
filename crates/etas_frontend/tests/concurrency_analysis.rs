@@ -321,6 +321,51 @@ flow main() -> unit {
 }
 
 #[test]
+fn task_owner_resource_plan_excludes_children_and_non_memory_host_calls() {
+    let output = check(
+        r#"
+import std.io.read_line;
+import std.task.{run, start, Scheduler};
+alias Schema = MemoryRegion<{ Values: Store<string, i32> }>;
+let Owner = std.memory.region<Schema>(stable_id = "owner-records", store = "owner");
+let Peer = std.memory.region<Schema>(stable_id = "peer-records", store = "peer");
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        Owner.Values.put("owner", 1);
+        let child = start(() => {
+            Peer.Values.put("peer", 1);
+            return 0;
+        });
+        read_line();
+        return 0;
+    });
+}
+"#,
+    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let owner = checked
+        .concurrency
+        .resource_closures
+        .values()
+        .find(|plan| plan.parameters.len() == 1)
+        .expect("run owner plan");
+    assert!(owner.complete, "{owner:#?}");
+    assert!(!owner.opaque_memory, "{owner:#?}");
+    assert_eq!(owner.resources.len(), 1);
+
+    let child = checked
+        .concurrency
+        .resource_closures
+        .values()
+        .find(|plan| plan.parameters.is_empty())
+        .expect("started child plan");
+    assert!(child.complete, "{child:#?}");
+    assert!(!child.opaque_memory, "{child:#?}");
+    assert_eq!(child.resources.len(), 1);
+}
+
+#[test]
 fn cpu_work_estimates_distinguish_leaf_bounded_and_recursive_calls() {
     let output = check(
         r#"

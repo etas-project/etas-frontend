@@ -140,10 +140,9 @@ impl<'a> Scanner<'a> {
                     .get(1)
                     .is_some_and(|part| part == "task")
                 {
-                    self.plan.complete = false;
                     return;
                 }
-                if fact
+                let may_access_memory = fact
                     .signature
                     .effects
                     .iter()
@@ -151,16 +150,12 @@ impl<'a> Scanner<'a> {
                     .any(|row| {
                         row.tail.is_some()
                             || row.effects.iter().any(|effect| {
-                                !matches!(effect.name.as_str(), "Error" | "Error.raise")
+                                effect.name == "Memory" || effect.name.starts_with("Memory.")
                             })
-                    })
-                {
+                    });
+                if may_access_memory {
                     self.plan.complete = false;
-                    self.plan.opaque_memory |= self.may_access_memory(expr);
-                }
-                if descriptor.purity == etas_std::IntrinsicPurity::Host {
-                    self.plan.complete = false;
-                    self.plan.opaque_memory |= self.may_access_memory(expr);
+                    self.plan.opaque_memory = true;
                 }
                 return;
             }
@@ -262,7 +257,6 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for Scanner<'_> {
         if matches!(expr.data(), HirExpr::Lambda { .. }) {
             self.closures.push(expr.id());
             self.nested += 1;
-            self.plan.complete = false;
         }
         if self.nested != 0 {
             return;
