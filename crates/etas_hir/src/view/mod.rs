@@ -29,5 +29,6 @@ pub use tree::{
     ScopeView, StmtView,
 };
 pub use visit::{
-    HirVisitor, walk_block, walk_body, walk_expr, walk_expr_tree, walk_item, walk_module,
+    HirVisitor, walk_block, walk_block_tree, walk_body, walk_expr, walk_expr_tree, walk_item,
+    walk_module,
 };
