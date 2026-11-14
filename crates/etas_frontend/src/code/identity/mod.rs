@@ -745,6 +745,29 @@ impl DefinitionIdentityIndex {
             }
             index.symbols.insert(symbol, key);
         }
+        let native_bindings = checked
+            .symbols
+            .iter()
+            .filter_map(|symbol| match &symbol.def {
+                etas_hir::SymbolDef::ImportAlias {
+                    origin: etas_hir::ImportAliasOrigin::NativeBinding,
+                    ..
+                } => symbol
+                    .defining_item
+                    .and_then(|item| checked.items.get(item))
+                    .and_then(|item| item.symbol())
+                    .and_then(|owner| index.symbols.get(&owner))
+                    .map(|owner| {
+                        owner
+                            .module()
+                            .iter()
+                            .chain(owner.declaration())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    }),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
         for symbol in checked.std_registry.symbols() {
             let Some(key) =
                 standard_definition_key(checked.std_registry, origins.standard_package, symbol)?
@@ -757,7 +780,13 @@ impl DefinitionIdentityIndex {
             {
                 standard_origins.insert(checked_key, key.clone());
             }
-            index.insert_path(symbol.qualified_path.clone(), key.clone())?;
+            // Source std declarations own their public paths. Primitive ABI
+            // references are addressed separately by NativeBinding symbols.
+            if !native_bindings.contains(&symbol.qualified_path)
+                || !index.paths.contains_key(&symbol.qualified_path)
+            {
+                index.insert_path(symbol.qualified_path.clone(), key.clone())?;
+            }
             if let StdDecl::Type(decl) = &symbol.decl
                 && kind == DefinitionKind::Type
             {
@@ -926,7 +955,22 @@ impl DefinitionIdentityIndex {
             })
             .collect::<std::collections::HashSet<_>>();
         for symbol in checked.symbols.iter() {
-            if let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def {
+            if let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def {
+                if *origin == etas_hir::ImportAliasOrigin::NativeBinding {
+                    let native = checked.std_registry.lookup_qualified(path).ok_or_else(|| {
+                        ProjectionError::MissingIdentity("native binding ABI".into())
+                    })?;
+                    let key = standard_definition_key(
+                        checked.std_registry,
+                        checked_standard_package,
+                        native,
+                    )?
+                    .ok_or_else(|| {
+                        ProjectionError::MissingIdentity("native binding identity".into())
+                    })?;
+                    index.symbols.insert(symbol.id, key);
+                    continue;
+                }
                 if module_imports.contains(&(symbol.definition_span.source, symbol.name.clone())) {
                     continue;
                 }

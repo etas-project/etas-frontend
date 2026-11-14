@@ -80,6 +80,26 @@ The frontend must not:
 `etas_intel` owns editor overlays and the IDE's latest/last-good snapshot
 policy while reusing the same frontend session protocol.
 
+## Native std Declarations
+
+An explicit std source build accepts native declarations with an authored ABI:
+
+```etas
+@std.binding("std.text.trim")
+public flow trim(value: string) -> string ![] {}
+```
+
+The declaration has an empty body, explicit result and public effects. Lowering
+creates a private `NativeBinding` reference and a normal checked call to the
+primitive. ABI validation compares parameters, results, generic bounds and
+public effects after mapping generic binders by position. The annotation is
+reserved for std source builds; a same-named user declaration has no authority.
+
+The source declaration owns its public path. Its private primitive reference
+retains a separate canonical identity, allowing a native-backed export to replace
+its original public name without recursively resolving to itself. Checked body
+images use schema 5 to preserve this provenance across processes.
+
 ## Incremental Compilation
 
 `FrontendSession` is an in-process compiler session, not a standalone server.

@@ -337,3 +337,65 @@ fn artifact_registry_exposes_source_flow_signature_and_canonical_owner() {
         response.output.diagnostics
     );
 }
+
+#[test]
+fn std_native_declarations_bind_checked_primitives_with_source_owned_names() {
+    let package = SourcePackage::new();
+    package.write(
+        "native.es",
+        r#"
+module std.text;
+@std.binding("std.text.trim")
+public flow trim(value: string) -> string ![] {}
+@std.binding("std.collections.array_push")
+public flow append<U>(values: Array<U>, value: U) -> Array<U> ![] {}
+@std.binding("std.task.run")
+public flow execute<T, effect E>(body: (std.task.Scheduler) -> T ![E]) -> T ![E] {}
+"#,
+    );
+    let checked = Frontend.check_standard_library_source(package.load().input);
+    assert!(checked.checked.is_some(), "{:?}", checked.diagnostics);
+    let program = checked.checked.unwrap();
+    let bound = program
+        .hir
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name.starts_with("$std_binding_"))
+        .collect::<Vec<_>>();
+    assert_eq!(bound.len(), 3);
+    for symbol in bound {
+        assert!(matches!(
+            symbol.def,
+            etas_hir::SymbolDef::ImportAlias { .. }
+        ));
+    }
+}
+
+#[test]
+fn std_native_abi_mismatch_has_a_source_location() {
+    let package = SourcePackage::new();
+    package.write("bad_native.es", "module std.text; @std.binding(\"std.text.trim\") public flow bad(value: string) -> string ![Console] {}");
+    let output = Frontend.check_standard_library_source(package.load().input);
+    assert!(output.checked.is_none());
+    let mismatch = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("std native binding ABI differs")
+        })
+        .unwrap();
+    let sources = output.sources.as_ref().unwrap();
+    let source = sources
+        .files
+        .iter()
+        .find(|source| source.id == mismatch.primary.span.source)
+        .unwrap();
+    assert!(source.path.as_ref().unwrap().ends_with("bad_native.es"));
+    assert!(
+        source.text[mismatch.primary.span.range.start.0 as usize
+            ..mismatch.primary.span.range.end.0 as usize]
+            .starts_with("@std.binding")
+    );
+}

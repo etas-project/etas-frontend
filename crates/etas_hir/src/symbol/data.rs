@@ -137,6 +137,8 @@ pub enum SymbolDef {
 pub enum ImportAliasOrigin {
     SourceImport,
     StdPrelude,
+    /// Compiler-created reference to a verified primitive ABI in std source.
+    NativeBinding,
 }
 
 #[derive(
