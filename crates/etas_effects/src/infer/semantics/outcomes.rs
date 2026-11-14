@@ -355,11 +355,17 @@ impl EffectSemantics<'_> {
             return None;
         };
         let symbol = self.type_symbols.canonical_symbol(self.hir, symbol)?;
+        let declaration = self.hir.symbols.get(symbol)?;
+        if let Some((owner, _, variant)) = self
+            .types
+            .facts
+            .enum_constructor(&self.types.store, declaration)
+            && Some(owner) == self.types.facts.known_std_types.result_enum
+        {
+            return Some(ReturnObservation::Result(variant.name == "Ok"));
+        }
         Some(
-            if matches!(
-                self.hir.symbols.get(symbol)?.def,
-                SymbolDef::EnumVariant { .. }
-            ) {
+            if matches!(declaration.def, SymbolDef::EnumVariant { .. }) {
                 ReturnObservation::Variant(symbol)
             } else {
                 ReturnObservation::Any

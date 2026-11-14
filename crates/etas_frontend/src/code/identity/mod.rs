@@ -1096,6 +1096,9 @@ impl DefinitionIdentityIndex {
             if let Some(native) = checked.types.source_type_roles.get(&symbol) {
                 declaration.standard = Some(*native);
                 index.type_declarations.insert(symbol, declaration.clone());
+                if matches!(checked.type_store.get(ty), Some(Type::Enum(_))) {
+                    index.types.insert(ty, declaration.clone());
+                }
                 let path = checked
                     .std_registry
                     .symbol(*native)

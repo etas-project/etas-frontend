@@ -196,8 +196,12 @@ impl TypeFacts {
         store: &crate::TypeStore,
         symbol: &etas_hir::Symbol,
     ) -> Option<(TypeId, usize, &'a EnumVariantLayoutFact)> {
-        let (owner, index) =
-            enums::constructor_identity(store, symbol, self.symbol_types.get(&symbol.id)?)?;
+        let (owner, index) = enums::constructor_identity(
+            store,
+            symbol,
+            self.symbol_types.get(&symbol.id)?,
+            self.known_std_types.result_enum,
+        )?;
         let variant = self.enum_layouts.get(&owner)?.variants.get(index)?;
         (variant.name == enums::constructor_name(symbol)).then_some((owner, index, variant))
     }

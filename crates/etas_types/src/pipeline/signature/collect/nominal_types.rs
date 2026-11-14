@@ -103,6 +103,17 @@ fn collect_enum_decl(
     state: &mut SignaturePipelineState,
     decl: etas_hir::HirEnumDecl,
 ) {
+    if ctx
+        .signature_facts
+        .source_type_roles
+        .contains_key(&decl.symbol)
+    {
+        state.symbol_types.insert(
+            decl.symbol,
+            ctx.signature_facts.symbol_types[&decl.symbol].clone(),
+        );
+        return;
+    }
     let name = canonical_source_type_name(ctx, decl.symbol)
         .unwrap_or_else(|| format!("enum{}", decl.symbol.0));
     let ty = ctx.interner.intern(Type::Enum(EnumTypeRef { name }));
@@ -156,7 +167,18 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 ctx.signature_facts
                     .type_generics
                     .insert(base, generic_params.clone());
-                let output = if generic_params.is_empty() {
+                let result_role = ctx
+                    .signature_facts
+                    .source_type_roles
+                    .get(&decl.symbol)
+                    .and_then(|native| ctx.std_registry.symbol(*native))
+                    .is_some_and(|native| native.qualified_path == ["std", "result", "Result"]);
+                let output = if result_role {
+                    ctx.interner.intern(Type::Result {
+                        ok: generic_params[0].subject,
+                        err: generic_params[1].subject,
+                    })
+                } else if generic_params.is_empty() {
                     base
                 } else {
                     ctx.interner.intern(Type::Applied {

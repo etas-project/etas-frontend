@@ -18,7 +18,17 @@ pub(super) fn lower(
         &item.path,
         &item.generic_params,
     )?;
-    let output = if parameters.is_empty() {
+    let result_role = item.path == ["std", "result", "Result"]
+        && ctx
+            .std_registry
+            .lookup_qualified(&item.path)
+            .is_some_and(|symbol| ctx.std_registry.declaration_key(symbol.id).is_some());
+    let output = if result_role {
+        ctx.interner.intern(Type::Result {
+            ok: parameters[0].subject,
+            err: parameters[1].subject,
+        })
+    } else if parameters.is_empty() {
         ty
     } else {
         ctx.interner.intern(Type::Applied {
@@ -85,6 +95,9 @@ pub(super) fn lower(
         },
     );
     ctx.signature_facts.type_generics.insert(ty, parameters);
+    if result_role {
+        ctx.signature_facts.known_std_types.result_enum = Some(ty);
+    }
     facts.push((
         item.path.clone(),
         SymbolTypeFact::Type {

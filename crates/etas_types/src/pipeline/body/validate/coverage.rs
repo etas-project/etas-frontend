@@ -317,10 +317,41 @@ impl Coverage<'_, '_> {
                     self.ctx.interner.store(),
                     symbol,
                     self.ctx.symbol_type(symbol.id)?,
+                    self.ctx.known_std_types().result_enum,
                 )?;
                 let layout = self.ctx.enum_layout(result)?;
+                if self.ctx.known_std_types().result_enum == Some(result)
+                    && matches!(self.ctx.interner.store().get(ty), Some(Type::Result { .. }))
+                {
+                    return match layout.variants.get(index)?.name.as_str() {
+                        "Ok" => Some(Tag::Structural("Ok")),
+                        "Err" => Some(Tag::Structural("Err")),
+                        _ => None,
+                    };
+                }
                 (owner == result && layout.variants.get(index)?.name == symbol.name)
                     .then_some(Tag::Variant { owner, index })
+            }
+            SymbolDef::Item { .. } => {
+                let native = self
+                    .ctx
+                    .source_type_role(symbol.id)
+                    .and_then(|native| self.ctx.std_registry.symbol(native))?;
+                match (
+                    self.ctx.interner.store().get(ty)?,
+                    native.qualified_path.as_slice(),
+                ) {
+                    (Type::Result { .. }, [std, result, name])
+                        if std == "std" && result == "result" =>
+                    {
+                        match name.as_str() {
+                            "Ok" => Some(Tag::Structural("Ok")),
+                            "Err" => Some(Tag::Structural("Err")),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
             }
             SymbolDef::ImportAlias { path, .. } => {
                 let std = self.ctx.std_registry.lookup_qualified(path)?;

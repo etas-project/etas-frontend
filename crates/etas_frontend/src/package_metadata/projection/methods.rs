@@ -26,6 +26,9 @@ impl ProjectMetadataProjection<'_> {
         let selection = self.exported_definition_items()?;
         let head = |ty| match self.checked.type_store.get(ty) {
             Some(Type::Applied { constructor, .. }) => TypeId(constructor.0),
+            Some(Type::Result { .. }) => {
+                self.checked.types.known_std_types.result_enum.unwrap_or(ty)
+            }
             _ => ty,
         };
         let subjects = selection

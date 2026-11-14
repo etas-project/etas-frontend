@@ -32,6 +32,7 @@ pub(crate) fn constructor_identity(
     store: &crate::TypeStore,
     symbol: &etas_hir::Symbol,
     fact: &crate::SymbolTypeFact,
+    result_enum: Option<TypeId>,
 ) -> Option<(TypeId, usize)> {
     let index = match &symbol.def {
         etas_hir::SymbolDef::EnumVariant { variant_index, .. }
@@ -48,6 +49,7 @@ pub(crate) fn constructor_identity(
     let owner = match store.get(signature.output)? {
         crate::Type::Applied { constructor, .. } => TypeId(constructor.0),
         crate::Type::Enum(_) => signature.output,
+        crate::Type::Result { .. } => result_enum?,
         _ => return None,
     };
     let crate::Type::Enum(declaration) = store.get(owner)? else {

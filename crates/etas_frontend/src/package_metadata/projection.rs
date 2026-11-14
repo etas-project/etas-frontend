@@ -476,7 +476,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             })
             .collect::<Result<Vec<_>, PackageMetadataError>>()?;
-        let ty = if self.checked.types.source_type_roles.contains_key(&symbol) {
+        let ty = if self.checked.types.source_type_roles.contains_key(&symbol)
+            && !matches!(
+                self.checked.hir.items.get(item),
+                Some(etas_hir::HirItem::Enum(_))
+            ) {
             Some(MetadataType {
                 kind: MetadataTypeKind::Nominal,
                 path: path.clone(),

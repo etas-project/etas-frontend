@@ -957,10 +957,45 @@ fn collect_standard_variant_constructor_call<E>(
     if super::enum_variant::declaration(ctx, path).is_some() {
         return Ok(None);
     }
-    let Some(name) = path.segments.last().map(|segment| segment.name.as_str()) else {
+    let qualified = match path.resolution {
+        ResolveResult::Resolved(symbol) => {
+            let Some(symbol) = ctx
+                .ctx
+                .symbols
+                .canonical_symbol(ctx.ctx.hir, symbol)
+                .and_then(|symbol| ctx.ctx.hir.symbols.get(symbol))
+            else {
+                return Ok(None);
+            };
+            let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                return Ok(None);
+            };
+            path.clone()
+        }
+        _ if path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.name == "std") =>
+        {
+            path.segments
+                .iter()
+                .map(|segment| segment.name.clone())
+                .collect()
+        }
+        _ => return Ok(None),
+    };
+    let Some(native) = ctx.ctx.std_registry.lookup_qualified(&qualified) else {
         return Ok(None);
     };
-    Ok(match name {
+    // Checked source constructor flows use ordinary callable instantiation.
+    // Only legacy native constructors need the contextual payload shortcut.
+    if native.kind != etas_std::StdSymbolKind::Constructor
+        || !matches!(native.decl, etas_std::StdDecl::Type(_))
+        || native.intrinsic.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(match native.name.as_str() {
         "Ok" => Some(collect_result_constructor_call(
             ctx,
             "Ok",

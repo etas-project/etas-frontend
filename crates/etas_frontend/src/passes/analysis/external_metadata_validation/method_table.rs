@@ -5,6 +5,7 @@ mod tests;
 
 pub(super) fn validate(
     environment: &ProjectEnvironmentInput,
+    std_registry: &etas_std::StdRegistry,
 ) -> Result<(), ExternalEnvironmentValidationError> {
     let mut subject_paths = std::collections::BTreeMap::<_, BTreeSet<Vec<String>>>::new();
     for binding in environment
@@ -60,7 +61,12 @@ pub(super) fn validate(
             let paths = subject_paths
                 .get(owner.subject())
                 .ok_or_else(|| fail("published method subject has no declaration origin"))?;
-            if !paths.contains(&method.self_type.path) {
+            let result_role = method.self_type.kind == etas_package_metadata::TypeKind::Result
+                && std_registry
+                    .lookup_qualified(&["std", "result", "Result"])
+                    .and_then(|symbol| std_registry.declaration_key(symbol.id))
+                    == Some(owner.subject());
+            if !paths.contains(&method.self_type.path) && !result_role {
                 return Err(fail(
                     "published method receiver disagrees with its canonical subject",
                 ));

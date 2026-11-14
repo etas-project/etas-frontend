@@ -185,7 +185,9 @@ fn lower_named_path(
             .and_then(|symbol| ctx.hir.symbols.get(symbol))
             .and_then(|symbol| match &symbol.def {
                 SymbolDef::ImportAlias { path, .. } => ctx.std_registry.lookup_qualified(path),
-                _ => None,
+                _ => ctx
+                    .source_type_role(symbol.id)
+                    .and_then(|native| ctx.std_registry.symbol(native)),
             })
             .and_then(|symbol| match &symbol.decl {
                 etas_std::StdDecl::Type(decl) => Some(decl.name.clone()),

@@ -162,6 +162,7 @@ impl DefinitionDescriptorProjector<'_> {
                         }
                         ReturnObservation::Unit => ReturnObservationInfo::Unit,
                         ReturnObservation::Bool(value) => ReturnObservationInfo::Bool(*value),
+                        ReturnObservation::Result(value) => ReturnObservationInfo::Result(*value),
                         ReturnObservation::Variant(symbol) => {
                             let constructor = *symbol;
                             let symbol = self
@@ -378,9 +379,9 @@ fn finite_trace_paths(
                 pending.push(Step::Choice(parts.len()));
                 pending.extend(parts.iter().rev().map(Step::Visit));
             }
-            Step::Visit(
-                Trace::Parallel(_) | Trace::TaskStart { .. } | Trace::TaskAwait { .. },
-            ) => return None,
+            Step::Visit(Trace::Parallel(_) | Trace::TaskStart { .. } | Trace::TaskAwait { .. }) => {
+                return None;
+            }
             Step::Visit(Trace::Repeat(_) | Trace::UnknownOrder(_) | Trace::Widened { .. }) => {
                 return None;
             }

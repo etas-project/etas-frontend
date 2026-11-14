@@ -48,6 +48,7 @@ pub enum ReturnObservation {
     Any,
     Unit,
     Bool(bool),
+    Result(bool),
     Variant(etas_hir::SymbolId),
     // Callable values may be returned directly or inside an aggregate payload.
     CallableSources(std::collections::BTreeSet<CallableReturnSource>),

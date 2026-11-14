@@ -515,7 +515,7 @@ fn validate_external_environment(
     )?;
     validate_trace_spec_identities(environment, &packages)?;
     specs::validate(environment)?;
-    method_table::validate(environment)?;
+    method_table::validate(environment, std_registry)?;
     validate_dependency_effect_metadata(environment, &packages, &effect_paths, &action_paths)?;
     validate_tool_bindings(environment, &packages, &tool_paths)?;
     if let Some(metadata) = environment

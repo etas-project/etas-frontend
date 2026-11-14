@@ -541,6 +541,9 @@ impl EffectSemantics<'_> {
                             Type::Primitive(PrimitiveType::Bool),
                             ReturnObservationInfo::Bool(value),
                         ) => ReturnObservation::Bool(*value),
+                        (Type::Result { .. }, ReturnObservationInfo::Result(value)) => {
+                            ReturnObservation::Result(*value)
+                        }
                         _ => return None,
                     };
                     exits.record(

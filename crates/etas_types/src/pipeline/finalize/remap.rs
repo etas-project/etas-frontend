@@ -781,6 +781,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             }
         }
     }
+    facts.known_std_types.result_enum = facts.known_std_types.result_enum.map(|ty| remapper.ty(ty));
     facts.known_std_types.directory_list_limit_error = facts
         .known_std_types
         .directory_list_limit_error

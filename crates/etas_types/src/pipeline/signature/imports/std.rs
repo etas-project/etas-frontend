@@ -36,27 +36,42 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
     let registry = ctx.std_registry.clone();
     record_known_std_types(ctx, &registry);
     ctx.signature_facts.std_spec_impls = lower_std_spec_impls(ctx, &registry);
+    ctx.signature_facts.std_spec_impls.retain(|implementation| {
+        !input
+            .role_bindings
+            .iter()
+            .any(|binding| binding.qualified_path == implementation.spec)
+    });
     for binding in &input.role_bindings {
         let native = registry
             .lookup_qualified(&binding.qualified_path)
             .expect("checked source role contract");
-        let mut declaration = native.decl.clone();
-        if let etas_std::StdDecl::Type(declaration) = &mut declaration {
-            let item = ctx
-                .hir
-                .symbols
-                .get(binding.symbol)
-                .unwrap()
-                .defining_item
-                .unwrap();
-            let etas_hir::HirItem::Type(source) = &ctx.hir.items[item] else {
-                unreachable!()
-            };
-            for (parameter, source) in declaration.params.iter_mut().zip(&source.type_params) {
+        let mut contract = native.clone();
+        let item = ctx
+            .hir
+            .symbols
+            .get(binding.symbol)
+            .unwrap()
+            .defining_item
+            .unwrap();
+        let parameters = match &ctx.hir.items[item] {
+            etas_hir::HirItem::Type(source) => &source.type_params,
+            etas_hir::HirItem::Enum(source) => &source.type_params,
+            etas_hir::HirItem::Spec(source) => &source.type_params,
+            etas_hir::HirItem::Flow(source) => &source.type_params,
+            _ => unreachable!("checked source role declaration"),
+        };
+        if let etas_std::StdDecl::Type(declaration) = &mut contract.decl {
+            for (parameter, source) in declaration.params.iter_mut().zip(parameters) {
                 parameter.name = ctx.hir.symbols.get(*source).unwrap().name.clone();
             }
+            if declaration.kind == etas_std::TypeDeclKind::Spec {
+                ctx.signature_facts
+                    .std_spec_aliases
+                    .insert(binding.symbol, native.qualified_path.clone());
+            }
         }
-        let fact = crate::lower::std::lower_std_decl(ctx, &registry, binding.symbol, &declaration);
+        let fact = lower_std_symbol(ctx, &registry, binding.symbol, &contract);
         ctx.signature_facts
             .symbol_types
             .insert(binding.symbol, fact);
@@ -120,6 +135,9 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    ctx.signature_facts.known_std_types.result_enum = registry
+        .lookup_qualified(&["std", "result", "Result"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.message = registry
         .lookup_qualified(&["std", "agent", "message", "Message"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));

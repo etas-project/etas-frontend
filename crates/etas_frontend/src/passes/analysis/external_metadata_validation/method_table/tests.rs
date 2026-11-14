@@ -68,7 +68,7 @@ fn in_memory_method_metadata_must_reference_its_checked_descriptor_binders() {
         }],
         ..Default::default()
     };
-    validate(&environment).unwrap();
+    validate(&environment, &etas_std::standard_registry()).unwrap();
     let method = environment.external_public_metadata[0]
         .methods
         .iter_mut()
@@ -80,7 +80,7 @@ fn in_memory_method_metadata_must_reference_its_checked_descriptor_binders() {
         .unwrap()
         .position = 1;
     method.callable.values[0].params[0] = method.self_type.clone();
-    let error = validate(&environment).unwrap_err();
+    let error = validate(&environment, &etas_std::standard_registry()).unwrap_err();
     assert_eq!(error.package, Some(package));
     assert!(error.reason.contains("declared type binder"), "{error:?}");
 }

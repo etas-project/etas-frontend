@@ -316,6 +316,14 @@ impl<'a> TypePipelineContext<'a> {
         self.lookup(|facts| &facts.qualified_action_signatures, name)
     }
 
+    pub(crate) fn source_type_role(
+        &self,
+        symbol: etas_hir::SymbolId,
+    ) -> Option<etas_std::StdSymbolId> {
+        self.lookup(|facts| &facts.source_type_roles, &symbol)
+            .copied()
+    }
+
     pub(crate) fn enum_layout(&self, ty: crate::TypeId) -> Option<&crate::EnumLayoutFact> {
         self.lookup(|facts| &facts.enum_layouts, &ty)
     }

@@ -58,6 +58,9 @@ impl StandardLibrary {
                     })
                 })
                 .ok_or("std callable has no canonical scope")?;
+            let implementation_scope = callable.as_method().map(|method| {
+                etas_code::descriptor::GenericOwner::Implementation(method.implementation().clone())
+            });
             let mut effect_parameters = std::collections::HashMap::new();
             for parameter in source
                 .descriptors()
@@ -84,11 +87,9 @@ impl StandardLibrary {
             }
             let mut declarations = correspondence.declarations().clone();
             let mut targets = std::collections::BTreeMap::new();
-            for origin in target
-                .native_type_origins()
-                .iter()
-                .filter(|origin| origin.scope == scope)
-            {
+            for origin in target.native_type_origins().iter().filter(|origin| {
+                origin.scope == scope || Some(&origin.scope) == implementation_scope.as_ref()
+            }) {
                 let fingerprint = target
                     .descriptors()
                     .type_fingerprint(origin.descriptor)
@@ -100,11 +101,9 @@ impl StandardLibrary {
                     return Err("std ABI has ambiguous checked type correspondence".into());
                 }
             }
-            for origin in source
-                .native_type_origins()
-                .iter()
-                .filter(|origin| origin.scope == scope)
-            {
+            for origin in source.native_type_origins().iter().filter(|origin| {
+                origin.scope == scope || Some(&origin.scope) == implementation_scope.as_ref()
+            }) {
                 let fingerprint = source
                     .descriptors()
                     .type_fingerprint(origin.descriptor)
@@ -116,6 +115,25 @@ impl StandardLibrary {
             let item = source
                 .item_owner(&callable)
                 .ok_or("std callable has no checked body")?;
+            if let Some(identity) = callable.as_method()
+                && let Some(imported) = consumer
+                    .types
+                    .external_methods
+                    .iter()
+                    .find(|method| &method.identity == identity)
+                && let Some(authored) = self
+                    .program
+                    .types
+                    .type_impl_methods
+                    .values()
+                    .find(|method| method.body == item)
+            {
+                for (source, target) in authored.owner_params.iter().zip(&imported.owner_params) {
+                    if source.kind == etas_types::CallableGenericParamKind::Type {
+                        declarations.insert(source.subject, target.subject);
+                    }
+                }
+            }
             let signature = instantiation::signature(&self.program.types, item)
                 .ok_or("std body has no checked signature")?;
             let contract = self
@@ -153,7 +171,7 @@ impl StandardLibrary {
             })
             .with_relocated_effect_parameters(&effect_parameters)
             .substitute(ty)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("std public ABI {callable:?}: {e}"))?;
         }
         consumer.type_store = Arc::new(interner.into_store());
         Ok(())

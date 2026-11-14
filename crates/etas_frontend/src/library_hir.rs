@@ -20,7 +20,7 @@ use crate::{
 
 mod restore;
 
-const SCHEMA: u32 = 9;
+const SCHEMA: u32 = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryHirSource {

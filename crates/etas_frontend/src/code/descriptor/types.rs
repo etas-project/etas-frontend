@@ -221,7 +221,17 @@ impl DefinitionDescriptorProjector<'_> {
         declaration: TypeDeclaration,
         scope: usize,
     ) -> Result<TypeInfo, ProjectionError> {
-        if let Some(standard) = declaration.standard {
+        let source = source.or(declaration.checked_type);
+        let source_enum_role = declaration.standard.is_some_and(|native| {
+            self.checked
+                .types
+                .source_type_roles
+                .values()
+                .any(|bound| *bound == native)
+        }) && source.is_some_and(|source| {
+            matches!(self.checked.type_store.get(source), Some(Type::Enum(_)))
+        });
+        if let Some(standard) = declaration.standard.filter(|_| !source_enum_role) {
             let Some(etas_std::StdDecl::Type(standard)) = self
                 .checked
                 .std_registry

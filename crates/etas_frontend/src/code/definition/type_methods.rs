@@ -46,9 +46,17 @@ fn implementation_identity(
 ) -> Result<ImplementationKey, ProjectionError> {
     let (constructor, arguments) = match checked.type_store.get(method.self_type) {
         Some(Type::Applied { constructor, args }) => {
-            (etas_types::TypeId(constructor.0), args.as_slice())
+            (etas_types::TypeId(constructor.0), args.clone())
         }
-        Some(_) => (method.self_type, &[][..]),
+        Some(Type::Result { ok, err }) => (
+            checked
+                .types
+                .known_std_types
+                .result_enum
+                .ok_or(ProjectionError::MissingType(method.self_type))?,
+            vec![*ok, *err],
+        ),
+        Some(_) => (method.self_type, Vec::new()),
         None => return Err(ProjectionError::MissingType(method.self_type)),
     };
     let subject = identities
@@ -59,7 +67,7 @@ fn implementation_identity(
         .clone();
     let mut projector = DefinitionDescriptorProjector::from_input(checked, identities, limits);
     let arguments =
-        projector.project_implementation_pattern(&subject, &method.owner_params, arguments)?;
+        projector.project_implementation_pattern(&subject, &method.owner_params, &arguments)?;
     let Some(HirItem::Impl(decl)) = checked.items.get(method.implementation) else {
         return Err(ProjectionError::Invalid(
             "type method has no checked implementation owner".into(),
