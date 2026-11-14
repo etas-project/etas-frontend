@@ -318,6 +318,11 @@ pub fn apply_external_signature_input(
     ctx.signature_facts
         .external_definition_bindings
         .extend(input.definition_bindings.iter().cloned());
+    ctx.signature_facts.external_type_declarations.extend(
+        ctx.external_type_paths
+            .iter()
+            .map(|(path, ty)| (path.clone(), *ty)),
+    );
     for (symbol, reflection) in &input.agent_reflections {
         if let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
             reflection

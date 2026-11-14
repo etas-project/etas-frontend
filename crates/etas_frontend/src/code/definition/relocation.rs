@@ -36,12 +36,19 @@ impl NativeTypeCorrespondence {
         target_identities: &DefinitionIdentityIndex,
     ) -> Result<Self, ProjectionError> {
         let mut declarations = BTreeMap::new();
+        let imported = target
+            .types
+            .external_type_declarations
+            .values()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
         for (ty, identity) in native_type_declarations(target.type_store, target_identities) {
             declarations
                 .entry(identity)
                 .and_modify(|previous| {
                     if target.type_store.nominal_identity(ty).is_some()
                         || target.type_store.parameter_identity(ty).is_some()
+                        || imported.contains(&ty)
                     {
                         *previous = ty;
                     }

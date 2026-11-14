@@ -98,7 +98,8 @@ reserved for std source builds; a same-named user declaration has no authority.
 The source declaration owns its public path. Its private primitive reference
 retains a separate canonical identity, allowing a native-backed export to replace
 its original public name without recursively resolving to itself. Checked body
-images use schema 6 to preserve this provenance across processes.
+images use schema 7 to preserve this provenance and checked external type
+declaration bindings across processes.
 
 Artifact queries publish source-defined generic nominal types and enums with
 their bundle declaration identities. Enum constructors preserve nullary,
