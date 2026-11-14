@@ -163,6 +163,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 native_instantiations: instantiations.clone(),
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
+                standard_library: context.standard_library.clone(),
                 checked_std_library_implementations: checked_std_library_implementations.clone(),
                 project_environment_fingerprint: definition_environment.fingerprint().to_owned(),
                 dependency_metadata_fingerprints: environment
@@ -222,9 +223,85 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 reachability: reachability.clone(),
                 residual: std::sync::Arc::default(),
             };
+            if context.input.options.standard_library_mode
+                == crate::StandardLibraryMode::SourceBootstrap
+            {
+                // Public library callables need an ABI type even when no body
+                // in this compilation references them as a function value.
+                let mut store = data.type_store.as_ref().clone();
+                let signatures = data
+                    .types
+                    .item_signatures
+                    .iter()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                for (item, signature) in signatures {
+                    let etas_types::ItemSignature::Flow(signature) = signature else {
+                        continue;
+                    };
+                    let ty = etas_types::Type::Function(etas_types::FlowType {
+                        input: signature.params.clone(),
+                        output: signature.output,
+                        effects: signature.effects.clone(),
+                    });
+                    if !store.iter().any(|(_, existing)| existing == &ty) {
+                        store.intern(ty);
+                    }
+                    if let Some(contract) = data
+                        .effects
+                        .public_contracts
+                        .iter()
+                        .find(|contract| contract.item == *item)
+                    {
+                        let row = match crate::project::instantiation::checked_row(
+                            &contract.public_row,
+                            &data.effect_registry,
+                            Some(signature),
+                            std::iter::empty(),
+                        ) {
+                            Ok(row) => row,
+                            Err(reason) => return PassResult::failed(reason),
+                        };
+                        let ty = etas_types::Type::Function(etas_types::FlowType {
+                            input: signature.params.clone(),
+                            output: signature.output,
+                            effects: Some(row),
+                        });
+                        if !store.iter().any(|(_, existing)| existing == &ty) {
+                            store.intern(ty);
+                        }
+                    }
+                }
+                data.type_store = std::sync::Arc::new(store);
+            } else if context.input.options.standard_library_mode
+                == crate::StandardLibraryMode::Artifact
+            {
+                let mut store = data.type_store.as_ref().clone();
+                let signatures = data
+                    .types
+                    .std_callable_signatures
+                    .iter()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                for signature in signatures.into_values() {
+                    let ty = etas_types::Type::Function(etas_types::FlowType {
+                        input: signature.params.clone(),
+                        output: signature.output,
+                        effects: signature.effects.clone(),
+                    });
+                    if !store.iter().any(|(_, existing)| existing == &ty) {
+                        store.intern(ty);
+                    }
+                }
+                data.type_store = std::sync::Arc::new(store);
+            }
             // Ordinary plans are bound to their owners' checked revisions only
             // now that every contract fact has been finalized. A candidate
             // binds to its frozen-contract revision when it is emitted.
+            if let Some(library) = &data.standard_library {
+                data.standard_library = match library.for_consumer(&data) {
+                    Ok(library) => Some(library),
+                    Err(reason) => return PassResult::failed(reason),
+                };
+            }
             if context.candidate.is_none() && !residual.is_empty() {
                 data.residual = std::sync::Arc::new(residual);
                 let binding = match data.residual.bind_ordinary(&data) {

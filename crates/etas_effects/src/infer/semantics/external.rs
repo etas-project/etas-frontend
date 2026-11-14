@@ -54,7 +54,26 @@ impl EffectSemantics<'_> {
             return None;
         };
         let symbol = self.type_symbols.canonical_symbol(self.hir, symbol)?;
-        let definition = self.types.facts.external_definition_bindings.get(&symbol)?;
+        let definition = self.types.facts.external_definition_bindings.get(&symbol);
+        let standard;
+        let definition = match definition {
+            Some(definition) => definition,
+            None => {
+                let etas_hir::SymbolDef::ImportAlias { path, .. } =
+                    &self.hir.symbols.get(symbol)?.def
+                else {
+                    return None;
+                };
+                standard = self
+                    .std_registry
+                    .lookup_qualified(path)
+                    .and_then(|symbol| self.std_registry.body_binding(symbol.id))?
+                    .callable
+                    .as_declaration()?
+                    .clone();
+                &standard
+            }
+        };
         if definition.kind() != etas_code::DefinitionKind::Flow {
             return None;
         }

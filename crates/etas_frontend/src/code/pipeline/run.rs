@@ -297,6 +297,7 @@ fn analyze_body_inputs(
     let mut context = ProjectContext::new_with_std_registry(input, checked.std_registry.clone())
         .with_check_scope(CheckScope::EntryReachable);
     context.incremental = true;
+    context.standard_library = checked.standard_library.clone();
     context.changed_sources = vec![overlay.slot().source];
     let syntax_identity = overlay.body().identity();
     let source = overlay.relocated().source().id;

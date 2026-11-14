@@ -13,6 +13,7 @@ pub(crate) use callable_graph::{
 mod context;
 mod dependency_namespaces;
 mod external_anchors;
+mod standard_library;
 pub use checked_reachability::{CheckedCallableRoot, CheckedReachabilityError};
 pub(crate) use dependency_namespaces::DependencyModuleNamespaces;
 pub(crate) use external_anchors::ExternalImportAnchorIndex;

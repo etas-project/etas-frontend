@@ -325,6 +325,34 @@ fn build_selected(
         }
         agent_bindings.insert(decl.symbol, identity);
     }
+    // Source std callables have a native body in another checked program.
+    // Keep their local signature types under the callable's canonical scope so
+    // cross-program generic bindings use declaration identity.
+    for declaration in checked.std_registry.symbols() {
+        let Some(binding) = checked.std_registry.body_binding(declaration.id) else {
+            continue;
+        };
+        let signature = checked
+            .types
+            .std_callable_signatures
+            .get(&declaration.id)
+            .ok_or_else(|| {
+                ProjectionError::Invalid("std artifact has no checked public signature".into())
+            })?;
+        let owner = match binding.callable.as_method() {
+            Some(method) => GenericOwner::Method(method.clone()),
+            None => GenericOwner::Declaration(
+                binding
+                    .callable
+                    .as_declaration()
+                    .ok_or_else(|| {
+                        ProjectionError::Invalid("std callable has no canonical declaration".into())
+                    })?
+                    .clone(),
+            ),
+        };
+        projector.project_signature(owner, signature, &vec![None; signature.params.len()], None)?;
+    }
     let projection = projector.finish_native()?;
     let mut catalog = DefinitionCatalog {
         checked,

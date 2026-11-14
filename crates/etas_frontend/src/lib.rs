@@ -63,7 +63,7 @@ pub use output::{
     ProjectExternalTypeInput, ProjectExternalTypeSpecSatisfactionInput, ProjectId, ProjectInput,
     ProjectOutput, ProjectStableSourceKeyInput, ProjectStandaloneSourcePackage,
     ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, SharedEffectOutput, SourcePackageOriginError,
-    StandardLibraryMode, TopLevelLetFact, TopLevelLetFacts, UnitId,
+    StandardLibrary, StandardLibraryMode, TopLevelLetFact, TopLevelLetFacts, UnitId,
 };
 pub use package_metadata::{
     PackageMetadataArtifact, PackageMetadataBinInput, PackageMetadataBuildInput,

@@ -153,6 +153,8 @@ impl ProjectInput {
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
     pub standard_library_mode: StandardLibraryMode,
+    #[serde(default)]
+    pub standard_library_artifact: Option<String>,
     pub reflection: crate::code::definition::ReflectionOptions,
     /// Select the optional typed-HIR optimization pipeline. O2 is the balanced default.
     pub optimization_level: OptimizationLevel,
@@ -181,16 +183,20 @@ impl ProjectCompileOptions {
         };
         let mut parts = vec![
             "frontend-options",
-            "v7",
+            "v8",
             entry_policy,
             match self.standard_library_mode {
                 StandardLibraryMode::Consumer => "std:consumer",
                 StandardLibraryMode::SourceBootstrap => "std:source-bootstrap",
+                StandardLibraryMode::Artifact => "std:artifact",
             },
             optimization,
             "retain-bodies",
         ];
         let quality_context_token_budget;
+        if let Some(identity) = &self.standard_library_artifact {
+            parts.extend(["std-artifact", identity.as_str()]);
+        }
         if let Some(budget) = self.quality_context_token_budget {
             quality_context_token_budget = budget.to_string();
             parts.push("quality-context-policy:token-budget");
@@ -247,6 +253,8 @@ pub enum StandardLibraryMode {
     /// Source declarations own their exports; embedded legacy bodies are not admitted.
     /// This transitional mode still uses the full legacy bootstrap contract.
     SourceBootstrap,
+    /// Toolchain-owned std query tables and bodies loaded from a verified SDK.
+    Artifact,
 }
 
 #[derive(
@@ -1538,6 +1546,8 @@ pub struct CheckedProgramData {
     pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
     pub compiler_version: String,
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
+    /// Independently checked toolchain body owner for artifact std callables.
+    pub standard_library: Option<Arc<StandardLibrary>>,
     pub(crate) checked_std_library_implementations:
         std::sync::Arc<crate::passes::CheckedStandardLibraryImplementations>,
     pub project_environment_fingerprint: String,
@@ -1614,6 +1624,46 @@ impl CheckedProgramData {
             .definition_environment
             .environment()
             .external_definition_origins
+    }
+}
+
+#[derive(Clone, Debug, etas_core::RetainedSize)]
+pub struct StandardLibrary {
+    pub program: CheckedProgram,
+    pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,
+    pub package: ProjectExternalPackageInput,
+    pub metadata: ProjectExternalPublicMetadataInput,
+    pub origins: etas_code::identity::PackageDefinitionOrigins,
+}
+
+impl StandardLibrary {
+    pub(crate) fn append_effect_environment(
+        &self,
+        environment: &mut ProjectEnvironmentInput,
+    ) -> ExternalPackageId {
+        let package = (0..u32::MAX)
+            .map(ExternalPackageId)
+            .find(|id| {
+                environment
+                    .external_packages
+                    .iter()
+                    .all(|package| package.id != *id)
+            })
+            .expect("toolchain package identity capacity");
+        let mut identity = self.package.clone();
+        identity.id = package;
+        let mut metadata = self.metadata.clone();
+        metadata.package = package;
+        environment.external_packages.push(identity);
+        environment.external_public_metadata.push(metadata);
+        environment
+            .external_definition_origins
+            .push(ProjectExternalDefinitionOriginsInput {
+                package,
+                origins: self.origins.clone(),
+                descriptors: Some(self.descriptors.as_ref().clone()),
+            });
+        package
     }
 }
 
