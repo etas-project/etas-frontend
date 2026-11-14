@@ -5,7 +5,9 @@ use crate::{
     Visibility,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct Symbol {
     pub id: SymbolId,
     pub name: String,
@@ -18,7 +20,9 @@ pub struct Symbol {
     pub definition_span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct SymbolData {
     pub name: String,
     pub kind: SymbolKind,
@@ -30,7 +34,9 @@ pub struct SymbolData {
     pub definition_span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SymbolKind {
     Module,
     TypeAlias,
@@ -54,7 +60,9 @@ pub enum SymbolKind {
     StdPreludeAlias,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SymbolDef {
     Module {
         module: HirModuleId,
@@ -123,13 +131,17 @@ pub enum SymbolDef {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ImportAliasOrigin {
     SourceImport,
     StdPrelude,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum PatternBindingOwner {
     MatchArm { expr: HirExprId },
     Handler { expr: HirExprId },
@@ -156,7 +168,9 @@ pub enum ResourceKind {
     Other,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SyntheticSymbolReason {
     ImportAlias,
     QualifiedEffectAction,

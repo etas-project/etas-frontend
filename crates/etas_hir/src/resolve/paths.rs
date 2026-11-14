@@ -4,7 +4,9 @@ use etas_syntax::ast;
 
 use crate::{HirDiagnostics, HirEffectRef, ScopeId, ScopeTree, SymbolId, SymbolKind, SymbolTable};
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ResolveResult {
     Resolved(SymbolId),
     PartiallyResolved(PartialResolution),
@@ -12,7 +14,9 @@ pub enum ResolveResult {
     Ambiguous(Vec<SymbolId>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct PartialResolution {
     pub resolved_prefix: Option<SymbolId>,
     pub resolved_segments: u32,
@@ -20,7 +24,9 @@ pub struct PartialResolution {
     pub reason: PartialResolutionReason,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum PartialResolutionReason {
     MemberRequiresTypeChecking,
     ModuleMemberMissing,
@@ -28,7 +34,9 @@ pub enum PartialResolutionReason {
     PackageResolverRequired,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResolvedPath {
     pub syntax_path: ast::Path,
     pub segments: Vec<PathSegment>,
@@ -36,19 +44,25 @@ pub struct ResolvedPath {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct PathSegment {
     pub name: String,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResolvedSymbol {
     pub symbol: SymbolId,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResolvedActionRef {
     pub effect: HirEffectRef,
     pub action: String,

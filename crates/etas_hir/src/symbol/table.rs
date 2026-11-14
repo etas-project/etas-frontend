@@ -1,8 +1,9 @@
 use crate::{Symbol, SymbolData, SymbolId};
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     members: std::collections::HashMap<(SymbolId, String), Vec<SymbolId>>,
 }
 

@@ -129,7 +129,7 @@ impl ProjectInput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
     pub standard_library_mode: StandardLibraryMode,
@@ -143,19 +143,6 @@ pub struct ProjectCompileOptions {
     /// target. The default supports no residual plan, so every outstanding
     /// residual obligation is rejected.
     pub residual_target: etas_code::residual::target::ResidualTargetCapabilities,
-}
-
-impl Default for ProjectCompileOptions {
-    fn default() -> Self {
-        Self {
-            entry_policy: EntryPolicy::default(),
-            standard_library_mode: StandardLibraryMode::default(),
-            reflection: crate::code::definition::ReflectionOptions::default(),
-            optimization_level: OptimizationLevel::default(),
-            quality_context_token_budget: None,
-            residual_target: Default::default(),
-        }
-    }
 }
 
 impl ProjectCompileOptions {
@@ -508,7 +495,7 @@ impl ProjectEnvironmentInput {
             .iter()
             .filter(|metadata| selected.is_none_or(|id| metadata.package == id))
             .collect();
-        public_metadata.sort_by(|left, right| left.package.cmp(&right.package));
+        public_metadata.sort_by_key(|entry| entry.package);
         for metadata in public_metadata {
             parts.push(format!("public-package:{}", metadata.package.0));
             for signature in &metadata.types {

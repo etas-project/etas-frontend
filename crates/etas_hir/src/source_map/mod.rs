@@ -8,18 +8,29 @@ use crate::{
 
 etas_core::id_type!(SyntaxNodeId);
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct SourceMap {
+    #[serde(serialize_with = "crate::serde_ordered::sources")]
     pub lexical_sources: HashMap<SourceId, SourceId>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub item_sources: HashMap<HirItemId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub expr_sources: HashMap<HirExprId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub handler_arm_sources: HashMap<HirHandlerArmId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub stmt_sources: HashMap<HirStmtId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub pat_sources: HashMap<HirPatId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub type_sources: HashMap<HirTypeId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub block_sources: HashMap<HirBlockId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub symbol_sources: HashMap<SymbolId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub syntax_nodes: HashMap<SyntaxNodeId, SyntaxNodeRef>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub syntax_to_hir: HashMap<SyntaxNodeId, Vec<HirNodeRef>>,
 }
 
@@ -31,7 +42,9 @@ impl SourceMap {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct SyntaxNodeRef {
     pub id: SyntaxNodeId,
     pub span: Span,
@@ -40,7 +53,17 @@ pub struct SyntaxNodeRef {
     pub child_index: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum SyntaxNodeKind {
     Item,
     Expr,
@@ -52,7 +75,9 @@ pub enum SyntaxNodeKind {
     Symbol,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirOrigin {
     Direct(SyntaxNodeRef),
     Desugared {
@@ -87,18 +112,24 @@ impl HirOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum DesugaringKind {
     MatchStatementExpr,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SyntheticOriginReason {
     LoweringGenerated,
     Recovery,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirNodeRef {
     Item(HirItemId),
     Expr(HirExprId),

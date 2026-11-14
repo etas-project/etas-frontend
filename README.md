@@ -124,6 +124,22 @@ For a source-root smoke check while the driver build command is being added:
 cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library
 ```
 
+`library_hir::LibraryHirImage` archives the checked library's HIR with private
+declarations, generic bodies, lexical scopes, canonical declaration/method
+identities and source maps. Sources retain package-relative paths and stable
+source keys. HIR maps and sets serialize in deterministic order. Decoding and
+rebuilding `HirRevision` preserves the graph across processes and checkout paths.
+This is a bundle component; execution still requires matching type/effect,
+native-binding and backend artifacts. It does not deserialize a `CheckedProgram`.
+
+The smoke-check example can export this component when its caller supplies the
+package identity, or load it in a separate process:
+
+```bash
+cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library std 0.2.2 /tmp/std.hir
+target/debug/examples/check_std_source --read-hir /tmp/std.hir
+```
+
 ## Build and Verify
 
 The workspace requires Rust `1.85` or newer and access to

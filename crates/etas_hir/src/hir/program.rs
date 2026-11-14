@@ -7,15 +7,19 @@ use crate::{
     HirModuleId, HirPatArena, HirStmtArena, HirTypeArena, ScopeTree, SourceMap, SymbolTable,
 };
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirProgram {
     pub modules: Vec<HirModuleId>,
     pub symbols: SymbolTable,
     pub scopes: ScopeTree,
     pub items: HirItemArena,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub item_annotations: HashMap<HirItemId, Vec<crate::HirAnnotation>>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub agent_methods: HashMap<crate::SymbolId, HirAgentMethod>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub source_import_targets: HashMap<crate::SymbolId, crate::SymbolId>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub standard_action_targets: HashMap<crate::SymbolId, etas_std::StdSymbolId>,
     pub exprs: HirExprArena,
     pub handler_arms: HirHandlerArmArena,
@@ -26,13 +30,17 @@ pub struct HirProgram {
     pub modules_arena: HirModuleArena,
     pub source_map: SourceMap,
     pub diagnostics: Vec<Diagnostic>,
+    #[serde(serialize_with = "crate::serde_ordered::set")]
     optimized_out_blocks: std::collections::HashSet<crate::HirBlockId>,
+    #[serde(serialize_with = "crate::serde_ordered::set")]
     optimized_out_exprs: std::collections::HashSet<crate::HirExprId>,
+    #[serde(serialize_with = "crate::serde_ordered::set")]
     optimized_out_patterns: std::collections::HashSet<crate::HirPatId>,
+    #[serde(serialize_with = "crate::serde_ordered::set")]
     optimized_out_statements: std::collections::HashSet<crate::HirStmtId>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirAgentMethod {
     pub agent: crate::SymbolId,
     pub symbol: crate::SymbolId,

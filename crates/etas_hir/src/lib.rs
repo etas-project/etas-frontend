@@ -6,6 +6,7 @@ pub mod ids;
 pub mod lower;
 pub mod resolve;
 pub mod scope;
+mod serde_ordered;
 pub mod source_map;
 pub mod symbol;
 pub mod view;

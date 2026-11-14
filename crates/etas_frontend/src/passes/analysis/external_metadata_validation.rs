@@ -595,7 +595,7 @@ fn validate_trace_spec_identities(
             if let Some(previous) = summaries.insert(&summary.definition, &summary.alternatives) {
                 if !comparator
                     .alternatives(previous, &summary.alternatives)
-                    .map_err(&fail)?
+                    .map_err(fail)?
                 {
                     return Err(fail(
                         "conflicting metadata for trace spec definition identity".into(),

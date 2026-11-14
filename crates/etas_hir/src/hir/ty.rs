@@ -6,7 +6,7 @@ use crate::{Arena, HirExprId, HirTypeId, ResolvedPath, SymbolId};
 pub type HirTypeArena = Arena<HirTypeId, HirType>;
 pub use ast::PrimitiveType as HirPrimitiveType;
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirType {
     Existential {
         bounds: Vec<HirTypeParamBound>,
@@ -67,7 +67,7 @@ impl HirType {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirFieldDecl {
     pub symbol: SymbolId,
     pub ty: HirTypeId,
@@ -75,35 +75,41 @@ pub struct HirFieldDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct HirTypeParamBound {
     pub path: ResolvedPath,
     pub args: Vec<HirTypeId>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirEffectRow {
     pub effects: Vec<HirEffectRef>,
     pub tail: Option<ResolvedPath>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirGenericArg {
     Type(HirTypeId),
     EffectRow(HirEffectRow),
     Wildcard { span: Span },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct HirEffectRef {
     pub path: ResolvedPath,
     pub args: Vec<HirEffectArg>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirEffectArg {
     Type(HirTypeId),
     Path(ResolvedPath),
@@ -125,7 +131,7 @@ pub enum HirEffectArg {
     },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirHandlerProducedEffects {
     Infer,
     Explicit(HirEffectRow),

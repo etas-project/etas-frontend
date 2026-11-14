@@ -96,6 +96,12 @@ impl ProjectContext {
         input: ProjectInput,
         std_registry: Arc<etas_std::StdRegistry>,
     ) -> Self {
+        let std_registry =
+            if input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+                Arc::new(std_registry.native_bootstrap())
+            } else {
+                std_registry
+            };
         let optimization_report =
             crate::HirOptimizationReport::new(input.options.optimization_level);
         Self {

@@ -83,7 +83,15 @@ pub enum HandlerProducedEffects {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum PrimitiveType {
     Bool,
@@ -151,7 +159,15 @@ pub struct FieldDecl {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum Visibility {
     Private,

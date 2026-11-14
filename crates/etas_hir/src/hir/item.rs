@@ -7,14 +7,14 @@ use crate::{
 
 pub type HirItemArena = Arena<HirItemId, HirItem>;
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirAnnotation {
     pub path: ResolvedPath,
     pub args: Vec<HirAnnotationArg>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirAnnotationArg {
     Positional {
         value: HirExprId,
@@ -28,7 +28,7 @@ pub enum HirAnnotationArg {
     },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirItem {
     TypeAlias(HirTypeAliasDecl),
     Type(HirTypeDecl),
@@ -79,7 +79,7 @@ impl HirItem {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirTypeAliasDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -88,7 +88,7 @@ pub struct HirTypeAliasDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirTypeDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -97,13 +97,13 @@ pub struct HirTypeDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirTypeDeclBody {
     Bodyless,
     Representation(HirTypeId),
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirEnumDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -112,7 +112,7 @@ pub struct HirEnumDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirEnumVariant {
     pub symbol: SymbolId,
     pub fields: Vec<HirTypeId>,
@@ -120,14 +120,14 @@ pub struct HirEnumVariant {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirSpecKind {
     TypeSpec,
     CallableSpec,
     TraceSpec,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirSpecDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -140,7 +140,7 @@ pub struct HirSpecDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirSpecCallableSignature {
     pub input: HirTypeId,
     pub output: HirTypeId,
@@ -148,7 +148,7 @@ pub struct HirSpecCallableSignature {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirSpecExpr {
     Atom(HirEffectRef),
     Allow {
@@ -195,13 +195,13 @@ impl HirSpecExpr {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirSpecItem {
     FlowSignature(Box<HirFlowSignature>),
     Error { span: Span },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirFlowSignature {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -213,7 +213,7 @@ pub struct HirFlowSignature {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirImplDecl {
     pub type_params: Vec<SymbolId>,
     pub target: HirImplTarget,
@@ -222,7 +222,7 @@ pub struct HirImplDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirSpecRef {
     pub spec_path: ResolvedPath,
     pub spec_args: Vec<HirTypeId>,
@@ -231,7 +231,7 @@ pub struct HirSpecRef {
 
 pub type HirImplSpecRef = HirSpecRef;
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirImplTarget {
     Agent {
         target: ResolvedPath,
@@ -248,7 +248,7 @@ pub enum HirImplTarget {
     Error,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirImplItem {
     Flow(HirFlowDecl),
     Callable { item: crate::HirItemId },
@@ -256,7 +256,7 @@ pub enum HirImplItem {
     Error { span: Span },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirEffectDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -266,7 +266,7 @@ pub struct HirEffectDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirEffectBody {
     Empty {
         span: Span,
@@ -286,7 +286,7 @@ impl HirEffectBody {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirEffectActionDecl {
     pub symbol: SymbolId,
     pub selector_params: Vec<HirActionSelectorParam>,
@@ -297,12 +297,12 @@ pub struct HirEffectActionDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirActionSelectorParam {
     Type { symbol: SymbolId },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirFlowDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -315,7 +315,7 @@ pub struct HirFlowDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Copy, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirFlowBody {
     Block(HirBlockId),
     Expr {
@@ -337,20 +337,20 @@ impl HirFlowBody {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirDeclarationConformance {
     pub target: HirDeclarationConformanceTarget,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirDeclarationConformanceTarget {
     Path(HirSpecRef),
     InlineTraceSpec(HirSpecExpr),
     Error { span: Span },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirToolDecl {
     pub symbol: SymbolId,
     pub type_params: Vec<SymbolId>,
@@ -363,14 +363,14 @@ pub struct HirToolDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirToolBody {
     Source(HirFlowBody),
     Decl { span: Span },
     Error { span: Span },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirAgentDecl {
     pub symbol: SymbolId,
     pub params: Vec<SymbolId>,
@@ -382,7 +382,7 @@ pub struct HirAgentDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirAgentBody {
     Source { block: HirBlockId },
     Decl { span: Span },
@@ -398,7 +398,7 @@ impl HirAgentBody {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirTopLevelLetDecl {
     pub symbol: SymbolId,
     pub visibility: Visibility,
@@ -408,14 +408,14 @@ pub struct HirTopLevelLetDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirMemoryAccess {
     pub kind: etas_syntax::ast::MemoryAccessKind,
     pub path: ResolvedPath,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirProtocolDecl {
     pub symbol: SymbolId,
     pub messages: Vec<HirProtocolMsg>,
@@ -423,7 +423,7 @@ pub struct HirProtocolDecl {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirProtocolMsg {
     pub from: ResolvedPath,
     pub to: ResolvedPath,

@@ -1,6 +1,7 @@
 mod artifact;
 pub mod code;
 mod incremental;
+pub mod library_hir;
 mod optimization;
 mod output;
 mod package_metadata;

@@ -327,7 +327,15 @@ pub struct UnaryExpr {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum UnaryOp {
     Not,
@@ -343,7 +351,15 @@ pub struct BinaryExpr {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum BinaryOp {
     EqEq,

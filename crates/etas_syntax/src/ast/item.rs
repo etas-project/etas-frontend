@@ -537,7 +537,15 @@ pub struct TopLevelLetDecl {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum MemoryAccessKind {
     Read,

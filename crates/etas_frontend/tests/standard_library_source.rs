@@ -156,3 +156,73 @@ fn std_source_build_checks_an_unreferenced_private_body_at_its_source_location()
         output.diagnostics
     );
 }
+
+#[test]
+fn checked_library_hir_round_trips_private_generic_bodies_with_portable_identities() {
+    use etas_frontend::library_hir::LibraryHirImage;
+    let owner = etas_code::PackageKey::from_name_and_version("std", "0.2.2").unwrap();
+    let make_image = || {
+        let package = SourcePackage::new();
+        package.write(
+            "generic.es",
+            r#"
+module std.text;
+flow private_identity<T>(value: T) -> T { return value; }
+public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); }
+"#,
+        );
+        let mut loaded = package.load();
+        loaded.input.environment.local_source_package = Some(owner);
+        loaded.input.environment.stable_source_keys = loaded
+            .input
+            .sources
+            .iter()
+            .map(|source| {
+                let path = source
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .strip_prefix(&package.0)
+                    .unwrap();
+                let segments = path
+                    .components()
+                    .map(|part| part.as_os_str().to_str().unwrap().to_owned())
+                    .collect::<Vec<_>>();
+                etas_frontend::ProjectStableSourceKeyInput {
+                    source: source.id,
+                    key: etas_code::StableSourceKey::new(
+                        etas_code::StableSourceOrigin::Package(owner),
+                        &segments,
+                    )
+                    .unwrap(),
+                }
+            })
+            .collect();
+        let output = Frontend.check_standard_library_source(loaded.input);
+        assert!(output.checked.is_some(), "{:?}", output.diagnostics);
+        LibraryHirImage::from_checked(output.checked.as_ref().unwrap(), owner, &package.0).unwrap()
+    };
+    // Independent sessions and checkouts exercise map ordering and path removal.
+    let first = make_image();
+    let bytes = first.encode().unwrap();
+    assert_eq!(bytes, make_image().encode().unwrap());
+    let restored = LibraryHirImage::decode(&bytes).unwrap();
+    assert_eq!(restored.package, owner);
+    assert!(
+        restored
+            .sources
+            .iter()
+            .all(|source| !source.relative_path.is_absolute())
+    );
+    for name in ["join", "private_identity", "generic_echo"] {
+        assert!(
+            restored
+                .declarations
+                .keys()
+                .any(|key| key.package() == owner && key.declaration() == [name.to_owned()])
+        );
+    }
+    let original = etas_hir::dump_hir(&first.program, Default::default());
+    let revision = restored.into_revision().unwrap();
+    assert_eq!(original, etas_hir::dump_hir(&revision, Default::default()));
+}
