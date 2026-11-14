@@ -124,24 +124,27 @@ For a source-root smoke check while the driver build command is being added:
 cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library
 ```
 
-`library_hir::LibraryHirImage` archives the checked library's HIR with private
-declarations, generic bodies, lexical scopes, canonical declaration/method
-identities, source maps, matching type/effect stores and facts, effect registry,
-concurrency eligibility and native generic applications. Sources retain
-package-relative paths and stable source keys. Unordered indexes serialize in
-canonical order, including nested method indexes. Generic application lookup
-hashes are rebuilt when loaded rather than stored as portable identities.
-Decoding and rebuilding `HirRevision` preserves the graph across processes and
-checkout paths. This is a bundle component; execution still requires restoration
-and validation of its native-binding environment, source archive and backend
-artifacts. It does not deserialize a `CheckedProgram`.
+`library_hir::LibraryHirImage` archives the checked library's HIR, private and
+generic bodies, declaration/method identities, source maps, type/effect facts,
+native generic applications, module/import bindings, reflection paths and exact
+compile options. Source paths remain relative to the package. Schema 3 uses
+CBOR so optional fields and dynamic tool-schema values retain their structure;
+unordered indexes use canonical serialization order.
 
-The smoke-check example can export this component when its caller supplies the
-package identity, or load it in a separate process:
+`into_revision` loads the raw graph. `into_checked` restores source provenance
+and runs the existing effect, residual-target, handler, native invocation,
+reflection and checked-publication passes. It parses the archived source for
+reflection without lowering or typechecking source bodies again. Live candidate
+revisions and foreign catalog bindings cannot be published as source libraries.
+The driver must verify the enclosing SDK artifact and supply its matching
+registry; the complete installed provider and runtime linking are still pending.
+
+The example can export a component or load it in another process:
 
 ```bash
-cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library std 0.2.2 /tmp/std.hir
+cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library std 0.2.3 /tmp/std.hir
 target/debug/examples/check_std_source --read-hir /tmp/std.hir
+target/debug/examples/check_std_source --load-library /tmp/std.hir /tmp/installed-std
 ```
 
 ## Build and Verify

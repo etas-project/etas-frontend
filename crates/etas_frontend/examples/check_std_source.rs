@@ -6,6 +6,22 @@ use etas_frontend::{
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if let [flag, path, root] = args.as_slice()
+        && flag == "--load-library"
+    {
+        let image = etas_frontend::library_hir::LibraryHirImage::decode(&std::fs::read(path)?)?;
+        let checked = image.into_checked(
+            std::path::Path::new(root),
+            std::sync::Arc::new(etas_std::standard_registry()),
+        )?;
+        println!(
+            "Restored checked library: {} declarations, {} effect summaries, {} sources",
+            checked.hir.items.len(),
+            checked.effects.item_effects.len(),
+            checked.sources.sources.len()
+        );
+        return Ok(());
+    }
     if let [flag, path] = args.as_slice()
         && flag == "--read-hir"
     {

@@ -100,6 +100,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "ciborium"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -113,6 +140,12 @@ checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crunchy"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "displaydoc"
@@ -134,7 +167,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 [[package]]
 name = "etas_builtin"
 version = "0.1.1"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "etas_core",
  "etas_std",
@@ -144,7 +177,7 @@ dependencies = [
 [[package]]
 name = "etas_cache"
 version = "0.1.0"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "blake3",
  "etas_core",
@@ -154,8 +187,8 @@ dependencies = [
 
 [[package]]
 name = "etas_code"
-version = "0.2.0"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+version = "0.2.1"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "blake3",
  "etas_core",
@@ -166,7 +199,7 @@ dependencies = [
 [[package]]
 name = "etas_core"
 version = "0.2.0"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "etas_memory_derive",
  "serde",
@@ -194,10 +227,11 @@ dependencies = [
 
 [[package]]
 name = "etas_frontend"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "bincode",
  "blake3",
+ "ciborium",
  "etas_cache",
  "etas_code",
  "etas_core",
@@ -239,7 +273,7 @@ dependencies = [
 [[package]]
 name = "etas_memory_derive"
 version = "0.1.0"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -248,7 +282,7 @@ dependencies = [
 [[package]]
 name = "etas_package_metadata"
 version = "0.2.0"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "blake3",
  "etas_code",
@@ -260,8 +294,8 @@ dependencies = [
 
 [[package]]
 name = "etas_std"
-version = "0.2.2"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+version = "0.2.3"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "blake3",
  "etas_core",
@@ -307,8 +341,8 @@ dependencies = [
 
 [[package]]
 name = "etas_utils"
-version = "0.1.1"
-source = "git+https://github.com/etas-project/etas-core.git?rev=239fc595b26bbeca072c0fdbc5d06642d3307a17#239fc595b26bbeca072c0fdbc5d06642d3307a17"
+version = "0.1.2"
+source = "git+https://github.com/etas-project/etas-core.git?rev=4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d#4b4cd2eb1e773c9d21303e3f3329b1bd6877fc0d"
 dependencies = [
  "etas_core",
  "serde",
@@ -342,6 +376,17 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
+]
+
+[[package]]
+name = "half"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
+dependencies = [
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]

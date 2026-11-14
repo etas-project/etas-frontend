@@ -1,6 +1,6 @@
 [package]
 name = "etas_frontend"
-version = "0.10.5"
+version = "0.10.6"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -19,6 +19,7 @@ etas_syntax.workspace = true
 etas_types.workspace = true
 etas_utils.workspace = true
 bincode.workspace = true
+ciborium.workspace = true
 blake3.workspace = true
 prost.workspace = true
 serde.workspace = true

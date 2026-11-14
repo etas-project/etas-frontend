@@ -169,6 +169,13 @@ fn checked_library_hir_round_trips_private_generic_bodies_with_portable_identiti
 module std.text;
 flow private_identity<T>(value: T) -> T { return value; }
 public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); }
+public spec Read<T> { flow read(self) -> T ![]; }
+public type Container<T> = { value: T };
+impl Container<T> ~ Read<T> {
+    public flow read(self) -> T ![] { return self.value; }
+}
+public flow read_string<S ~ Read<string>>(value: S) -> string ![] { return value.read(); }
+public flow describe() -> unit { let definition = ^generic_echo; return; }
 "#,
         );
         let mut loaded = package.load();
@@ -204,6 +211,8 @@ public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); 
     };
     // Independent sessions and checkouts exercise map ordering and path removal.
     let first = make_image();
+    assert!(!first.methods.is_empty());
+    assert!(!first.types.reflections.is_empty());
     let bytes = first.encode().unwrap();
     let second = make_image();
     let mut changed = Vec::new();
@@ -257,4 +266,28 @@ public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); 
     let original = etas_hir::dump_hir(&first.program, Default::default());
     let revision = restored.into_revision().unwrap();
     assert_eq!(original, etas_hir::dump_hir(&revision, Default::default()));
+    let installed = SourcePackage::new();
+    let linked = LibraryHirImage::decode(&bytes)
+        .unwrap()
+        .into_checked(
+            &installed.0,
+            std::sync::Arc::new(etas_std::standard_registry()),
+        )
+        .unwrap();
+    assert_eq!(
+        original,
+        etas_hir::dump_hir(&linked.hir, Default::default())
+    );
+    assert!(linked.uses_environment(&first.environment));
+    assert!(linked.entry.is_none());
+    assert_eq!(
+        linked.checked_reflections().len(),
+        first.types.reflections.len()
+    );
+    for item in first.declarations.values() {
+        if first.types.item_signatures.contains_key(item) {
+            assert!(linked.definition_sources.body(*item).is_some());
+            assert!(linked.effects.item_effects.contains_key(item));
+        }
+    }
 }

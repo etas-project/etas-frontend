@@ -16,7 +16,18 @@ use crate::project::{
 };
 
 #[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, etas_core::RetainedSize,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum OptimizationLevel {
     O0,
@@ -129,7 +140,16 @@ impl ProjectInput {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
     pub standard_library_mode: StandardLibraryMode,
@@ -191,7 +211,17 @@ impl ProjectCompileOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum EntryPolicy {
     #[default]
     CompileOnly,
@@ -199,7 +229,17 @@ pub enum EntryPolicy {
     Runnable,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum StandardLibraryMode {
     #[default]
     Consumer,
@@ -209,7 +249,16 @@ pub enum StandardLibraryMode {
     SourceBootstrap,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ProjectEnvironmentInput {
     /// Caller-supplied pre-analysis identities; SourceId is only a lookup key.
     pub stable_source_keys: Vec<ProjectStableSourceKeyInput>,
@@ -231,19 +280,25 @@ pub struct ProjectEnvironmentInput {
     pub external_modules_fingerprint: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectStableSourceKeyInput {
     pub source: SourceId,
     pub key: etas_code::StableSourceKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectStandaloneSourcePackage {
     pub source: SourceId,
     pub package: etas_code::PackageKey,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectDependencySourcePackage {
     pub package: ExternalPackageId,
     pub import_root: String,
@@ -279,7 +334,9 @@ pub(crate) fn resolve_stable_source_key(
     Ok(key)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalDefinitionOriginsInput {
     pub package: ExternalPackageId,
     pub origins: etas_code::identity::PackageDefinitionOrigins,
@@ -708,7 +765,9 @@ impl ProjectEnvironmentInput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalPackageInput {
     pub id: ExternalPackageId,
     pub name: String,
@@ -718,13 +777,17 @@ pub struct ProjectExternalPackageInput {
     pub std_compatibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalPackageDependencyInput {
     pub package: ExternalPackageId,
     pub dependency: ExternalPackageId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalModuleInput {
     pub package: Option<ExternalPackageId>,
     pub id: ExternalModuleId,
@@ -732,7 +795,9 @@ pub struct ProjectExternalModuleInput {
     pub exports: Vec<ProjectExternalExportInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalPublicMetadataInput {
     pub package: ExternalPackageId,
     pub types: Vec<ProjectExternalNamedSignatureInput>,
@@ -757,7 +822,9 @@ pub struct ProjectExternalPublicMetadataInput {
     pub re_exports: Vec<ProjectExternalReExportInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalNamedSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
@@ -765,7 +832,9 @@ pub struct ProjectExternalNamedSignatureInput {
     pub ty: Option<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalSpecSignatureInput {
     pub path: Vec<String>,
     pub visibility: String,
@@ -777,14 +846,18 @@ pub struct ProjectExternalSpecSignatureInput {
     pub super_specs: Vec<ProjectExternalSpecBoundInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalSpecKindInput {
     Type,
     Callable,
     Trace,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalSpecMethodInput {
     pub name: String,
     pub path: Vec<String>,
@@ -792,13 +865,17 @@ pub struct ProjectExternalSpecMethodInput {
     pub receiver_param: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalSpecBoundInput {
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalSpecImplInput {
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
@@ -806,27 +883,35 @@ pub struct ProjectExternalSpecImplInput {
     pub methods: Vec<etas_code::MethodId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalTypeSpecSatisfactionInput {
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalCallableSpecSatisfactionInput {
     pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalTraceSpecConformanceInput {
     pub item: etas_package_metadata::CallableContractTarget,
     pub target: ProjectExternalTraceSpecConformanceTargetInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalTraceSpecConformanceTargetInput {
     Inline,
     Named {
@@ -836,7 +921,9 @@ pub enum ProjectExternalTraceSpecConformanceTargetInput {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalFlowSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
@@ -847,7 +934,9 @@ pub struct ProjectExternalFlowSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalAgentSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
@@ -858,7 +947,9 @@ pub struct ProjectExternalAgentSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalToolSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
@@ -869,13 +960,17 @@ pub struct ProjectExternalToolSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalToolSchemaInput {
     pub path: Vec<String>,
     pub schema_json: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalActionSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalActionGenericParamInput>,
@@ -888,14 +983,18 @@ pub struct ProjectExternalActionSignatureInput {
     pub visibility: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalCallableGenericParamInput {
     pub name: String,
     pub kind: ProjectExternalCallableGenericParamKindInput,
     pub bounds: Vec<ProjectExternalSpecBoundInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalCallableGenericParamKindInput {
     Type,
     Effect,
@@ -903,7 +1002,9 @@ pub enum ProjectExternalCallableGenericParamKindInput {
 
 pub type ProjectExternalActionGenericParamInput = ProjectExternalCallableGenericParamInput;
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalActionArgKindInput {
     Type,
     MemoryPlace,
@@ -911,19 +1012,33 @@ pub enum ProjectExternalActionArgKindInput {
     StringPattern,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ProjectExternalEffectRowInput {
     pub effects: Vec<ProjectExternalEffectRefInput>,
     pub tail: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalEffectRefInput {
     pub path: Vec<String>,
     pub args: Vec<ProjectExternalEffectArgInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalEffectArgInput {
     Type(ProjectExternalTypeInput),
     Path(Vec<String>),
@@ -932,7 +1047,9 @@ pub enum ProjectExternalEffectArgInput {
     Wildcard,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalTypeInput {
     Existential {
         bounds: Vec<ProjectExternalSpecBoundInput>,
@@ -1011,13 +1128,17 @@ pub enum ProjectExternalTypeInput {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalRecordFieldInput {
     pub name: String,
     pub ty: ProjectExternalTypeInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalEffectSummaryInput {
     pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
@@ -1032,45 +1153,66 @@ pub struct ProjectExternalEffectSummaryInput {
     pub action_trace: ProjectExternalActionTraceInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalRequestInstantiationInput {
     pub actions: Vec<ProjectExternalActionRequestInput>,
     pub parameters: Vec<ProjectExternalParameterRequestInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalActionRequestInput {
     pub action: ProjectExternalEffectRefInput,
     pub type_bindings: Option<Vec<(String, ProjectExternalTypeInput)>>,
     pub signature: Option<ProjectExternalActionRequestSignatureInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalActionRequestSignatureInput {
     pub params: Vec<ProjectExternalTypeInput>,
     pub output: ProjectExternalTypeInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalParameterRequestInput {
     pub parameter: etas_package_metadata::CallableRequestTarget,
     pub excluded: Vec<ProjectExternalEffectRefInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalDefaultHandlerEffectsInput {
     pub direct_effects: ProjectExternalEffectRowInput,
     pub default_actions: ProjectExternalEffectRowInput,
     pub handlers: Vec<ProjectExternalDefaultHandlerContributionInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalDefaultHandlerContributionInput {
     pub action: ProjectExternalEffectRefInput,
     pub produced: ProjectExternalEffectRowInput,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum ProjectExternalActionTraceInput {
     #[default]
     Empty,
@@ -1091,7 +1233,17 @@ pub enum ProjectExternalActionTraceInput {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum ProjectExternalActionTraceEventSourceInput {
     Perform,
     StdIntrinsic,
@@ -1102,27 +1254,35 @@ pub enum ProjectExternalActionTraceEventSourceInput {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalLatentFlowSummaryInput {
     pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub declared_bound: ProjectExternalEffectRowInput,
     pub inferred_effects: ProjectExternalEffectRowInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalActionSummaryInput {
     pub action: Vec<String>,
     pub args: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalTraceSpecSummaryInput {
     pub trace_spec: Vec<String>,
     pub definition: etas_code::DefinitionKey,
     pub alternatives: Vec<Vec<ProjectExternalTraceSpecClauseInput>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalTraceSpecClauseInput {
     pub kind: ProjectExternalTraceSpecClauseKindInput,
     pub pattern: Option<ProjectExternalEffectRowInput>,
@@ -1132,7 +1292,9 @@ pub struct ProjectExternalTraceSpecClauseInput {
     pub selector_bounds: Vec<ProjectExternalTraceSelectorBoundInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalTraceSelectorBoundInput {
     pub operand: ProjectExternalTraceSelectorOperandInput,
     pub effect_path: Vec<String>,
@@ -1142,7 +1304,9 @@ pub struct ProjectExternalTraceSelectorBoundInput {
     pub spec_args: Vec<ProjectExternalTypeInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalTraceSelectorOperandInput {
     Pattern,
     Guard,
@@ -1150,7 +1314,9 @@ pub enum ProjectExternalTraceSelectorOperandInput {
     Obligation,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ProjectExternalTraceSpecClauseKindInput {
     Allow,
     Deny,
@@ -1158,20 +1324,26 @@ pub enum ProjectExternalTraceSpecClauseKindInput {
     RequireAfter,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalReExportInput {
     pub from: Vec<String>,
     pub exported: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectExternalExportInput {
     pub symbol: ExternalSymbolId,
     pub name: String,
     pub visibility: etas_hir::Visibility,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectToolBindingInput {
     pub tool: String,
     pub provider: String,
@@ -1179,13 +1351,26 @@ pub struct ProjectToolBindingInput {
     pub action_row: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectEntry {
     pub module: Option<ModulePath>,
     pub flow: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ModulePath {
     pub segments: Vec<String>,
 }
@@ -1452,25 +1637,31 @@ impl From<etas_effects::EffectOutput> for SharedEffectOutput {
     }
 }
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct TopLevelLetFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub items: std::collections::HashMap<HirItemId, TopLevelLetFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub symbols: std::collections::HashMap<SymbolId, TopLevelLetFact>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct TopLevelLetFact {
     pub ty: TypeId,
     pub classification: TopLevelLetClassification,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ProjectEntryFact {
     pub requested: ProjectEntry,
     pub resolved: Option<ProjectEntryResolution>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ProjectEntryResolution {
     pub module: HirModuleId,
     pub item: HirItemId,

@@ -11,7 +11,7 @@ pub struct HirItemBindings {
     pub external_import_members: HashMap<etas_hir::SymbolId, HirExternalImportMember>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirExternalImportMember {
     pub package: crate::ExternalPackageId,
     pub path: Vec<String>,

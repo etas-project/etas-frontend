@@ -56,6 +56,19 @@ pub(crate) struct DefinitionSourceCaptureInput<'a> {
 }
 
 impl DefinitionSources {
+    pub(crate) fn library_body_slots(
+        &self,
+    ) -> Result<std::collections::BTreeMap<HirItemId, AstBodyRef>, &'static str> {
+        if !self.revisions.is_empty() || !self.overlaid_bodies.is_empty() {
+            return Err("a library bundle cannot capture live candidate body revisions");
+        }
+        Ok(self
+            .bodies
+            .iter()
+            .map(|(item, body)| (*item, body.clone()))
+            .collect())
+    }
+
     pub(crate) fn capture(
         input: DefinitionSourceCaptureInput<'_>,
     ) -> Result<Self, ReflectionConfigurationError> {
