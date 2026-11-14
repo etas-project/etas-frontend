@@ -2,6 +2,16 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 
 use super::state::BodyPipelineState;
 
+// Type interning assigns arena IDs: visit checked facts in source-ID order so
+// equivalent compilation sessions produce the same portable type graph.
+fn ordered_values_mut<K: Ord, V>(
+    map: &mut std::collections::HashMap<K, V>,
+) -> impl Iterator<Item = &mut V> {
+    let mut entries = map.iter_mut().collect::<Vec<_>>();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.into_iter().map(|(_, value)| value)
+}
+
 pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: BodyPipelineState) {
     let mut state = state;
     if let Err(error) = apply_solver_substitutions(ctx, &mut state) {
@@ -191,12 +201,13 @@ fn materialize_generic_type_instances(
     ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
     state: &mut BodyPipelineState,
 ) -> Result<(), crate::TypeSubstitutionError> {
-    let instantiations = state
+    let mut instantiations = state
         .solver_report
         .generic_instantiations
         .iter()
         .map(|(expr, fact)| (*expr, fact.clone()))
         .collect::<Vec<_>>();
+    instantiations.sort_unstable_by_key(|(expr, _)| *expr);
     let mut replacements = std::collections::HashMap::new();
     for (expr, fact) in instantiations {
         let source = state
@@ -238,17 +249,16 @@ fn materialize_generic_type_instances(
             .with_type_parameters(&replacements)
             .substitute(ty)
     };
-    for ty in state
-        .provisional
-        .expr_types
-        .values_mut()
-        .chain(state.solver_report.inferred_expr_types.values_mut())
-        .chain(state.provisional.stmt_types.values_mut())
-        .chain(state.provisional.pat_types.values_mut())
+    for ty in ordered_values_mut(&mut state.provisional.expr_types)
+        .chain(ordered_values_mut(
+            &mut state.solver_report.inferred_expr_types,
+        ))
+        .chain(ordered_values_mut(&mut state.provisional.stmt_types))
+        .chain(ordered_values_mut(&mut state.provisional.pat_types))
     {
         *ty = remap(ctx, *ty)?;
     }
-    for fact in state.provisional.symbol_types.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.symbol_types) {
         match fact {
             crate::SymbolTypeFact::Param { ty }
             | crate::SymbolTypeFact::Local { ty, .. }
@@ -258,7 +268,7 @@ fn materialize_generic_type_instances(
             _ => {}
         }
     }
-    for fact in state.solver_report.std_intrinsic_calls.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.std_intrinsic_calls) {
         fact.callable_type = remap(ctx, fact.callable_type)?;
         for ty in fact
             .signature
@@ -269,13 +279,13 @@ fn materialize_generic_type_instances(
             *ty = remap(ctx, *ty)?;
         }
     }
-    for fact in state.provisional.handler_actions.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.handler_actions) {
         fact.output = remap(ctx, fact.output)?;
         for ty in &mut fact.params {
             *ty = remap(ctx, *ty)?;
         }
     }
-    for fact in state.provisional.continuation_bindings.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.continuation_bindings) {
         fact.action_output = remap(ctx, fact.action_output)?;
         fact.answer = fact.answer.map(|answer| remap(ctx, answer)).transpose()?;
         fact.residual_effects = fact
@@ -336,7 +346,7 @@ fn apply_solver_substitutions(
         return Ok(());
     }
 
-    for fact in state.solver_report.std_intrinsic_calls.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.std_intrinsic_calls) {
         fact.callable_type = substitute_type(
             ctx,
             &substitutions,
@@ -350,7 +360,7 @@ fn apply_solver_substitutions(
             &mut fact.signature,
         )?;
     }
-    for fact in state.solver_report.action_calls.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.action_calls) {
         substitute_callable_signature(
             ctx,
             &substitutions,
@@ -359,7 +369,7 @@ fn apply_solver_substitutions(
         )?;
     }
 
-    for fact in state.solver_report.reflections.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.reflections) {
         fact.descriptor_type = substitute_type(
             ctx,
             &substitutions,
@@ -371,29 +381,29 @@ fn apply_solver_substitutions(
         }
     }
 
-    for ty in state.provisional.expr_types.values_mut() {
+    for ty in ordered_values_mut(&mut state.provisional.expr_types) {
         *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
     }
-    for ty in state.provisional.expr_memory_places.values_mut() {
+    for ty in ordered_values_mut(&mut state.provisional.expr_memory_places) {
         *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
     }
-    for fact in state.provisional.field_projections.values_mut().flatten() {
+    for fact in ordered_values_mut(&mut state.provisional.field_projections).flatten() {
         fact.receiver = substitute_type(ctx, &substitutions, &named_substitutions, fact.receiver)?;
         fact.output = substitute_type(ctx, &substitutions, &named_substitutions, fact.output)?;
     }
-    for ty in state.provisional.stmt_types.values_mut() {
+    for ty in ordered_values_mut(&mut state.provisional.stmt_types) {
         *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
     }
-    for ty in state.provisional.pat_types.values_mut() {
+    for ty in ordered_values_mut(&mut state.provisional.pat_types) {
         *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
     }
-    for fact in state.provisional.symbol_types.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.symbol_types) {
         substitute_symbol_fact(ctx, &substitutions, &named_substitutions, fact)?;
     }
-    for fact in state.provisional.item_signatures.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.item_signatures) {
         substitute_item_signature(ctx, &substitutions, &named_substitutions, fact)?;
     }
-    for fact in state.provisional.try_facts.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.try_facts) {
         fact.value_type =
             substitute_type(ctx, &substitutions, &named_substitutions, fact.value_type)?;
         fact.result_type =
@@ -402,30 +412,24 @@ fn apply_solver_substitutions(
             *error = substitute_type(ctx, &substitutions, &named_substitutions, *error)?;
         }
     }
-    for fact in state
-        .provisional
-        .index_facts
-        .values_mut()
-        .chain(state.solver_report.index_facts.values_mut())
+    for fact in ordered_values_mut(&mut state.provisional.index_facts)
+        .chain(ordered_values_mut(&mut state.solver_report.index_facts))
     {
         substitute_index_fact(ctx, &substitutions, &named_substitutions, fact)?;
     }
-    for fact in state
-        .provisional
-        .slice_facts
-        .values_mut()
-        .chain(state.solver_report.slice_facts.values_mut())
+    for fact in ordered_values_mut(&mut state.provisional.slice_facts)
+        .chain(ordered_values_mut(&mut state.solver_report.slice_facts))
     {
         substitute_slice_fact(ctx, &substitutions, &named_substitutions, fact)?;
     }
-    for error in state.solver_report.checked_index_errors.values_mut() {
+    for error in ordered_values_mut(&mut state.solver_report.checked_index_errors) {
         *error = substitute_type(ctx, &substitutions, &named_substitutions, *error)?;
     }
-    for fact in state.solver_report.agent_inferences.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.agent_inferences) {
         fact.output = substitute_type(ctx, &substitutions, &named_substitutions, fact.output)?;
         fact.schema = substitute_type(ctx, &substitutions, &named_substitutions, fact.schema)?;
     }
-    for fact in state.provisional.handler_actions.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.handler_actions) {
         fact.output = substitute_type(ctx, &substitutions, &named_substitutions, fact.output)?;
         for ty in &mut fact.params {
             *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
@@ -436,7 +440,7 @@ fn apply_solver_substitutions(
             }
         }
     }
-    for fact in state.provisional.continuation_bindings.values_mut() {
+    for fact in ordered_values_mut(&mut state.provisional.continuation_bindings) {
         fact.action_output = substitute_type(
             ctx,
             &substitutions,
@@ -460,11 +464,7 @@ fn apply_solver_substitutions(
             })
             .transpose()?;
     }
-    for fact in state
-        .solver_report
-        .deferred_handler_instantiations
-        .values_mut()
-    {
+    for fact in ordered_values_mut(&mut state.solver_report.deferred_handler_instantiations) {
         if let Some(overload) = &mut fact.overload {
             for ty in overload
                 .params
@@ -494,7 +494,7 @@ fn apply_solver_substitutions(
                 substitute_type(ctx, &substitutions, &named_substitutions, parameter.rigid)?;
         }
     }
-    for fact in state.solver_report.generic_instantiations.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.generic_instantiations) {
         for (_, ty) in &mut fact.type_bindings {
             *ty = substitute_type(ctx, &substitutions, &named_substitutions, *ty)?;
         }
@@ -529,16 +529,13 @@ fn apply_solver_substitutions(
             }
         }
     }
-    for fact in state.solver_report.checked_method_calls.values_mut().chain(
-        state
-            .solver_report
-            .bound_method_values
-            .values_mut()
+    for fact in ordered_values_mut(&mut state.solver_report.checked_method_calls).chain(
+        ordered_values_mut(&mut state.solver_report.bound_method_values)
             .map(|value| &mut value.method),
     ) {
         fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
     }
-    for fact in state.solver_report.existential_packs.values_mut() {
+    for fact in ordered_values_mut(&mut state.solver_report.existential_packs) {
         fact.try_map_types(|ty| substitute_type(ctx, &substitutions, &named_substitutions, ty))?;
     }
     Ok(())
