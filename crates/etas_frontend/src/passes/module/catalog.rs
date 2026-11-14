@@ -5,7 +5,7 @@ use etas_utils::{
     PreservedArtifacts,
 };
 
-use crate::passes::artifacts::{MODULE_CATALOG, MODULE_INDEX};
+use crate::passes::artifacts::{MODULE_CATALOG, MODULE_INDEX, global_with_diagnostics};
 use crate::{
     CatalogModuleOrigin, ModuleCatalog, ModuleExport, ModuleExportTable, ModuleExportTarget,
     ModuleOrigin, ProjectContext,
@@ -17,7 +17,7 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("BuildModuleCatalogPass", PassKind::Analysis)
             .requires(ArtifactSet::one(MODULE_INDEX))
-            .produces(ArtifactSet::one(MODULE_CATALOG))
+            .produces(global_with_diagnostics([MODULE_CATALOG]))
     }
 
     fn run(
@@ -27,6 +27,44 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let modules = context.modules.as_ref().expect("module index should exist");
+        if context.input.options.standard_library_mode
+            != crate::StandardLibraryMode::SourceBootstrap
+            && let Some((_, module)) = modules.modules.iter().find(|(_, module)| {
+                module
+                    .path
+                    .segments
+                    .first()
+                    .is_some_and(|root| root == "std")
+                    && !matches!(module.origin, ModuleOrigin::VirtualStd { .. })
+            })
+        {
+            context.diagnostics.push(etas_core::Diagnostic::syntax(
+                etas_core::SyntaxDiagnosticCode::InvalidItem,
+                module.span,
+                format!(
+                    "module `{}` conflicts with the toolchain-owned `std` root",
+                    module.path.segments.join(".")
+                ),
+            ));
+            return PassResult::stop();
+        }
+        if let Some(package) = context
+            .input
+            .environment
+            .external_packages
+            .iter()
+            .find(|package| package.import_root.split('.').next() == Some("std"))
+        {
+            let span = context.input.sources.first().map_or_else(
+                || etas_core::Span::empty(etas_core::SourceId(0), etas_core::TextSize::ZERO),
+                |source| etas_core::Span::empty(source.id, etas_core::TextSize::ZERO),
+            );
+            context.diagnostics.push(etas_core::Diagnostic::syntax(
+                etas_core::SyntaxDiagnosticCode::InvalidItem, span,
+                format!("dependency `{}` import root `{}` conflicts with the toolchain-owned `std` root", package.name, package.import_root),
+            ));
+            return PassResult::stop();
+        }
         let mut catalog = ModuleCatalog {
             dependency_namespaces: modules.dependency_namespaces.clone(),
             ..ModuleCatalog::default()
@@ -69,15 +107,11 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
             catalog.insert(module.path.clone(), origin, exports);
         }
 
-        if !context
-            .input
-            .environment
-            .external_packages
-            .iter()
-            .any(|package| package.import_root == "std")
-        {
-            add_std_modules(&mut catalog, &context.std_registry);
-        }
+        add_std_modules(
+            &mut catalog,
+            &context.std_registry,
+            context.input.options.standard_library_mode,
+        );
         add_external_modules(&mut catalog, context);
 
         context.module_catalog = Some(catalog);
@@ -85,13 +119,24 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
     }
 }
 
-fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry) {
+fn add_std_modules(
+    catalog: &mut ModuleCatalog,
+    registry: &etas_std::StdRegistry,
+    mode: crate::StandardLibraryMode,
+) {
     for module in registry.modules() {
         let path = crate::ModulePath {
             segments: module.path.clone(),
         };
         let items = registry
             .module_exports(module.id)
+            .filter(|(_, symbol)| {
+                mode != crate::StandardLibraryMode::SourceBootstrap
+                    || !matches!(
+                        symbol.implementation,
+                        Some(etas_std::StdImplementationRef::Source { .. })
+                    )
+            })
             .map(|(name, symbol)| {
                 (
                     name.to_owned(),
@@ -107,6 +152,18 @@ fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry
                 )
             })
             .collect::<HashMap<_, _>>();
+        if mode == crate::StandardLibraryMode::SourceBootstrap
+            && let Some(key) = catalog
+                .module_keys(&path)
+                .and_then(|keys| keys.first())
+                .copied()
+        {
+            let source = catalog.modules.get_mut(key).expect("source std module");
+            for (name, export) in items {
+                source.exports.items.entry(name).or_insert(export);
+            }
+            continue;
+        }
         catalog.insert(
             path,
             CatalogModuleOrigin::Std { module: module.id },

@@ -12,7 +12,7 @@ use etas_core::Span;
 
 use crate::{HirBlockId, HirExprId, HirItemId, HirModuleId, ResolveResult, ScopeId, SymbolId};
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ScopeTree {
     scopes: Vec<Scope>,
 }
@@ -118,23 +118,38 @@ impl ScopeTree {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct Scope {
     pub id: ScopeId,
     pub parent: Option<ScopeId>,
     pub owner: ScopeOwner,
     pub symbols: Vec<SymbolId>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     names: HashMap<(ScopeNamespace, String), Vec<SymbolId>>,
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialOrd,
+    Ord,
+)]
 pub enum ScopeNamespace {
     Item,
     Module,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ScopeOwner {
     Module(HirModuleId),
     Item(HirItemId),

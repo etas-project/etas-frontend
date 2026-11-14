@@ -181,6 +181,8 @@ impl DefinitionDescriptorProjector<'_> {
             | Type::Schema(_)
             | Type::Prompt
             | Type::PromptPart
+            | Type::SchedulerHandle
+            | Type::Continuation(_)
             | Type::Message(_)
             | Type::MemorySelection(_)
             | Type::Store { .. }
@@ -199,8 +201,6 @@ impl DefinitionDescriptorProjector<'_> {
             Type::IntegerLiteral { .. }
             | Type::Var(_)
             | Type::Refined { .. }
-            | Type::SchedulerHandle
-            | Type::Continuation(_)
             | Type::MemoryPlace(_)
             | Type::ResourceHandle(ResourceHandleType::Other { .. }) => {
                 return Err(ProjectionError::UnresolvedType(source));

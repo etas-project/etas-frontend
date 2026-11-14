@@ -50,7 +50,10 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let environment = context.input.environment.clone();
+        let mut environment = context.input.environment.clone();
+        if let Some(library) = &context.standard_library {
+            library.append_environment(&mut environment);
+        }
         let Some(sources) = context.sources.as_ref() else {
             return PassResult::failed("source package validation requires the source set");
         };
@@ -595,7 +598,7 @@ fn validate_trace_spec_identities(
             if let Some(previous) = summaries.insert(&summary.definition, &summary.alternatives) {
                 if !comparator
                     .alternatives(previous, &summary.alternatives)
-                    .map_err(&fail)?
+                    .map_err(fail)?
                 {
                     return Err(fail(
                         "conflicting metadata for trace spec definition identity".into(),

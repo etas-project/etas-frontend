@@ -8,7 +8,7 @@ use crate::{
 
 use super::module_index::{AstImportRef, AstItemRef, ReExport};
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedImports {
     pub imports: Vec<ResolvedImport>,
     pub wildcard_imports: Vec<ResolvedWildcardImport>,
@@ -17,7 +17,7 @@ pub struct ResolvedImports {
         std::collections::BTreeMap<ModuleKey, std::collections::BTreeMap<String, ImportTarget>>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedImport {
     pub from: ModuleId,
     pub from_part: ModulePartId,
@@ -28,7 +28,7 @@ pub struct ResolvedImport {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedWildcardImport {
     pub from: ModuleId,
     pub from_part: ModulePartId,
@@ -40,7 +40,9 @@ pub struct ResolvedWildcardImport {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ImportTarget {
     Module(ResolvedModuleTarget),
     SourceItem {
@@ -93,7 +95,9 @@ impl ImportTarget {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ResolvedModuleTarget {
     Source {
         key: ModuleKey,
@@ -120,27 +124,29 @@ impl ResolvedModuleTarget {
     }
 }
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedPaths {
     pub module_names: Vec<ResolvedModulePath>,
     pub import_targets: Vec<etas_hir::ResolvedPath>,
     pub expr_paths: Vec<HirExprPathResolution>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedModulePath {
     pub module: HirModuleId,
     pub path: etas_hir::ResolvedPath,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirExprPathResolution {
     pub expr: HirExprId,
     pub path: etas_hir::ResolvedPath,
     pub result: HirPathResolution,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirPathResolution {
     DirectSymbol(SymbolId),
     ExplicitImport {

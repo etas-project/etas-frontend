@@ -19,20 +19,39 @@ use crate::passes::artifacts::{
     CONCURRENCY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, PREPARED_EFFECT_REGISTRY,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ConcurrencyFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub sites: HashMap<HirExprId, ConcurrencySiteFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub owners: HashMap<ScopeId, TaskScopeFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub starts: HashMap<HirExprId, TaskStartFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub awaits: HashMap<HirExprId, TaskAwaitFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub continuation_transfers: HashMap<HirExprId, ContinuationTransferFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub plans: HashMap<ScopeId, ConcurrencyPlanFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub resource_callables: HashMap<HirItemId, ResourceGuardCallablePlan>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub resource_closures: HashMap<HirExprId, ResourceGuardCallablePlan>,
 }
 
 /// Read-only selectors evaluated by the coordinator before task admission.
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum ResourceValueSelector {
     Expr(HirExprId),
     SymbolPath {
@@ -41,20 +60,33 @@ pub enum ResourceValueSelector {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct RuntimeResourceSelector {
     pub store: ResourceValueSelector,
     /// None acquires the entire Store (scan/query/clear and similar operations).
     pub key: Option<HirExprId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResourceGuardCall {
     pub callable: HirItemId,
     pub arguments: Vec<HirExprId>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ResourceGuardCallablePlan {
     pub parameters: Vec<SymbolId>,
     pub resources: Vec<RuntimeResourceSelector>,
@@ -64,7 +96,9 @@ pub struct ResourceGuardCallablePlan {
     pub opaque_memory: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ConcurrencySiteFact {
     pub kind: TaskCallKind,
     pub owner_scope: ScopeId,
@@ -73,7 +107,9 @@ pub struct ConcurrencySiteFact {
     pub concurrency_limit: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct TaskScopeFact {
     pub owner_scope: ScopeId,
     pub sites: Vec<HirExprId>,
@@ -82,7 +118,9 @@ pub struct TaskScopeFact {
     pub concurrency_limit: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct TaskBranchFact {
     pub id: TaskSiteId,
     pub source_index: usize,
@@ -95,7 +133,9 @@ pub struct TaskBranchFact {
 
 pub type BranchFact = TaskBranchFact;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum TaskBranchShape {
     ExplicitStart,
     TupleElement,
@@ -104,7 +144,9 @@ pub enum TaskBranchShape {
     Dynamic,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SchedulingDecision {
     Concurrent,
     Serialize,
@@ -112,12 +154,16 @@ pub enum SchedulingDecision {
     Reject,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResourceGuardPlan {
     pub conflicts: Vec<ResourceConflict>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResourceConflict {
     pub left_task: HirExprId,
     pub right_task: HirExprId,
@@ -125,28 +171,60 @@ pub struct ResourceConflict {
     pub right: Effect,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct TaskSiteId {
     pub source: SourceId,
     pub start: u32,
     pub end: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct AwaitSiteId {
     pub source: SourceId,
     pub start: u32,
     pub end: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct ContinuationTransferId {
     pub source: SourceId,
     pub start: u32,
     pub end: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct TaskStartFact {
     pub id: TaskSiteId,
     pub call: HirExprId,
@@ -159,7 +237,9 @@ pub struct TaskStartFact {
     pub concurrency_limit: Option<u32>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct TaskAwaitFact {
     pub id: AwaitSiteId,
     pub call: HirExprId,
@@ -169,7 +249,9 @@ pub struct TaskAwaitFact {
     pub task: Option<TaskSiteId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ContinuationTransferFact {
     pub id: ContinuationTransferId,
     pub call: HirExprId,
@@ -178,7 +260,9 @@ pub struct ContinuationTransferFact {
     pub target: etas_effects::TransferTarget,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct ConcurrencyPlanFact {
     pub owner_scope: ScopeId,
     pub branches: Vec<TaskSiteId>,

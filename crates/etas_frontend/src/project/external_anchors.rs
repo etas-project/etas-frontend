@@ -13,6 +13,32 @@ pub(crate) struct ExternalImportAnchorIndex {
 }
 
 impl ExternalImportAnchorIndex {
+    pub(crate) fn add_standard_library(
+        &mut self,
+        package: ExternalPackageId,
+        hir: &etas_hir::HirProgram,
+        registry: &etas_std::StdRegistry,
+    ) {
+        for symbol in hir.symbols.iter() {
+            let etas_hir::SymbolDef::ImportAlias { path: imported, .. } = &symbol.def else {
+                continue;
+            };
+            let Some(declaration) = registry
+                .lookup_qualified(imported)
+                .and_then(|symbol| registry.declaration_key(symbol.id))
+            else {
+                continue;
+            };
+            let mut item = declaration.module().to_vec();
+            item.extend_from_slice(declaration.declaration());
+            self.insert_item(package, item, symbol.definition_span);
+            self.insert_module(
+                package,
+                declaration.module().to_vec(),
+                symbol.definition_span,
+            );
+        }
+    }
     pub(crate) fn build(
         imports: &ResolvedImports,
         environment: &ProjectEnvironmentInput,

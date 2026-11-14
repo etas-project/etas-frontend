@@ -315,6 +315,10 @@ impl ExternalDescriptorMatcher<'_> {
             ExternalTypeInput::Result { ok, err } => (B::Result, vec![ok.as_ref(), err.as_ref()]),
             ExternalTypeInput::Prompt => (B::Prompt, vec![]),
             ExternalTypeInput::PromptPart => (B::PromptPart, vec![]),
+            ExternalTypeInput::Named(path) | ExternalTypeInput::Nominal { path, .. }
+                if self.identities.registry.lookup_qualified(path).is_some_and(|symbol| matches!(&symbol.decl, etas_std::StdDecl::Type(decl) if decl.runtime_role == Some(etas_std::RuntimeTypeRole::Scheduler))) => (B::SchedulerHandle, vec![]),
+            ExternalTypeInput::Applied { path, args }
+                if self.identities.registry.lookup_qualified(path).is_some_and(|symbol| matches!(&symbol.decl, etas_std::StdDecl::Type(decl) if decl.runtime_role == Some(etas_std::RuntimeTypeRole::Continuation))) => (B::Continuation, args.iter().collect()),
             ExternalTypeInput::Message(x) => (B::Message, vec![x.as_ref()]),
             ExternalTypeInput::MemorySelection(x) => (B::MemorySelection, vec![x.as_ref()]),
             ExternalTypeInput::Store { key, value } => (B::Store, vec![key.as_ref(), value.as_ref()]),

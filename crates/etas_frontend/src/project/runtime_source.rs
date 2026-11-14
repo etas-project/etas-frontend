@@ -2,7 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{ExternalPackageId, ModulePath};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct RuntimeSourceRequirements {
     pub dependencies: BTreeMap<ExternalPackageId, RuntimeSourceRequirement>,
 }
@@ -13,7 +22,9 @@ impl RuntimeSourceRequirements {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct RuntimeSourceRequirement {
     pub package: ExternalPackageId,
     pub import_root: String,
@@ -23,14 +34,18 @@ pub struct RuntimeSourceRequirement {
     pub reasons: Vec<RuntimeSourceReason>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct RuntimeSourceReason {
     pub item_path: Vec<String>,
     pub module_path: ModulePath,
     pub kind: RuntimeSourceReasonKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum RuntimeSourceReasonKind {
     ExternalRuntimeItem,
     ExternalRuntimeModule,

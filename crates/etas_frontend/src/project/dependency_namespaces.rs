@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use crate::{ExternalPackageId, ModulePath, ProjectEnvironmentInput};
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DependencyModuleNamespaces {
     packages: BTreeMap<ExternalPackageId, PackageNamespaces>,
 }
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 struct PackageNamespaces {
     source_to_namespace: BTreeMap<ModulePath, ModulePath>,
     namespace_to_source: BTreeMap<ModulePath, ModulePath>,

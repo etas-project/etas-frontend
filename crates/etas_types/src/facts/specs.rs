@@ -4,10 +4,13 @@ use crate::{CallableSignature, TypeId};
 pub struct SpecFacts {
     #[serde(default)]
     pub canonical: CanonicalSpecFacts,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub external_signatures:
         std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub external_impls: Vec<ExternalSpecImplFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub external_aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<etas_hir::SymbolId, SpecSignature>,
     pub impls: Vec<SpecImplFact>,
     pub type_satisfactions: Vec<TypeSpecSatisfactionFact>,
@@ -15,8 +18,10 @@ pub struct SpecFacts {
     pub trace_conformances: Vec<TraceSpecConformanceFact>,
     pub external_callable_satisfactions: Vec<ExternalCallableSpecSatisfactionFact>,
     pub external_trace_conformances: Vec<ExternalTraceSpecConformanceFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub type_param_bounds: std::collections::HashMap<etas_hir::SymbolId, Vec<TypeParamBoundFact>>,
     pub std_impls: Vec<CheckedStdSpecImplFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_spec_aliases: std::collections::HashMap<etas_hir::SymbolId, Vec<String>>,
 }
 
@@ -41,6 +46,7 @@ pub enum CheckedSpecRef {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct CanonicalSpecFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<etas_code::DefinitionKey, CanonicalSpecSignatureFact>,
     pub impls: Vec<CanonicalSpecImplFact>,
 }
@@ -296,8 +302,10 @@ pub struct ExternalSpecImplFact {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub impls: Vec<ExternalSpecImplFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
 }
 
@@ -436,7 +444,16 @@ pub struct SpecMethodFact {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum SpecMethodIdentity {
     Source(etas_hir::SymbolId),

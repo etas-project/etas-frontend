@@ -21,6 +21,29 @@ impl EffectSemantics<'_> {
         site: CallSite<crate::infer::unit::EffectUnit>,
         mut state: EffectState,
     ) -> EffectState {
+        if let Some(metadata) = self.external_reference_metadata(site.callee_expr).cloned() {
+            match self.external_call_summary_from_metadata(&metadata, &site, &mut state, None) {
+                Ok(Some(summary)) => {
+                    if summary.exits.is_some() {
+                        state
+                            .exits
+                            .gaps
+                            .remove(&crate::OutcomeAnalysisGap::ExternalCall(site.call));
+                        self.note_call_outcomes(site.call, None, &summary, &mut state);
+                    }
+                    state.summary.seq_assign(&summary);
+                    return state;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return self.incomplete_at(
+                        site.span,
+                        format!("external call effect selector specialization failed: {error}"),
+                        state,
+                    );
+                }
+            }
+        }
         if self.std_pure_support_call(site.callee_expr) {
             return state;
         }

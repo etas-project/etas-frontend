@@ -76,6 +76,26 @@ impl NativeInstantiationPlan {
     }
 }
 
+// Only native application keys cross the bundle boundary. Rebuild the lookup
+// table in the receiving process; its hashes are never portable identities.
+impl serde::Serialize for NativeInstantiationPlan {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&self.instances, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NativeInstantiationPlan {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let instances =
+            <Vec<NativeInstantiation> as serde::Deserialize>::deserialize(deserializer)?;
+        let mut plan = Self::default();
+        for instance in instances {
+            plan.push(instance);
+        }
+        Ok(plan)
+    }
+}
+
 enum Argument<'a> {
     Type(TypeId),
     Row(&'a EffectRowRef),
@@ -116,6 +136,26 @@ pub(crate) fn normalized_row(row: &EffectRowRef) -> EffectRowRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_round_trip_rebuilds_generic_application_lookup() {
+        let owner = etas_hir::HirItemId(7);
+        let arguments = [CallableGenericArg::Type(TypeId(3))];
+        let mut plan = NativeInstantiationPlan::default();
+        plan.push(NativeInstantiation {
+            owner,
+            arguments: vec![NativeGenericArgument::Type(TypeId(3))],
+            owner_bindings: vec![(TypeId(2), TypeId(3))],
+        });
+        let bytes = bincode::serde::encode_to_vec(&plan, bincode::config::standard()).unwrap();
+        let (restored, consumed): (NativeInstantiationPlan, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(
+            restored.checked_instance(owner, &arguments).unwrap(),
+            plan.checked_instance(owner, &arguments).unwrap()
+        );
+    }
 
     #[test]
     fn a_hash_hit_does_not_replace_full_application_identity() {

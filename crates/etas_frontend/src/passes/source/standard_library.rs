@@ -58,7 +58,14 @@ impl Pass<ProjectContext> for AdmitStandardLibrarySourcesPass {
                 ));
             }
             let asset = etas_std::standard_library_source(library_source);
-            let text: Arc<str> = Arc::from(asset.source);
+            // The maintained source declares its public std module. Legacy
+            // implementation assets live in separate private virtual modules,
+            // including during AST/HIR symbol predeclaration.
+            let (_, body) = asset
+                .source
+                .split_once('\n')
+                .expect("std source module header");
+            let text: Arc<str> = format!("module {};\n{body}", asset.module_path.join(".")).into();
             source_set.files.push(SourceFile {
                 id: source,
                 path: Some(PathBuf::from(asset.virtual_path)),
@@ -83,6 +90,9 @@ impl Pass<ProjectContext> for AdmitStandardLibrarySourcesPass {
 }
 
 fn select_sources(context: &ProjectContext) -> Vec<StdLibrarySourceId> {
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+        return Vec::new();
+    }
     let implementations = context
         .std_registry
         .symbols()

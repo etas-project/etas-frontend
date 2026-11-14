@@ -67,6 +67,9 @@ pub fn apply_external_signature_input(
                     target: ty,
                     params: parameters.clone(),
                 },
+                _ if ctx.std_registry.lookup_qualified(&item.path).is_some_and(|symbol|
+                    ctx.std_registry.declaration_key(symbol.id).is_some()
+                    && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration) if declaration.runtime_role.is_some())) => SymbolTypeFact::Type { constructor: TypeConstructorId(ty.0) },
                 _ => {
                     let representation = match ctx.interner.store().get(ty) {
                         Some(Type::Nominal(nominal)) => nominal.representation,
@@ -256,6 +259,17 @@ pub fn apply_external_signature_input(
             .get(&(binding.package, binding.path.clone()))
             .cloned()
         {
+            if let SymbolTypeFact::Flow { signature } = &fact
+                && let Some(standard) = ctx.std_registry.lookup_qualified(&binding.path)
+                && ctx.std_registry.body_binding(standard.id).is_some()
+            {
+                // The SDK query and imported callable share the same checked
+                // generic/nominal types; retaining a second std-lowered shape
+                // would give returned values incompatible arena identities.
+                ctx.signature_facts
+                    .std_callable_signatures
+                    .insert(standard.id, signature.clone());
+            }
             if matches!(&fact, SymbolTypeFact::Agent { .. }) {
                 ctx.signature_facts.external_agent_reflections.insert(
                     binding.symbol,
@@ -307,6 +321,11 @@ pub fn apply_external_signature_input(
     ctx.signature_facts
         .external_definition_bindings
         .extend(input.definition_bindings.iter().cloned());
+    ctx.signature_facts.external_type_declarations.extend(
+        ctx.external_type_paths
+            .iter()
+            .map(|(path, ty)| (path.clone(), *ty)),
+    );
     for (symbol, reflection) in &input.agent_reflections {
         if let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
             reflection

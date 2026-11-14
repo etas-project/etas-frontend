@@ -227,12 +227,20 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         let Some(validated_environment) = context.validated_external_environment.as_ref() else {
             return PassResult::failed("effect checking requires validated external metadata");
         };
-        let environment = validated_environment.environment();
+        let mut environment = validated_environment.environment().clone();
+        let standard_package = context
+            .standard_library
+            .as_ref()
+            .map(|library| library.append_environment(&mut environment));
+        let environment = &environment;
         let Some(catalog) = context.module_catalog.as_ref() else {
             return PassResult::failed("effect checking requires the module catalog");
         };
-        let external_anchors =
+        let mut external_anchors =
             ExternalImportAnchorIndex::build(resolved_imports, environment, catalog);
+        if let Some(package) = standard_package {
+            external_anchors.add_standard_library(package, &hir.hir, &context.std_registry);
+        }
         let mut external_metadata_diagnostics = Vec::new();
         let Some(prepared) = context.prepared_effect_registry.take() else {
             return PassResult::failed("effect checking requires the prepared effect registry");

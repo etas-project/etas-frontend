@@ -6,7 +6,7 @@ use crate::{
 
 pub type HirModuleArena = Arena<HirModuleId, HirModule>;
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirModule {
     pub id: HirModuleId,
     pub name: Option<ResolvedPath>,
@@ -16,7 +16,7 @@ pub struct HirModule {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirImport {
     pub source: HirImportSource,
     pub kind: HirImportKind,
@@ -26,14 +26,16 @@ pub struct HirImport {
     pub span: Span,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirImportKind {
     Single,
     GroupMember,
     Wildcard,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirImportSource {
     Single {
         path_span: Span,
@@ -49,7 +51,7 @@ pub enum HirImportSource {
     },
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirImportBinding {
     pub symbol: SymbolId,
     pub local_name: String,

@@ -1,6 +1,6 @@
 [package]
 name = "etas_syntax"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,4 +9,5 @@ repository.workspace = true
 [dependencies]
 etas_syntax_derive = { path = "../etas_syntax_derive" }
 etas_core.workspace = true
+serde.workspace = true
 ariadne.workspace = true

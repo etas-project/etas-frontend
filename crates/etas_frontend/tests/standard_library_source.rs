@@ -1,0 +1,455 @@
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+use etas_frontend::{
+    Frontend, ModulePath, ProjectEntry, ProjectSourceLoadOptions, ProjectSourceLoadScope,
+    ProjectSourceLoader, StandardLibraryMode,
+};
+
+struct SourcePackage(PathBuf);
+
+impl SourcePackage {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "etas-std-source-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(root.join("library/std/text")).unwrap();
+        let package = Self(root);
+        package.write("mod.es", "module std.text;");
+        package.write(
+            "assembly.es",
+            r#"
+module std.text;
+public flow join(parts: Array<string>, separator: string) -> string {
+    var result = "";
+    var first = true;
+    for part in parts limit Iterations(18446744073709551615) {
+        if !first { result = result + separator; }
+        result = result + part;
+        first = false;
+    }
+    return result;
+}
+"#,
+        );
+        package
+    }
+
+    fn write(&self, file: &str, source: &str) {
+        fs::write(self.0.join("library/std/text").join(file), source).unwrap();
+    }
+
+    fn load(&self) -> etas_frontend::LoadedProjectInput {
+        ProjectSourceLoader::default()
+            .load(ProjectSourceLoadOptions {
+                project_root: self.0.clone(),
+                roots: vec![self.0.join("library")],
+                entry: ProjectEntry {
+                    module: None,
+                    flow: "main".into(),
+                },
+                scope: ProjectSourceLoadScope::FullSourceTree,
+                source_kind: None,
+                import_search_roots: vec![],
+                external_module_roots: vec![],
+            })
+            .unwrap()
+    }
+}
+
+impl Drop for SourcePackage {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn adding_a_source_part_adds_public_std_flows_without_rust_registration_or_main() {
+    let package = SourcePackage::new();
+    assert_eq!(package.load().input.sources.len(), 2);
+    package.write(
+        "decorate.es",
+        r#"
+module std.text;
+import std.text.char_count;
+public flow decorate(value: string) -> string { return "[" + value + "]"; }
+public flow decorated_width(value: string) -> usize { return char_count(decorate(value)); }
+"#,
+    );
+    let loaded = package.load();
+    assert_eq!(loaded.input.sources.len(), 3);
+    package.write(
+        "consumer.es",
+        r#"
+module std.text.consumer;
+import std.text.decorate;
+public flow render(value: string) -> string { return decorate(value); }
+"#,
+    );
+    let loaded = package.load();
+    assert_eq!(loaded.input.sources.len(), 4);
+    let consumer_fingerprint = loaded.input.options.canonical_options_fingerprint();
+    let output = Frontend.check_standard_library_source(loaded.input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.as_ref().expect("checked source std");
+    assert_eq!(
+        checked.compile_options.standard_library_mode,
+        StandardLibraryMode::SourceBootstrap
+    );
+    assert_ne!(
+        consumer_fingerprint,
+        checked.compile_options.canonical_options_fingerprint()
+    );
+    assert!(output.entry.as_ref().unwrap().resolved.is_none());
+    let modules = output.modules.as_ref().unwrap();
+    let id = modules.by_path[&ModulePath {
+        segments: vec!["std".into(), "text".into()],
+    }];
+    let text = modules.modules.get(id).unwrap();
+    assert_eq!(text.parts.len(), 3);
+    for flow in ["join", "decorate", "decorated_width"] {
+        assert_eq!(
+            text.visibility_exports.items[flow].visibility,
+            etas_hir::Visibility::Public
+        );
+    }
+    assert!(
+        output
+            .sources
+            .as_ref()
+            .unwrap()
+            .files
+            .iter()
+            .all(|source| !matches!(source.kind, etas_frontend::SourceKind::VirtualStd { .. }))
+    );
+}
+
+#[test]
+fn std_source_build_checks_an_unreferenced_private_body_at_its_source_location() {
+    let package = SourcePackage::new();
+    package.write(
+        "private.es",
+        "module std.text; flow unused() -> string { return 42; }",
+    );
+    let loaded = package.load();
+    let source = loaded
+        .input
+        .sources
+        .iter()
+        .find(|source| source.path.as_ref().unwrap().ends_with("private.es"))
+        .unwrap()
+        .id;
+    let output = Frontend.check_standard_library_source(loaded.input);
+    assert!(output.checked.is_none());
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.primary.span.source == source),
+        "{:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn checked_library_hir_round_trips_private_generic_bodies_with_portable_identities() {
+    use etas_frontend::library_hir::LibraryHirImage;
+    let owner = etas_code::PackageKey::from_name_and_version("std", "0.2.2").unwrap();
+    let make_image = || {
+        let package = SourcePackage::new();
+        package.write(
+            "generic.es",
+            r#"
+module std.text;
+flow private_identity<T>(value: T) -> T { return value; }
+public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); }
+public spec Read<T> { flow read(self) -> T ![]; }
+public type Container<T> = { value: T };
+impl Container<T> ~ Read<T> {
+    public flow read(self) -> T ![] { return self.value; }
+}
+public flow read_string<S ~ Read<string>>(value: S) -> string ![] { return value.read(); }
+public flow describe() -> unit { let definition = ^generic_echo; return; }
+"#,
+        );
+        let mut loaded = package.load();
+        loaded.input.environment.local_source_package = Some(owner);
+        loaded.input.environment.stable_source_keys = loaded
+            .input
+            .sources
+            .iter()
+            .map(|source| {
+                let path = source
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .strip_prefix(&package.0)
+                    .unwrap();
+                let segments = path
+                    .components()
+                    .map(|part| part.as_os_str().to_str().unwrap().to_owned())
+                    .collect::<Vec<_>>();
+                etas_frontend::ProjectStableSourceKeyInput {
+                    source: source.id,
+                    key: etas_code::StableSourceKey::new(
+                        etas_code::StableSourceOrigin::Package(owner),
+                        &segments,
+                    )
+                    .unwrap(),
+                }
+            })
+            .collect();
+        let output = Frontend.check_standard_library_source(loaded.input);
+        assert!(output.checked.is_some(), "{:?}", output.diagnostics);
+        LibraryHirImage::from_checked(output.checked.as_ref().unwrap(), owner, &package.0).unwrap()
+    };
+    // Independent sessions and checkouts exercise map ordering and path removal.
+    let first = make_image();
+    assert!(!first.methods.is_empty());
+    assert!(!first.types.reflections.is_empty());
+    let bytes = first.encode().unwrap();
+    let second = make_image();
+    let mut changed = Vec::new();
+    macro_rules! compare_part {
+        ($field:ident) => {
+            if bincode::serde::encode_to_vec(&first.$field, bincode::config::standard()).unwrap()
+                != bincode::serde::encode_to_vec(&second.$field, bincode::config::standard())
+                    .unwrap()
+            {
+                changed.push(stringify!($field));
+            }
+        };
+    }
+    compare_part!(program);
+    compare_part!(type_store);
+    compare_part!(types);
+    compare_part!(effects);
+    compare_part!(effect_registry);
+    compare_part!(concurrency);
+    compare_part!(cpu_parallel);
+    assert!(
+        bytes == second.encode().unwrap(),
+        "noncanonical image components: {changed:?}"
+    );
+    let restored = LibraryHirImage::decode(&bytes).unwrap();
+    assert!(restored.encode().unwrap() == bytes);
+    assert_eq!(
+        restored.types.item_signatures.len(),
+        first.types.item_signatures.len()
+    );
+    assert!(!restored.types.item_signatures.is_empty());
+    assert_eq!(
+        restored.effects.item_effects.len(),
+        first.effects.item_effects.len()
+    );
+    assert_eq!(restored.package, owner);
+    assert!(
+        restored
+            .sources
+            .iter()
+            .all(|source| !source.relative_path.is_absolute())
+    );
+    for name in ["join", "private_identity", "generic_echo"] {
+        assert!(
+            restored
+                .declarations
+                .keys()
+                .any(|key| key.package() == owner && key.declaration() == [name.to_owned()])
+        );
+    }
+    let original = etas_hir::dump_hir(&first.program, Default::default());
+    let revision = restored.into_revision().unwrap();
+    assert_eq!(original, etas_hir::dump_hir(&revision, Default::default()));
+    let installed = SourcePackage::new();
+    let linked = LibraryHirImage::decode(&bytes)
+        .unwrap()
+        .into_checked_from_image(&installed.0)
+        .unwrap();
+    assert_eq!(
+        original,
+        etas_hir::dump_hir(&linked.hir, Default::default())
+    );
+    assert!(linked.uses_environment(&first.environment));
+    assert!(linked.entry.is_none());
+    assert_eq!(
+        linked.checked_reflections().len(),
+        first.types.reflections.len()
+    );
+    for item in first.declarations.values() {
+        if first.types.item_signatures.contains_key(item) {
+            assert!(linked.definition_sources.body(*item).is_some());
+            assert!(linked.effects.item_effects.contains_key(item));
+        }
+    }
+}
+
+#[test]
+fn artifact_registry_exposes_source_flow_signature_and_canonical_owner() {
+    use etas_code::{CallableId, DefinitionKey, DefinitionKind, PackageKey};
+    use etas_frontend::{CheckRequest, FrontendSession, ProjectInput, SourceInput};
+    use etas_std::{FlowDecl, StdRegistryBuilder, StdRegistryImage};
+    let native = etas_std::standard_registry().native_bootstrap();
+    let module = native
+        .modules()
+        .find(|module| module.path == ["std", "text"])
+        .unwrap()
+        .id;
+    let definition = DefinitionKey::new(
+        PackageKey::from_name_and_version("std", "0.2.4").unwrap(),
+        vec!["std".into(), "text".into()],
+        vec!["from_bundle".into()],
+        DefinitionKind::Flow,
+    )
+    .unwrap();
+    let mut builder = StdRegistryBuilder::from_registry(native);
+    let symbol = builder.source_flow(
+        module,
+        "from_bundle",
+        FlowDecl::pure("from_bundle", &["string"], "string"),
+        CallableId::declaration(definition.clone()).unwrap(),
+        "Artifact source flow",
+    );
+    builder.prelude("from_bundle", symbol);
+    let bytes = serde_json::to_vec(&StdRegistryImage::capture(&builder.finish()).unwrap()).unwrap();
+    let image: StdRegistryImage = serde_json::from_slice(&bytes).unwrap();
+    let registry = std::sync::Arc::new(image.into_registry().unwrap());
+    let key = etas_frontend::code::identity::standard_definition_key(
+        &registry,
+        etas_frontend::code::identity::standard_package_key(&registry).unwrap(),
+        registry.symbol(symbol).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(key, Some(definition));
+    let mut session = FrontendSession::with_std_registry(registry);
+    let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(
+        "module app; import std.text.{from_bundle as echo}; flow main() -> string { return echo(from_bundle(\"loaded\")); }",
+    )));
+    let response = session.check(project, CheckRequest::one_shot()).unwrap();
+    assert!(
+        response.output.checked.is_some(),
+        "{:?}",
+        response.output.diagnostics
+    );
+}
+
+#[test]
+fn source_task_runtime_roles_keep_their_checked_opaque_abi() {
+    let package = SourcePackage::new();
+    fs::create_dir_all(package.0.join("library/std/task")).unwrap();
+    fs::write(
+        package.0.join("library/std/task/mod.es"),
+        r#"
+module std.task;
+@std.role("std.task.Task")
+public type Task<T, effect E>;
+@std.role("std.task.Scheduler")
+public type Scheduler;
+@std.role("std.task.Continuation")
+public type Continuation<T>;
+@std.binding("std.task.run")
+public flow execute<T, effect E>(body: (Scheduler) -> T ![E]) -> T ![E] {}
+"#,
+    )
+    .unwrap();
+    let output = Frontend.check_standard_library_source(package.load().input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    assert_eq!(checked.types.source_type_roles.len(), 3);
+    for (symbol, native) in &checked.types.source_type_roles {
+        let etas_types::SymbolTypeFact::Type { constructor } = checked.types.symbol_types[symbol]
+        else {
+            panic!("opaque role is not a compiler type");
+        };
+        let etas_std::StdDecl::Type(declaration) =
+            &checked.std_registry.symbol(*native).unwrap().decl
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            (
+                declaration.runtime_role.unwrap(),
+                checked
+                    .type_store
+                    .get(etas_types::TypeId(constructor.0))
+                    .unwrap()
+            ),
+            (etas_std::RuntimeTypeRole::Task, etas_types::Type::Task(_))
+                | (
+                    etas_std::RuntimeTypeRole::Scheduler,
+                    etas_types::Type::SchedulerHandle
+                )
+                | (
+                    etas_std::RuntimeTypeRole::Continuation,
+                    etas_types::Type::Continuation(_)
+                )
+        ));
+    }
+}
+
+#[test]
+fn std_native_declarations_bind_checked_primitives_with_source_owned_names() {
+    let package = SourcePackage::new();
+    package.write(
+        "native.es",
+        r#"
+module std.text;
+@std.binding("std.text.trim")
+public flow trim(value: string) -> string ![] {}
+@std.binding("std.collections.array_push")
+public flow append<U>(values: Array<U>, value: U) -> Array<U> ![] {}
+@std.binding("std.task.run")
+public flow execute<T, effect E>(body: (std.task.Scheduler) -> T ![E]) -> T ![E] {}
+"#,
+    );
+    let checked = Frontend.check_standard_library_source(package.load().input);
+    assert!(checked.checked.is_some(), "{:?}", checked.diagnostics);
+    let program = checked.checked.unwrap();
+    let bound = program
+        .hir
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.name.starts_with("$std_binding_"))
+        .collect::<Vec<_>>();
+    assert_eq!(bound.len(), 3);
+    for symbol in bound {
+        assert!(matches!(
+            symbol.def,
+            etas_hir::SymbolDef::ImportAlias { .. }
+        ));
+    }
+}
+
+#[test]
+fn std_native_abi_mismatch_has_a_source_location() {
+    let package = SourcePackage::new();
+    package.write("bad_native.es", "module std.text; @std.binding(\"std.text.trim\") public flow bad(value: string) -> string ![Console] {}");
+    let output = Frontend.check_standard_library_source(package.load().input);
+    assert!(output.checked.is_none());
+    let mismatch = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("std native binding ABI differs")
+        })
+        .unwrap();
+    let sources = output.sources.as_ref().unwrap();
+    let source = sources
+        .files
+        .iter()
+        .find(|source| source.id == mismatch.primary.span.source)
+        .unwrap();
+    assert!(source.path.as_ref().unwrap().ends_with("bad_native.es"));
+    assert!(
+        source.text[mismatch.primary.span.range.start.0 as usize
+            ..mismatch.primary.span.range.end.0 as usize]
+            .starts_with("@std.binding")
+    );
+}

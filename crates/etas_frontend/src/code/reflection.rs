@@ -43,6 +43,28 @@ fn checkpoint(control: Option<&dyn PipelineExecutionControl>) -> Result<(), Refl
 }
 
 impl CheckedReflectionTargets {
+    pub(crate) fn library_paths(&self, hir: &HirRevision) -> Result<ResolvedPaths, &'static str> {
+        let mut expressions = self.sites.iter().collect::<Vec<_>>();
+        expressions.sort_unstable_by_key(|(id, _)| **id);
+        let expr_paths = expressions
+            .into_iter()
+            .map(|(id, site)| {
+                let Some(HirExpr::Reflect(reflection)) = hir.exprs.get(*id) else {
+                    return Err("reflection site has no HIR expression");
+                };
+                Ok(crate::HirExprPathResolution {
+                    expr: *id,
+                    path: reflection.target.root_path().clone(),
+                    result: site.resolution.clone(),
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(ResolvedPaths {
+            expr_paths,
+            ..Default::default()
+        })
+    }
+
     /// Extend only declaration-layout facts while retaining the same checked
     /// reflection sites and their original HIR revision.
     pub(crate) fn extend_checked_types(

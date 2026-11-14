@@ -62,6 +62,13 @@ fn collect_type_decl(
     _id: HirItemId,
     decl: etas_hir::HirTypeDecl,
 ) {
+    if ctx
+        .signature_facts
+        .source_type_roles
+        .contains_key(&decl.symbol)
+    {
+        return;
+    }
     let name = canonical_source_type_name(ctx, decl.symbol)
         .unwrap_or_else(|| format!("type{}", decl.symbol.0));
     let representation = None;

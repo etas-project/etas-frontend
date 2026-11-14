@@ -696,9 +696,7 @@ pub fn lower_std_action_arg_kind(kind: &etas_std::EffectActionArgKind) -> Effect
         etas_std::EffectActionArgKind::Type => EffectActionArgKind::Type,
         etas_std::EffectActionArgKind::MemoryPlace => EffectActionArgKind::MemoryPlace,
         etas_std::EffectActionArgKind::StaticResourcePath { ty } => {
-            EffectActionArgKind::StaticResourcePath {
-                ty: (*ty).to_owned(),
-            }
+            EffectActionArgKind::StaticResourcePath { ty: ty.to_string() }
         }
         etas_std::EffectActionArgKind::StringPattern => EffectActionArgKind::StringPattern,
     }
@@ -896,7 +894,9 @@ fn lower_std_enum_layout(
                 return None;
             };
             Some(crate::EnumVariantLayoutFact {
-                field_names: None,
+                field_names: registry
+                    .enum_field_names(constructor.id)
+                    .map(<[String]>::to_vec),
                 name: constructor.name.clone(),
                 fields: decl
                     .params

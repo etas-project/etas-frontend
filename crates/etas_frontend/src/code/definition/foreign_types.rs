@@ -38,6 +38,10 @@ impl std::fmt::Debug for ForeignTypeBindings {
 }
 
 impl ForeignTypeBindings {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bindings.is_empty() && self.specs.is_empty()
+    }
+
     pub(crate) fn relocate_checked(
         &self,
         declarations: &HashMap<TypeId, TypeId>,

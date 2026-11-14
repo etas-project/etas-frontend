@@ -71,6 +71,40 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             );
         };
 
+        for (item, target, span) in
+            super::super::hir::native_binding::declarations(&hir.hir, &context.std_registry)
+        {
+            let Some(etas_types::ItemSignature::Flow(source)) =
+                types.facts.item_signatures.get(&item)
+            else {
+                continue;
+            };
+            let etas_hir::HirItem::Flow(flow) = &hir.hir.items[item] else {
+                continue;
+            };
+            let Some(alias) = hir
+                .hir
+                .scopes
+                .lookup_local(flow.scope, &format!("$std_binding_{}", flow.symbol.0))
+            else {
+                continue;
+            };
+            let Some(etas_types::SymbolTypeFact::Flow {
+                signature: expected,
+            }) = types.facts.symbol_types.get(&alias)
+            else {
+                return PassResult::failed("native binding has no checked primitive signature");
+            };
+            if !native_signatures_match(source, expected, &types.store, &types.facts)
+                .unwrap_or(false)
+            {
+                context.diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, span,
+                    format!("std native binding ABI differs from `{}`; match its generic bounds, parameters, result and public effects", context.std_registry.symbol(target).unwrap().qualified_path.join(".")),
+                ));
+            }
+        }
+
         let admitted_by_source = admitted
             .sources
             .iter()
@@ -235,6 +269,92 @@ fn row_is_allowed(actual: &etas_effects::EffectRow, declared: &etas_effects::Eff
             .effects
             .iter()
             .all(|effect| declared.effects.contains(effect))
+}
+
+fn native_signatures_match(
+    source: &etas_types::CallableSignature,
+    native: &etas_types::CallableSignature,
+    store: &etas_types::TypeStore,
+    facts: &etas_types::TypeFacts,
+) -> Result<bool, etas_types::TypeSubstitutionError> {
+    use etas_types::{CallableGenericParamKind as Kind, EffectRowRef, TypeSubstitutionEngine};
+    if source.generic_params.len() != native.generic_params.len()
+        || source
+            .generic_params
+            .iter()
+            .zip(&native.generic_params)
+            .any(|(left, right)| left.kind != right.kind)
+    {
+        return Ok(false);
+    }
+    let pairs = native
+        .generic_params
+        .iter()
+        .zip(&source.generic_params)
+        .collect::<Vec<_>>();
+    let parameters = pairs
+        .iter()
+        .filter(|(from, _)| from.kind == Kind::Type)
+        .map(|(from, to)| (from.subject, to.subject))
+        .collect();
+    let named = pairs
+        .iter()
+        .filter(|(from, _)| from.kind == Kind::Type)
+        .map(|(from, to)| (from.name.clone(), to.subject))
+        .collect();
+    let rows = pairs
+        .iter()
+        .filter(|(from, _)| from.kind == Kind::Effect)
+        .map(|(from, to)| {
+            (
+                from.name.clone(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some(to.name.clone()),
+                },
+            )
+        })
+        .collect();
+    let mut substitution = TypeSubstitutionEngine::existing(store, &named)
+        .with_type_parameters(&parameters)
+        .with_effect_arguments(&rows);
+    for (from, to) in pairs {
+        let mut bounds = from.bounds.clone();
+        for bound in &mut bounds {
+            bound.args = bound
+                .args
+                .iter()
+                .map(|ty| substitution.substitute(*ty))
+                .collect::<Result<_, _>>()?;
+        }
+        let mut source_bounds = to.bounds.clone();
+        for bound in &mut source_bounds {
+            if let etas_types::CheckedSpecRef::Source(symbol) = &bound.spec
+                && let Some(path) = facts.std_spec_aliases.get(symbol)
+            {
+                bound.spec = etas_types::CheckedSpecRef::Std(path.clone());
+            }
+        }
+        if bounds != source_bounds {
+            return Ok(false);
+        }
+    }
+    let params = native
+        .params
+        .iter()
+        .map(|ty| substitution.substitute(*ty))
+        .collect::<Result<Vec<_>, _>>()?;
+    let output = substitution.substitute(native.output)?;
+    let empty = EffectRowRef {
+        effects: vec![],
+        tail: None,
+    };
+    let effects = substitution
+        .substitute_effect_row(native.effects.clone().unwrap_or_else(|| empty.clone()))?;
+    // Requested actions are derived by the effect pipeline from the bound call.
+    Ok(params == source.params
+        && output == source.output
+        && &effects == source.effects.as_ref().unwrap_or(&empty))
 }
 
 fn signatures_match(

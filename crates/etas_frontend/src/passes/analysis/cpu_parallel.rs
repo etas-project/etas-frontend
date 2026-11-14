@@ -24,13 +24,26 @@ mod work;
 pub use freeze::{CpuCaptureContract, CpuFreezeContract};
 pub use origin::CpuCallableOrigin;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct CpuParallelEligibilityFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub callables: HashMap<HirItemId, CpuParallelEligibilityFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub closures: HashMap<HirExprId, CpuParallelEligibilityFact>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct CpuParallelEligibilityFact {
     /// Source item that owns the callable's code and generic context.
     pub owner: HirItemId,
@@ -43,7 +56,9 @@ pub struct CpuParallelEligibilityFact {
     pub estimated_work: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum CpuParallelRejection {
     OpenEffectRow,
     HostAction,

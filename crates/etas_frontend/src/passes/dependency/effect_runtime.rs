@@ -79,6 +79,15 @@ fn complete(context: &mut ProjectContext) -> Result<(), String> {
             continue;
         }
         let key = method.identity.implementation();
+        if context
+            .standard_library
+            .as_ref()
+            .is_some_and(|library| library.origins.package == key.package())
+        {
+            // The selected SDK already carries this implementation's checked
+            // body. It is not a locked dependency source overlay.
+            continue;
+        }
         let mut origins = environment
             .external_definition_origins
             .iter()

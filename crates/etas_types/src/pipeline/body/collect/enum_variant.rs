@@ -20,7 +20,7 @@ pub(super) fn declaration<E>(
         ctx.ctx.symbol_type(symbol.id)?,
     )?;
     let variant = ctx.ctx.enum_layout(owner)?.variants.get(variant_index)?;
-    (variant.name == symbol.name).then(|| variant.clone())
+    (variant.name == crate::facts::enums::constructor_name(symbol)).then(|| variant.clone())
 }
 
 pub(super) fn signature<E>(

@@ -69,11 +69,27 @@ impl DefinitionCatalog {
                 }
             }
         }
-        let pending = bindings.values().collect::<BTreeSet<_>>();
-        for metadata in self.checked.external_definition_origins() {
-            let Some(set) = &metadata.descriptors else {
-                continue;
-            };
+        let mut pending = bindings.values().cloned().collect::<BTreeSet<_>>();
+        pending.extend(self.checked.types.methods.entries().filter_map(
+            |method| match &method.target {
+                etas_types::method::MethodTarget::External { identity } => {
+                    Some(CallableId::method(identity.clone()))
+                }
+                _ => None,
+            },
+        ));
+        let standard = self
+            .checked
+            .standard_library
+            .as_ref()
+            .map(|library| library.descriptors.clone());
+        for set in self
+            .checked
+            .external_definition_origins()
+            .iter()
+            .filter_map(|metadata| metadata.descriptors.as_ref())
+            .chain(standard.as_deref())
+        {
             let Some(headers) = &set.headers else {
                 continue;
             };

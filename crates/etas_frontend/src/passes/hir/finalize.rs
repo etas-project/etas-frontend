@@ -40,7 +40,7 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
             .hir_lowering
             .take()
             .expect("project HIR lowering state should exist");
-        let hir = match lowering.lowering.finish() {
+        let mut hir = match lowering.lowering.finish() {
             Ok(hir) => hir,
             Err(error) => {
                 return PassResult::failed(format!(
@@ -48,6 +48,17 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
                 ));
             }
         };
+        super::native_binding::bind(
+            &mut hir,
+            context.input.options.standard_library_mode,
+            &context.std_registry,
+        );
+        let (_, role_diagnostics) = super::native_role::bindings(
+            &hir,
+            context.input.options.standard_library_mode,
+            &context.std_registry,
+        );
+        hir.diagnostics.extend(role_diagnostics);
         let hir = match etas_hir::HirRevision::try_new(hir) {
             Ok(revision) => revision,
             Err(error) => {

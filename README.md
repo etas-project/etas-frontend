@@ -80,6 +80,44 @@ The frontend must not:
 `etas_intel` owns editor overlays and the IDE's latest/last-good snapshot
 policy while reusing the same frontend session protocol.
 
+## Native std Declarations
+
+An explicit std source build accepts native declarations with an authored ABI:
+
+```etas
+@std.binding("std.text.trim")
+public flow trim(value: string) -> string ![] {}
+```
+
+The declaration has an empty body, explicit result and public effects. Lowering
+creates a private `NativeBinding` reference and a normal checked call to the
+primitive. ABI validation compares parameters, results, generic bounds and
+public effects after mapping generic binders by position. The annotation is
+reserved for std source builds; a same-named user declaration has no authority.
+
+The source declaration owns its public path. Its private primitive reference
+retains a separate canonical identity, allowing a native-backed export to replace
+its original public name without recursively resolving to itself. Checked body
+images use schema 7 to preserve this provenance and checked external type
+declaration bindings across processes.
+
+Artifact queries publish source-defined generic nominal types and enums with
+their bundle declaration identities. Enum constructors preserve nullary,
+positional and named payloads. Qualified constructor references and imported
+enum members carry checked `StdEnumVariant` layout provenance, including when a
+reference was resolved before import members were installed.
+
+The trusted SDK also supplies source spec declarations, implementation methods
+and their canonical package identities through the existing external metadata
+pipeline. Source calls reuse its checked Effect and requested-action contracts.
+Public implementation methods receive public contracts through their spec;
+function values retain both the authored and solved public ABI types across
+the consumer/library boundary. Native binding bounds compare resolved std spec
+aliases by their registry identity.
+
+Orchestration uses ordinary `flow` declarations and existing named `handler`
+values applied with `with`. No `controller` declaration is required.
+
 ## Incremental Compilation
 
 `FrontendSession` is an in-process compiler session, not a standalone server.
@@ -107,6 +145,46 @@ handlers, and source-independent definition identities.
 Source and metadata modules share one module identity/catalog model. Import
 resolution must distinguish exact modules, child modules, and exported items;
 prefix matching is not a valid substitute.
+
+`Frontend::check_standard_library_source` checks a complete std source set
+without `main`, using the normal project pipeline. The driver must discover
+the manifest's source root with `ProjectSourceLoadScope::FullSourceTree` first.
+Public declarations in any module part become the source module's exports;
+remaining primitive/type imports use the transitional legacy bootstrap contract.
+Embedded legacy bodies are excluded, and all supplied private bodies are checked.
+`StandardLibraryMode::SourceBootstrap` has its own compiler-options fingerprint.
+This entry point does not yet provide an artifact provider or the final minimal
+bootstrap contract. Consumer compilation continues to use the legacy provider.
+
+For a source-root smoke check while the driver build command is being added:
+
+```bash
+cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library
+```
+
+`library_hir::LibraryHirImage` archives the checked library's HIR, private and
+generic bodies, declaration/method identities, source maps, type/effect facts,
+native generic applications, module/import bindings, reflection paths, exact
+compile options and a validated native registry image. Source paths remain relative to the package. Schema 4 uses
+CBOR so optional fields and dynamic tool-schema values retain their structure;
+unordered indexes use canonical serialization order.
+
+`into_revision` loads the raw graph. `into_checked` restores source provenance
+and runs the existing effect, residual-target, handler, native invocation,
+reflection and checked-publication passes. It parses the archived source for
+reflection without lowering or typechecking source bodies again. Live candidate
+revisions and foreign catalog bindings cannot be published as source libraries.
+`into_checked_from_image` uses the embedded native registry without constructing
+the handwritten registry. The driver must verify the enclosing SDK and native
+binding ABI; the complete installed provider and application linking are pending.
+
+The example can export a component or load it in another process:
+
+```bash
+cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library std 0.2.4 /tmp/std.hir
+target/debug/examples/check_std_source --read-hir /tmp/std.hir
+target/debug/examples/check_std_source --load-library /tmp/std.hir /tmp/installed-std
+```
 
 ## Build and Verify
 

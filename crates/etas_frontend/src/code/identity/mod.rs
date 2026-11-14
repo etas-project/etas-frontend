@@ -32,6 +32,9 @@ pub fn standard_definition_key(
     package: PackageKey,
     symbol: &etas_std::StdSymbol,
 ) -> Result<Option<DefinitionKey>, ProjectionError> {
+    if let Some(key) = registry.declaration_key(symbol.id) {
+        return Ok(Some(key.clone()));
+    }
     let kind = match &symbol.decl {
         StdDecl::Type(_) if symbol.kind == etas_std::StdSymbolKind::Constructor => {
             DefinitionKind::Flow
@@ -742,19 +745,66 @@ impl DefinitionIdentityIndex {
             }
             index.symbols.insert(symbol, key);
         }
+        let native_bindings = checked
+            .symbols
+            .iter()
+            .filter_map(|symbol| match &symbol.def {
+                etas_hir::SymbolDef::ImportAlias {
+                    origin: etas_hir::ImportAliasOrigin::NativeBinding,
+                    ..
+                } => symbol
+                    .defining_item
+                    .and_then(|item| checked.items.get(item))
+                    .and_then(|item| item.symbol())
+                    .and_then(|owner| index.symbols.get(&owner))
+                    .map(|owner| {
+                        owner
+                            .module()
+                            .iter()
+                            .chain(owner.declaration())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    }),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let role_owners = checked
+            .types
+            .source_type_roles
+            .iter()
+            .map(|(source, native)| {
+                Ok((
+                    *native,
+                    index
+                        .symbols
+                        .get(source)
+                        .ok_or(ProjectionError::MissingDeclaration(*source))?
+                        .clone(),
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, ProjectionError>>()?;
         for symbol in checked.std_registry.symbols() {
-            let Some(key) =
+            let Some(mut key) =
                 standard_definition_key(checked.std_registry, origins.standard_package, symbol)?
             else {
                 continue;
             };
+            if let Some(source) = role_owners.get(&symbol.id) {
+                key = source.clone();
+            }
             let kind = key.kind();
             if let Some(checked_key) =
                 standard_definition_key(checked.std_registry, checked_standard_package, symbol)?
             {
                 standard_origins.insert(checked_key, key.clone());
             }
-            index.insert_path(symbol.qualified_path.clone(), key.clone())?;
+            // Source std declarations own their public paths. Primitive ABI
+            // references are addressed separately by NativeBinding symbols.
+            if !native_bindings.contains(&symbol.qualified_path)
+                || !index.paths.contains_key(&symbol.qualified_path)
+            {
+                index.insert_path(symbol.qualified_path.clone(), key.clone())?;
+            }
             if let StdDecl::Type(decl) = &symbol.decl
                 && kind == DefinitionKind::Type
             {
@@ -764,7 +814,7 @@ impl DefinitionIdentityIndex {
                     .map(|parameter| GenericDeclaration {
                         name: parameter.name.clone(),
                         subject: None,
-                        effect: false,
+                        effect: parameter.kind == etas_std::StdGenericParamKind::EffectRow,
                         bounds: parameter
                             .bounds
                             .iter()
@@ -923,7 +973,22 @@ impl DefinitionIdentityIndex {
             })
             .collect::<std::collections::HashSet<_>>();
         for symbol in checked.symbols.iter() {
-            if let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def {
+            if let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def {
+                if *origin == etas_hir::ImportAliasOrigin::NativeBinding {
+                    let native = checked.std_registry.lookup_qualified(path).ok_or_else(|| {
+                        ProjectionError::MissingIdentity("native binding ABI".into())
+                    })?;
+                    let key = standard_definition_key(
+                        checked.std_registry,
+                        checked_standard_package,
+                        native,
+                    )?
+                    .ok_or_else(|| {
+                        ProjectionError::MissingIdentity("native binding identity".into())
+                    })?;
+                    index.symbols.insert(symbol.id, key);
+                    continue;
+                }
                 if module_imports.contains(&(symbol.definition_span.source, symbol.name.clone())) {
                     continue;
                 }
@@ -1028,6 +1093,18 @@ impl DefinitionIdentityIndex {
                 _ => return Err(ProjectionError::MissingDeclaration(symbol)),
             };
             declaration.checked_type = Some(ty);
+            if let Some(native) = checked.types.source_type_roles.get(&symbol) {
+                declaration.standard = Some(*native);
+                index.type_declarations.insert(symbol, declaration.clone());
+                let path = checked
+                    .std_registry
+                    .symbol(*native)
+                    .unwrap()
+                    .qualified_path
+                    .join(".");
+                index.type_names.insert(path, declaration);
+                continue;
+            }
             index.type_declarations.insert(symbol, declaration.clone());
             index.types.insert(ty, declaration.clone());
             match checked.type_store.get(ty) {

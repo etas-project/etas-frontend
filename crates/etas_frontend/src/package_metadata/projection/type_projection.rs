@@ -285,11 +285,26 @@ impl<'a> TypeProjection<'a> {
                     })
                     .collect::<Result<Vec<_>, PackageMetadataError>>()?;
             }
+            Type::Task(task) => {
+                metadata.kind = MetadataTypeKind::Task;
+                metadata.children.push(self.ty(task.output)?);
+                metadata.effects = Some(self.row(&task.effects)?);
+            }
+            Type::SchedulerHandle => {
+                metadata.kind = MetadataTypeKind::Named;
+                metadata.path = vec!["std".into(), "task".into(), "Scheduler".into()];
+            }
+            Type::Continuation(continuation)
+                if continuation.handled_answer.is_none()
+                    && continuation.residual_effects.is_none() =>
+            {
+                metadata.kind = MetadataTypeKind::Applied;
+                metadata.path = vec!["std".into(), "task".into(), "Continuation".into()];
+                metadata.children.push(self.ty(continuation.action_output)?);
+            }
             Type::Refined { .. }
             | Type::Schema(_)
             | Type::MemoryPlace(_)
-            | Type::Task(_)
-            | Type::SchedulerHandle
             | Type::Continuation(_) => {
                 return Err(PackageMetadataError::UnsupportedType {
                     ty,

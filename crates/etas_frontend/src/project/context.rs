@@ -30,6 +30,7 @@ pub struct ProjectContext {
     pub(crate) candidate: Option<crate::code::pipeline::CandidatePipelineContext>,
     pub input: ProjectInput,
     pub std_registry: Arc<etas_std::StdRegistry>,
+    pub standard_library: Option<Arc<crate::StandardLibrary>>,
     pub incremental: bool,
     pub check_scope: CheckScope,
     pub project_wide_change: bool,
@@ -96,6 +97,12 @@ impl ProjectContext {
         input: ProjectInput,
         std_registry: Arc<etas_std::StdRegistry>,
     ) -> Self {
+        let std_registry =
+            if input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+                Arc::new(std_registry.native_bootstrap())
+            } else {
+                std_registry
+            };
         let optimization_report =
             crate::HirOptimizationReport::new(input.options.optimization_level);
         Self {
@@ -104,6 +111,7 @@ impl ProjectContext {
             candidate: None,
             input,
             std_registry,
+            standard_library: None,
             incremental: false,
             check_scope: CheckScope::FullProject,
             project_wide_change: false,

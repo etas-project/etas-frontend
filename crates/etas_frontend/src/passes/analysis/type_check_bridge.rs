@@ -65,7 +65,19 @@ fn external_signature_input(
     let catalog = context.module_catalog.as_ref().ok_or_else(|| {
         crate::code::descriptor::ProjectionError::MissingIdentity("module catalog".into())
     })?;
-    let anchors = crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
+    let mut anchors =
+        crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
+    let standard = context.standard_library.as_ref().map(|library| {
+        environment
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == library.package.import_root)
+            .expect("validated standard package")
+            .id
+    });
+    if let Some(package) = standard {
+        anchors.add_standard_library(package, hir, &context.std_registry);
+    }
     let mut input = etas_types::ExternalSignatureInput {
         package_anchors: environment
             .external_packages
@@ -201,6 +213,28 @@ fn external_signature_input(
                     span: member.span,
                 }
             }));
+    }
+    if let Some(package) = standard {
+        for symbol in hir.symbols.iter() {
+            let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                continue;
+            };
+            let Some(declaration) = context.std_registry.lookup_qualified(path) else {
+                continue;
+            };
+            let Some(key) = context.std_registry.declaration_key(declaration.id) else {
+                continue;
+            };
+            input
+                .symbol_bindings
+                .push(etas_types::ExternalSymbolBindingInput {
+                    symbol: symbol.id,
+                    package: external_package_key(package),
+                    path: declaration.qualified_path.clone(),
+                    span: symbol.definition_span,
+                });
+            input.definition_bindings.push((symbol.id, key.clone()));
+        }
     }
     reflection::apply(context, &mut input, diagnostics);
     reflection::canonicalize_re_exports(context, &mut input, diagnostics);
@@ -860,6 +894,14 @@ fn std_signature_input(
 ) -> etas_types::StdSignatureInput {
     let registry = context.std_registry.as_ref();
     let mut input = etas_types::StdSignatureInput::default();
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+        input.role_bindings = super::super::hir::native_role::bindings(
+            hir,
+            context.input.options.standard_library_mode,
+            registry,
+        )
+        .0;
+    }
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
         for resolved in &resolved_imports.imports {
@@ -926,7 +968,11 @@ fn std_signature_input(
         let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def else {
             continue;
         };
-        if *origin != etas_hir::ImportAliasOrigin::StdPrelude {
+        if !matches!(
+            origin,
+            etas_hir::ImportAliasOrigin::StdPrelude
+                | etas_hir::ImportAliasOrigin::StdEnumVariant { .. }
+        ) {
             continue;
         }
         let Some(std_symbol) = registry.lookup_qualified(path) else {
@@ -940,6 +986,13 @@ fn std_signature_input(
             });
     }
 
+    if context.standard_library.is_some() {
+        input.symbol_bindings.retain(|binding| {
+            registry
+                .lookup_qualified(&binding.qualified_path)
+                .is_none_or(|symbol| registry.declaration_key(symbol.id).is_none())
+        });
+    }
     input
 }
 

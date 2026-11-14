@@ -221,6 +221,7 @@ impl EffectSemantics<'_> {
                 summary.independent_determinism = Some(crate::Determinism::Deterministic);
                 // A declared escaping row never describes internal requested or
                 // handled actions. Keep the call symbolic until the argument is known.
+                summary.requested_actions = crate::EffectRow::empty();
                 summary.action_trace = ActionTraceDomain::ParameterCall {
                     target: crate::ParameterCallTarget::Native(symbol),
                     parameter: data.name.clone(),

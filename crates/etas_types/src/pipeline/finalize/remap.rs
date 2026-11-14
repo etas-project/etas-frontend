@@ -626,6 +626,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     for (_, target) in facts.external_type_aliases.values_mut() {
         *target = remapper.ty(*target);
     }
+    for target in facts.external_type_declarations.values_mut() {
+        *target = remapper.ty(*target);
+    }
     for method in facts.type_impl_methods.values_mut() {
         method.self_type = remapper.ty(method.self_type);
         crate::facts::methods::map_parameters(&mut method.owner_params, &mut |ty| {

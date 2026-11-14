@@ -199,7 +199,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            for export in module.visibility_exports.items.values() {
+            for export in module
+                .visibility_exports
+                .items
+                .iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+            {
                 let mut path = module.path.segments.clone();
                 path.push(export.name.clone());
                 let visibility = visibility_name(export.visibility);
@@ -279,7 +285,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            for export in module.visibility_exports.items.values() {
+            for export in module
+                .visibility_exports
+                .items
+                .iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+            {
                 let item = self.hir_item_for_export(export)?;
                 let symbol = self
                     .checked
@@ -464,69 +476,80 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             })
             .collect::<Result<Vec<_>, PackageMetadataError>>()?;
-        let ty = match self.checked.types.symbol_types.get(&symbol) {
-            Some(etas_types::SymbolTypeFact::Type { constructor }) => {
-                let id = TypeId(constructor.0);
-                let mut ty = self.metadata_type_in_generic_scope(id, &names)?;
-                if matches!(self.checked.type_store.get(id), Some(Type::Enum(_))) {
-                    let layout = self.checked.types.enum_layouts.get(&id).ok_or_else(|| {
-                        PackageMetadataError::MissingExportSignature { path: path.clone() }
-                    })?;
-                    ty.kind = MetadataTypeKind::Enum;
-                    ty.fields = layout
-                        .variants
-                        .iter()
-                        .map(|variant| {
-                            let fields = variant
-                                .fields
-                                .iter()
-                                .map(|field| self.metadata_type_in_generic_scope(*field, &names))
-                                .collect::<Result<Vec<_>, _>>()?;
-                            let payload = if let Some(names) = &variant.field_names {
-                                if names.len() != fields.len() {
-                                    return Err(PackageMetadataError::MissingExportSignature {
-                                        path: path.clone(),
-                                    });
-                                }
-                                MetadataType {
-                                    kind: MetadataTypeKind::Record,
-                                    fields: names
-                                        .iter()
-                                        .cloned()
-                                        .zip(fields)
-                                        .map(|(name, ty)| MetadataTypeField { name, ty })
-                                        .collect(),
-                                    ..Default::default()
-                                }
-                            } else {
-                                MetadataType {
-                                    kind: MetadataTypeKind::Tuple,
-                                    children: fields,
-                                    ..Default::default()
-                                }
-                            };
-                            Ok(MetadataTypeField {
-                                name: variant.name.clone(),
-                                ty: payload,
-                            })
-                        })
-                        .collect::<Result<_, PackageMetadataError>>()?;
-                }
-                canonicalize_declared_type_path(&mut ty, &path);
-                Some(ty)
-            }
-            Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => {
-                let mut ty = self.metadata_type_in_generic_scope(TypeId(constructor.0), &names)?;
-                canonicalize_declared_type_path(&mut ty, &path);
-                Some(ty)
-            }
-            Some(etas_types::SymbolTypeFact::TypeAlias { target, .. }) => Some(MetadataType {
-                kind: MetadataTypeKind::Alias,
+        let ty = if self.checked.types.source_type_roles.contains_key(&symbol) {
+            Some(MetadataType {
+                kind: MetadataTypeKind::Nominal,
                 path: path.clone(),
-                children: vec![self.metadata_type_in_generic_scope(*target, &names)?],
                 ..Default::default()
-            }),
-            _ => None,
+            })
+        } else {
+            match self.checked.types.symbol_types.get(&symbol) {
+                Some(etas_types::SymbolTypeFact::Type { constructor }) => {
+                    let id = TypeId(constructor.0);
+                    let mut ty = self.metadata_type_in_generic_scope(id, &names)?;
+                    if matches!(self.checked.type_store.get(id), Some(Type::Enum(_))) {
+                        let layout = self.checked.types.enum_layouts.get(&id).ok_or_else(|| {
+                            PackageMetadataError::MissingExportSignature { path: path.clone() }
+                        })?;
+                        ty.kind = MetadataTypeKind::Enum;
+                        ty.fields = layout
+                            .variants
+                            .iter()
+                            .map(|variant| {
+                                let fields = variant
+                                    .fields
+                                    .iter()
+                                    .map(|field| {
+                                        self.metadata_type_in_generic_scope(*field, &names)
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                let payload = if let Some(names) = &variant.field_names {
+                                    if names.len() != fields.len() {
+                                        return Err(PackageMetadataError::MissingExportSignature {
+                                            path: path.clone(),
+                                        });
+                                    }
+                                    MetadataType {
+                                        kind: MetadataTypeKind::Record,
+                                        fields: names
+                                            .iter()
+                                            .cloned()
+                                            .zip(fields)
+                                            .map(|(name, ty)| MetadataTypeField { name, ty })
+                                            .collect(),
+                                        ..Default::default()
+                                    }
+                                } else {
+                                    MetadataType {
+                                        kind: MetadataTypeKind::Tuple,
+                                        children: fields,
+                                        ..Default::default()
+                                    }
+                                };
+                                Ok(MetadataTypeField {
+                                    name: variant.name.clone(),
+                                    ty: payload,
+                                })
+                            })
+                            .collect::<Result<_, PackageMetadataError>>()?;
+                    }
+                    canonicalize_declared_type_path(&mut ty, &path);
+                    Some(ty)
+                }
+                Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => {
+                    let mut ty =
+                        self.metadata_type_in_generic_scope(TypeId(constructor.0), &names)?;
+                    canonicalize_declared_type_path(&mut ty, &path);
+                    Some(ty)
+                }
+                Some(etas_types::SymbolTypeFact::TypeAlias { target, .. }) => Some(MetadataType {
+                    kind: MetadataTypeKind::Alias,
+                    path: path.clone(),
+                    children: vec![self.metadata_type_in_generic_scope(*target, &names)?],
+                    ..Default::default()
+                }),
+                _ => None,
+            }
         };
         Ok(MetadataNamedSignature {
             path,
@@ -676,7 +699,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            for export in module.visibility_exports.items.values() {
+            for export in module
+                .visibility_exports
+                .items
+                .iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+            {
                 if !matches!(export.item.kind, AstItemKind::Spec) {
                     continue;
                 }

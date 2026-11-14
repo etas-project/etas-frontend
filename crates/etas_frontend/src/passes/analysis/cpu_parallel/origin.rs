@@ -6,7 +6,9 @@ use etas_hir::{HirItemId, HirProgram};
 
 use crate::{ModuleOrigin, ProjectContext};
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum CpuCallableOrigin {
     Program,
     Package(CallableId),

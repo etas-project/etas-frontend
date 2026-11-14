@@ -30,6 +30,7 @@ pub(crate) struct FrontendPipelineRequest {
     pub(crate) check_scope: CheckScope,
     pub(crate) collect_timing: bool,
     pub(crate) std_registry: Arc<etas_std::StdRegistry>,
+    pub(crate) standard_library: Option<Arc<crate::StandardLibrary>>,
     pub(crate) memory_probe: Option<crate::session::FrontendMemoryProbe>,
 }
 
@@ -52,6 +53,7 @@ pub(crate) fn run_controlled_check_pipeline(
         check_scope,
         collect_timing,
         std_registry,
+        standard_library,
         memory_probe,
     } = request;
     let optimization_plan = crate::optimization::OptimizationPlan::from_options(&input.options);
@@ -69,6 +71,9 @@ pub(crate) fn run_controlled_check_pipeline(
     }
     .with_check_scope(check_scope);
     context.pipeline_plan_change = pipeline_plan_change;
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::Artifact {
+        context.standard_library = standard_library;
+    }
     run_controlled_context_pipeline(
         context,
         project_pipeline(&optimization_plan),

@@ -5,14 +5,18 @@ use etas_types::{
 };
 
 /// Checked data types that must be concrete and freezable before CPU admission.
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct CpuFreezeContract {
     pub parameters: Vec<TypeId>,
     pub output: TypeId,
     pub captures: Vec<CpuCaptureContract>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct CpuCaptureContract {
     pub symbol: etas_hir::SymbolId,
     pub ty: TypeId,

@@ -138,7 +138,7 @@ pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, Stri
 
 fn sorted<K: Ord, V>(map: &HashMap<K, V>) -> Vec<(&K, &V)> {
     let mut bindings = map.iter().collect::<Vec<_>>();
-    bindings.sort_by(|(left, _), (right, _)| left.cmp(right));
+    bindings.sort_by_key(|(key, _)| *key);
     bindings
 }
 

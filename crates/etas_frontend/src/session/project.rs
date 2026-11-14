@@ -54,6 +54,7 @@ where
     pub(super) std_version: String,
     pub(super) options_hash: String,
     pub(super) std_registry: Arc<etas_std::StdRegistry>,
+    pub(super) standard_library: Option<Arc<crate::StandardLibrary>>,
 }
 
 struct MetadataSummaryArtifact<T> {
@@ -85,6 +86,7 @@ where
         input: ProjectInput,
         store: S,
         std_registry: Arc<etas_std::StdRegistry>,
+        standard_library: Option<Arc<crate::StandardLibrary>>,
     ) -> Self {
         let sources = source_set_from_input(&input);
         let options_hash = input.options.canonical_options_fingerprint();
@@ -110,6 +112,7 @@ where
             std_version: frontend_std_version(&std_registry),
             options_hash,
             std_registry,
+            standard_library,
         }
     }
 
@@ -194,6 +197,7 @@ where
             check_scope: request.scope,
             collect_timing: request.collect_pipeline_timing,
             std_registry: self.std_registry.clone(),
+            standard_library: self.standard_library.clone(),
             memory_probe,
         });
         if let PassControl::Failed(failure) = &pipeline_run.control {
@@ -1241,6 +1245,7 @@ mod tests {
             }),
             etas_cache::MemoryArtifactStore::new(),
             std::sync::Arc::new(etas_std::standard_registry()),
+            None,
         );
         state
             .apply_changes(ProjectChangeSet {
@@ -1274,6 +1279,7 @@ mod tests {
                      check_scope: _scope,
                      collect_timing,
                      std_registry: _,
+                     standard_library: _,
                      memory_probe: _,
                  }| {
                     assert_eq!(

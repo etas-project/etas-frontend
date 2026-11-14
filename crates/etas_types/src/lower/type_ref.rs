@@ -463,12 +463,10 @@ fn lower_source_declared_alias(
         ));
         return Some(ctx.interner.primitive(PrimitiveType::Never));
     }
-    let item = match ctx.hir.symbols.get(symbol) {
-        Some(symbol_data) => match &symbol_data.def {
-            SymbolDef::Item { item } => *item,
-            _ => symbol_data.defining_item?,
-        },
-        None => return None,
+    let symbol_data = ctx.hir.symbols.get(symbol)?;
+    let item = match &symbol_data.def {
+        SymbolDef::Item { item } => *item,
+        _ => symbol_data.defining_item?,
     };
     let item_data = ctx.hir.items.get(item).cloned()?;
     let HirItem::TypeAlias(decl) = item_data else {
@@ -506,12 +504,10 @@ fn lower_source_declared_type(
         ));
         return Some(ctx.interner.primitive(PrimitiveType::Never));
     }
-    let item = match ctx.hir.symbols.get(symbol) {
-        Some(symbol_data) => match &symbol_data.def {
-            SymbolDef::Item { item } => *item,
-            _ => symbol_data.defining_item?,
-        },
-        None => return None,
+    let symbol_data = ctx.hir.symbols.get(symbol)?;
+    let item = match &symbol_data.def {
+        SymbolDef::Item { item } => *item,
+        _ => symbol_data.defining_item?,
     };
     ctx.lowering_type_stack.push(symbol);
     let Some(item_data) = ctx.hir.items.get(item).cloned() else {
