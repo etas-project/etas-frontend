@@ -36,7 +36,11 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
     record_known_std_types(ctx, &registry);
     ctx.signature_facts.std_spec_impls = lower_std_spec_impls(ctx, &registry);
     for symbol in registry.symbols() {
-        let Some(etas_std::StdImplementationRef::Source { .. }) = symbol.implementation else {
+        let Some(
+            etas_std::StdImplementationRef::Source { .. }
+            | etas_std::StdImplementationRef::Artifact { .. },
+        ) = symbol.implementation
+        else {
             continue;
         };
         let etas_std::StdDecl::Flow(flow) = &symbol.decl else {

@@ -126,8 +126,8 @@ cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas
 
 `library_hir::LibraryHirImage` archives the checked library's HIR, private and
 generic bodies, declaration/method identities, source maps, type/effect facts,
-native generic applications, module/import bindings, reflection paths and exact
-compile options. Source paths remain relative to the package. Schema 3 uses
+native generic applications, module/import bindings, reflection paths, exact
+compile options and a validated native registry image. Source paths remain relative to the package. Schema 4 uses
 CBOR so optional fields and dynamic tool-schema values retain their structure;
 unordered indexes use canonical serialization order.
 
@@ -136,13 +136,14 @@ and runs the existing effect, residual-target, handler, native invocation,
 reflection and checked-publication passes. It parses the archived source for
 reflection without lowering or typechecking source bodies again. Live candidate
 revisions and foreign catalog bindings cannot be published as source libraries.
-The driver must verify the enclosing SDK artifact and supply its matching
-registry; the complete installed provider and runtime linking are still pending.
+`into_checked_from_image` uses the embedded native registry without constructing
+the handwritten registry. The driver must verify the enclosing SDK and native
+binding ABI; the complete installed provider and application linking are pending.
 
 The example can export a component or load it in another process:
 
 ```bash
-cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library std 0.2.3 /tmp/std.hir
+cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library std 0.2.4 /tmp/std.hir
 target/debug/examples/check_std_source --read-hir /tmp/std.hir
 target/debug/examples/check_std_source --load-library /tmp/std.hir /tmp/installed-std
 ```

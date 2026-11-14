@@ -269,10 +269,7 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
     let installed = SourcePackage::new();
     let linked = LibraryHirImage::decode(&bytes)
         .unwrap()
-        .into_checked(
-            &installed.0,
-            std::sync::Arc::new(etas_std::standard_registry()),
-        )
+        .into_checked_from_image(&installed.0)
         .unwrap();
     assert_eq!(
         original,
@@ -290,4 +287,53 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
             assert!(linked.effects.item_effects.contains_key(item));
         }
     }
+}
+
+#[test]
+fn artifact_registry_exposes_source_flow_signature_and_canonical_owner() {
+    use etas_code::{CallableId, DefinitionKey, DefinitionKind, PackageKey};
+    use etas_frontend::{CheckRequest, FrontendSession, ProjectInput, SourceInput};
+    use etas_std::{FlowDecl, StdRegistryBuilder, StdRegistryImage};
+    let native = etas_std::standard_registry().native_bootstrap();
+    let module = native
+        .modules()
+        .find(|module| module.path == ["std", "text"])
+        .unwrap()
+        .id;
+    let definition = DefinitionKey::new(
+        PackageKey::from_name_and_version("std", "0.2.4").unwrap(),
+        vec!["std".into(), "text".into()],
+        vec!["from_bundle".into()],
+        DefinitionKind::Flow,
+    )
+    .unwrap();
+    let mut builder = StdRegistryBuilder::from_registry(native);
+    let symbol = builder.source_flow(
+        module,
+        "from_bundle",
+        FlowDecl::pure("from_bundle", &["string"], "string"),
+        CallableId::declaration(definition.clone()).unwrap(),
+        "Artifact source flow",
+    );
+    builder.prelude("from_bundle", symbol);
+    let bytes = serde_json::to_vec(&StdRegistryImage::capture(&builder.finish()).unwrap()).unwrap();
+    let image: StdRegistryImage = serde_json::from_slice(&bytes).unwrap();
+    let registry = std::sync::Arc::new(image.into_registry().unwrap());
+    let key = etas_frontend::code::identity::standard_definition_key(
+        &registry,
+        etas_frontend::code::identity::standard_package_key(&registry).unwrap(),
+        registry.symbol(symbol).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(key, Some(definition));
+    let mut session = FrontendSession::with_std_registry(registry);
+    let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(
+        "module app; import std.text.{from_bundle as echo}; flow main() -> string { return echo(from_bundle(\"loaded\")); }",
+    )));
+    let response = session.check(project, CheckRequest::one_shot()).unwrap();
+    assert!(
+        response.output.checked.is_some(),
+        "{:?}",
+        response.output.diagnostics
+    );
 }

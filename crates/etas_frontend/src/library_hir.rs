@@ -20,7 +20,7 @@ use crate::{
 
 mod restore;
 
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryHirSource {
@@ -48,6 +48,7 @@ pub struct LibraryHirImage {
     pub cpu_parallel: crate::CpuParallelEligibilityFacts,
     pub(crate) native_instantiations: crate::project::instantiation::NativeInstantiationPlan,
     pub std_contract: String,
+    pub native_registry: etas_std::StdRegistryImage,
     pub environment: crate::ProjectEnvironmentInput,
     pub compile_options: crate::ProjectCompileOptions,
     pub optimization_report: crate::HirOptimizationReport,
@@ -146,6 +147,8 @@ impl LibraryHirImage {
             cpu_parallel: checked.cpu_parallel.as_ref().clone(),
             native_instantiations: checked.native_instantiations.as_ref().clone(),
             std_contract: checked.std_registry.version().compatibility_identity(),
+            native_registry: etas_std::StdRegistryImage::capture(&checked.std_registry)
+                .map_err(error)?,
             environment: checked.definition_environment.environment().clone(),
             compile_options: checked.compile_options.clone(),
             optimization_report: checked.optimization_report.clone(),
@@ -216,6 +219,21 @@ impl LibraryHirImage {
         registry: std::sync::Arc<etas_std::StdRegistry>,
     ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
         restore::restore(self, package_root, registry)
+    }
+
+    /// Restore using the image's validated query view, without constructing the
+    /// handwritten registry or consulting it for absent declarations.
+    pub fn into_checked_from_image(
+        self,
+        package_root: &Path,
+    ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
+        let registry = std::sync::Arc::new(
+            self.native_registry
+                .clone()
+                .into_registry()
+                .map_err(error)?,
+        );
+        self.into_checked(package_root, registry)
     }
 }
 

@@ -32,6 +32,9 @@ pub fn standard_definition_key(
     package: PackageKey,
     symbol: &etas_std::StdSymbol,
 ) -> Result<Option<DefinitionKey>, ProjectionError> {
+    if let Some(binding) = registry.body_binding(symbol.id) {
+        return Ok(binding.callable.as_declaration().cloned());
+    }
     let kind = match &symbol.decl {
         StdDecl::Type(_) if symbol.kind == etas_std::StdSymbolKind::Constructor => {
             DefinitionKind::Flow

@@ -10,10 +10,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         && flag == "--load-library"
     {
         let image = etas_frontend::library_hir::LibraryHirImage::decode(&std::fs::read(path)?)?;
-        let checked = image.into_checked(
-            std::path::Path::new(root),
-            std::sync::Arc::new(etas_std::standard_registry()),
-        )?;
+        let checked = image.into_checked_from_image(std::path::Path::new(root))?;
         println!(
             "Restored checked library: {} declarations, {} effect summaries, {} sources",
             checked.hir.items.len(),

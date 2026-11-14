@@ -1103,9 +1103,7 @@ fn effect_action_args_from_std_decl(
             etas_std::EffectActionArgKind::Type => EffectActionArgKind::Type,
             etas_std::EffectActionArgKind::MemoryPlace => EffectActionArgKind::MemoryPlace,
             etas_std::EffectActionArgKind::StaticResourcePath { ty } => {
-                EffectActionArgKind::StaticResourcePath {
-                    ty: (*ty).to_owned(),
-                }
+                EffectActionArgKind::StaticResourcePath { ty: ty.to_string() }
             }
             etas_std::EffectActionArgKind::StringPattern => EffectActionArgKind::StringPattern,
         })
