@@ -199,7 +199,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            for export in module.visibility_exports.items.values() {
+            for export in module
+                .visibility_exports
+                .items
+                .iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+            {
                 let mut path = module.path.segments.clone();
                 path.push(export.name.clone());
                 let visibility = visibility_name(export.visibility);
@@ -279,7 +285,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            for export in module.visibility_exports.items.values() {
+            for export in module
+                .visibility_exports
+                .items
+                .iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+            {
                 let item = self.hir_item_for_export(export)?;
                 let symbol = self
                     .checked
@@ -676,7 +688,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             if !matches!(module.origin, ModuleOrigin::Source) {
                 continue;
             }
-            for export in module.visibility_exports.items.values() {
+            for export in module
+                .visibility_exports
+                .items
+                .iter()
+                .collect::<BTreeMap<_, _>>()
+                .into_values()
+            {
                 if !matches!(export.item.kind, AstItemKind::Spec) {
                     continue;
                 }
