@@ -142,8 +142,16 @@ impl Frontend {
             .into_check_output()
     }
 
-    pub fn check_project(&self, input: ProjectInput) -> ProjectOutput {
-        let mut session = FrontendSession::new();
+    pub fn check_project(&self, mut input: ProjectInput) -> ProjectOutput {
+        let registry = if input.options.standard_library_mode
+            == StandardLibraryMode::SourceBootstrap
+        {
+            input.options.standard_library_artifact = Some(etas_std::compiler_contract_identity());
+            etas_std::compiler_contract_registry()
+        } else {
+            etas_std::standard_registry()
+        };
+        let mut session = FrontendSession::with_std_registry(std::sync::Arc::new(registry));
         let project = session.open_project(input);
         session
             .check(project, CheckRequest::one_shot())
@@ -153,8 +161,8 @@ impl Frontend {
 
     /// Check the complete std source package without an entry flow. The caller
     /// supplies all manifest-selected sources using FullSourceTree discovery.
-    /// This migration entry point still uses the legacy primitive/type contract;
-    /// artifact providers and the final minimal bootstrap are separate stages.
+    /// Only the explicit compiler/host ABI is predeclared. The complete legacy
+    /// std registry is not constructed by this source build entry point.
     pub fn check_standard_library_source(&self, mut input: ProjectInput) -> ProjectOutput {
         input.options.entry_policy = EntryPolicy::Optional;
         input.options.standard_library_mode = StandardLibraryMode::SourceBootstrap;
