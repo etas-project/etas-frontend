@@ -83,6 +83,15 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
                 }
             };
             let module_path = match source_file.kind {
+                // Legacy implementation assets retain their private virtual
+                // identity while the maintained source tree uses public std modules.
+                SourceKind::VirtualStd { source } => ModulePath {
+                    segments: etas_std::standard_library_source(source)
+                        .module_path
+                        .iter()
+                        .map(|segment| (*segment).to_owned())
+                        .collect(),
+                },
                 SourceKind::DependencySourceOverlay { package, .. } => match index
                     .dependency_namespaces
                     .namespace_for_source(package, &declared_module_path)

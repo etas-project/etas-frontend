@@ -132,6 +132,7 @@ impl ProjectInput {
 #[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
 pub struct ProjectCompileOptions {
     pub entry_policy: EntryPolicy,
+    pub standard_library_mode: StandardLibraryMode,
     pub reflection: crate::code::definition::ReflectionOptions,
     /// Select the optional typed-HIR optimization pipeline. O2 is the balanced default.
     pub optimization_level: OptimizationLevel,
@@ -148,6 +149,7 @@ impl Default for ProjectCompileOptions {
     fn default() -> Self {
         Self {
             entry_policy: EntryPolicy::default(),
+            standard_library_mode: StandardLibraryMode::default(),
             reflection: crate::code::definition::ReflectionOptions::default(),
             optimization_level: OptimizationLevel::default(),
             quality_context_token_budget: None,
@@ -172,8 +174,12 @@ impl ProjectCompileOptions {
         };
         let mut parts = vec![
             "frontend-options",
-            "v6",
+            "v7",
             entry_policy,
+            match self.standard_library_mode {
+                StandardLibraryMode::Consumer => "std:consumer",
+                StandardLibraryMode::SourceBootstrap => "std:source-bootstrap",
+            },
             optimization,
             "retain-bodies",
         ];
@@ -204,6 +210,16 @@ pub enum EntryPolicy {
     CompileOnly,
     Optional,
     Runnable,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+pub enum StandardLibraryMode {
+    #[default]
+    Consumer,
+    /// Check source std against the existing primitive and type contracts.
+    /// Source declarations own their exports; embedded legacy bodies are not admitted.
+    /// This transitional mode still uses the full legacy bootstrap contract.
+    SourceBootstrap,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]

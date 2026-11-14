@@ -76,7 +76,11 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
             .iter()
             .any(|package| package.import_root == "std")
         {
-            add_std_modules(&mut catalog, &context.std_registry);
+            add_std_modules(
+                &mut catalog,
+                &context.std_registry,
+                context.input.options.standard_library_mode,
+            );
         }
         add_external_modules(&mut catalog, context);
 
@@ -85,13 +89,24 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
     }
 }
 
-fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry) {
+fn add_std_modules(
+    catalog: &mut ModuleCatalog,
+    registry: &etas_std::StdRegistry,
+    mode: crate::StandardLibraryMode,
+) {
     for module in registry.modules() {
         let path = crate::ModulePath {
             segments: module.path.clone(),
         };
         let items = registry
             .module_exports(module.id)
+            .filter(|(_, symbol)| {
+                mode != crate::StandardLibraryMode::SourceBootstrap
+                    || !matches!(
+                        symbol.implementation,
+                        Some(etas_std::StdImplementationRef::Source { .. })
+                    )
+            })
             .map(|(name, symbol)| {
                 (
                     name.to_owned(),
@@ -107,6 +122,18 @@ fn add_std_modules(catalog: &mut ModuleCatalog, registry: &etas_std::StdRegistry
                 )
             })
             .collect::<HashMap<_, _>>();
+        if mode == crate::StandardLibraryMode::SourceBootstrap
+            && let Some(key) = catalog
+                .module_keys(&path)
+                .and_then(|keys| keys.first())
+                .copied()
+        {
+            let source = catalog.modules.get_mut(key).expect("source std module");
+            for (name, export) in items {
+                source.exports.items.entry(name).or_insert(export);
+            }
+            continue;
+        }
         catalog.insert(
             path,
             CatalogModuleOrigin::Std { module: module.id },

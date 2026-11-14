@@ -108,6 +108,22 @@ Source and metadata modules share one module identity/catalog model. Import
 resolution must distinguish exact modules, child modules, and exported items;
 prefix matching is not a valid substitute.
 
+`Frontend::check_standard_library_source` checks a complete std source set
+without `main`, using the normal project pipeline. The driver must discover
+the manifest's source root with `ProjectSourceLoadScope::FullSourceTree` first.
+Public declarations in any module part become the source module's exports;
+remaining primitive/type imports use the transitional legacy bootstrap contract.
+Embedded legacy bodies are excluded, and all supplied private bodies are checked.
+`StandardLibraryMode::SourceBootstrap` has its own compiler-options fingerprint.
+This entry point does not yet provide an artifact provider or the final minimal
+bootstrap contract. Consumer compilation continues to use the legacy provider.
+
+For a source-root smoke check while the driver build command is being added:
+
+```bash
+cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library
+```
+
 ## Build and Verify
 
 The workspace requires Rust `1.85` or newer and access to

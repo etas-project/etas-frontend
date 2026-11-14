@@ -83,6 +83,9 @@ impl Pass<ProjectContext> for AdmitStandardLibrarySourcesPass {
 }
 
 fn select_sources(context: &ProjectContext) -> Vec<StdLibrarySourceId> {
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+        return Vec::new();
+    }
     let implementations = context
         .std_registry
         .symbols()

@@ -62,7 +62,7 @@ pub use output::{
     ProjectExternalTypeInput, ProjectExternalTypeSpecSatisfactionInput, ProjectId, ProjectInput,
     ProjectOutput, ProjectStableSourceKeyInput, ProjectStandaloneSourcePackage,
     ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, SharedEffectOutput, SourcePackageOriginError,
-    TopLevelLetFact, TopLevelLetFacts, UnitId,
+    StandardLibraryMode, TopLevelLetFact, TopLevelLetFacts, UnitId,
 };
 pub use package_metadata::{
     PackageMetadataArtifact, PackageMetadataBinInput, PackageMetadataBuildInput,
@@ -148,6 +148,16 @@ impl Frontend {
             .check(project, CheckRequest::one_shot())
             .expect("one-shot frontend check uses a valid project session")
             .output
+    }
+
+    /// Check the complete std source package without an entry flow. The caller
+    /// supplies all manifest-selected sources using FullSourceTree discovery.
+    /// This migration entry point still uses the legacy primitive/type contract;
+    /// artifact providers and the final minimal bootstrap are separate stages.
+    pub fn check_standard_library_source(&self, mut input: ProjectInput) -> ProjectOutput {
+        input.options.entry_policy = EntryPolicy::Optional;
+        input.options.standard_library_mode = StandardLibraryMode::SourceBootstrap;
+        self.check_project(input)
     }
 }
 
