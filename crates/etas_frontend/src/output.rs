@@ -1619,6 +1619,21 @@ impl CheckedProgramData {
         self.reflection_targets.resolution(expression)
     }
 
+    pub fn foreign_method(
+        &self,
+        identity: &etas_code::MethodId,
+    ) -> Option<(
+        &CheckedProgram,
+        HirItemId,
+        &etas_types::method::MethodSignatureFact,
+    )> {
+        self.foreign_type_bindings.method(identity)
+    }
+
+    pub fn foreign_methods(&self) -> impl Iterator<Item = &etas_code::MethodId> {
+        self.foreign_type_bindings.methods()
+    }
+
     pub fn external_definition_origins(&self) -> &[ProjectExternalDefinitionOriginsInput] {
         &self
             .definition_environment

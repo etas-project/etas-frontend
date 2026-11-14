@@ -50,6 +50,8 @@ pub(crate) struct PreparedInstantiations {
     pub store: Arc<TypeStore>,
     pub plan: Arc<NativeInstantiationPlan>,
     pub method_bodies: BTreeSet<HirItemId>,
+    pub foreign_methods: Vec<super::witness::ForeignMethodInstantiation>,
+    pub foreign_flows: Vec<super::witness::ForeignFlowInstantiation>,
 }
 
 pub(crate) struct PreparationInput<'a> {
@@ -132,6 +134,8 @@ pub(crate) fn prepare_from_targets(
             store: types.store.clone(),
             plan: Arc::default(),
             method_bodies: BTreeSet::new(),
+            foreign_methods: Vec::new(),
+            foreign_flows: Vec::new(),
         });
     }
     let index = hir.index();
@@ -169,6 +173,8 @@ pub(crate) fn prepare_from_targets(
             store: types.store.clone(),
             plan: Arc::default(),
             method_bodies: BTreeSet::new(),
+            foreign_methods: Vec::new(),
+            foreign_flows: Vec::new(),
         });
     }
     let mut roots = BTreeMap::<HirItemId, Vec<TypeId>>::new();
@@ -214,6 +220,10 @@ pub(crate) fn prepare_from_targets(
     let mut plan = NativeInstantiationPlan::default();
     let witnesses = super::witness::WitnessResolver::new(types);
     let mut method_bodies = BTreeSet::new();
+    let mut foreign_methods = Vec::new();
+    let mut foreign_seen = HashSet::new();
+    let mut foreign_flows = Vec::new();
+    let mut flows_seen = HashSet::new();
     let mut interner = interner.unwrap_or_else(|| TypeInterner::from_store((*types.store).clone()));
     let mut materialized = Vec::new();
     let mut representations =
@@ -303,6 +313,18 @@ pub(crate) fn prepare_from_targets(
                     let dictionary = witnesses.bound_bodies(signature, fact, &mut substitution)?;
                     method_bodies.extend(dictionary.bodies);
                     pending.extend(dictionary.applications);
+                    if fact.deferred_effect_row_obligations.is_empty()
+                        && let Some(symbol) = super::targets::external_symbol(hir, *call)
+                    {
+                        let application = super::witness::ForeignFlowInstantiation {
+                            symbol,
+                            site: *call,
+                            arguments: bind_call(&mut substitution, signature, fact)?,
+                        };
+                        if flows_seen.insert(application.clone()) {
+                            foreign_flows.push(application);
+                        }
+                    }
                 }
                 if let Some(method) = types.facts.selected_method(*call)
                     && matches!(
@@ -313,13 +335,28 @@ pub(crate) fn prepare_from_targets(
                     if let Some(application) =
                         witnesses.method_application(method, &mut substitution)?
                     {
-                        method_bodies.insert(application.body);
-                        match application.instance {
-                            Some(instance) => pending.push_back(instance),
-                            None if phase == PreparationPhase::Types => {}
-                            None => {
+                        match application {
+                            super::witness::MethodApplication::Native { body, instance } => {
+                                method_bodies.insert(body);
+                                match instance {
+                                    Some(instance) => pending.push_back(instance),
+                                    None if phase == PreparationPhase::Types => {}
+                                    None => return Err(
+                                        "native invocation has unmaterialized deferred effect rows"
+                                            .into(),
+                                    ),
+                                }
+                            }
+                            super::witness::MethodApplication::Foreign(Some(instance)) => {
+                                if foreign_seen.insert(instance.clone()) {
+                                    foreign_methods.push(instance);
+                                }
+                            }
+                            super::witness::MethodApplication::Foreign(None)
+                                if phase == PreparationPhase::Types => {}
+                            super::witness::MethodApplication::Foreign(None) => {
                                 return Err(
-                                    "native invocation has unmaterialized deferred effect rows"
+                                    "foreign invocation has unmaterialized deferred effect rows"
                                         .into(),
                                 );
                             }
@@ -428,6 +465,8 @@ pub(crate) fn prepare_from_targets(
         store: Arc::new(interner.into_store()),
         plan: Arc::new(plan),
         method_bodies,
+        foreign_methods,
+        foreign_flows,
     })
 }
 

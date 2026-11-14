@@ -81,6 +81,16 @@ impl MethodIndex {
         result
     }
 
+    pub fn with_additional_declarations(
+        &self,
+        store: &TypeStore,
+        entries: impl IntoIterator<Item = MethodSignatureFact>,
+    ) -> Self {
+        let mut result = Self::build(store, self.entries.iter().cloned().chain(entries).collect());
+        result.source_origins = self.source_origins.clone();
+        result
+    }
+
     pub fn get(&self, index: u32) -> &MethodSignatureFact {
         &self.entries[index as usize]
     }

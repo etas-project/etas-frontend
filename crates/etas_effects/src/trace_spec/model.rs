@@ -297,25 +297,7 @@ impl TraceSpecPattern {
         let Some((target, actual_args)) = bound_target_and_args(allowed, actual) else {
             return self.arg_bounds.is_empty();
         };
-        let spec_facts = etas_types::SpecFacts {
-            canonical: types.facts.canonical_specs.clone(),
-            external_signatures: types.facts.external_specs.signatures.clone(),
-            external_impls: types.facts.external_specs.impls.clone(),
-            external_aliases: types.facts.external_specs.aliases.clone(),
-            signatures: types.facts.spec_signatures.clone(),
-            impls: types.facts.spec_impls.clone(),
-            type_satisfactions: types.facts.type_spec_satisfactions.clone(),
-            callable_satisfactions: types.facts.callable_spec_satisfactions.clone(),
-            trace_conformances: types.facts.trace_spec_conformances.clone(),
-            external_callable_satisfactions: types
-                .facts
-                .external_callable_spec_satisfactions
-                .clone(),
-            external_trace_conformances: types.facts.external_trace_spec_conformances.clone(),
-            type_param_bounds: types.facts.type_param_bounds.clone(),
-            std_impls: types.facts.std_spec_impls.clone(),
-            std_spec_aliases: types.facts.std_spec_aliases.clone(),
-        };
+        let spec_facts = etas_types::SpecFacts::from(types.facts.as_ref());
         self.arg_bounds
             .iter()
             .filter(|bound| bound.target == target)

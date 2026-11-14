@@ -970,6 +970,15 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             *arg = remapper.ty(*arg);
         }
     }
+    for implementation in &mut facts.checked_spec_impls {
+        for parameter in &mut implementation.generic_params {
+            remapper.generic_parameter(parameter);
+        }
+        implementation.self_type = remapper.ty(implementation.self_type);
+        for arg in &mut implementation.args {
+            *arg = remapper.ty(*arg);
+        }
+    }
     for fact in &mut facts.type_spec_satisfactions {
         remapper.type_spec_satisfaction(fact);
     }

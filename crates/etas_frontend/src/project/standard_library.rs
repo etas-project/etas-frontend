@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use etas_hir::{HirExpr, ResolveResult, SymbolDef};
+mod methods;
+mod owner;
+
+use etas_hir::SymbolDef;
 use etas_types::{
-    CallableGenericParamKind, TypeInterner, TypeOutput, TypeSubstitutionEngine,
-    ty::TypeRelocationMaterializationInput,
+    TypeInterner, TypeOutput, TypeSubstitutionEngine, ty::TypeRelocationMaterializationInput,
 };
 
 use super::instantiation::{self, InstantiationError, NativeGenericArgument, NativeInstantiation};
@@ -162,23 +164,57 @@ impl StandardLibrary {
     /// lowers source or checks the library bodies again.
     pub(crate) fn for_consumer(
         self: &Arc<Self>,
-        consumer: &CheckedProgramData,
+        consumer: &mut CheckedProgramData,
     ) -> Result<Arc<Self>, String> {
+        loop {
+            let before = (
+                consumer.type_store.len(),
+                consumer.native_instantiations.instances().len(),
+            );
+            let linked = self.link_consumer(consumer)?;
+            let after = (
+                consumer.type_store.len(),
+                consumer.native_instantiations.instances().len(),
+            );
+            if before == after {
+                return Ok(linked);
+            }
+        }
+    }
+
+    fn link_consumer(
+        self: &Arc<Self>,
+        consumer: &mut CheckedProgramData,
+    ) -> Result<Arc<Self>, String> {
+        let prepared_owner = instantiation::prepare(
+            instantiation::PreparationInput {
+                hir: &consumer.hir,
+                types: &TypeOutput {
+                    store: consumer.type_store.clone(),
+                    facts: consumer.types.clone(),
+                    diagnostics: vec![],
+                },
+                effects: &consumer.effects,
+                limits: Default::default(),
+                control: None,
+            },
+            consumer.native_instantiations.instances(),
+            None,
+        )
+        .map_err(|error| match error {
+            InstantiationError::Invalid(reason) | InstantiationError::Resource { reason, .. } => {
+                reason
+            }
+            InstantiationError::Interrupted(error) => error.reason,
+        })?;
+        consumer.type_store = prepared_owner.store;
+        consumer.native_instantiations = prepared_owner.plan;
         let mut calls = Vec::new();
-        for (site, application) in &consumer.types.generic_instantiations {
-            let value = match consumer.hir.exprs.get(*site) {
-                Some(HirExpr::Call { callee, .. }) => *callee,
-                Some(HirExpr::Path(_)) => *site,
-                _ => continue,
-            };
-            let Some(HirExpr::Path(path)) = consumer.hir.exprs.get(value) else {
-                continue;
-            };
-            let ResolveResult::Resolved(symbol) = path.resolution else {
-                continue;
-            };
-            let Some(SymbolDef::ImportAlias { path, .. }) =
-                consumer.symbols.get(symbol).map(|symbol| &symbol.def)
+        for application in prepared_owner.foreign_flows {
+            let Some(SymbolDef::ImportAlias { path, .. }) = consumer
+                .symbols
+                .get(application.symbol)
+                .map(|symbol| &symbol.def)
             else {
                 continue;
             };
@@ -189,7 +225,11 @@ impl StandardLibrary {
             else {
                 continue;
             };
-            calls.push((*site, binding.callable.clone(), application));
+            calls.push((
+                application.site,
+                binding.callable.clone(),
+                application.arguments,
+            ));
         }
         if calls.is_empty() {
             return Ok(self.clone());
@@ -213,8 +253,12 @@ impl StandardLibrary {
         let mut rows = Vec::new();
         let mut request_types = Vec::new();
         for (site, _, application) in &calls {
-            roots.extend(application.type_bindings.iter().map(|(_, ty)| *ty));
-            rows.extend(application.effect_row_bindings.iter().map(|(_, row)| row));
+            for argument in application {
+                match argument {
+                    NativeGenericArgument::Type(ty) => roots.push(*ty),
+                    NativeGenericArgument::EffectRow(row) => rows.push(row),
+                }
+            }
             if let Some(summary) = consumer.effects.expr_effects.get(site)
                 && let etas_effects::RequestInstantiationSummary::Available { actions, .. } =
                     &summary.handler_requests
@@ -233,10 +277,37 @@ impl StandardLibrary {
         request_types.sort_unstable();
         request_types.dedup();
         roots.extend(&request_types);
+        let imported_methods = methods::select(source.checked_program(), &source, &target, &roots)?;
+        let mut additional_specs = Vec::new();
+        for method in &imported_methods {
+            let declaration = method.declaration;
+            if let etas_types::method::MethodEvidence::Implementation { spec, .. } =
+                &declaration.evidence
+            {
+                additional_specs.push(spec.clone());
+            }
+            roots.push(declaration.receiver_type);
+            roots.extend(&declaration.signature.params);
+            roots.push(declaration.signature.output);
+            rows.extend(declaration.signature.effects.iter());
+            for parameter in declaration
+                .owner_params
+                .iter()
+                .chain(&declaration.signature.generic_params)
+            {
+                roots.push(parameter.subject);
+                for bound in &parameter.bounds {
+                    roots.extend(&bound.args);
+                    additional_specs.push(bound.spec.clone());
+                }
+            }
+        }
         let (reachable, spec_plan) = crate::code::definition::checked_type_and_spec_plan(
             crate::code::definition::CheckedTypeAndSpecPlanInput {
                 source: consumer,
                 target: &self.program.std_registry,
+                target_definitions: Some(&target),
+                additional_specs: &additional_specs,
                 roots: &roots,
                 rows: &rows,
                 declarations: correspondence.declarations(),
@@ -255,15 +326,18 @@ impl StandardLibrary {
                     .map(|identity| (*ty, identity.clone()))
             })
             .collect();
+        let mut interner = TypeInterner::from_store(self.program.type_store.as_ref().clone());
+        let mut declarations = correspondence.declarations().clone();
+        methods::reserve_parameters(&imported_methods, &mut interner, &mut declarations)?;
         let foreign = etas_types::ty::relocate_foreign_type_graph(
-            TypeInterner::from_store(self.program.type_store.as_ref().clone()),
+            interner,
             etas_types::ty::ForeignTypeGraphInput {
                 source: &consumer.type_store,
                 facts: &consumer.types,
                 target_facts: &self.program.types,
                 reachable: &reachable,
                 identities: &identities,
-                declarations: correspondence.declarations(),
+                declarations: &declarations,
                 effect_names: correspondence.effect_names(),
                 specs: &spec_plan.mapping,
                 max_depth: limits.max_expansion_depth,
@@ -287,6 +361,18 @@ impl StandardLibrary {
         foreign_type_bindings
             .extend_specs_checked(&source, &spec_plan.mapping, &control)
             .map_err(|e| e.to_string())?;
+        let method_declarations = methods::relocate(
+            &imported_methods,
+            consumer,
+            &self.program,
+            &spec_plan.mapping,
+            &mut interner,
+            &declarations,
+            correspondence.effect_names(),
+        )?;
+        foreign_type_bindings
+            .extend_methods_checked(&source, &method_declarations, &control)
+            .map_err(|e| e.to_string())?;
         let mut seeds = self.program.native_instantiations.instances().to_vec();
         {
             let mut relocation = TypeSubstitutionEngine::relocating_materialized(
@@ -298,6 +384,7 @@ impl StandardLibrary {
                 },
             )
             .with_spec_identities(&spec_plan.mapping);
+
             for ty in request_types {
                 relocation.substitute(ty).map_err(|e| e.to_string())?;
             }
@@ -305,40 +392,20 @@ impl StandardLibrary {
                 let owner = target
                     .item_owner(&callable)
                     .ok_or("std generic callable has no checked body")?;
-                let signature = instantiation::signature(&self.program.types, owner)
-                    .ok_or("std generic body has no checked signature")?;
-                let arguments = signature
-                    .generic_params
-                    .iter()
-                    .map(|parameter| {
-                        Ok(match parameter.kind {
-                            CallableGenericParamKind::Type => NativeGenericArgument::Type(
-                                relocation
-                                    .substitute(
-                                        application
-                                            .type_bindings
-                                            .iter()
-                                            .find(|(name, _)| name == &parameter.name)
-                                            .ok_or("std generic call has no checked type argument")?
-                                            .1,
-                                    )
-                                    .map_err(|e| e.to_string())?,
+                let arguments = application
+                    .into_iter()
+                    .map(|argument| {
+                        Ok(match argument {
+                            NativeGenericArgument::Type(ty) => NativeGenericArgument::Type(
+                                relocation.substitute(ty).map_err(|e| e.to_string())?,
                             ),
-                            CallableGenericParamKind::Effect => NativeGenericArgument::EffectRow(
-                                relocation
-                                    .substitute_effect_row(
-                                        application
-                                            .effect_row_bindings
-                                            .iter()
-                                            .find(|(name, _)| name == &parameter.name)
-                                            .ok_or(
-                                                "std generic call has no checked effect argument",
-                                            )?
-                                            .1
-                                            .clone(),
-                                    )
-                                    .map_err(|e| e.to_string())?,
-                            ),
+                            NativeGenericArgument::EffectRow(row) => {
+                                NativeGenericArgument::EffectRow(
+                                    relocation
+                                        .substitute_effect_row(row)
+                                        .map_err(|e| e.to_string())?,
+                                )
+                            }
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()?;
@@ -377,6 +444,10 @@ impl StandardLibrary {
                 }
                 crate::code::reflection::ReflectionTargetError::Interrupted(error) => error.reason,
             })?;
+        let methods = facts
+            .methods
+            .with_additional_declarations(interner.store(), method_declarations);
+        let (facts, reflection_targets) = reflection_targets.with_method_index(Arc::new(methods));
         let types = TypeOutput {
             store: self.program.type_store.clone(),
             facts: facts.clone(),
@@ -405,6 +476,22 @@ impl StandardLibrary {
         program.foreign_type_bindings = Arc::new(foreign_type_bindings);
         program.type_store = prepared.store;
         program.native_instantiations = prepared.plan;
+        owner::prepare(
+            consumer,
+            &program,
+            &prepared.foreign_methods,
+            limits,
+            &control,
+        )?;
+        let caller = Arc::new(catalog(Arc::new(consumer.clone()))?);
+        let imported = program.types.methods.entries().filter(|method| {
+            matches!(&method.target, etas_types::method::MethodTarget::External { identity } if program.foreign_method(identity).is_some())
+        }).cloned().collect::<Vec<_>>();
+        let mut bindings = program.foreign_type_bindings.as_ref().clone();
+        bindings
+            .extend_methods_checked(&caller, &imported, &control)
+            .map_err(|e| e.to_string())?;
+        program.foreign_type_bindings = Arc::new(bindings);
         let mut linked = self.as_ref().clone();
         linked.program = Arc::new(program);
         Ok(Arc::new(linked))

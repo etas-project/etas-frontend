@@ -5,6 +5,7 @@ mod targets;
 #[cfg(test)]
 mod tests;
 mod witness;
+pub(crate) use witness::ForeignMethodInstantiation;
 
 use std::collections::HashMap;
 

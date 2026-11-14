@@ -258,6 +258,8 @@ fn prepare(input: PreparationInput<'_>) -> Result<PreparedCandidateApplication, 
         crate::code::definition::CheckedTypeAndSpecPlanInput {
             source,
             target: std_registry,
+            target_definitions: None,
+            additional_specs: &[],
             roots: &roots,
             rows: &rows,
             declarations: correspondence.declarations(),

@@ -31,6 +31,24 @@ pub(super) fn external_signature<'a>(
     }
 }
 
+pub(super) fn external_symbol(
+    hir: &etas_hir::HirProgram,
+    expr: HirExprId,
+) -> Option<etas_hir::SymbolId> {
+    let path = match hir.exprs.get(expr)? {
+        HirExpr::Call { callee, .. } => match hir.exprs.get(*callee)? {
+            HirExpr::Path(path) => path,
+            _ => return None,
+        },
+        HirExpr::Path(path) => path,
+        _ => return None,
+    };
+    let ResolveResult::Resolved(symbol) = path.resolution else {
+        return None;
+    };
+    hir.canonical_source_symbol(symbol)
+}
+
 pub(crate) fn direct_targets(
     hir: &etas_hir::HirProgram,
     types: &TypeOutput,

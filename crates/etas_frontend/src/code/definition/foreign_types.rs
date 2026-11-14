@@ -12,6 +12,7 @@ use crate::code::descriptor::ProjectionError;
 pub(crate) struct ForeignTypeBindings {
     bindings: HashMap<TypeId, ForeignTypeBinding>,
     specs: HashMap<DefinitionKey, ForeignSpecBinding>,
+    methods: HashMap<etas_code::MethodId, ForeignMethodBinding>,
 }
 
 #[derive(Clone, etas_core::RetainedSize)]
@@ -27,6 +28,12 @@ struct ForeignSpecBinding {
     catalog: Arc<DefinitionCatalog>,
 }
 
+#[derive(Clone, etas_core::RetainedSize)]
+struct ForeignMethodBinding {
+    catalog: Arc<DefinitionCatalog>,
+    declaration: etas_types::method::MethodSignatureFact,
+}
+
 impl std::fmt::Debug for ForeignTypeBindings {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -39,7 +46,7 @@ impl std::fmt::Debug for ForeignTypeBindings {
 
 impl ForeignTypeBindings {
     pub(crate) fn is_empty(&self) -> bool {
-        self.bindings.is_empty() && self.specs.is_empty()
+        self.bindings.is_empty() && self.specs.is_empty() && self.methods.is_empty()
     }
 
     pub(crate) fn relocate_checked(
@@ -48,7 +55,10 @@ impl ForeignTypeBindings {
         target: &TypeStore,
         control: &dyn PipelineExecutionControl,
     ) -> Result<Self, ProjectionError> {
-        let mut result = Self::default();
+        let mut result = Self {
+            methods: self.methods.clone(),
+            ..Self::default()
+        };
         for (source, binding) in &self.bindings {
             control.checkpoint().map_err(|error| {
                 ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
@@ -94,7 +104,10 @@ impl ForeignTypeBindings {
         target: &TypeStore,
         control: &dyn PipelineExecutionControl,
     ) -> Result<Self, ProjectionError> {
-        let mut result = Self::default();
+        let mut result = Self {
+            methods: self.methods.clone(),
+            ..Self::default()
+        };
         for (id, binding) in &self.bindings {
             control.checkpoint().map_err(|error| {
                 ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
@@ -148,6 +161,67 @@ impl ForeignTypeBindings {
             );
         }
         Ok(result)
+    }
+
+    pub(crate) fn extend_methods_checked(
+        &mut self,
+        catalog: &Arc<DefinitionCatalog>,
+        declarations: &[etas_types::method::MethodSignatureFact],
+        control: &dyn PipelineExecutionControl,
+    ) -> Result<(), ProjectionError> {
+        for declaration in declarations {
+            let etas_types::method::MethodTarget::External { identity } = &declaration.target
+            else {
+                return Err(ProjectionError::Invalid(
+                    "foreign method has no canonical target".into(),
+                ));
+            };
+            control.checkpoint().map_err(|error| {
+                ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
+            })?;
+            let callable = etas_code::CallableId::method(identity.clone());
+            let item = catalog.item_owner(&callable).ok_or_else(|| {
+                ProjectionError::MissingIdentity("foreign method has no checked source body".into())
+            })?;
+            if !matches!(
+                catalog.checked_program().hir.items.get(item),
+                Some(etas_hir::HirItem::Flow(_))
+            ) {
+                return Err(ProjectionError::Invalid(
+                    "foreign method owner has no source flow".into(),
+                ));
+            }
+            self.methods.insert(
+                identity.clone(),
+                ForeignMethodBinding {
+                    catalog: catalog.clone(),
+                    declaration: declaration.clone(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn method(
+        &self,
+        identity: &etas_code::MethodId,
+    ) -> Option<(
+        &crate::CheckedProgram,
+        etas_hir::HirItemId,
+        &etas_types::method::MethodSignatureFact,
+    )> {
+        let binding = self.methods.get(identity)?;
+        Some((
+            binding.catalog.checked_program(),
+            binding
+                .catalog
+                .item_owner(&etas_code::CallableId::method(identity.clone()))?,
+            &binding.declaration,
+        ))
+    }
+
+    pub(crate) fn methods(&self) -> impl Iterator<Item = &etas_code::MethodId> {
+        self.methods.keys()
     }
 
     pub(crate) fn extend_specs_checked(

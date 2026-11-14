@@ -81,7 +81,7 @@ pub struct MethodSignatureFact {
 }
 
 impl MethodSignatureFact {
-    pub(crate) fn try_map_types<E>(
+    pub fn try_map_types<E>(
         &mut self,
         mut map: impl FnMut(TypeId) -> Result<TypeId, E>,
     ) -> Result<(), E> {

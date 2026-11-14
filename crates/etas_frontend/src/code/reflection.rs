@@ -43,6 +43,22 @@ fn checkpoint(control: Option<&dyn PipelineExecutionControl>) -> Result<(), Refl
 }
 
 impl CheckedReflectionTargets {
+    pub(crate) fn with_method_index(
+        &self,
+        methods: Arc<etas_types::method::MethodIndex>,
+    ) -> (Arc<TypeFacts>, Arc<Self>) {
+        let mut facts = self.types.as_ref().clone();
+        facts.methods = methods;
+        let facts = Arc::new(facts);
+        (
+            facts.clone(),
+            Arc::new(Self {
+                types: facts,
+                sites: self.sites.clone(),
+            }),
+        )
+    }
+
     pub(crate) fn library_paths(&self, hir: &HirRevision) -> Result<ResolvedPaths, &'static str> {
         let mut expressions = self.sites.iter().collect::<Vec<_>>();
         expressions.sort_unstable_by_key(|(id, _)| **id);
@@ -134,6 +150,7 @@ impl CheckedReflectionTargets {
             && specs.canonical.signatures.is_empty()
             && specs.canonical.impls.is_empty()
             && specs.std_impls.is_empty()
+            && specs.checked_impls.is_empty()
         {
             return Ok((original.clone(), self.clone()));
         }

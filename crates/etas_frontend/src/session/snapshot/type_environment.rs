@@ -33,6 +33,7 @@ pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, Stri
     )?;
     append(&mut parts, "std-aliases", sorted(&facts.std_spec_aliases))?;
     append(&mut parts, "std-impls", &facts.std_spec_impls)?;
+    append(&mut parts, "checked-impls", &facts.checked_spec_impls)?;
     append(
         &mut parts,
         "impls",

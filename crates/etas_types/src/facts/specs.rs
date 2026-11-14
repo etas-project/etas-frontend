@@ -2,6 +2,7 @@ use crate::{CallableSignature, TypeId};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecFacts {
+    pub checked_impls: Vec<CheckedSpecImplementationFact>,
     #[serde(default)]
     pub canonical: CanonicalSpecFacts,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
@@ -76,6 +77,17 @@ pub struct CanonicalSpecImplFact {
 pub struct RelocatedSpecFacts {
     pub canonical: CanonicalSpecFacts,
     pub std_impls: Vec<CheckedStdSpecImplFact>,
+    pub checked_impls: Vec<CheckedSpecImplementationFact>,
+}
+
+/// Implementation evidence whose declaration is already owned by the target
+/// checked program. It introduces no HIR implementation or lexical names.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct CheckedSpecImplementationFact {
+    pub generic_params: Vec<crate::CallableGenericParam>,
+    pub self_type: TypeId,
+    pub spec: CheckedSpecRef,
+    pub args: Vec<TypeId>,
 }
 
 #[derive(Debug)]
@@ -159,6 +171,11 @@ impl RelocatedSpecFacts {
                     .iter()
                     .map(|implementation| &implementation.generic_params),
             )
+            .chain(
+                self.checked_impls
+                    .iter()
+                    .map(|implementation| &implementation.generic_params),
+            )
         {
             let mut subjects = std::collections::HashSet::new();
             for parameter in parameters {
@@ -227,6 +244,27 @@ impl RelocatedSpecFacts {
                 }
             }
         }
+        for implementation in &self.checked_impls {
+            checkpoint()?;
+            let CheckedSpecRef::Source(symbol) = implementation.spec else {
+                return Err(
+                    "imported checked implementation must name a target source spec".into(),
+                );
+            };
+            let Some(declaration) = existing.spec_signatures.get(&symbol) else {
+                return Err("imported checked implementation has no target declaration".into());
+            };
+            if declaration.kind != SpecKind::TypeSpec
+                || declaration.params.len() != implementation.args.len()
+                || store.get(implementation.self_type).is_none()
+                || implementation
+                    .args
+                    .iter()
+                    .any(|ty| store.get(*ty).is_none())
+            {
+                return Err("imported checked implementation has invalid types or arity".into());
+            }
+        }
         Ok(())
     }
 
@@ -260,6 +298,17 @@ impl RelocatedSpecFacts {
             checkpoint()?;
             if standard.insert((item.self_type, item.spec.clone(), item.args.clone())) {
                 facts.std_spec_impls.push(item);
+            }
+        }
+        let mut checked = std::collections::HashSet::new();
+        for item in &facts.checked_spec_impls {
+            checkpoint()?;
+            checked.insert((item.self_type, item.spec.clone(), item.args.clone()));
+        }
+        for item in self.checked_impls {
+            checkpoint()?;
+            if checked.insert((item.self_type, item.spec.clone(), item.args.clone())) {
+                facts.checked_spec_impls.push(item);
             }
         }
         Ok(())

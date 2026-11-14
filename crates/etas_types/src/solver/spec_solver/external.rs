@@ -369,6 +369,24 @@ fn evidence_satisfies_inner(
             )
         });
     }
+    if facts.checked_impls.iter().any(|implementation| {
+        implementation_satisfies(
+            store,
+            facts,
+            Implementation {
+                parameters: &implementation.generic_params,
+                subject: implementation.self_type,
+                spec: implementation.spec.clone(),
+                args: &implementation.args,
+            },
+            ty,
+            target,
+            args,
+            active,
+        )
+    }) {
+        return true;
+    }
     if facts.std_impls.iter().any(|implementation| {
         implementation_satisfies(
             store,

@@ -223,9 +223,10 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 reachability: reachability.clone(),
                 residual: std::sync::Arc::default(),
             };
-            if context.input.options.standard_library_mode
-                == crate::StandardLibraryMode::SourceBootstrap
-            {
+            if matches!(
+                context.input.options.standard_library_mode,
+                crate::StandardLibraryMode::SourceBootstrap | crate::StandardLibraryMode::Artifact
+            ) {
                 // Public library callables need an ABI type even when no body
                 // in this compilation references them as a function value.
                 let mut store = data.type_store.as_ref().clone();
@@ -272,9 +273,8 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                     }
                 }
                 data.type_store = std::sync::Arc::new(store);
-            } else if context.input.options.standard_library_mode
-                == crate::StandardLibraryMode::Artifact
-            {
+            }
+            if context.input.options.standard_library_mode == crate::StandardLibraryMode::Artifact {
                 let mut store = data.type_store.as_ref().clone();
                 let signatures = data
                     .types
@@ -300,7 +300,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 if let Err(reason) = library.materialize_public_abis(&mut data) {
                     return PassResult::failed(reason);
                 }
-                data.standard_library = match library.for_consumer(&data) {
+                data.standard_library = match library.for_consumer(&mut data) {
                     Ok(library) => Some(library),
                     Err(reason) => return PassResult::failed(reason),
                 };

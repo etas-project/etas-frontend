@@ -151,6 +151,8 @@ pub struct TypeFacts {
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub spec_signatures: HashMap<SymbolId, SpecSignature>,
     pub spec_impls: Vec<SpecImplFact>,
+    #[serde(default)]
+    pub checked_spec_impls: Vec<specs::CheckedSpecImplementationFact>,
     pub type_spec_satisfactions: Vec<TypeSpecSatisfactionFact>,
     pub callable_spec_satisfactions: Vec<CallableSpecSatisfactionFact>,
     pub trace_spec_conformances: Vec<TraceSpecConformanceFact>,
@@ -227,6 +229,7 @@ impl TypeFacts {
 impl From<&TypeFacts> for SpecFacts {
     fn from(facts: &TypeFacts) -> Self {
         Self {
+            checked_impls: facts.checked_spec_impls.clone(),
             canonical: facts.canonical_specs.clone(),
             external_signatures: facts.external_specs.signatures.clone(),
             external_impls: facts.external_specs.impls.clone(),
