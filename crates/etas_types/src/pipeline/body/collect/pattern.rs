@@ -52,7 +52,7 @@ pub fn collect_pattern<E>(
                 origin: ConstraintOrigin { span },
                 reason: AssignabilityReason::Pattern,
             });
-            for (elem, elem_ty) in elems.into_iter().zip(elem_tys.into_iter()) {
+            for (elem, elem_ty) in elems.into_iter().zip(elem_tys) {
                 collect_pattern(ctx, elem, elem_ty)?;
             }
         }

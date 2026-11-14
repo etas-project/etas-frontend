@@ -126,11 +126,15 @@ cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas
 
 `library_hir::LibraryHirImage` archives the checked library's HIR with private
 declarations, generic bodies, lexical scopes, canonical declaration/method
-identities and source maps. Sources retain package-relative paths and stable
-source keys. HIR maps and sets serialize in deterministic order. Decoding and
-rebuilding `HirRevision` preserves the graph across processes and checkout paths.
-This is a bundle component; execution still requires matching type/effect,
-native-binding and backend artifacts. It does not deserialize a `CheckedProgram`.
+identities, source maps, matching type/effect stores and facts, effect registry,
+concurrency eligibility and native generic applications. Sources retain
+package-relative paths and stable source keys. Unordered indexes serialize in
+canonical order, including nested method indexes. Generic application lookup
+hashes are rebuilt when loaded rather than stored as portable identities.
+Decoding and rebuilding `HirRevision` preserves the graph across processes and
+checkout paths. This is a bundle component; execution still requires restoration
+and validation of its native-binding environment, source archive and backend
+artifacts. It does not deserialize a `CheckedProgram`.
 
 The smoke-check example can export this component when its caller supplies the
 package identity, or load it in a separate process:

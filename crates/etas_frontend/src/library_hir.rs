@@ -1,7 +1,7 @@
 //! Portable HIR component for library bundles. This preserves the checked
-//! graph's scopes, private declarations and source map. Loading it produces HIR,
-//! not a CheckedProgram; a bundle must also carry its matching type/effect and
-//! binding artifacts before it can be linked for execution.
+//! graph's scopes, private declarations, type/effect facts, generic applications
+//! and source map. Loading it produces HIR, not a CheckedProgram; publication
+//! must also restore and validate the matching environment and binding artifacts.
 
 use std::{
     collections::BTreeMap,
@@ -18,7 +18,7 @@ use crate::{
     code::identity::{DefinitionIdentityIndex, DefinitionOrigins, standard_package_key},
 };
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryHirSource {
@@ -37,6 +37,13 @@ pub struct LibraryHirImage {
     pub methods: BTreeMap<MethodId, HirItemId>,
     pub sources: Vec<LibraryHirSource>,
     pub program: HirProgram,
+    pub type_store: etas_types::TypeStore,
+    pub types: etas_types::TypeFacts,
+    pub effects: etas_effects::EffectFacts,
+    pub effect_registry: etas_effects::EffectRegistry,
+    pub concurrency: crate::ConcurrencyFacts,
+    pub cpu_parallel: crate::CpuParallelEligibilityFacts,
+    pub(crate) native_instantiations: crate::project::instantiation::NativeInstantiationPlan,
 }
 
 impl LibraryHirImage {
@@ -93,6 +100,13 @@ impl LibraryHirImage {
             methods,
             sources,
             program: checked.hir.program().clone(),
+            type_store: checked.type_store.as_ref().clone(),
+            types: checked.types.as_ref().clone(),
+            effects: checked.effects.as_ref().clone(),
+            effect_registry: checked.effect_registry.as_ref().clone(),
+            concurrency: checked.concurrency.as_ref().clone(),
+            cpu_parallel: checked.cpu_parallel.as_ref().clone(),
+            native_instantiations: checked.native_instantiations.as_ref().clone(),
         })
     }
 

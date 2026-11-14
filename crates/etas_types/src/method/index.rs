@@ -6,12 +6,18 @@ use super::{MethodEvidence, MethodSignatureFact, MethodTarget};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct MethodIndex {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub(super) source_origins: HashMap<etas_hir::SymbolId, etas_code::MethodId>,
     entries: Vec<MethodSignatureFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     members: HashMap<String, Vec<u32>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::nested_map")]
     nominal: HashMap<TypeId, HashMap<String, Vec<u32>>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::nested_map")]
     families: HashMap<u8, HashMap<String, Vec<u32>>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::nested_map")]
     witness_patterns: HashMap<ReceiverHead, HashMap<crate::SpecMethodIdentity, Vec<u32>>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     targets: HashMap<TargetKey, Vec<u32>>,
 }
 
@@ -232,7 +238,16 @@ impl MethodIndex {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 enum TargetKey {
     Source(etas_hir::SymbolId),
@@ -280,6 +295,8 @@ fn same_evidence(left: &MethodEvidence, right: &MethodEvidence) -> bool {
     Debug,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
     Hash,
     serde::Serialize,
     serde::Deserialize,

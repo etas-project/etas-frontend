@@ -15,6 +15,7 @@ use crate::InterpreterSupport;
     etas_core::RetainedSize,
 )]
 pub struct InterpreterSupportFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub items: HashMap<HirItemId, InterpreterSupport>,
     pub entry: Option<InterpreterSupport>,
 }

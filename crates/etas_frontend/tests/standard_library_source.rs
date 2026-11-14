@@ -205,8 +205,40 @@ public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); 
     // Independent sessions and checkouts exercise map ordering and path removal.
     let first = make_image();
     let bytes = first.encode().unwrap();
-    assert_eq!(bytes, make_image().encode().unwrap());
+    let second = make_image();
+    let mut changed = Vec::new();
+    macro_rules! compare_part {
+        ($field:ident) => {
+            if bincode::serde::encode_to_vec(&first.$field, bincode::config::standard()).unwrap()
+                != bincode::serde::encode_to_vec(&second.$field, bincode::config::standard())
+                    .unwrap()
+            {
+                changed.push(stringify!($field));
+            }
+        };
+    }
+    compare_part!(program);
+    compare_part!(type_store);
+    compare_part!(types);
+    compare_part!(effects);
+    compare_part!(effect_registry);
+    compare_part!(concurrency);
+    compare_part!(cpu_parallel);
+    assert!(
+        bytes == second.encode().unwrap(),
+        "noncanonical image components: {changed:?}"
+    );
     let restored = LibraryHirImage::decode(&bytes).unwrap();
+    assert!(restored.encode().unwrap() == bytes);
+    assert_eq!(
+        restored.types.item_signatures.len(),
+        first.types.item_signatures.len()
+    );
+    assert!(!restored.types.item_signatures.is_empty());
+    assert_eq!(
+        restored.effects.item_effects.len(),
+        first.effects.item_effects.len()
+    );
     assert_eq!(restored.package, owner);
     assert!(
         restored

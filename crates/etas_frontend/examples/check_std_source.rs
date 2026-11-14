@@ -12,9 +12,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         let image = etas_frontend::library_hir::LibraryHirImage::decode(&std::fs::read(path)?)?;
         let declarations = image.declarations.len();
         let sources = image.sources.len();
+        let signatures = image.types.item_signatures.len();
+        let effects = image.effects.item_effects.len();
         let revision = image.into_revision()?;
         println!(
-            "Loaded {declarations} declarations from {sources} sources; {} HIR items",
+            "Loaded {declarations} declarations from {sources} sources; {} HIR items, {signatures} typed signatures, {effects} effect summaries",
             revision.items.len()
         );
         return Ok(());

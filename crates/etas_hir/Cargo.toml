@@ -1,6 +1,6 @@
 [package]
 name = "etas_hir"
-version = "0.2.1"
+version = "0.2.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -11,3 +11,4 @@ etas_core.workspace = true
 etas_syntax.workspace = true
 etas_std.workspace = true
 serde.workspace = true
+etas_utils.workspace = true

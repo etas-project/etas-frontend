@@ -19,14 +19,18 @@ pub(crate) use prepare::{
 pub(crate) use rows::checked_row;
 pub(crate) use targets::direct_targets;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub(crate) enum NativeGenericArgument {
     Type(TypeId),
     EffectRow(EffectRowRef),
 }
 
 /// Binder identity is (owner, argument position), never a global parameter name.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub(crate) struct NativeInstantiation {
     pub owner: HirItemId,
     pub arguments: Vec<NativeGenericArgument>,

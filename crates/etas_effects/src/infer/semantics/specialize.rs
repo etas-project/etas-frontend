@@ -826,10 +826,10 @@ impl EffectSemantics<'_> {
                     }
                 }
             }
-            Effect::Error(ty) => {
-                if etas_types::type_contains_named_param(&self.types.store, *ty, name)? {
-                    return Ok(true);
-                }
+            Effect::Error(ty)
+                if etas_types::type_contains_named_param(&self.types.store, *ty, name)? =>
+            {
+                return Ok(true);
             }
             _ => {}
         }
