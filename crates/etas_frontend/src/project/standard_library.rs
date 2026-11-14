@@ -195,21 +195,112 @@ impl StandardLibrary {
             return Ok(self.clone());
         }
         calls.sort_by_key(|(site, _, _)| *site);
-        let source = catalog(Arc::new(consumer.clone()))?;
+        let source = Arc::new(catalog(Arc::new(consumer.clone()))?);
         let target = catalog(self.program.clone())?;
         let correspondence =
             NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
-        let mut interner = TypeInterner::from_store(self.program.type_store.as_ref().clone());
+        // Callback actions may carry caller-owned selectors that do not appear
+        // in the callback's public escaping row. Import their checked nominal
+        // declaration graph before preparing the SDK invocation proofs.
+        let limits = etas_code::descriptor::DescriptorLimits::default();
+        let control = Continue;
+        let budget = etas_types::TypeSubstitutionBudget::new(
+            limits.max_nodes,
+            limits.max_edges,
+            Some(&control),
+        );
+        let mut roots = Vec::new();
+        let mut rows = Vec::new();
+        let mut request_types = Vec::new();
+        for (site, _, application) in &calls {
+            roots.extend(application.type_bindings.iter().map(|(_, ty)| *ty));
+            rows.extend(application.effect_row_bindings.iter().map(|(_, row)| row));
+            if let Some(summary) = consumer.effects.expr_effects.get(site)
+                && let etas_effects::RequestInstantiationSummary::Available { actions, .. } =
+                    &summary.handler_requests
+            {
+                for action in actions {
+                    if let Some(signature) = &action.signature {
+                        request_types.extend(signature.params.iter().copied());
+                        request_types.push(signature.output);
+                    }
+                    if let Some(bindings) = &action.type_bindings {
+                        request_types.extend(bindings.iter().map(|(_, ty)| *ty));
+                    }
+                }
+            }
+        }
+        request_types.sort_unstable();
+        request_types.dedup();
+        roots.extend(&request_types);
+        let (reachable, spec_plan) = crate::code::definition::checked_type_and_spec_plan(
+            crate::code::definition::CheckedTypeAndSpecPlanInput {
+                source: consumer,
+                target: &self.program.std_registry,
+                roots: &roots,
+                rows: &rows,
+                declarations: correspondence.declarations(),
+                identity: &|spec| source.native_spec_identity(spec).cloned(),
+                max_depth: limits.max_expansion_depth,
+                control: &control,
+                budget: &budget,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let identities = reachable
+            .iter()
+            .filter_map(|ty| {
+                source
+                    .native_type_declaration(*ty)
+                    .map(|identity| (*ty, identity.clone()))
+            })
+            .collect();
+        let foreign = etas_types::ty::relocate_foreign_type_graph(
+            TypeInterner::from_store(self.program.type_store.as_ref().clone()),
+            etas_types::ty::ForeignTypeGraphInput {
+                source: &consumer.type_store,
+                facts: &consumer.types,
+                target_facts: &self.program.types,
+                reachable: &reachable,
+                identities: &identities,
+                declarations: correspondence.declarations(),
+                effect_names: correspondence.effect_names(),
+                specs: &spec_plan.mapping,
+                max_depth: limits.max_expansion_depth,
+                budget: &budget,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let mut interner = foreign.interner;
+        let declarations = foreign.declarations;
+        let mut foreign_type_bindings = self
+            .program
+            .foreign_type_bindings
+            .extend_checked(
+                &source,
+                &identities,
+                &declarations,
+                interner.store(),
+                &control,
+            )
+            .map_err(|e| e.to_string())?;
+        foreign_type_bindings
+            .extend_specs_checked(&source, &spec_plan.mapping, &control)
+            .map_err(|e| e.to_string())?;
         let mut seeds = self.program.native_instantiations.instances().to_vec();
         {
             let mut relocation = TypeSubstitutionEngine::relocating_materialized(
                 TypeRelocationMaterializationInput {
                     source: &consumer.type_store,
                     target: &mut interner,
-                    declaration_types: correspondence.declarations(),
+                    declaration_types: &declarations,
                     effect_names: correspondence.effect_names(),
                 },
-            );
+            )
+            .with_spec_identities(&spec_plan.mapping);
+            for ty in request_types {
+                relocation.substitute(ty).map_err(|e| e.to_string())?;
+            }
             for (_, callable, application) in calls {
                 let owner = target
                     .item_owner(&callable)
@@ -258,9 +349,37 @@ impl StandardLibrary {
                 });
             }
         }
+        let spec_facts = spec_plan
+            .materialize(crate::code::definition::SpecMaterializationInput {
+                source: &consumer.type_store,
+                target: &mut interner,
+                declarations: &declarations,
+                effect_names: correspondence.effect_names(),
+                reachable: &reachable,
+                max_depth: limits.max_expansion_depth,
+                budget: &budget,
+            })
+            .map_err(|e| e.to_string())?;
+        let (facts, reflection_targets) = self
+            .program
+            .reflection_targets
+            .extend_checked_types(
+                &self.program.types,
+                interner.store(),
+                foreign.type_generics,
+                foreign.enum_layouts,
+                spec_facts,
+                Some(&control),
+            )
+            .map_err(|error| match error {
+                crate::code::reflection::ReflectionTargetError::Invalid(reason) => {
+                    reason.to_string()
+                }
+                crate::code::reflection::ReflectionTargetError::Interrupted(error) => error.reason,
+            })?;
         let types = TypeOutput {
             store: self.program.type_store.clone(),
-            facts: self.program.types.clone(),
+            facts: facts.clone(),
             diagnostics: vec![],
         };
         let prepared = instantiation::prepare(
@@ -268,8 +387,8 @@ impl StandardLibrary {
                 hir: &self.program.hir,
                 types: &types,
                 effects: &self.program.effects,
-                limits: Default::default(),
-                control: None,
+                limits,
+                control: Some(&control),
             },
             &seeds,
             Some(interner),
@@ -281,11 +400,22 @@ impl StandardLibrary {
             InstantiationError::Interrupted(error) => error.reason,
         })?;
         let mut program = self.program.as_ref().clone();
+        program.types = facts;
+        program.reflection_targets = reflection_targets;
+        program.foreign_type_bindings = Arc::new(foreign_type_bindings);
         program.type_store = prepared.store;
         program.native_instantiations = prepared.plan;
         let mut linked = self.as_ref().clone();
         linked.program = Arc::new(program);
         Ok(Arc::new(linked))
+    }
+}
+
+struct Continue;
+
+impl etas_utils::PipelineExecutionControl for Continue {
+    fn checkpoint(&self) -> Result<(), etas_utils::PipelineInterruption> {
+        Ok(())
     }
 }
 
