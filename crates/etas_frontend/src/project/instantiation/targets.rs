@@ -8,6 +8,9 @@ pub(super) fn external_signature<'a>(
     types: &'a TypeOutput,
     expr: HirExprId,
 ) -> Option<&'a etas_types::CallableSignature> {
+    if let Some(selected) = types.facts.std_intrinsic_calls.get(&expr) {
+        return Some(&selected.signature);
+    }
     let path = match hir.exprs.get(expr)? {
         HirExpr::Call { callee, .. } => match hir.exprs.get(*callee)? {
             HirExpr::Path(path) => path,
