@@ -326,6 +326,13 @@ impl TypeSolver {
                         // before a bottom-only path supplies its final default.
                         deferred_bottom.push((from, to, *origin));
                     } else {
+                        // Construction checks the nominal's representation. Keep
+                        // its field inference bindings in the solver result too.
+                        let to = if matches!(reason, crate::AssignabilityReason::Constructor) {
+                            nominal_representation(input.store, to).unwrap_or(to)
+                        } else {
+                            to
+                        };
                         let mut unifier = TypeUnifier::with_known_substitution(
                             input.store,
                             &report.substitutions,
