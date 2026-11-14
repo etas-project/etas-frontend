@@ -73,6 +73,7 @@ pub struct SourceSymbolBindingInput {
 #[derive(Clone, Debug, Default)]
 pub struct StdSignatureInput {
     pub symbol_bindings: Vec<StdSymbolBindingInput>,
+    pub role_bindings: Vec<StdSymbolBindingInput>,
 }
 
 #[derive(Clone, Debug)]

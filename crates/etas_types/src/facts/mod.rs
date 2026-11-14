@@ -74,6 +74,8 @@ pub struct TypeFacts {
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub external_type_declarations: HashMap<Vec<String>, TypeId>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_type_roles: HashMap<SymbolId, etas_std::StdSymbolId>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub type_generics: HashMap<TypeId, Vec<CallableGenericParam>>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub reflection_type_identities: HashMap<TypeId, etas_code::DefinitionKey>,

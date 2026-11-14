@@ -27,6 +27,7 @@ pub fn apply_hir_std_prelude(ctx: &mut TypePipelineContext<'_>) {
         ctx,
         &StdSignatureInput {
             symbol_bindings: bindings,
+            role_bindings: Vec::new(),
         },
     );
 }
@@ -35,6 +36,34 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
     let registry = ctx.std_registry.clone();
     record_known_std_types(ctx, &registry);
     ctx.signature_facts.std_spec_impls = lower_std_spec_impls(ctx, &registry);
+    for binding in &input.role_bindings {
+        let native = registry
+            .lookup_qualified(&binding.qualified_path)
+            .expect("checked source role contract");
+        let mut declaration = native.decl.clone();
+        if let etas_std::StdDecl::Type(declaration) = &mut declaration {
+            let item = ctx
+                .hir
+                .symbols
+                .get(binding.symbol)
+                .unwrap()
+                .defining_item
+                .unwrap();
+            let etas_hir::HirItem::Type(source) = &ctx.hir.items[item] else {
+                unreachable!()
+            };
+            for (parameter, source) in declaration.params.iter_mut().zip(&source.type_params) {
+                parameter.name = ctx.hir.symbols.get(*source).unwrap().name.clone();
+            }
+        }
+        let fact = crate::lower::std::lower_std_decl(ctx, &registry, binding.symbol, &declaration);
+        ctx.signature_facts
+            .symbol_types
+            .insert(binding.symbol, fact);
+        ctx.signature_facts
+            .source_type_roles
+            .insert(binding.symbol, native.id);
+    }
     for symbol in registry.symbols() {
         let Some(
             etas_std::StdImplementationRef::Source { .. }

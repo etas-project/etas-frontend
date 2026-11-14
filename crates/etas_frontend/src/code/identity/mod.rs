@@ -768,12 +768,30 @@ impl DefinitionIdentityIndex {
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
+        let role_owners = checked
+            .types
+            .source_type_roles
+            .iter()
+            .map(|(source, native)| {
+                Ok((
+                    *native,
+                    index
+                        .symbols
+                        .get(source)
+                        .ok_or(ProjectionError::MissingDeclaration(*source))?
+                        .clone(),
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, ProjectionError>>()?;
         for symbol in checked.std_registry.symbols() {
-            let Some(key) =
+            let Some(mut key) =
                 standard_definition_key(checked.std_registry, origins.standard_package, symbol)?
             else {
                 continue;
             };
+            if let Some(source) = role_owners.get(&symbol.id) {
+                key = source.clone();
+            }
             let kind = key.kind();
             if let Some(checked_key) =
                 standard_definition_key(checked.std_registry, checked_standard_package, symbol)?
@@ -796,7 +814,7 @@ impl DefinitionIdentityIndex {
                     .map(|parameter| GenericDeclaration {
                         name: parameter.name.clone(),
                         subject: None,
-                        effect: false,
+                        effect: parameter.kind == etas_std::StdGenericParamKind::EffectRow,
                         bounds: parameter
                             .bounds
                             .iter()
@@ -1075,6 +1093,18 @@ impl DefinitionIdentityIndex {
                 _ => return Err(ProjectionError::MissingDeclaration(symbol)),
             };
             declaration.checked_type = Some(ty);
+            if let Some(native) = checked.types.source_type_roles.get(&symbol) {
+                declaration.standard = Some(*native);
+                index.type_declarations.insert(symbol, declaration.clone());
+                let path = checked
+                    .std_registry
+                    .symbol(*native)
+                    .unwrap()
+                    .qualified_path
+                    .join(".");
+                index.type_names.insert(path, declaration);
+                continue;
+            }
             index.type_declarations.insert(symbol, declaration.clone());
             index.types.insert(ty, declaration.clone());
             match checked.type_store.get(ty) {

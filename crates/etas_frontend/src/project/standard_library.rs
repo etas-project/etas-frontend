@@ -56,6 +56,30 @@ impl StandardLibrary {
                     })
                 })
                 .ok_or("std callable has no canonical scope")?;
+            let mut effect_parameters = std::collections::HashMap::new();
+            for parameter in source
+                .descriptors()
+                .data()
+                .binders
+                .iter()
+                .filter(|parameter| {
+                    parameter.owner == scope
+                        && parameter.kind == etas_code::descriptor::GenericParameterKind::EffectRow
+                })
+            {
+                let target_parameter = target
+                    .descriptors()
+                    .data()
+                    .binders
+                    .iter()
+                    .find(|candidate| {
+                        candidate.owner == scope
+                            && candidate.position == parameter.position
+                            && candidate.kind == parameter.kind
+                    })
+                    .ok_or("std ABI has no checked effect parameter correspondence")?;
+                effect_parameters.insert(parameter.name.clone(), target_parameter.name.clone());
+            }
             let mut declarations = correspondence.declarations().clone();
             let mut targets = std::collections::BTreeMap::new();
             for origin in target
@@ -125,6 +149,7 @@ impl StandardLibrary {
                 declaration_types: &declarations,
                 effect_names: correspondence.effect_names(),
             })
+            .with_relocated_effect_parameters(&effect_parameters)
             .substitute(ty)
             .map_err(|e| e.to_string())?;
         }

@@ -894,6 +894,14 @@ fn std_signature_input(
 ) -> etas_types::StdSignatureInput {
     let registry = context.std_registry.as_ref();
     let mut input = etas_types::StdSignatureInput::default();
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+        input.role_bindings = super::super::hir::native_role::bindings(
+            hir,
+            context.input.options.standard_library_mode,
+            registry,
+        )
+        .0;
+    }
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
         for resolved in &resolved_imports.imports {

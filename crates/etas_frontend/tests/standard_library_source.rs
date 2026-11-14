@@ -339,6 +339,60 @@ fn artifact_registry_exposes_source_flow_signature_and_canonical_owner() {
 }
 
 #[test]
+fn source_task_runtime_roles_keep_their_checked_opaque_abi() {
+    let package = SourcePackage::new();
+    fs::create_dir_all(package.0.join("library/std/task")).unwrap();
+    fs::write(
+        package.0.join("library/std/task/mod.es"),
+        r#"
+module std.task;
+@std.role("std.task.Task")
+public type Task<T, effect E>;
+@std.role("std.task.Scheduler")
+public type Scheduler;
+@std.role("std.task.Continuation")
+public type Continuation<T>;
+@std.binding("std.task.run")
+public flow execute<T, effect E>(body: (Scheduler) -> T ![E]) -> T ![E] {}
+"#,
+    )
+    .unwrap();
+    let output = Frontend.check_standard_library_source(package.load().input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    assert_eq!(checked.types.source_type_roles.len(), 3);
+    for (symbol, native) in &checked.types.source_type_roles {
+        let etas_types::SymbolTypeFact::Type { constructor } = checked.types.symbol_types[symbol]
+        else {
+            panic!("opaque role is not a compiler type");
+        };
+        let etas_std::StdDecl::Type(declaration) =
+            &checked.std_registry.symbol(*native).unwrap().decl
+        else {
+            unreachable!()
+        };
+        assert!(matches!(
+            (
+                declaration.runtime_role.unwrap(),
+                checked
+                    .type_store
+                    .get(etas_types::TypeId(constructor.0))
+                    .unwrap()
+            ),
+            (etas_std::RuntimeTypeRole::Task, etas_types::Type::Task(_))
+                | (
+                    etas_std::RuntimeTypeRole::Scheduler,
+                    etas_types::Type::SchedulerHandle
+                )
+                | (
+                    etas_std::RuntimeTypeRole::Continuation,
+                    etas_types::Type::Continuation(_)
+                )
+        ));
+    }
+}
+
+#[test]
 fn std_native_declarations_bind_checked_primitives_with_source_owned_names() {
     let package = SourcePackage::new();
     package.write(

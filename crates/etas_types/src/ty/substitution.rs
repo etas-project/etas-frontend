@@ -71,10 +71,12 @@ impl std::fmt::Display for TypeSubstitutionError {
             Self::UnresolvedParameter(ty) => {
                 write!(f, "unresolved generic value type at {ty:?}")
             }
-            Self::OpenEffectRow(name) => write!(
-                f,
-                "type application requires a closed effect row, found `{name}`"
-            ),
+            Self::OpenEffectRow(name) => {
+                write!(
+                    f,
+                    "type application requires a closed effect row, found `{name}`"
+                )
+            }
             Self::CyclicType(ty) => write!(f, "type graph contains a cycle at {ty:?}"),
             Self::CyclicEffectRow(name) => {
                 write!(f, "effect-row substitution contains a cycle at `{name}`")
@@ -219,6 +221,7 @@ pub struct TypeSubstitutionEngine<'a> {
     type_parameters: Option<&'a HashMap<TypeId, TypeId>>,
     spec_identities: Option<&'a HashMap<crate::CheckedSpecRef, crate::CheckedSpecRef>>,
     effect_rows: Option<EffectRowSubstitution<'a>>,
+    relocated_effect_parameters: Option<&'a HashMap<String, String>>,
     closed_named_types: Option<&'a (dyn Fn(TypeId) -> bool + Sync)>,
     active: HashSet<TypeId>,
     memo: HashMap<TypeId, TypeId>,
@@ -272,6 +275,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             type_parameters: None,
             spec_identities: None,
             effect_rows: None,
+            relocated_effect_parameters: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
@@ -294,6 +298,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             type_parameters: None,
             spec_identities: None,
             effect_rows: None,
+            relocated_effect_parameters: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
@@ -399,6 +404,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             type_parameters: None,
             spec_identities: None,
             effect_rows: None,
+            relocated_effect_parameters: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
@@ -421,6 +427,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             type_parameters: None,
             spec_identities: None,
             effect_rows: None,
+            relocated_effect_parameters: None,
             closed_named_types: None,
             active: HashSet::new(),
             memo: HashMap::new(),
@@ -447,6 +454,18 @@ impl<'a> TypeSubstitutionEngine<'a> {
         let mut engine = Self::relocating_materialized(input);
         engine.relocation_overrides = Some(overrides);
         engine
+    }
+
+    /// Relocate open template rows only after their binders have been matched
+    /// by canonical callable owner and parameter position.
+    pub fn with_relocated_effect_parameters(
+        mut self,
+        parameters: &'a HashMap<String, String>,
+    ) -> Self {
+        self.relocated_effect_parameters = Some(parameters);
+        self.memo.clear();
+        self.memo_depths.clear();
+        self
     }
 
     /// Source binders are identified by symbols, not by reusable display names.
@@ -1439,6 +1458,42 @@ mod tests {
         assert_eq!(
             engine.substitute(function),
             Err(TypeSubstitutionError::OpenEffectRow("E".into()))
+        );
+    }
+
+    #[test]
+    fn relocation_preserves_checked_effect_template_binders() {
+        let mut source = TypeInterner::new();
+        let unit = source.primitive(PrimitiveType::Unit);
+        let callback = source.intern(Type::Function(FlowType {
+            input: vec![],
+            output: unit,
+            effects: Some(EffectRowRef {
+                effects: vec![],
+                tail: Some("E".into()),
+            }),
+        }));
+        let source = source.into_store();
+        let mut target = TypeInterner::new();
+        let declarations = HashMap::new();
+        let effects = HashMap::new();
+        let parameters = HashMap::from([("E".into(), "CallerEffects".into())]);
+        let relocated =
+            TypeSubstitutionEngine::relocating_materialized(TypeRelocationMaterializationInput {
+                source: &source,
+                target: &mut target,
+                declaration_types: &declarations,
+                effect_names: &effects,
+            })
+            .with_relocated_effect_parameters(&parameters)
+            .substitute(callback)
+            .unwrap();
+        let Some(Type::Function(function)) = target.store().get(relocated) else {
+            panic!("expected relocated callback");
+        };
+        assert_eq!(
+            function.effects.as_ref().unwrap().tail.as_deref(),
+            Some("CallerEffects")
         );
     }
 

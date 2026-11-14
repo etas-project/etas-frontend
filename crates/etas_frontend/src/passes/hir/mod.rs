@@ -2,6 +2,7 @@ mod common;
 mod finalize;
 mod lower_module_part;
 pub(crate) mod native_binding;
+pub(crate) mod native_role;
 mod predeclare;
 
 pub use finalize::FinalizeProjectHirPass;

@@ -67,6 +67,9 @@ pub fn apply_external_signature_input(
                     target: ty,
                     params: parameters.clone(),
                 },
+                _ if ctx.std_registry.lookup_qualified(&item.path).is_some_and(|symbol|
+                    ctx.std_registry.declaration_key(symbol.id).is_some()
+                    && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration) if declaration.runtime_role.is_some())) => SymbolTypeFact::Type { constructor: TypeConstructorId(ty.0) },
                 _ => {
                     let representation = match ctx.interner.store().get(ty) {
                         Some(Type::Nominal(nominal)) => nominal.representation,
