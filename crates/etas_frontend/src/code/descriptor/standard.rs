@@ -283,7 +283,17 @@ impl DefinitionDescriptorProjector<'_> {
                     .into_iter()
                     .map(|ty| self.standard_ref(ty, scope, identity.module()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let payload = if types.is_empty() {
+                let names = self.checked.std_registry.enum_field_names(constructor.id);
+                let payload = if let Some(names) = names {
+                    VariantPayloadInfo::Named(
+                        names
+                            .iter()
+                            .cloned()
+                            .zip(types)
+                            .map(|(name, ty)| etas_code::descriptor::FieldInfo { name, ty })
+                            .collect(),
+                    )
+                } else if types.is_empty() {
                     VariantPayloadInfo::None
                 } else {
                     VariantPayloadInfo::Positional(types)

@@ -394,6 +394,7 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         if let Err(error) = super::external_enum_members::install(context, hir) {
             return PassResult::failed(error);
         }
+        super::external_enum_members::install_std(&context.std_registry, hir);
         super::source_members::canonicalize_agent_method_owners(hir);
         let resolved = super::source_members::resolve_members(hir);
         install_external_effect_action_refs(context, hir);

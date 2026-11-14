@@ -926,7 +926,11 @@ fn std_signature_input(
         let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def else {
             continue;
         };
-        if *origin != etas_hir::ImportAliasOrigin::StdPrelude {
+        if !matches!(
+            origin,
+            etas_hir::ImportAliasOrigin::StdPrelude
+                | etas_hir::ImportAliasOrigin::StdEnumVariant { .. }
+        ) {
             continue;
         }
         let Some(std_symbol) = registry.lookup_qualified(path) else {

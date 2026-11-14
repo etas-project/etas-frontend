@@ -17,6 +17,17 @@ pub struct EnumVariantLayoutFact {
     pub field_names: Option<Vec<String>>,
 }
 
+pub(crate) fn constructor_name(symbol: &etas_hir::Symbol) -> &str {
+    if let etas_hir::SymbolDef::ImportAlias {
+        path,
+        origin: etas_hir::ImportAliasOrigin::StdEnumVariant { .. },
+    } = &symbol.def
+    {
+        return path.last().map_or(&symbol.name, String::as_str);
+    }
+    &symbol.name
+}
+
 pub(crate) fn constructor_identity(
     store: &crate::TypeStore,
     symbol: &etas_hir::Symbol,
@@ -25,6 +36,10 @@ pub(crate) fn constructor_identity(
     let index = match &symbol.def {
         etas_hir::SymbolDef::EnumVariant { variant_index, .. }
         | etas_hir::SymbolDef::ExternalEnumVariant { variant_index, .. } => *variant_index as usize,
+        etas_hir::SymbolDef::ImportAlias {
+            origin: etas_hir::ImportAliasOrigin::StdEnumVariant { variant_index },
+            ..
+        } => *variant_index as usize,
         _ => return None,
     };
     let crate::SymbolTypeFact::Flow { signature } = fact else {

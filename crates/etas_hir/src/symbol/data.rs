@@ -139,6 +139,10 @@ pub enum ImportAliasOrigin {
     StdPrelude,
     /// Compiler-created reference to a verified primitive ABI in std source.
     NativeBinding,
+    /// Imported constructor of the session's checked standard enum layout.
+    StdEnumVariant {
+        variant_index: u32,
+    },
 }
 
 #[derive(

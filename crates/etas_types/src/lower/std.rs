@@ -894,7 +894,9 @@ fn lower_std_enum_layout(
                 return None;
             };
             Some(crate::EnumVariantLayoutFact {
-                field_names: None,
+                field_names: registry
+                    .enum_field_names(constructor.id)
+                    .map(<[String]>::to_vec),
                 name: constructor.name.clone(),
                 fields: decl
                     .params

@@ -193,7 +193,7 @@ impl TypeFacts {
         let (owner, index) =
             enums::constructor_identity(store, symbol, self.symbol_types.get(&symbol.id)?)?;
         let variant = self.enum_layouts.get(&owner)?.variants.get(index)?;
-        (variant.name == symbol.name).then_some((owner, index, variant))
+        (variant.name == enums::constructor_name(symbol)).then_some((owner, index, variant))
     }
 
     pub fn agent_default_method(
