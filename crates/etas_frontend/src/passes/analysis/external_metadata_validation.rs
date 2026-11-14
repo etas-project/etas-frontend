@@ -50,7 +50,10 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let environment = context.input.environment.clone();
+        let mut environment = context.input.environment.clone();
+        if let Some(library) = &context.standard_library {
+            library.append_environment(&mut environment);
+        }
         let Some(sources) = context.sources.as_ref() else {
             return PassResult::failed("source package validation requires the source set");
         };

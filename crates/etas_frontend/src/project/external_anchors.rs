@@ -19,31 +19,24 @@ impl ExternalImportAnchorIndex {
         hir: &etas_hir::HirProgram,
         registry: &etas_std::StdRegistry,
     ) {
-        for (_, expression) in hir.exprs.iter() {
-            let etas_hir::HirExpr::Path(path) = expression else {
+        for symbol in hir.symbols.iter() {
+            let etas_hir::SymbolDef::ImportAlias { path: imported, .. } = &symbol.def else {
                 continue;
             };
-            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-                continue;
-            };
-            let Some(etas_hir::SymbolDef::ImportAlias { path: imported, .. }) =
-                hir.symbols.get(symbol).map(|symbol| &symbol.def)
-            else {
-                continue;
-            };
-            let Some(binding) = registry
+            let Some(declaration) = registry
                 .lookup_qualified(imported)
-                .and_then(|symbol| registry.body_binding(symbol.id))
+                .and_then(|symbol| registry.declaration_key(symbol.id))
             else {
-                continue;
-            };
-            let Some(declaration) = binding.callable.as_declaration() else {
                 continue;
             };
             let mut item = declaration.module().to_vec();
             item.extend_from_slice(declaration.declaration());
-            self.insert_item(package, item, path.span);
-            self.insert_module(package, declaration.module().to_vec(), path.span);
+            self.insert_item(package, item, symbol.definition_span);
+            self.insert_module(
+                package,
+                declaration.module().to_vec(),
+                symbol.definition_span,
+            );
         }
     }
     pub(crate) fn build(

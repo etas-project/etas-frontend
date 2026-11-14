@@ -106,6 +106,17 @@ positional and named payloads. Qualified constructor references and imported
 enum members carry checked `StdEnumVariant` layout provenance, including when a
 reference was resolved before import members were installed.
 
+The trusted SDK also supplies source spec declarations, implementation methods
+and their canonical package identities through the existing external metadata
+pipeline. Source calls reuse its checked Effect and requested-action contracts.
+Public implementation methods receive public contracts through their spec;
+function values retain both the authored and solved public ABI types across
+the consumer/library boundary. Native binding bounds compare resolved std spec
+aliases by their registry identity.
+
+Orchestration uses ordinary `flow` declarations and existing named `handler`
+values applied with `with`. No `controller` declaration is required.
+
 ## Incremental Compilation
 
 `FrontendSession` is an in-process compiler session, not a standalone server.

@@ -310,6 +310,22 @@ impl ContractValidator<'_, '_> {
     }
 
     fn materialize_public_contracts(&mut self) {
+        let public_methods = self
+            .types
+            .facts
+            .methods
+            .entries()
+            .filter_map(|method| {
+                if !method.public {
+                    return None;
+                }
+                match method.target {
+                    etas_types::method::MethodTarget::Source { callable, .. }
+                    | etas_types::method::MethodTarget::Agent { callable, .. } => Some(callable),
+                    _ => None,
+                }
+            })
+            .collect::<BTreeSet<_>>();
         for (item, hir_item) in self.hir.items.iter() {
             if !self.item_is_reachable(item) {
                 continue;
@@ -320,7 +336,7 @@ impl ContractValidator<'_, '_> {
             let Some(symbol_data) = self.hir.symbols.get(symbol) else {
                 continue;
             };
-            if symbol_data.visibility != Visibility::Public {
+            if symbol_data.visibility != Visibility::Public && !public_methods.contains(&item) {
                 continue;
             }
             let span = hir_item.span();

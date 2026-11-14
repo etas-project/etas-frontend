@@ -1633,14 +1633,22 @@ pub struct StandardLibrary {
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,
     pub package: ProjectExternalPackageInput,
     pub metadata: ProjectExternalPublicMetadataInput,
+    pub modules: Vec<ProjectExternalModuleInput>,
     pub origins: etas_code::identity::PackageDefinitionOrigins,
 }
 
 impl StandardLibrary {
-    pub(crate) fn append_effect_environment(
+    pub(crate) fn append_environment(
         &self,
         environment: &mut ProjectEnvironmentInput,
     ) -> ExternalPackageId {
+        if let Some(package) = environment
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == self.package.import_root)
+        {
+            return package.id;
+        }
         let package = (0..u32::MAX)
             .map(ExternalPackageId)
             .find(|id| {
@@ -1656,6 +1664,12 @@ impl StandardLibrary {
         metadata.package = package;
         environment.external_packages.push(identity);
         environment.external_public_metadata.push(metadata);
+        environment
+            .external_modules
+            .extend(self.modules.iter().cloned().map(|mut module| {
+                module.package = Some(package);
+                module
+            }));
         environment
             .external_definition_origins
             .push(ProjectExternalDefinitionOriginsInput {

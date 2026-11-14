@@ -95,7 +95,9 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             else {
                 return PassResult::failed("native binding has no checked primitive signature");
             };
-            if !native_signatures_match(source, expected, &types.store).unwrap_or(false) {
+            if !native_signatures_match(source, expected, &types.store, &types.facts)
+                .unwrap_or(false)
+            {
                 context.diagnostics.push(etas_core::Diagnostic::type_check(
                     etas_core::TypeDiagnosticCode::TypeMismatch, span,
                     format!("std native binding ABI differs from `{}`; match its generic bounds, parameters, result and public effects", context.std_registry.symbol(target).unwrap().qualified_path.join(".")),
@@ -273,6 +275,7 @@ fn native_signatures_match(
     source: &etas_types::CallableSignature,
     native: &etas_types::CallableSignature,
     store: &etas_types::TypeStore,
+    facts: &etas_types::TypeFacts,
 ) -> Result<bool, etas_types::TypeSubstitutionError> {
     use etas_types::{CallableGenericParamKind as Kind, EffectRowRef, TypeSubstitutionEngine};
     if source.generic_params.len() != native.generic_params.len()
@@ -324,7 +327,15 @@ fn native_signatures_match(
                 .map(|ty| substitution.substitute(*ty))
                 .collect::<Result<_, _>>()?;
         }
-        if bounds != to.bounds {
+        let mut source_bounds = to.bounds.clone();
+        for bound in &mut source_bounds {
+            if let etas_types::CheckedSpecRef::Source(symbol) = &bound.spec
+                && let Some(path) = facts.std_spec_aliases.get(symbol)
+            {
+                bound.spec = etas_types::CheckedSpecRef::Std(path.clone());
+            }
+        }
+        if bounds != source_bounds {
             return Ok(false);
         }
     }

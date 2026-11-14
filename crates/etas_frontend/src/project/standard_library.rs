@@ -16,6 +16,122 @@ use crate::{
 };
 
 impl StandardLibrary {
+    /// Function values cross the SDK boundary with the solved public effect
+    /// row. Keep this ABI alongside the authored signature before execution.
+    pub(crate) fn materialize_public_abis(
+        &self,
+        consumer: &mut CheckedProgramData,
+    ) -> Result<(), String> {
+        let source = catalog(self.program.clone())?;
+        let target = catalog(Arc::new(consumer.clone()))?;
+        let correspondence =
+            NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
+        let mut callables = std::collections::BTreeSet::new();
+        for symbol in consumer.symbols.iter() {
+            if let SymbolDef::ImportAlias { path, .. } = &symbol.def
+                && let Some(binding) = consumer
+                    .std_registry
+                    .lookup_qualified(path)
+                    .and_then(|declaration| consumer.std_registry.body_binding(declaration.id))
+            {
+                callables.insert(binding.callable.clone());
+            }
+        }
+        for method in consumer.types.methods.entries() {
+            if let etas_types::method::MethodTarget::External { identity } = &method.target {
+                let callable = etas_code::CallableId::method(identity.clone());
+                if source.item_owner(&callable).is_some() {
+                    callables.insert(callable);
+                }
+            }
+        }
+        let mut interner = TypeInterner::from_store(consumer.type_store.as_ref().clone());
+        for callable in callables {
+            let scope = callable
+                .as_method()
+                .map(|method| etas_code::descriptor::GenericOwner::Method(method.clone()))
+                .or_else(|| {
+                    callable.as_declaration().map(|declaration| {
+                        etas_code::descriptor::GenericOwner::Declaration(declaration.clone())
+                    })
+                })
+                .ok_or("std callable has no canonical scope")?;
+            let mut declarations = correspondence.declarations().clone();
+            let mut targets = std::collections::BTreeMap::new();
+            for origin in target
+                .native_type_origins()
+                .iter()
+                .filter(|origin| origin.scope == scope)
+            {
+                let fingerprint = target
+                    .descriptors()
+                    .type_fingerprint(origin.descriptor)
+                    .map_err(|e| e.to_string())?;
+                if targets
+                    .insert(fingerprint, origin.local)
+                    .is_some_and(|previous| previous != origin.local)
+                {
+                    return Err("std ABI has ambiguous checked type correspondence".into());
+                }
+            }
+            for origin in source
+                .native_type_origins()
+                .iter()
+                .filter(|origin| origin.scope == scope)
+            {
+                let fingerprint = source
+                    .descriptors()
+                    .type_fingerprint(origin.descriptor)
+                    .map_err(|e| e.to_string())?;
+                if let Some(target) = targets.get(&fingerprint) {
+                    declarations.entry(origin.local).or_insert(*target);
+                }
+            }
+            let item = source
+                .item_owner(&callable)
+                .ok_or("std callable has no checked body")?;
+            let signature = instantiation::signature(&self.program.types, item)
+                .ok_or("std body has no checked signature")?;
+            let contract = self
+                .program
+                .effects
+                .public_contracts
+                .iter()
+                .find(|contract| contract.item == item)
+                .ok_or("std body has no checked public effect contract")?;
+            let row = instantiation::checked_row(
+                &contract.public_row,
+                &self.program.effect_registry,
+                Some(signature),
+                std::iter::empty(),
+            )?;
+            let flow = etas_types::FlowType {
+                input: signature.params.clone(),
+                output: signature.output,
+                effects: Some(row),
+            };
+            let ty = self
+                .program
+                .type_store
+                .iter()
+                .find_map(|(id, ty)| {
+                    matches!(ty, etas_types::Type::Function(candidate) if candidate == &flow)
+                        .then_some(id)
+                })
+                .ok_or("std body has no checked public function type")?;
+            TypeSubstitutionEngine::relocating_materialized(TypeRelocationMaterializationInput {
+                source: &self.program.type_store,
+                target: &mut interner,
+                declaration_types: &declarations,
+                effect_names: correspondence.effect_names(),
+            })
+            .substitute(ty)
+            .map_err(|e| e.to_string())?;
+        }
+        consumer.type_store = Arc::new(interner.into_store());
+        Ok(())
+    }
+
     /// Prepare the consumer's checked generic applications against the archived
     /// body graph. This materializes types and invocation proofs; it never
     /// lowers source or checks the library bodies again.

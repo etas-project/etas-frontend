@@ -231,7 +231,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         let standard_package = context
             .standard_library
             .as_ref()
-            .map(|library| library.append_effect_environment(&mut environment));
+            .map(|library| library.append_environment(&mut environment));
         let environment = &environment;
         let Some(catalog) = context.module_catalog.as_ref() else {
             return PassResult::failed("effect checking requires the module catalog");

@@ -69,7 +69,15 @@ impl DefinitionCatalog {
                 }
             }
         }
-        let pending = bindings.values().collect::<BTreeSet<_>>();
+        let mut pending = bindings.values().cloned().collect::<BTreeSet<_>>();
+        pending.extend(self.checked.types.methods.entries().filter_map(
+            |method| match &method.target {
+                etas_types::method::MethodTarget::External { identity } => {
+                    Some(CallableId::method(identity.clone()))
+                }
+                _ => None,
+            },
+        ));
         let standard = self
             .checked
             .standard_library

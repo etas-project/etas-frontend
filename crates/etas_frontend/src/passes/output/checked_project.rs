@@ -296,7 +296,10 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             // Ordinary plans are bound to their owners' checked revisions only
             // now that every contract fact has been finalized. A candidate
             // binds to its frozen-contract revision when it is emitted.
-            if let Some(library) = &data.standard_library {
+            if let Some(library) = data.standard_library.clone() {
+                if let Err(reason) = library.materialize_public_abis(&mut data) {
+                    return PassResult::failed(reason);
+                }
                 data.standard_library = match library.for_consumer(&data) {
                     Ok(library) => Some(library),
                     Err(reason) => return PassResult::failed(reason),

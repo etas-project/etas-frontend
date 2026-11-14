@@ -256,6 +256,17 @@ pub fn apply_external_signature_input(
             .get(&(binding.package, binding.path.clone()))
             .cloned()
         {
+            if let SymbolTypeFact::Flow { signature } = &fact
+                && let Some(standard) = ctx.std_registry.lookup_qualified(&binding.path)
+                && ctx.std_registry.body_binding(standard.id).is_some()
+            {
+                // The SDK query and imported callable share the same checked
+                // generic/nominal types; retaining a second std-lowered shape
+                // would give returned values incompatible arena identities.
+                ctx.signature_facts
+                    .std_callable_signatures
+                    .insert(standard.id, signature.clone());
+            }
             if matches!(&fact, SymbolTypeFact::Agent { .. }) {
                 ctx.signature_facts.external_agent_reflections.insert(
                     binding.symbol,
