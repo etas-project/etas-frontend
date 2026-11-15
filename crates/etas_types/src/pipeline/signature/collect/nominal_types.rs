@@ -82,12 +82,21 @@ fn collect_type_decl(
                 .map(|symbol| symbol.name.clone())
         })
         .collect::<Vec<_>>();
-    let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
-        read_only_erased_view: false,
-        name,
-        params: params.clone(),
-        representation,
-    }));
+    // Source overlays complete the already imported declaration in place.
+    let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let imported = ctx
+        .external_type_paths
+        .get(&path)
+        .copied()
+        .filter(|ty| matches!(ctx.interner.store().get(*ty), Some(Type::Nominal(_))));
+    let ty = imported.unwrap_or_else(|| {
+        ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
+            name,
+            params: params.clone(),
+            representation,
+        }))
+    });
     state.symbol_types.insert(
         decl.symbol,
         SymbolTypeFact::NominalType {

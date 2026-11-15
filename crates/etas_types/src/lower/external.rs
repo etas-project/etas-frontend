@@ -658,6 +658,9 @@ pub fn lower_external_type_declaration(
             ty
         }
         None => {
+            if let Some(ty) = ctx.external_type_paths.get(path) {
+                return *ty;
+            }
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 read_only_erased_view: false,
                 name: path.join("."),

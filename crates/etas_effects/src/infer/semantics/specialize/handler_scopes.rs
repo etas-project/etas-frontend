@@ -6,15 +6,14 @@ use crate::{
 use etas_core::Span;
 
 impl EffectSemantics<'_> {
-    pub(super) fn remove_intercepted_callback_defaults(
+    pub(super) fn apply_callback_handlers(
         &self,
         target: &mut EffectSummary,
         parameter: ParameterCallTarget,
         span: Span,
         callback: &mut EffectSummary,
     ) -> Result<(), EffectSpecializationError> {
-        let intercepted =
-            self.definitely_intercepted_callback_defaults(target, parameter, span, callback)?;
+        let intercepted = self.intercepted_callback_actions(target, parameter, span, callback)?;
         if !intercepted.is_empty() {
             target.record_handled_action_row(intercepted.clone());
             let coverage = EffectCoverage {
@@ -28,7 +27,7 @@ impl EffectSemantics<'_> {
         Ok(())
     }
 
-    pub(super) fn definitely_intercepted_callback_defaults(
+    pub(super) fn intercepted_callback_actions(
         &self,
         target: &EffectSummary,
         parameter: ParameterCallTarget,
@@ -51,7 +50,12 @@ impl EffectSemantics<'_> {
             types: &self.types.store,
         };
         let mut handled = EffectSet::new();
-        for action in callback.default_actions.effects.iter() {
+        for action in callback
+            .requested_actions
+            .effects
+            .iter()
+            .chain(callback.default_actions.effects.iter())
+        {
             let mut every_path = true;
             for request in &matching {
                 if let Some(control) = self.query_control {

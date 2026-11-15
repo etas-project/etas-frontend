@@ -189,7 +189,7 @@ impl EffectSemantics<'_> {
                 let mut source_summary =
                     self.trace_argument_summary(binding, state, parameter, *span)?;
                 source_summary.handler_requests = crate::RequestInstantiationSummary::default();
-                self.remove_intercepted_callback_defaults(
+                self.apply_callback_handlers(
                     target,
                     *parameter_target,
                     *span,
@@ -236,7 +236,7 @@ impl EffectSemantics<'_> {
                     let mut source_summary =
                         self.trace_argument_summary(binding, state, &call.parameter, call.span)?;
                     source_summary.handler_requests = crate::RequestInstantiationSummary::default();
-                    self.remove_intercepted_callback_defaults(
+                    self.apply_callback_handlers(
                         target,
                         call.target,
                         call.span,
