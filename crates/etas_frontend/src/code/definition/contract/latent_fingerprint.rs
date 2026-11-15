@@ -213,6 +213,23 @@ impl Fingerprinter<'_> {
             "etas.code.latent-type-fields.v1",
             fields.into_iter().map(|(_, field)| field),
         ));
+        if !ty.projected_fields.is_empty() {
+            let mut projections = Vec::new();
+            for field in &ty.projected_fields {
+                projections.push((
+                    &field.name,
+                    combine(
+                        "etas.code.latent-type-projection.v1",
+                        [encoded("field", &field.name)?, self.ty(&field.ty)?],
+                    ),
+                ));
+            }
+            projections.sort_unstable_by_key(|(name, _)| *name);
+            parts.push(combine(
+                "etas.code.latent-type-projections.v1",
+                projections.into_iter().map(|(_, field)| field),
+            ));
+        }
         for row in [&ty.effects, &ty.produced_effects] {
             parts.push(match row {
                 Some(row) => combine("etas.code.latent-present-row.v1", [self.row(row)?]),

@@ -104,7 +104,9 @@ pub(crate) fn bindings(
                 HirItem::Type(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target.is_bodyless_type() && matches!(source.body, HirTypeDeclBody::Bodyless),
+                    (target.is_bodyless_type() && matches!(source.body, HirTypeDeclBody::Bodyless))
+                        || (target.is_projected_type()
+                            && matches!(source.body, HirTypeDeclBody::Representation(_))),
                 ),
                 HirItem::Enum(source) => (
                     source.symbol,

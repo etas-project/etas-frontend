@@ -83,6 +83,15 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
                 .insert(binding.symbol, native.qualified_path.clone());
         }
         let fact = lower_std_symbol(ctx, &registry, binding.symbol, &contract);
+        if let Some(code_role) = role.code_role()
+            && let Some(ty) = lower_std_type_symbol(ctx, &registry, &contract)
+        {
+            record_code_type(ctx, code_role, ty);
+            ctx.signature_facts
+                .known_std_types
+                .intrinsic_only_constructors
+                .insert(ty);
+        }
         ctx.signature_facts
             .symbol_types
             .insert(binding.symbol, fact);
@@ -276,62 +285,7 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
             && let Some(role) = declaration.code_role
             && let Some(ty) = lower_std_type_symbol(ctx, registry, symbol)
         {
-            match role {
-                etas_std::CodeTypeRole::AgentId => {
-                    ctx.signature_facts.known_std_types.code.agent_id = Some(ty)
-                }
-                etas_std::CodeTypeRole::TypeInfo => {
-                    ctx.signature_facts.known_std_types.code.type_info = Some(ty)
-                }
-                etas_std::CodeTypeRole::GenericOwnerInfo => {
-                    ctx.signature_facts.known_std_types.code.generic_owner_info = Some(ty)
-                }
-                etas_std::CodeTypeRole::ToolRef => {
-                    ctx.signature_facts.known_std_types.code.tool_ref = Some(ty)
-                }
-                etas_std::CodeTypeRole::StaticValueInfo => {
-                    ctx.signature_facts.known_std_types.code.static_value_info = Some(ty)
-                }
-                etas_std::CodeTypeRole::TraceConstraintInfo => {
-                    ctx.signature_facts
-                        .known_std_types
-                        .code
-                        .trace_constraint_info = Some(ty)
-                }
-                etas_std::CodeTypeRole::AgentDefinition => {
-                    ctx.signature_facts.known_std_types.code.agent_definition = Some(ty)
-                }
-                etas_std::CodeTypeRole::CallableDefinition => {
-                    ctx.signature_facts.known_std_types.code.callable_definition = Some(ty)
-                }
-                etas_std::CodeTypeRole::SyntaxBlock => {
-                    ctx.signature_facts.known_std_types.code.syntax_block = Some(ty)
-                }
-                etas_std::CodeTypeRole::DefinitionId => {
-                    ctx.signature_facts.known_std_types.code.definition_id = Some(ty)
-                }
-                etas_std::CodeTypeRole::CallableId => {
-                    ctx.signature_facts.known_std_types.code.callable_id = Some(ty)
-                }
-                etas_std::CodeTypeRole::EffectRowInfo => {
-                    ctx.signature_facts.known_std_types.code.effect_row_info = Some(ty)
-                }
-                etas_std::CodeTypeRole::ActionSummary => {
-                    ctx.signature_facts.known_std_types.code.action_summary = Some(ty)
-                }
-                etas_std::CodeTypeRole::TraceSummary => {
-                    ctx.signature_facts.known_std_types.code.trace_summary = Some(ty)
-                }
-                etas_std::CodeTypeRole::Determinism => {
-                    ctx.signature_facts.known_std_types.code.determinism = Some(ty)
-                }
-                etas_std::CodeTypeRole::DescriptorDetail => {
-                    ctx.signature_facts.known_std_types.code.descriptor_detail = Some(ty)
-                }
-                etas_std::CodeTypeRole::TraceWitness => {
-                    ctx.signature_facts.known_std_types.code.trace_witness = Some(ty)
-                }
-            }
+            record_code_type(ctx, role, ty);
         }
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && let Some(item) = declaration.iterable_item
@@ -372,4 +326,67 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         return;
     };
     ctx.signature_facts.known_std_types.index_error = Some(index_error);
+}
+
+fn record_code_type(
+    ctx: &mut TypePipelineContext<'_>,
+    role: etas_std::CodeTypeRole,
+    ty: crate::TypeId,
+) {
+    match role {
+        etas_std::CodeTypeRole::AgentId => {
+            ctx.signature_facts.known_std_types.code.agent_id = Some(ty)
+        }
+        etas_std::CodeTypeRole::TypeInfo => {
+            ctx.signature_facts.known_std_types.code.type_info = Some(ty)
+        }
+        etas_std::CodeTypeRole::GenericOwnerInfo => {
+            ctx.signature_facts.known_std_types.code.generic_owner_info = Some(ty)
+        }
+        etas_std::CodeTypeRole::ToolRef => {
+            ctx.signature_facts.known_std_types.code.tool_ref = Some(ty)
+        }
+        etas_std::CodeTypeRole::StaticValueInfo => {
+            ctx.signature_facts.known_std_types.code.static_value_info = Some(ty)
+        }
+        etas_std::CodeTypeRole::TraceConstraintInfo => {
+            ctx.signature_facts
+                .known_std_types
+                .code
+                .trace_constraint_info = Some(ty)
+        }
+        etas_std::CodeTypeRole::AgentDefinition => {
+            ctx.signature_facts.known_std_types.code.agent_definition = Some(ty)
+        }
+        etas_std::CodeTypeRole::CallableDefinition => {
+            ctx.signature_facts.known_std_types.code.callable_definition = Some(ty)
+        }
+        etas_std::CodeTypeRole::SyntaxBlock => {
+            ctx.signature_facts.known_std_types.code.syntax_block = Some(ty)
+        }
+        etas_std::CodeTypeRole::DefinitionId => {
+            ctx.signature_facts.known_std_types.code.definition_id = Some(ty)
+        }
+        etas_std::CodeTypeRole::CallableId => {
+            ctx.signature_facts.known_std_types.code.callable_id = Some(ty)
+        }
+        etas_std::CodeTypeRole::EffectRowInfo => {
+            ctx.signature_facts.known_std_types.code.effect_row_info = Some(ty)
+        }
+        etas_std::CodeTypeRole::ActionSummary => {
+            ctx.signature_facts.known_std_types.code.action_summary = Some(ty)
+        }
+        etas_std::CodeTypeRole::TraceSummary => {
+            ctx.signature_facts.known_std_types.code.trace_summary = Some(ty)
+        }
+        etas_std::CodeTypeRole::Determinism => {
+            ctx.signature_facts.known_std_types.code.determinism = Some(ty)
+        }
+        etas_std::CodeTypeRole::DescriptorDetail => {
+            ctx.signature_facts.known_std_types.code.descriptor_detail = Some(ty)
+        }
+        etas_std::CodeTypeRole::TraceWitness => {
+            ctx.signature_facts.known_std_types.code.trace_witness = Some(ty)
+        }
+    }
 }

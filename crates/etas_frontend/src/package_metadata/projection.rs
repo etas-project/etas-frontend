@@ -484,6 +484,24 @@ impl<'a> ProjectMetadataProjection<'a> {
             Some(MetadataType {
                 kind: MetadataTypeKind::Nominal,
                 path: path.clone(),
+                projected_fields: match self.checked.types.symbol_types.get(&symbol) {
+                    Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => self
+                        .checked
+                        .types
+                        .known_std_types
+                        .projected_fields
+                        .get(&TypeId(constructor.0))
+                        .into_iter()
+                        .flatten()
+                        .map(|field| {
+                            Ok(MetadataTypeField {
+                                name: field.name.clone(),
+                                ty: self.metadata_type_in_generic_scope(field.ty, &names)?,
+                            })
+                        })
+                        .collect::<Result<_, PackageMetadataError>>()?,
+                    _ => Vec::new(),
+                },
                 ..Default::default()
             })
         } else {
@@ -1256,7 +1274,11 @@ impl<'a> ProjectMetadataProjection<'a> {
         for child in &mut metadata.children {
             self.canonicalize_metadata_type(child)?;
         }
-        for field in &mut metadata.fields {
+        for field in metadata
+            .fields
+            .iter_mut()
+            .chain(&mut metadata.projected_fields)
+        {
             self.canonicalize_metadata_type(&mut field.ty)?;
         }
         for bound in &mut metadata.bounds {
@@ -2740,7 +2762,7 @@ fn normalize_generic_type(ty: &mut MetadataType, names: &BTreeSet<String>) {
             normalize_generic_type(argument, names);
         }
     }
-    for field in &mut ty.fields {
+    for field in ty.fields.iter_mut().chain(&mut ty.projected_fields) {
         normalize_generic_type(&mut field.ty, names);
     }
     if let Some(effects) = &mut ty.effects {

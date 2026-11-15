@@ -107,7 +107,12 @@ fn validate_metadata_type(
             ));
         }
         pending.extend(&ty.children);
-        pending.extend(ty.fields.iter().map(|field| &field.ty));
+        pending.extend(
+            ty.fields
+                .iter()
+                .chain(&ty.projected_fields)
+                .map(|field| &field.ty),
+        );
         for row in ty.effects.iter().chain(&ty.produced_effects) {
             validate_metadata_row(row, scope)?;
         }

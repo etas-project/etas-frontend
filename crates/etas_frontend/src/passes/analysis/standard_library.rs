@@ -94,6 +94,14 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
                 types,
             ));
 
+        context
+            .diagnostics
+            .extend(native_projection_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+                types,
+            ));
+
         for (item, target, span) in
             super::super::hir::native_binding::declarations(&hir.hir, &context.std_registry)
         {
@@ -702,4 +710,63 @@ fn native_record_field_matches(
         }
         _ => false,
     }
+}
+
+fn native_projection_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_projection_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        for (_, item) in hir.items.iter() {
+            let Some(symbol) = item.symbol().and_then(|symbol| hir.symbols.get(symbol)) else {
+                continue;
+            };
+            if symbol.name != *name
+                || !hir.modules_arena[symbol.defining_module]
+                    .name
+                    .as_ref()
+                    .is_some_and(|path| {
+                        path.segments
+                            .iter()
+                            .map(|part| &part.name)
+                            .eq(module.iter())
+                    })
+            {
+                continue;
+            }
+            let fields = match types.facts.symbol_types.get(&symbol.id) {
+                Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => types
+                    .facts
+                    .known_std_types
+                    .projected_fields
+                    .get(&etas_types::TypeId(constructor.0)),
+                _ => None,
+            };
+            let valid = fields.is_some_and(|fields| {
+                fields.len() == reference.fields.len()
+                    && reference.fields.iter().all(|field| {
+                        fields
+                            .iter()
+                            .find(|actual| actual.name == field.name)
+                            .is_some_and(|actual| {
+                                native_record_field_matches(hir, types, actual.ty, &field.ty)
+                            })
+                    })
+            });
+            if !valid {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    symbol.definition_span,
+                    format!(
+                        "native getter ABI requires `{}` with its checked projected fields",
+                        reference.path.join(".")
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
 }

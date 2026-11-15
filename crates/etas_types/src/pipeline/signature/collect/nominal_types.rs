@@ -152,6 +152,34 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                     HirTypeDeclBody::Bodyless => None,
                     HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
                 };
+                if ctx
+                    .signature_facts
+                    .source_type_roles
+                    .get(&decl.symbol)
+                    .and_then(|id| ctx.std_registry.symbol(*id))
+                    .and_then(|symbol| {
+                        etas_std::StdSourceRole::from_path(&symbol.qualified_path.join("."))
+                    })
+                    .is_some_and(etas_std::StdSourceRole::is_projected_type)
+                {
+                    if let (
+                        Some(Type::Record(record)),
+                        Some(SymbolTypeFact::NominalType { constructor, .. }),
+                    ) = (
+                        representation.and_then(|ty| ctx.interner.store().get(ty)),
+                        ctx.signature_facts.symbol_types.get(&decl.symbol),
+                    ) {
+                        let constructor = crate::TypeId(constructor.0);
+                        ctx.signature_facts
+                            .known_std_types
+                            .projected_fields
+                            .insert(constructor, record.fields.clone());
+                        ctx.signature_facts
+                            .type_generics
+                            .insert(constructor, generics);
+                    }
+                    continue;
+                }
                 if let Some(SymbolTypeFact::NominalType {
                     constructor,
                     representation: slot,

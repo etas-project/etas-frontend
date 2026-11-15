@@ -186,7 +186,12 @@ impl CapturedProjection {
                         continue;
                     }
                     pending.extend(ty.children.iter_mut().map(Part::Type));
-                    pending.extend(ty.fields.iter_mut().map(|field| Part::Type(&mut field.ty)));
+                    pending.extend(
+                        ty.fields
+                            .iter_mut()
+                            .chain(&mut ty.projected_fields)
+                            .map(|field| Part::Type(&mut field.ty)),
+                    );
                     pending.extend(
                         ty.effects
                             .iter_mut()

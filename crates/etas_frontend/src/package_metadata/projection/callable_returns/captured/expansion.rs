@@ -41,7 +41,12 @@ pub(super) fn validate(
                 pending.extend(
                     ty.children
                         .iter()
-                        .chain(ty.fields.iter().map(|field| &field.ty))
+                        .chain(
+                            ty.fields
+                                .iter()
+                                .chain(&ty.projected_fields)
+                                .map(|field| &field.ty),
+                        )
                         .map(|ty| (Part::Type(ty), depth + 1, substitute)),
                 );
                 pending.extend(

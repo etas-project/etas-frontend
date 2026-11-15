@@ -606,6 +606,7 @@ pub fn lower_external_type_declaration(
         && registry.declaration_key(symbol.id).is_some()
         && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
             if declaration.runtime_role.is_some()
+                || declaration.code_role.is_some()
                 || registry.native_record_reference(&path.join(".")).is_some())
     {
         let ty = crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol).unwrap();
