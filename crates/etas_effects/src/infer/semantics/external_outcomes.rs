@@ -443,7 +443,7 @@ impl EffectSemantics<'_> {
             if callback_row.open.is_some() {
                 return None;
             }
-            requested.union_assign(&callback_row.effects);
+            // Callback requests remain symbolic; this set records concrete handler requests.
             let mut handled = crate::EffectSet::new();
             for scope in handlers {
                 let ParameterHandlerScopeInfo::Handle { arms } = scope;

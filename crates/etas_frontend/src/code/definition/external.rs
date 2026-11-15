@@ -109,6 +109,13 @@ impl DefinitionCatalog {
                     .map(|snapshot| (&snapshot.identity, snapshot))
                     .collect::<BTreeMap<_, _>>()
             });
+            let method_snapshots = headers.snapshots.as_ref().map(|snapshots| {
+                snapshots
+                    .methods
+                    .iter()
+                    .map(|snapshot| (&snapshot.revision.definition, snapshot))
+                    .collect::<BTreeMap<_, _>>()
+            });
             let bodies = headers.bodies.as_ref().map(|bodies| {
                 bodies
                     .entries
@@ -121,11 +128,16 @@ impl DefinitionCatalog {
                     .as_ref()
                     .and_then(|bodies| bodies.get(&header.id))
                     .map(|body| Arc::new((*body).clone()));
-                let snapshot = header
-                    .id
-                    .as_declaration()
-                    .and_then(|identity| snapshots.as_ref()?.get(identity))
-                    .map(|snapshot| (*snapshot).clone());
+                let snapshot = if let Some(identity) = header.id.as_declaration() {
+                    snapshots
+                        .as_ref()
+                        .and_then(|snapshots| snapshots.get(identity))
+                } else {
+                    method_snapshots
+                        .as_ref()
+                        .and_then(|snapshots| snapshots.get(&header.id))
+                }
+                .map(|snapshot| (*snapshot).clone());
                 if let Some(existing) = self.external_callables.get(&header.id) {
                     if existing.header != *header
                         || existing.graph != graph
