@@ -695,6 +695,27 @@ fn complete_external_nominal(
     }
 }
 
+/// Portable rows use declaration paths. Typed native rows use the verified
+/// registry logical alias for that same identity; foreign names stay qualified.
+pub(super) fn canonical_effect_name(facts: &crate::TypeFacts, path: &[String]) -> String {
+    use etas_code::descriptor::EffectTargetInfo;
+    let qualified = path.join(".");
+    let Some(target) = facts.reflection_effect_targets.get(&qualified) else {
+        return qualified;
+    };
+    let logical = match target {
+        EffectTargetInfo::Effect(effect) => effect.declaration().join("."),
+        EffectTargetInfo::Action { effect, name } => {
+            format!("{}.{}", effect.declaration().join("."), name)
+        }
+    };
+    if facts.reflection_effect_targets.get(&logical) == Some(target) {
+        logical
+    } else {
+        qualified
+    }
+}
+
 pub fn lower_external_effect_row(
     ctx: &mut TypePipelineContext<'_>,
     span: Span,
@@ -705,7 +726,7 @@ pub fn lower_external_effect_row(
             .effects
             .iter()
             .map(|effect| EffectRef {
-                name: effect.path.join("."),
+                name: canonical_effect_name(&ctx.signature_facts, &effect.path),
                 args: effect
                     .args
                     .iter()

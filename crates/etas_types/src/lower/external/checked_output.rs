@@ -126,7 +126,7 @@ impl<'a> CheckedExternalTypeResolver<'a> {
                 .iter()
                 .map(|effect| {
                     Ok(EffectRef {
-                        name: effect.path.join("."),
+                        name: super::canonical_effect_name(&self.types.facts, &effect.path),
                         args: effect
                             .args
                             .iter()
