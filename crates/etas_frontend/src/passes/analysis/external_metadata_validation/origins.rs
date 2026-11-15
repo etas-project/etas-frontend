@@ -126,6 +126,7 @@ pub(super) fn validate(
             if !exports
                 .get(&input.package)
                 .is_some_and(|exports| exports.contains(&path))
+                && kinds.get(path.as_slice()) != Some(&DefinitionKind::EnumVariant)
             {
                 return Err(fail(format!(
                     "definition `{}` has no matching module export",
@@ -654,46 +655,41 @@ fn validate_resource_bounds(environment: &ProjectEnvironmentInput) -> Result<(),
 
 fn declaration_kinds(
     metadata: &ProjectExternalPublicMetadataInput,
-) -> BTreeMap<&[String], DefinitionKind> {
+) -> BTreeMap<Vec<String>, DefinitionKind> {
     use DefinitionKind as K;
-    metadata
+    let mut kinds: BTreeMap<_, _> = metadata
         .types
         .iter()
-        .map(|s| (s.path.as_slice(), K::Type))
-        .chain(metadata.enums.iter().map(|s| (s.path.as_slice(), K::Type)))
-        .chain(metadata.flows.iter().map(|s| (s.path.as_slice(), K::Flow)))
-        .chain(
-            metadata
-                .agents
-                .iter()
-                .map(|s| (s.path.as_slice(), K::Agent)),
-        )
-        .chain(metadata.tools.iter().map(|s| (s.path.as_slice(), K::Tool)))
-        .chain(
-            metadata
-                .values
-                .iter()
-                .map(|s| (s.path.as_slice(), K::Value)),
-        )
-        .chain(
-            metadata
-                .effects
-                .iter()
-                .map(|s| (s.path.as_slice(), K::Effect)),
-        )
+        .map(|s| (s.path.clone(), K::Type))
+        .chain(metadata.enums.iter().map(|s| (s.path.clone(), K::Type)))
+        .chain(metadata.flows.iter().map(|s| (s.path.clone(), K::Flow)))
+        .chain(metadata.agents.iter().map(|s| (s.path.clone(), K::Agent)))
+        .chain(metadata.tools.iter().map(|s| (s.path.clone(), K::Tool)))
+        .chain(metadata.values.iter().map(|s| (s.path.clone(), K::Value)))
+        .chain(metadata.effects.iter().map(|s| (s.path.clone(), K::Effect)))
         .chain(
             metadata
                 .spec_signatures
                 .iter()
-                .map(|s| (s.path.as_slice(), K::Spec)),
+                .map(|s| (s.path.clone(), K::Spec)),
         )
         .chain(
             metadata
                 .trace_specs
                 .iter()
-                .map(|s| (s.path.as_slice(), K::Spec)),
+                .map(|s| (s.path.clone(), K::Spec)),
         )
-        .collect()
+        .collect();
+    for declaration in &metadata.enums {
+        if let Some(crate::ProjectExternalTypeInput::Enum { variants, .. }) = &declaration.ty {
+            for variant in variants {
+                let mut path = declaration.path.clone();
+                path.push(variant.name.clone());
+                kinds.insert(path, K::EnumVariant);
+            }
+        }
+    }
+    kinds
 }
 
 fn validate_chains(bindings: &BTreeMap<Vec<String>, Binding<'_>>) -> Result<(), Error> {
