@@ -635,7 +635,7 @@ fn native_record_reference_diagnostics(
                 && representation.and_then(|ty| types.store.get(ty)).is_some_and(|ty| {
                     matches!(ty, etas_types::Type::Record(record) if record.fields.len() == reference.fields.len()
                         && reference.fields.iter().all(|field| record.fields.iter().find(|actual| actual.name == field.name)
-                            .is_some_and(|actual| native_primitive_matches(&types.store, actual.ty, &field.ty))))
+                            .is_some_and(|actual| native_record_field_matches(hir, types, actual.ty, &field.ty))))
                 });
             if !valid {
                 diagnostics.push(etas_core::Diagnostic::type_check(
@@ -650,4 +650,56 @@ fn native_record_reference_diagnostics(
         }
     }
     diagnostics
+}
+
+fn native_record_field_matches(
+    hir: &etas_hir::HirProgram,
+    types: &etas_types::TypeOutput,
+    actual: etas_types::TypeId,
+    expected: &etas_std::StdType,
+) -> bool {
+    use etas_std::StdType;
+    use etas_types::{SymbolTypeFact, Type, TypeId};
+    match (expected, types.store.get(actual)) {
+        (StdType::Primitive(_), _) => native_primitive_matches(&types.store, actual, expected),
+        (StdType::Array(expected), Some(Type::Array(actual)))
+        | (StdType::Option(expected), Some(Type::Option(actual))) => {
+            native_record_field_matches(hir, types, *actual, expected)
+        }
+        (StdType::Named(expected), _) => {
+            let expected = expected.split('.').collect::<Vec<_>>();
+            // Match the checked declaration's TypeId, rather than accepting a
+            // nominal with a similar name or record representation.
+            hir.symbols.iter().any(|symbol| {
+                let canonical = match &symbol.def {
+                    etas_hir::SymbolDef::ImportAlias { path, .. } => {
+                        path.iter().map(String::as_str).eq(expected.iter().copied())
+                    }
+                    _ => hir.modules_arena[symbol.defining_module]
+                        .name
+                        .as_ref()
+                        .is_some_and(|module| {
+                            module
+                                .segments
+                                .iter()
+                                .map(|part| part.name.as_str())
+                                .chain(std::iter::once(symbol.name.as_str()))
+                                .eq(expected.iter().copied())
+                        }),
+                };
+                canonical
+                    && match types.facts.symbol_types.get(&symbol.id) {
+                        Some(
+                            SymbolTypeFact::NominalType { constructor, .. }
+                            | SymbolTypeFact::Type { constructor },
+                        ) => actual == TypeId(constructor.0),
+                        Some(SymbolTypeFact::TypeAlias { target, params }) if params.is_empty() => {
+                            actual == *target
+                        }
+                        _ => false,
+                    }
+            })
+        }
+        _ => false,
+    }
 }

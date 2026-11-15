@@ -1653,7 +1653,9 @@ pub struct StandardLibrary {
 }
 
 impl StandardLibrary {
-    pub(crate) fn append_environment(
+    /// Add the verified toolchain library to the prepared project environment.
+    /// Reusing that environment in a frontend session preserves its package ID.
+    pub fn append_environment(
         &self,
         environment: &mut ProjectEnvironmentInput,
     ) -> ExternalPackageId {

@@ -604,7 +604,9 @@ pub fn lower_external_type_declaration(
     let registry = ctx.std_registry.clone();
     if let Some(symbol) = registry.lookup_qualified(path)
         && registry.declaration_key(symbol.id).is_some()
-        && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration) if declaration.runtime_role.is_some())
+        && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
+            if declaration.runtime_role.is_some()
+                || registry.native_record_reference(&path.join(".")).is_some())
     {
         let ty = crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol).unwrap();
         ctx.external_type_paths.insert(path.to_vec(), ty);
