@@ -154,6 +154,11 @@ impl EffectSemantics<'_> {
                     .iter()
                     .filter_map(|entry| self.latent_payload_sources(state, entry.value)),
             ),
+            HirExpr::ListCons { head, tail, .. } => self.union_latent_sources(
+                [*head, *tail]
+                    .into_iter()
+                    .filter_map(|value| self.latent_payload_sources(state, value)),
+            ),
             HirExpr::Record(record) => {
                 self.union_latent_sources(record.fields.iter().filter_map(|field| match field {
                     etas_hir::HirFieldInit::Named { value, .. } => {
@@ -173,10 +178,16 @@ impl EffectSemantics<'_> {
             HirExpr::Try { expr: base, .. }
             | HirExpr::Index { base, .. }
             | HirExpr::Field { base, .. } => self.latent_sources_for_expr(state, *base),
-            HirExpr::Call { callee, args, .. } if self.is_latent_transparent_call(*callee) => args
-                .first()
-                .and_then(arg_expr)
-                .and_then(|arg| self.latent_sources_for_expr(state, arg)),
+            HirExpr::Call { callee, args, .. }
+                if !self.latent_payload_arguments(*callee).is_empty() =>
+            {
+                self.union_latent_sources(
+                    self.latent_payload_arguments(*callee)
+                        .iter()
+                        .filter_map(|position| args.get(*position).and_then(arg_expr))
+                        .filter_map(|arg| self.latent_payload_sources(state, arg)),
+                )
+            }
             HirExpr::Call { callee, args, .. } if self.is_value_constructor_call(*callee) => self
                 .union_latent_sources(
                     args.iter()
@@ -215,25 +226,24 @@ impl EffectSemantics<'_> {
         })
     }
 
-    pub(crate) fn is_latent_transparent_call(&self, callee: HirExprId) -> bool {
+    pub(crate) fn latent_payload_arguments(&self, callee: HirExprId) -> &'static [usize] {
         let Some(HirExpr::Path(path)) = self.hir.exprs.get(callee) else {
-            return false;
+            return &[];
         };
         let ResolveResult::Resolved(symbol) = path.resolution else {
-            return false;
+            return &[];
         };
         let Some(symbol) = self.hir.symbols.get(symbol) else {
-            return false;
+            return &[];
         };
         let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
-            return false;
+            return &[];
         };
         self.std_registry
             .lookup_qualified(path)
             .and_then(|symbol| symbol.intrinsic.as_ref())
-            .is_some_and(|descriptor| {
-                descriptor.latent_effect == etas_std::IntrinsicLatentEffect::TransparentFirstArg
-            })
+            .map(|descriptor| descriptor.payload_arguments())
+            .unwrap_or(&[])
     }
 
     pub(crate) fn is_value_constructor_call(&self, callee: HirExprId) -> bool {
@@ -434,10 +444,14 @@ impl EffectSemantics<'_> {
             HirExpr::Index { base, .. } | HirExpr::Field { base, .. } => {
                 self.anonymous_flow_unit_for_expr(owner, *base)
             }
-            HirExpr::Call { callee, args, .. } if self.is_latent_transparent_call(*callee) => args
-                .first()
-                .and_then(arg_expr)
-                .and_then(|arg| self.anonymous_flow_unit_for_expr(owner, arg)),
+            HirExpr::Call { callee, args, .. }
+                if !self.latent_payload_arguments(*callee).is_empty() =>
+            {
+                self.latent_payload_arguments(*callee)
+                    .iter()
+                    .filter_map(|position| args.get(*position).and_then(arg_expr))
+                    .find_map(|arg| self.anonymous_flow_unit_for_expr(owner, arg))
+            }
             HirExpr::Call { callee, args, .. } if self.is_value_constructor_call(*callee) => args
                 .iter()
                 .filter_map(arg_expr)
@@ -555,15 +569,21 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn expr_type_has_parameters(&self, expr: HirExprId) -> bool {
-        self.types.facts.expr_types.get(&expr).is_some_and(|ty| {
-            self.latent_type_shapes
-                .get_or_init(|| {
-                    super::latent_shape::LatentTypeShapes::build(self.types, |ty| {
-                        self.descriptor_contract_type(ty).is_some()
-                    })
+        self.types
+            .facts
+            .expr_types
+            .get(&expr)
+            .is_some_and(|ty| self.type_has_parameters(*ty))
+    }
+
+    pub(super) fn type_has_parameters(&self, ty: TypeId) -> bool {
+        self.latent_type_shapes
+            .get_or_init(|| {
+                super::latent_shape::LatentTypeShapes::build(self.types, |ty| {
+                    self.descriptor_contract_type(ty).is_some()
                 })
-                .has_parameters(*ty)
-        })
+            })
+            .has_parameters(ty)
     }
 
     pub(crate) fn is_deferred_first_class_param(&self, expr: HirExprId) -> bool {

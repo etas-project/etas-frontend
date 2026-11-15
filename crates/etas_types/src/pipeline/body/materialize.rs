@@ -197,10 +197,61 @@ mod continuation;
 mod methods;
 mod reflection;
 
+fn constraint_generics(
+    state: &BodyPipelineState,
+) -> std::collections::BTreeMap<etas_hir::HirExprId, Vec<crate::CallableGenericParam>> {
+    let mut declarations = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for constraint in &state.constraints {
+        let (expr, parameters) = match constraint {
+            crate::TypeConstraint::Callable {
+                call: Some(expr),
+                generic_params,
+                ..
+            }
+            | crate::TypeConstraint::CallableReference {
+                expr,
+                generic_params,
+                ..
+            } => (*expr, generic_params.clone()),
+            crate::TypeConstraint::OverloadedCall {
+                expr, candidates, ..
+            }
+            | crate::TypeConstraint::MethodCall {
+                expr, candidates, ..
+            } => (
+                *expr,
+                candidates
+                    .iter()
+                    .flat_map(|candidate| candidate.signature.generic_params.iter().cloned())
+                    .collect(),
+            ),
+            _ => continue,
+        };
+        declarations.entry(expr).or_default().extend(parameters);
+    }
+    declarations
+}
+
+fn scoped_type_bindings(
+    parameters: &[crate::CallableGenericParam],
+    fact: &crate::GenericInstantiationFact,
+) -> std::collections::HashMap<crate::TypeId, crate::TypeId> {
+    parameters
+        .iter()
+        .filter_map(|parameter| {
+            fact.type_bindings
+                .iter()
+                .find(|(name, _)| name == &parameter.name)
+                .map(|(_, ty)| (parameter.subject, *ty))
+        })
+        .collect()
+}
+
 fn materialize_generic_type_instances(
     ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
     state: &mut BodyPipelineState,
 ) -> Result<(), crate::TypeSubstitutionError> {
+    let declarations = constraint_generics(state);
     let mut instantiations = state
         .solver_report
         .generic_instantiations
@@ -226,13 +277,20 @@ fn materialize_generic_type_instances(
         let Some(source) = source else {
             continue;
         };
-        let types = fact.type_bindings.into_iter().collect();
+        let parameters =
+            scoped_type_bindings(declarations.get(&expr).map_or(&[], Vec::as_slice), &fact);
+        let types = std::collections::HashMap::new();
+        let source_parameters = std::collections::HashMap::new();
         let rows = fact.effect_row_bindings.into_iter().collect();
         let materialized = crate::TypeSubstitutionEngine::materializing(
             &mut ctx.interner,
             &types,
             Some(&state.solver_report.substitutions),
         )
+        // The result already contains caller-owned type parameters. Substitute
+        // the checked callee's subjects, never a caller's reused display name.
+        .with_type_parameters(&parameters)
+        .with_source_parameters(&source_parameters)
         .with_effect_arguments(&rows)
         .substitute(source)?;
         if materialized != source {
@@ -305,6 +363,7 @@ fn materialize_callable_references(
     ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
     state: &mut BodyPipelineState,
 ) -> Result<(), String> {
+    let declarations = constraint_generics(state);
     for constraint in &state.constraints {
         let crate::TypeConstraint::CallableReference { expr, .. } = constraint else {
             continue;
@@ -322,13 +381,18 @@ fn materialize_callable_references(
             .expr_types
             .get_mut(expr)
             .ok_or_else(|| format!("callable reference {expr:?} has no provisional type"))?;
-        let types = fact.type_bindings.iter().cloned().collect();
+        let parameters =
+            scoped_type_bindings(declarations.get(expr).map_or(&[], Vec::as_slice), fact);
+        let types = std::collections::HashMap::new();
+        let source_parameters = std::collections::HashMap::new();
         let rows = fact.effect_row_bindings.iter().cloned().collect();
         *ty = crate::TypeSubstitutionEngine::materializing(
             &mut ctx.interner,
             &types,
             Some(&state.solver_report.substitutions),
         )
+        .with_type_parameters(&parameters)
+        .with_source_parameters(&source_parameters)
         .with_effect_arguments(&rows)
         .substitute(*ty)
         .map_err(|error| error.to_string())?;

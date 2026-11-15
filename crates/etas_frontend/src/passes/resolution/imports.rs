@@ -391,6 +391,7 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         if let Err(error) = install_wildcard_import_aliases(context, hir, wildcard_imports) {
             return PassResult::failed(error);
         }
+        install_source_std_prelude_aliases(context, hir);
         if let Err(error) = super::external_enum_members::install(context, hir) {
             return PassResult::failed(error);
         }
@@ -410,6 +411,56 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         };
         context.hir = Some(crate::HirOutput { hir });
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(HIR_OUTPUT))
+    }
+}
+
+fn install_source_std_prelude_aliases(context: &ProjectContext, hir: &mut etas_hir::HirProgram) {
+    if context.input.options.standard_library_mode != crate::StandardLibraryMode::SourceBootstrap {
+        return;
+    }
+    let catalog = context
+        .module_catalog
+        .as_ref()
+        .expect("checked module catalog");
+    let bindings = context
+        .hir_item_bindings
+        .as_ref()
+        .expect("checked HIR item bindings");
+    let mut exports = BTreeMap::new();
+    for (_, module) in catalog.modules.iter() {
+        for (name, export) in &module.exports.items {
+            if export.visibility != etas_hir::Visibility::Public {
+                continue;
+            }
+            let ModuleExportTarget::Source { item, .. } = &export.target else {
+                continue;
+            };
+            if let Some(item) = bindings.ast_to_hir.get(item) {
+                let mut path = module.path.segments.clone();
+                path.push(name.clone());
+                exports.insert(path, *item);
+            }
+        }
+    }
+    let aliases = hir
+        .symbols
+        .iter()
+        .filter_map(|symbol| {
+            let etas_hir::SymbolDef::ImportAlias {
+                path,
+                origin: etas_hir::ImportAliasOrigin::StdPrelude,
+            } = &symbol.def
+            else {
+                return None;
+            };
+            exports.get(path).map(|item| (symbol.id, *item))
+        })
+        .collect::<Vec<_>>();
+    for (alias, item) in aliases {
+        if let Some(target) = hir.items.get(item).and_then(etas_hir::HirItem::symbol) {
+            hir.source_import_targets.insert(alias, target);
+        }
+        super::source_members::bind_members(hir, alias, item);
     }
 }
 

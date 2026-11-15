@@ -1220,6 +1220,16 @@ impl DefinitionIdentityIndex {
         {
             index.bind_method(checked, symbol, id)?;
         }
+        for method in &checked.types.external_methods {
+            index.method_owner_parameters.insert(
+                method.identity.clone(),
+                method
+                    .owner_params
+                    .iter()
+                    .map(GenericDeclaration::from)
+                    .collect(),
+            );
+        }
         Ok(index)
     }
 
@@ -1310,6 +1320,41 @@ impl DefinitionIdentityIndex {
 
     pub(crate) fn method(&self, symbol: SymbolId) -> Option<&MethodId> {
         self.methods.get(&symbol)
+    }
+
+    pub(crate) fn method_subject(
+        &self,
+        store: &etas_types::TypeStore,
+        ty: TypeId,
+    ) -> Result<(&TypeDeclaration, Vec<TypeId>), ProjectionError> {
+        use etas_std::StdSourceRole as R;
+        let role = match store.get(ty) {
+            Some(Type::Array(item)) => Some((R::Array, vec![*item])),
+            Some(Type::List(item)) => Some((R::List, vec![*item])),
+            Some(Type::Map { key, value }) => Some((R::Map, vec![*key, *value])),
+            Some(Type::Set(item)) => Some((R::Set, vec![*item])),
+            Some(Type::Range { index }) => Some((R::Range, vec![*index])),
+            Some(Type::Slice(item)) => Some((R::Slice, vec![*item])),
+            Some(Type::Option(item)) => Some((R::Option, vec![*item])),
+            Some(Type::Result { ok, err }) => Some((R::Result, vec![*ok, *err])),
+            _ => None,
+        };
+        if let Some((role, arguments)) = role {
+            return self
+                .type_names
+                .get(role.path())
+                .map(|declaration| (declaration, arguments))
+                .ok_or(ProjectionError::MissingType(ty));
+        }
+        let (constructor, arguments) = match store.get(ty) {
+            Some(Type::Applied { constructor, args }) => (TypeId(constructor.0), args.clone()),
+            Some(_) => (ty, Vec::new()),
+            None => return Err(ProjectionError::MissingType(ty)),
+        };
+        self.types
+            .get(&constructor)
+            .map(|declaration| (declaration, arguments))
+            .ok_or(ProjectionError::MissingType(constructor))
     }
 
     pub(crate) fn implementation_parameter(

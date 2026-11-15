@@ -353,6 +353,18 @@ fn build_selected(
         };
         projector.project_signature(owner, signature, &vec![None; signature.params.len()], None)?;
     }
+    // Imported method binders also need local checked type origins. Their
+    // portable header alone cannot relocate session-local generic TypeIds.
+    let mut methods = checked.types.external_methods.iter().collect::<Vec<_>>();
+    methods.sort_by(|left, right| left.identity.cmp(&right.identity));
+    for method in methods {
+        projector.project_signature(
+            GenericOwner::Method(method.identity.clone()),
+            &method.signature,
+            &method.parameter_names,
+            None,
+        )?;
+    }
     let projection = projector.finish_native()?;
     let mut catalog = DefinitionCatalog {
         checked,

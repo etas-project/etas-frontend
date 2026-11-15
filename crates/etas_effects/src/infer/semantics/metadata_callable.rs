@@ -435,7 +435,9 @@ impl EffectSemantics<'_> {
                             graph: key,
                             parameter: *parameter,
                         })
-                        .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                        .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                            reason: format!("returned metadata parameter {parameter:?} has no captured value origins"),
+                        })?;
                     found.extend(origins);
                 }
             }
@@ -478,7 +480,12 @@ impl EffectSemantics<'_> {
                 call,
             )?;
         } else if self.expr_type_contains_flow(call) {
-            return Err(EffectSpecializationError::InvalidCallableReturnSources);
+            return Err(EffectSpecializationError::InvalidCallableEnvironment {
+                reason: format!(
+                    "metadata method {} has no checked callable return origins",
+                    source.value
+                ),
+            });
         }
         Ok(())
     }
@@ -716,7 +723,9 @@ impl EffectSemantics<'_> {
                 });
             }
         }
-        if let Some(returned) = &node.returned_sources {
+        if let Some(returned) = &node.returned_sources
+            && (self.expr_type_contains_flow(site.call) || self.expr_type_has_parameters(site.call))
+        {
             self.record_metadata_sources(
                 MetadataCallBindings {
                     key: Some(source.graph),

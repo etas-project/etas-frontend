@@ -964,6 +964,9 @@ fn std_signature_input(
     }
 
     for symbol in hir.symbols.iter() {
+        if hir.source_import_targets.contains_key(&symbol.id) {
+            continue;
+        }
         let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def else {
             continue;
         };

@@ -469,8 +469,8 @@ impl CallableExitSummary {
 
     /// Value-origin evidence is independent of whether a preceding call returns,
     /// raises or diverges. Keep all control gaps on this summary; they are not a
-    /// certificate of purity or totality. Every successful return still needs a
-    /// checked, nonempty source observation.
+    /// certificate of purity or totality. Successful returns need checked
+    /// source observations; None contributes no callable payload.
     pub fn callable_return_sources(
         &self,
     ) -> Option<std::collections::BTreeSet<CallableReturnSource>> {
@@ -490,6 +490,10 @@ impl CallableExitSummary {
                     observation: ReturnObservation::CallableSources(found),
                     ..
                 } if !found.is_empty() => sources.extend(found.iter().cloned()),
+                CallableOutcome::Returned {
+                    observation: ReturnObservation::Option(false),
+                    ..
+                } => {}
                 CallableOutcome::Returned { .. } => return None,
                 _ => {}
             }

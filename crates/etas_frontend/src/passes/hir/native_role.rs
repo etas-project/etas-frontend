@@ -103,8 +103,7 @@ pub(crate) fn bindings(
                 HirItem::Type(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target.runtime_role().is_some()
-                        && matches!(source.body, HirTypeDeclBody::Bodyless),
+                    target.is_bodyless_type() && matches!(source.body, HirTypeDeclBody::Bodyless),
                 ),
                 HirItem::Enum(source) => (
                     source.symbol,

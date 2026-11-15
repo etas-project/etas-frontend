@@ -114,7 +114,7 @@ flow main() -> unit {
             })
             .unwrap();
         assert_eq!(
-            semantics.is_latent_transparent_call(callee),
+            !semantics.latent_payload_arguments(callee).is_empty(),
             expected,
             "{name}"
         );

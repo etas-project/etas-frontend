@@ -24,7 +24,7 @@ impl EffectSemantics<'_> {
         self.std_registry
             .lookup_qualified(path)
             .is_some_and(|declaration| {
-                declaration.intrinsic.as_ref().is_some_and(|descriptor| {
+                declaration.intrinsic.as_ref().is_none_or(|descriptor| {
                     descriptor.latent_effect == etas_std::IntrinsicLatentEffect::TransparentFirstArg
                 }) && declaration.kind == StdSymbolKind::Constructor
                     && matches!(self.type_symbols.symbol_fact(self.hir, &self.types.facts, symbol), Some(SymbolTypeFact::Flow { signature }) if signature.params.is_empty())

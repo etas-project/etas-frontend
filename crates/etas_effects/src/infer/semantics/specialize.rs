@@ -417,11 +417,17 @@ impl EffectSemantics<'_> {
             for exit in &mut exits.exits {
                 exit.trace =
                     self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
-                if let crate::CallableOutcome::Returned { observation, .. }
-                | crate::CallableOutcome::HandlerFinished { observation, .. }
-                | crate::CallableOutcome::HandlerResumed { observation, .. } = &mut exit.outcome
+                if let crate::CallableOutcome::Returned { ty, observation }
+                | crate::CallableOutcome::HandlerFinished { ty, observation }
+                | crate::CallableOutcome::HandlerResumed { ty, observation } = &mut exit.outcome
                     && let crate::ReturnObservation::CallableSources(parameters) = observation
                 {
+                    // A generic data-origin recipe may instantiate to ordinary
+                    // data. Such a result does not carry a callable contract.
+                    if !self.type_contains_flow(*ty) && !self.type_has_parameters(*ty) {
+                        *observation = crate::ReturnObservation::Any;
+                        continue;
+                    }
                     let sources = self.returned_callable_bindings(
                         parameters,
                         &trace_bindings,

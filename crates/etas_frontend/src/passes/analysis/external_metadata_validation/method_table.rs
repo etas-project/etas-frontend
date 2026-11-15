@@ -62,6 +62,12 @@ pub(super) fn validate(
                 .get(owner.subject())
                 .ok_or_else(|| fail("published method subject has no declaration origin"))?;
             let builtin_path = match method.self_type.kind {
+                etas_package_metadata::TypeKind::Array => Some(["std", "collections", "Array"]),
+                etas_package_metadata::TypeKind::List => Some(["std", "collections", "List"]),
+                etas_package_metadata::TypeKind::Map => Some(["std", "collections", "Map"]),
+                etas_package_metadata::TypeKind::Set => Some(["std", "collections", "Set"]),
+                etas_package_metadata::TypeKind::Range => Some(["std", "collections", "Range"]),
+                etas_package_metadata::TypeKind::Slice => Some(["std", "collections", "Slice"]),
                 etas_package_metadata::TypeKind::Result => Some(["std", "result", "Result"]),
                 etas_package_metadata::TypeKind::Option => Some(["std", "option", "Option"]),
                 _ => None,

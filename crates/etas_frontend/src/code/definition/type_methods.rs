@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use etas_code::descriptor::DescriptorLimits;
 use etas_code::{ImplementationHeader, ImplementationKey, ImplementationSpecIdentity, MethodId};
 use etas_hir::{HirImplTarget, HirItem, SymbolId};
-use etas_types::Type;
 
 use crate::code::{
     descriptor::{DefinitionDescriptorProjector, DescriptorInput, ProjectionError},
@@ -44,35 +43,9 @@ fn implementation_identity(
     limits: DescriptorLimits,
     method: &etas_types::facts::TypeImplMethodFact,
 ) -> Result<ImplementationKey, ProjectionError> {
-    let (constructor, arguments) = match checked.type_store.get(method.self_type) {
-        Some(Type::Applied { constructor, args }) => {
-            (etas_types::TypeId(constructor.0), args.clone())
-        }
-        Some(Type::Result { ok, err }) => (
-            checked
-                .types
-                .known_std_types
-                .result_enum
-                .ok_or(ProjectionError::MissingType(method.self_type))?,
-            vec![*ok, *err],
-        ),
-        Some(Type::Option(inner)) => (
-            checked
-                .types
-                .known_std_types
-                .option_enum
-                .ok_or(ProjectionError::MissingType(method.self_type))?,
-            vec![*inner],
-        ),
-        Some(_) => (method.self_type, Vec::new()),
-        None => return Err(ProjectionError::MissingType(method.self_type)),
-    };
-    let subject = identities
-        .types
-        .get(&constructor)
-        .ok_or(ProjectionError::MissingType(constructor))?
-        .identity
-        .clone();
+    let (declaration, arguments) =
+        identities.method_subject(checked.type_store, method.self_type)?;
+    let subject = declaration.identity.clone();
     let mut projector = DefinitionDescriptorProjector::from_input(checked, identities, limits);
     let arguments =
         projector.project_implementation_pattern(&subject, &method.owner_params, &arguments)?;

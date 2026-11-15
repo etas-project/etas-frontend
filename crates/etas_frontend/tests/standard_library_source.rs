@@ -72,6 +72,11 @@ impl Drop for SourcePackage {
 #[test]
 fn adding_a_source_part_adds_public_std_flows_without_rust_registration_or_main() {
     let package = SourcePackage::new();
+    let text_algorithms = etas_std::library::source_checkout_manifest()
+        .parent()
+        .unwrap()
+        .join("library/std/text/native.es");
+    package.write("mod.es", &fs::read_to_string(text_algorithms).unwrap());
     assert_eq!(package.load().input.sources.len(), 2);
     package.write(
         "decorate.es",

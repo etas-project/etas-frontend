@@ -276,6 +276,11 @@ impl ProjectMetadataProjection<'_> {
     ) -> Result<Vec<etas_package_metadata::SpecMethodCallableArgument>, PackageMetadataError> {
         let mut callable_arguments = Vec::new();
         for (target, origins) in &snapshot.parameters {
+            // Instantiating generic data with a scalar leaves no callable
+            // payload to publish as a method callback argument.
+            if origins.is_empty() {
+                continue;
+            }
             let ParameterCallTarget::Interface(position) = target else {
                 return Err(invalid(
                     "method evidence callback has no checked input position",

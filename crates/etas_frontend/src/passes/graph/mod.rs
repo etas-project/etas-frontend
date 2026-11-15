@@ -48,6 +48,12 @@ impl Pass<ProjectContext> for BuildImportGraphPass {
             }
             let mut seen = HashSet::new();
             for target in targets {
+                // Module parts can name another item of the same logical
+                // module. That alias does not add a module dependency.
+                if matches!(target, ImportTarget::SourceItem { module, .. } if *module == import.from)
+                {
+                    continue;
+                }
                 if let Some((candidate, resolved)) = source_edge_target(modules, target)
                     && seen.insert(resolved)
                 {

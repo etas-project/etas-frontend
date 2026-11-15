@@ -119,7 +119,17 @@ impl EffectSemantics<'_> {
             && exits.returns_only()
             && exits.exits.iter().all(|exit| matches!(exit.outcome, CallableOutcome::Returned { ty: returned, .. } if returned == *ty))
         {
-            state.exits.join_assign(exits);
+            let mut exits = exits.clone();
+            if !self.type_contains_flow(*ty) && !self.type_has_parameters(*ty) {
+                for exit in &mut exits.exits {
+                    if let CallableOutcome::Returned { observation, .. } = &mut exit.outcome
+                        && matches!(observation, ReturnObservation::CallableSources(_))
+                    {
+                        *observation = ReturnObservation::Any;
+                    }
+                }
+            }
+            state.exits.join_assign(&exits);
             return;
         }
         let outcome = match value {
@@ -333,6 +343,18 @@ impl EffectSemantics<'_> {
         expr: HirExprId,
         path: &etas_hir::ResolvedPath,
     ) -> Option<ReturnObservation> {
+        if let ResolveResult::Resolved(symbol) = path.resolution
+            && self.checked_empty_constructor_value(expr, symbol)
+            && self
+                .types
+                .facts
+                .expr_types
+                .get(&expr)
+                .and_then(|ty| self.types.store.get(*ty))
+                .is_some_and(|ty| matches!(ty, Type::Option(_)))
+        {
+            return Some(ReturnObservation::Option(false));
+        }
         if let ResolveResult::PartiallyResolved(partial) = &path.resolution
             && partial.reason == etas_hir::PartialResolutionReason::MemberRequiresTypeChecking
         {

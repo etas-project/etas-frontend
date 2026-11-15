@@ -211,6 +211,9 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         environment: Option<crate::facts::CallableEnvironmentId>,
     ) -> Result<bool, EffectSpecializationError> {
+        if !self.expr_type_contains_flow(site.call) && !self.expr_type_has_parameters(site.call) {
+            return Ok(false);
+        }
         let Some(exits) = &summary.exits else {
             return Ok(false);
         };

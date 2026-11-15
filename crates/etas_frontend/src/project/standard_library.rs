@@ -116,6 +116,8 @@ impl StandardLibrary {
             let item = source
                 .item_owner(&callable)
                 .ok_or("std callable has no checked body")?;
+            let signature = instantiation::signature(&self.program.types, item)
+                .ok_or("std body has no checked signature")?;
             if let Some(identity) = callable.as_method()
                 && let Some(imported) = consumer
                     .types
@@ -129,14 +131,22 @@ impl StandardLibrary {
                     .values()
                     .find(|method| method.body == item)
             {
-                for (source, target) in authored.owner_params.iter().zip(&imported.owner_params) {
+                for (source, target) in authored
+                    .owner_params
+                    .iter()
+                    .zip(&imported.owner_params)
+                    .chain(
+                        signature
+                            .generic_params
+                            .iter()
+                            .zip(&imported.signature.generic_params),
+                    )
+                {
                     if source.kind == etas_types::CallableGenericParamKind::Type {
                         declarations.insert(source.subject, target.subject);
                     }
                 }
             }
-            let signature = instantiation::signature(&self.program.types, item)
-                .ok_or("std body has no checked signature")?;
             let contract = self
                 .program
                 .effects
