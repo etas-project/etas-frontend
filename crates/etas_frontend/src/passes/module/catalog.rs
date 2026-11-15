@@ -85,6 +85,7 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
                                 target: ModuleExportTarget::Source {
                                     module: module_id,
                                     item: item.item.clone(),
+                                    member: None,
                                 },
                             },
                         )
@@ -105,6 +106,54 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
                 _ => CatalogModuleOrigin::ProjectSource { module: module_id },
             };
             catalog.insert(module.path.clone(), origin, exports);
+        }
+
+        // Enum constructor namespaces participate in ordinary group, wildcard
+        // and public imports, retaining the owning source declaration.
+        for (module_id, module) in modules.modules.iter() {
+            for export in module.visibility_exports.items.values() {
+                if export.item.kind != crate::AstItemKind::Enum {
+                    continue;
+                }
+                let parsed = context
+                    .parsed_sources
+                    .iter()
+                    .find(|source| source.source == export.item.source)
+                    .unwrap();
+                let etas_syntax::ast::Item::Enum(declaration) =
+                    &parsed.parse.value.items[export.item.index].item
+                else {
+                    unreachable!()
+                };
+                let mut path = module.path.clone();
+                path.segments.push(declaration.name.text.clone());
+                let origin = catalog
+                    .modules
+                    .get(catalog.source_module_key(module_id).unwrap())
+                    .unwrap()
+                    .origin
+                    .clone();
+                let items = declaration
+                    .variants
+                    .iter()
+                    .map(|variant| {
+                        let name = variant.name.text.clone();
+                        (
+                            name.clone(),
+                            ModuleExport {
+                                name: name.clone(),
+                                visibility: export.visibility,
+                                target: ModuleExportTarget::Source {
+                                    module: module_id,
+                                    item: export.item.clone(),
+                                    member: Some(name),
+                                },
+                            },
+                        )
+                    })
+                    .collect();
+                catalog.insert(path, origin, ModuleExportTable { items });
+            }
         }
 
         add_std_modules(

@@ -154,7 +154,12 @@ fn resolve_single_import(
 ) -> Vec<ImportResolution> {
     let full_path = ModulePath::from_ast(path);
     match resolver.resolve_module(&full_path) {
-        ModuleResolution::Source { key, module } => {
+        ModuleResolution::Source { key, module }
+            if modules
+                .modules
+                .get(module)
+                .is_some_and(|owner| owner.path == full_path) =>
+        {
             return vec![ImportResolution::Explicit(ResolvedImport {
                 from,
                 from_part,
@@ -168,7 +173,7 @@ fn resolve_single_import(
                 span,
             })];
         }
-        ModuleResolution::Missing => {}
+        ModuleResolution::Missing | ModuleResolution::Source { .. } => {}
         ModuleResolution::Ambiguous(_) => {
             diagnostics.push(project_diagnostic(
                 span,
@@ -344,11 +349,13 @@ pub(super) fn import_target_for_export(name: &str, export: ProviderExport) -> Im
             module_key,
             module,
             item,
+            member,
         } => ImportTarget::SourceItem {
             module_key,
             module,
             name: name.to_owned(),
             item,
+            member,
         },
         ProviderExportTarget::Std {
             module_key,

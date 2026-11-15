@@ -47,6 +47,34 @@ fn leaf_item(checked: &etas_frontend::CheckedProject) -> etas_hir::HirItemId {
 }
 
 #[test]
+fn source_enum_constructor_reexports_keep_generic_tuple_and_named_payloads() {
+    let mut input = project(
+        "public import lib.leaf.Reply.{Empty, Item, Named};",
+        "import lib.leaf.Reply; import lib.api.{Empty, Item, Named};",
+        "let first: Reply<i32> = Item(7); let second: Reply<i32> = Named { value = 9 }; let empty: Reply<i32> = Empty; return match first { Reply.Item(value) => value, _ => 0 };",
+    );
+    input.sources[1].text =
+        "module lib.leaf; public enum Reply<T> { Empty, Item(T), Named { value: T }, }".into();
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    for name in ["Empty", "Item", "Named"] {
+        let alias = checked
+            .symbols
+            .iter()
+            .find(|symbol| {
+                symbol.name == name && checked.hir.source_import_targets.contains_key(&symbol.id)
+            })
+            .unwrap();
+        let target = checked.hir.source_import_targets[&alias.id];
+        assert_eq!(
+            checked.symbols.get(target).unwrap().kind,
+            etas_hir::SymbolKind::EnumVariant
+        );
+    }
+}
+
+#[test]
 fn source_flow_reexports_preserve_inferred_effects_and_canonical_call_targets() {
     for (facade, imports, call) in [
         (

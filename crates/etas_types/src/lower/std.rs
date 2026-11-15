@@ -732,6 +732,14 @@ fn lower_named_std_type_with_scope(
         return lower_std_type_decl_with_name(ctx, registry, decl, Some(&identity));
     }
 
+    if registry.native_enum_reference(name).is_some() {
+        // The checked source enum supplies its layout and constructor facts.
+        // A host ABI reference supplies only this canonical nominal identity.
+        return ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
+            name: name.to_owned(),
+        }));
+    }
+
     ctx.interner.intern(Type::Named(NamedTypeRef {
         source_parameter: None,
         name: name.to_owned(),

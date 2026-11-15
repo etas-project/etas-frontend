@@ -458,3 +458,38 @@ fn std_native_abi_mismatch_has_a_source_location() {
             .starts_with("@std.binding")
     );
 }
+
+#[test]
+fn native_enum_payload_requirement_is_checked_at_the_source_variant() {
+    let package = SourcePackage::new();
+    let maintained = etas_std::library::source_checkout_manifest()
+        .parent()
+        .unwrap()
+        .join("library/std/text/errors.es");
+    let source = fs::read_to_string(maintained)
+        .unwrap()
+        .replace("\n    ParseFailure,", "\n    ParseFailure(string),");
+    package.write("errors.es", &source);
+    let loaded = package.load();
+    let file = loaded
+        .input
+        .sources
+        .iter()
+        .find(|file| file.text == source)
+        .unwrap()
+        .id;
+    let output = Frontend.check_standard_library_source(loaded.input);
+    assert!(output.checked.is_none());
+    let diagnostic = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("native enum ABI requires unit variant `ParseFailure`")
+        })
+        .unwrap();
+    assert_eq!(diagnostic.primary.span.source, file);
+    let range = diagnostic.primary.span.range;
+    assert!(source[range.start.0 as usize..range.end.0 as usize].contains("ParseFailure(string)"));
+}

@@ -50,6 +50,7 @@ pub enum ImportTarget {
         module: ModuleId,
         name: String,
         item: AstItemRef,
+        member: Option<String>,
     },
     StdItem {
         module_key: ModuleKey,

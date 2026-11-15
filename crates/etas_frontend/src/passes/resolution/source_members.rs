@@ -25,14 +25,19 @@ pub(super) fn bind_module_members(
             continue;
         }
         let symbol = match &export.target {
-            crate::ModuleExportTarget::Source { item, .. } => {
+            crate::ModuleExportTarget::Source { item, member, .. } => {
                 let item = bindings
                     .ast_to_hir
                     .get(item)
                     .ok_or_else(|| format!("module export `{name}` has no HIR item binding"))?;
-                *symbols_by_item
-                    .get(item)
-                    .ok_or_else(|| format!("module export `{name}` has no HIR symbol"))?
+                if let Some(member) = member {
+                    source_member_symbol(hir, *item, Some(member))
+                        .ok_or_else(|| format!("module export `{name}` has no source member"))?
+                } else {
+                    *symbols_by_item
+                        .get(item)
+                        .ok_or_else(|| format!("module export `{name}` has no HIR symbol"))?
+                }
             }
             crate::ModuleExportTarget::Std { symbol, .. } => {
                 let declaration = std_registry.symbol(*symbol).ok_or_else(|| {
@@ -103,6 +108,27 @@ pub(super) fn bind_module_members(
         hir.symbols.insert_member(alias, name.clone(), symbol);
     }
     Ok(external_bindings)
+}
+
+pub(super) fn source_member_symbol(
+    hir: &HirProgram,
+    item: HirItemId,
+    member: Option<&str>,
+) -> Option<SymbolId> {
+    let item = hir.items.get(item)?;
+    match member {
+        None => item.symbol(),
+        Some(name) => {
+            let HirItem::Enum(declaration) = item else {
+                return None;
+            };
+            declaration
+                .variants
+                .iter()
+                .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == name)
+                .map(|variant| variant.symbol)
+        }
+    }
 }
 
 pub(super) fn source_item_symbols(

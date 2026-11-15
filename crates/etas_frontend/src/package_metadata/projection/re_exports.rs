@@ -44,7 +44,30 @@ impl ProjectMetadataProjection<'_> {
                     .cloned()
                     .chain(std::iter::once(name.clone()))
                     .collect(),
-                crate::ImportTarget::SourceItem { .. } | crate::ImportTarget::Module(_) => continue,
+                crate::ImportTarget::SourceItem {
+                    item,
+                    member: Some(member),
+                    ..
+                } => {
+                    let item = self
+                        .checked
+                        .hir_item_bindings
+                        .ast_to_hir
+                        .get(item)
+                        .ok_or_else(|| PackageMetadataError::MissingExportSignature {
+                            path: vec![name.into()],
+                        })?;
+                    let symbol = self.checked.hir.items[*item].symbol().unwrap();
+                    let mut path = self.checked.hir.declaration_path(symbol).ok_or_else(|| {
+                        PackageMetadataError::MissingExportSignature {
+                            path: vec![name.into()],
+                        }
+                    })?;
+                    path.push(member.clone());
+                    path
+                }
+                crate::ImportTarget::SourceItem { member: None, .. }
+                | crate::ImportTarget::Module(_) => continue,
             };
             let declaration = self
                 .checked

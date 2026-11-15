@@ -71,6 +71,13 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             );
         };
 
+        context
+            .diagnostics
+            .extend(native_enum_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+            ));
+
         for (item, target, span) in
             super::super::hir::native_binding::declarations(&hir.hir, &context.std_registry)
         {
@@ -261,6 +268,79 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             ArtifactSet::one(CHECKED_STD_LIBRARY_IMPLEMENTATIONS),
         )
     }
+}
+
+fn native_enum_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_enum_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        let source = hir.items.iter().find_map(|(_, item)| {
+            let (symbol, span) = match item {
+                HirItem::Enum(declaration) => (declaration.symbol, declaration.span),
+                HirItem::Type(declaration) => (declaration.symbol, declaration.span),
+                _ => return None,
+            };
+            let symbol = hir.symbols.get(symbol).unwrap();
+            let owner = hir.modules_arena.get(symbol.defining_module).unwrap();
+            (symbol.name == *name
+                && owner.name.as_ref().is_some_and(|path| {
+                    path.segments
+                        .iter()
+                        .map(|segment| &segment.name)
+                        .eq(module.iter())
+                }))
+            .then_some((item, span))
+        });
+        let Some((source, span)) = source else {
+            // Partial compiler library images may leave ABI imports unresolved.
+            // Publishing a complete std provider requires the checked enum.
+            continue;
+        };
+        let error = |span, reason: String| {
+            etas_core::Diagnostic::type_check(
+                etas_core::TypeDiagnosticCode::TypeMismatch,
+                span,
+                reason,
+            )
+        };
+        let HirItem::Enum(declaration) = source else {
+            diagnostics.push(error(
+                span,
+                format!(
+                    "native ABI references `{}` as an enum",
+                    reference.path.join(".")
+                ),
+            ));
+            continue;
+        };
+        if !declaration.type_params.is_empty() {
+            diagnostics.push(error(
+                span,
+                "native enum ABI reference requires no type parameters".into(),
+            ));
+        }
+        for required in &reference.required_unit_variants {
+            match declaration
+                .variants
+                .iter()
+                .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == *required)
+            {
+                Some(variant) if variant.fields.is_empty() => {}
+                Some(variant) => diagnostics.push(error(
+                    variant.span,
+                    format!("native enum ABI requires unit variant `{required}`"),
+                )),
+                None => diagnostics.push(error(
+                    span,
+                    format!("native enum ABI requires unit variant `{required}`"),
+                )),
+            }
+        }
+    }
+    diagnostics
 }
 
 fn row_is_allowed(actual: &etas_effects::EffectRow, declared: &etas_effects::EffectRow) -> bool {

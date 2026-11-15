@@ -203,10 +203,15 @@ impl ProviderExport {
             name: export.name.clone(),
             visibility: export.visibility,
             target: match &export.target {
-                ModuleExportTarget::Source { module, item } => ProviderExportTarget::Source {
+                ModuleExportTarget::Source {
+                    module,
+                    item,
+                    member,
+                } => ProviderExportTarget::Source {
                     module_key: key,
                     module: *module,
                     item: item.clone(),
+                    member: member.clone(),
                 },
                 ModuleExportTarget::Std {
                     module,
@@ -241,6 +246,7 @@ pub enum ProviderExportTarget {
         module_key: ModuleKey,
         module: ModuleId,
         item: AstItemRef,
+        member: Option<String>,
     },
     Std {
         module_key: ModuleKey,

@@ -159,7 +159,10 @@ fn materialize_source_re_exports(context: &mut ProjectContext) -> Result<(), Str
             continue;
         };
         for (name, export) in &record.exports.items {
-            let ModuleExportTarget::Source { item, .. } = &export.target else {
+            let ModuleExportTarget::Source {
+                item, member: None, ..
+            } = &export.target
+            else {
                 continue;
             };
             let mut source = originals
@@ -323,9 +326,15 @@ fn apply_re_exports_to_catalog(
 pub(super) fn module_export_target_for_import(target: &ImportTarget) -> Option<ModuleExportTarget> {
     match target {
         ImportTarget::Module(_) => None,
-        ImportTarget::SourceItem { module, item, .. } => Some(ModuleExportTarget::Source {
+        ImportTarget::SourceItem {
+            module,
+            item,
+            member,
+            ..
+        } => Some(ModuleExportTarget::Source {
             module: *module,
             item: item.clone(),
+            member: member.clone(),
         }),
         ImportTarget::StdItem {
             module,
@@ -432,13 +441,17 @@ fn install_source_std_prelude_aliases(context: &ProjectContext, hir: &mut etas_h
             if export.visibility != etas_hir::Visibility::Public {
                 continue;
             }
-            let ModuleExportTarget::Source { item, .. } = &export.target else {
+            let ModuleExportTarget::Source { item, member, .. } = &export.target else {
                 continue;
             };
             if let Some(item) = bindings.ast_to_hir.get(item) {
                 let mut path = module.path.segments.clone();
                 path.push(name.clone());
-                exports.insert(path, *item);
+                if let Some(symbol) =
+                    super::source_members::source_member_symbol(hir, *item, member.as_deref())
+                {
+                    exports.insert(path, symbol);
+                }
             }
         }
     }
@@ -456,11 +469,20 @@ fn install_source_std_prelude_aliases(context: &ProjectContext, hir: &mut etas_h
             exports.get(path).map(|item| (symbol.id, *item))
         })
         .collect::<Vec<_>>();
-    for (alias, item) in aliases {
-        if let Some(target) = hir.items.get(item).and_then(etas_hir::HirItem::symbol) {
-            hir.source_import_targets.insert(alias, target);
+    for (alias, target) in aliases {
+        hir.source_import_targets.insert(alias, target);
+        if let Some(item) = hir
+            .symbols
+            .get(target)
+            .and_then(|symbol| symbol.defining_item)
+        {
+            if !matches!(
+                hir.symbols.get(target).unwrap().kind,
+                etas_hir::SymbolKind::EnumVariant
+            ) {
+                super::source_members::bind_members(hir, alias, item);
+            }
         }
-        super::source_members::bind_members(hir, alias, item);
     }
 }
 
@@ -748,16 +770,20 @@ fn install_wildcard_import_aliases(
                         },
                     );
             }
-            if let ImportTarget::SourceItem { item, .. } = target
+            if let ImportTarget::SourceItem { item, member, .. } = target
                 && let Some(item) = context
                     .hir_item_bindings
                     .as_ref()
                     .and_then(|bindings| bindings.ast_to_hir.get(item))
             {
-                if let Some(target) = hir.items.get(*item).and_then(etas_hir::HirItem::symbol) {
+                if let Some(target) =
+                    super::source_members::source_member_symbol(hir, *item, member.as_deref())
+                {
                     hir.source_import_targets.insert(symbol, target);
                 }
-                super::source_members::bind_members(hir, symbol, *item);
+                if member.is_none() {
+                    super::source_members::bind_members(hir, symbol, *item);
+                }
             }
         }
     }
@@ -845,16 +871,20 @@ fn install_explicit_import_aliases(
                 },
             ));
         }
-        if let ImportTarget::SourceItem { item, .. } = &import.target
+        if let ImportTarget::SourceItem { item, member, .. } = &import.target
             && let Some(item) = context
                 .hir_item_bindings
                 .as_ref()
                 .and_then(|bindings| bindings.ast_to_hir.get(item))
         {
-            if let Some(target) = source_item_symbols.get(item) {
-                hir.source_import_targets.insert(binding_symbol, *target);
+            if let Some(target) =
+                super::source_members::source_member_symbol(hir, *item, member.as_deref())
+            {
+                hir.source_import_targets.insert(binding_symbol, target);
             }
-            super::source_members::bind_members(hir, binding_symbol, *item);
+            if member.is_none() {
+                super::source_members::bind_members(hir, binding_symbol, *item);
+            }
         }
         if let ImportTarget::Module(module) = &import.target {
             let record = catalog

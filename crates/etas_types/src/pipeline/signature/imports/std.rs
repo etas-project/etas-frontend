@@ -170,7 +170,15 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.text_error = registry
         .lookup_qualified(&["std", "text", "TextError"])
-        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))
+        .or_else(|| {
+            registry.native_enum_reference("std.text.TextError")?;
+            Some(crate::lower::std::lower_std_type(
+                ctx,
+                registry,
+                &etas_std::StdType::Named("std.text.TextError".into()),
+            ))
+        });
     ctx.signature_facts.known_std_types.priority_queue = registry
         .lookup_qualified(&["std", "collections", "PriorityQueue"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));

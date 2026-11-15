@@ -896,9 +896,23 @@ impl DefinitionIdentityIndex {
                 continue;
             }
             let identity = match &import.target {
-                crate::ImportTarget::SourceItem { item, .. } => {
-                    source_items.get(&item.span).cloned()
-                }
+                crate::ImportTarget::SourceItem { item, member, .. } => source_items
+                    .get(&item.span)
+                    .map(|owner| {
+                        if let Some(member) = member {
+                            let mut path = owner.declaration().to_vec();
+                            path.push(member.clone());
+                            DefinitionKey::new(
+                                owner.package(),
+                                owner.module().to_vec(),
+                                path,
+                                DefinitionKind::EnumVariant,
+                            )
+                        } else {
+                            Ok(owner.clone())
+                        }
+                    })
+                    .transpose()?,
                 crate::ImportTarget::StdItem { symbol, .. } => checked
                     .std_registry
                     .symbol(*symbol)
