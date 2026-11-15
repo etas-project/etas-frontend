@@ -71,7 +71,9 @@ impl EffectSemantics<'_> {
                         reason: "call argument has no checked value type".into(),
                     });
                 }
-                if !self.expr_type_contains_flow(*expr) {
+                if !self.expr_type_contains_flow(*expr)
+                    && !self.symbolic_contract_expr(state, *expr)
+                {
                     return Ok(Default::default());
                 }
                 Ok(self

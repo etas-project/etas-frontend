@@ -317,9 +317,18 @@ impl Coverage<'_, '_> {
                     self.ctx.interner.store(),
                     symbol,
                     self.ctx.symbol_type(symbol.id)?,
-                    self.ctx.known_std_types().result_enum,
+                    self.ctx.known_std_types(),
                 )?;
                 let layout = self.ctx.enum_layout(result)?;
+                if self.ctx.known_std_types().option_enum == Some(result)
+                    && matches!(self.ctx.interner.store().get(ty), Some(Type::Option(_)))
+                {
+                    return match layout.variants.get(index)?.name.as_str() {
+                        "Some" => Some(Tag::Structural("Some")),
+                        "None" => Some(Tag::Structural("None")),
+                        _ => None,
+                    };
+                }
                 if self.ctx.known_std_types().result_enum == Some(result)
                     && matches!(self.ctx.interner.store().get(ty), Some(Type::Result { .. }))
                 {
@@ -341,6 +350,15 @@ impl Coverage<'_, '_> {
                     self.ctx.interner.store().get(ty)?,
                     native.qualified_path.as_slice(),
                 ) {
+                    (Type::Option(_), [std, option, name])
+                        if std == "std" && option == "option" =>
+                    {
+                        match name.as_str() {
+                            "Some" => Some(Tag::Structural("Some")),
+                            "None" => Some(Tag::Structural("None")),
+                            _ => None,
+                        }
+                    }
                     (Type::Result { .. }, [std, result, name])
                         if std == "std" && result == "result" =>
                     {

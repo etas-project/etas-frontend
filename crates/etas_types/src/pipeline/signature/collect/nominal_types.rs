@@ -167,17 +167,19 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 ctx.signature_facts
                     .type_generics
                     .insert(base, generic_params.clone());
-                let result_role = ctx
+                let enum_role = ctx
                     .signature_facts
                     .source_type_roles
                     .get(&decl.symbol)
                     .and_then(|native| ctx.std_registry.symbol(*native))
-                    .is_some_and(|native| native.qualified_path == ["std", "result", "Result"]);
-                let output = if result_role {
+                    .map(|native| native.qualified_path.as_slice());
+                let output = if enum_role.is_some_and(|path| path == ["std", "result", "Result"]) {
                     ctx.interner.intern(Type::Result {
                         ok: generic_params[0].subject,
                         err: generic_params[1].subject,
                     })
+                } else if enum_role.is_some_and(|path| path == ["std", "option", "Option"]) {
+                    ctx.interner.intern(Type::Option(generic_params[0].subject))
                 } else if generic_params.is_empty() {
                     base
                 } else {

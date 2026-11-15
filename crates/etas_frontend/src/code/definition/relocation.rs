@@ -73,9 +73,21 @@ impl NativeTypeCorrespondence {
         for (name, tag) in from.effect_registry.named_tags() {
             let identity = source_identities.effect_tag(tag)?;
             if let Some(target_tag) = tags.get(identity) {
-                let canonical = to.effect_registry.tag_name(*target_tag).ok_or_else(|| {
+                let fallback = to.effect_registry.tag_name(*target_tag).ok_or_else(|| {
                     ProjectionError::Invalid("target effect has no canonical name".into())
                 })?;
+                let declared = identity
+                    .module()
+                    .iter()
+                    .chain(identity.declaration())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(".");
+                let canonical = if to.effect_registry.tag_by_name(&declared) == Some(*target_tag) {
+                    declared.as_str()
+                } else {
+                    fallback
+                };
                 let target_name = if to.effect_registry.tag_by_name(name) == Some(*target_tag) {
                     name
                 } else {

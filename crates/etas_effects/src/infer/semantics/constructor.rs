@@ -42,7 +42,9 @@ impl EffectSemantics<'_> {
             SymbolDef::ExternalEnumVariant { .. } => self.types.facts
                 .enum_constructor(&self.types.store, definition).is_some(),
             SymbolDef::ImportAlias { path, .. } => self.std_registry.lookup_qualified(path).is_some_and(|symbol| {
-                symbol.enum_owner.is_some() && symbol.intrinsic.is_none()
+                (symbol.enum_owner.is_some()
+                    || (symbol.kind == StdSymbolKind::Constructor && self.std_registry.body_binding(symbol.id).is_some()))
+                    && symbol.intrinsic.is_none()
                     && matches!(&symbol.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty())
             }),
             _ => false,
@@ -65,6 +67,10 @@ impl EffectSemantics<'_> {
             return false;
         }
         let constructor = match self.types.store.get(signature.output) {
+            Some(Type::Option(_)) => match self.types.facts.known_std_types.option_enum {
+                Some(owner) => owner,
+                None => return false,
+            },
             Some(Type::Result { .. }) => match self.types.facts.known_std_types.result_enum {
                 Some(owner) => owner,
                 None => return false,

@@ -200,7 +200,7 @@ impl TypeFacts {
             store,
             symbol,
             self.symbol_types.get(&symbol.id)?,
-            self.known_std_types.result_enum,
+            &self.known_std_types,
         )?;
         let variant = self.enum_layouts.get(&owner)?.variants.get(index)?;
         (variant.name == enums::constructor_name(symbol)).then_some((owner, index, variant))

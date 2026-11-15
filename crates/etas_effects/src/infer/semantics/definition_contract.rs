@@ -14,13 +14,37 @@ impl EffectSemantics<'_> {
         !sources.is_empty()
             && sources.iter().all(|source| match source {
                 LatentSource::Parameter { symbol, .. } => {
+                    let payloads = self.generic_variant_payloads(*symbol);
                     self.symbol_value_type(*symbol).is_some_and(|parameter| {
                         self.descriptor_contract_type(parameter) == Some(ty)
                             || (parameter == ty && self.symbolic_callable_parameter(*symbol))
+                            || (!payloads.is_empty() && (parameter == ty || payloads.contains(&ty)))
                     })
                 }
                 _ => false,
             })
+    }
+
+    // A generic enum payload may later be instantiated with a callable. Track
+    // its data origin through pattern bindings without assuming a call contract.
+    pub(super) fn generic_variant_payloads(&self, symbol: etas_hir::SymbolId) -> Vec<TypeId> {
+        if !matches!(
+            self.hir.symbols.get(symbol).map(|symbol| &symbol.def),
+            Some(SymbolDef::Param { .. })
+        ) {
+            return Vec::new();
+        }
+        let payloads = match self
+            .symbol_value_type(symbol)
+            .and_then(|ty| self.types.store.get(ty))
+        {
+            Some(Type::Option(inner)) => vec![*inner],
+            Some(Type::Result { ok, err }) => vec![*ok, *err],
+            _ => return Vec::new(),
+        };
+        payloads.into_iter().filter(|ty| matches!(
+            self.types.store.get(*ty), Some(Type::Named(parameter)) if parameter.source_parameter.is_some()
+        )).collect()
     }
 
     pub(super) fn symbolic_callable_parameter(&self, symbol: etas_hir::SymbolId) -> bool {

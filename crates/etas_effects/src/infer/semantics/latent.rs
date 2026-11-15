@@ -237,20 +237,28 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn is_value_constructor_call(&self, callee: HirExprId) -> bool {
+        if self
+            .std_qualified_path_for_expr(callee)
+            .and_then(|path| self.std_registry.lookup_qualified(&path))
+            .is_some_and(|symbol| symbol.enum_owner.is_some() && symbol.intrinsic.is_none())
+        {
+            return true;
+        }
         let Some(HirExpr::Path(path)) = self.hir.exprs.get(callee) else {
             return false;
         };
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return false;
         };
-        self.hir.symbols.get(symbol).is_some_and(|symbol| {
-            matches!(
-                symbol.kind,
-                etas_hir::SymbolKind::Type
-                    | etas_hir::SymbolKind::Enum
-                    | etas_hir::SymbolKind::EnumVariant
-            )
-        })
+        self.checked_enum_constructor(symbol)
+            || self.hir.symbols.get(symbol).is_some_and(|symbol| {
+                matches!(
+                    symbol.kind,
+                    etas_hir::SymbolKind::Type
+                        | etas_hir::SymbolKind::Enum
+                        | etas_hir::SymbolKind::EnumVariant
+                )
+            })
     }
 
     pub(crate) fn record_latent_sources_for_pat(
@@ -544,6 +552,18 @@ impl EffectSemantics<'_> {
                 })
             })
             .contains(ty)
+    }
+
+    pub(super) fn expr_type_has_parameters(&self, expr: HirExprId) -> bool {
+        self.types.facts.expr_types.get(&expr).is_some_and(|ty| {
+            self.latent_type_shapes
+                .get_or_init(|| {
+                    super::latent_shape::LatentTypeShapes::build(self.types, |ty| {
+                        self.descriptor_contract_type(ty).is_some()
+                    })
+                })
+                .has_parameters(*ty)
+        })
     }
 
     pub(crate) fn is_deferred_first_class_param(&self, expr: HirExprId) -> bool {

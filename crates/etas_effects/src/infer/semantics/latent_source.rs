@@ -97,6 +97,7 @@ impl EffectSemantics<'_> {
                 SymbolDef::Param { owner, .. }
                     if self.checked_callable_contract_parameter(symbol).is_some()
                         || self.symbolic_callable_parameter(symbol)
+                        || !self.generic_variant_payloads(symbol).is_empty()
                         || self
                             .symbol_value_type(symbol)
                             .is_some_and(|ty| self.descriptor_contract_type(ty).is_some()) =>

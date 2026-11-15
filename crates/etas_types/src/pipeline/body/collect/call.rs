@@ -286,6 +286,7 @@ fn collect_std_qualified_call<E>(
         };
         (ty, Vec::new())
     };
+    ctx.record_expr_type(callee, callee_ty);
     let expected_inputs = super::callable_instantiation::argument_hints(
         ctx,
         callee_ty,

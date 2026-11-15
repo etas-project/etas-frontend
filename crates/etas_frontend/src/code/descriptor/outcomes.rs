@@ -163,6 +163,7 @@ impl DefinitionDescriptorProjector<'_> {
                         ReturnObservation::Unit => ReturnObservationInfo::Unit,
                         ReturnObservation::Bool(value) => ReturnObservationInfo::Bool(*value),
                         ReturnObservation::Result(value) => ReturnObservationInfo::Result(*value),
+                        ReturnObservation::Option(value) => ReturnObservationInfo::Option(*value),
                         ReturnObservation::Variant(symbol) => {
                             let constructor = *symbol;
                             let symbol = self

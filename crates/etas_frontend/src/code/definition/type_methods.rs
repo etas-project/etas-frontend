@@ -56,6 +56,14 @@ fn implementation_identity(
                 .ok_or(ProjectionError::MissingType(method.self_type))?,
             vec![*ok, *err],
         ),
+        Some(Type::Option(inner)) => (
+            checked
+                .types
+                .known_std_types
+                .option_enum
+                .ok_or(ProjectionError::MissingType(method.self_type))?,
+            vec![*inner],
+        ),
         Some(_) => (method.self_type, Vec::new()),
         None => return Err(ProjectionError::MissingType(method.self_type)),
     };

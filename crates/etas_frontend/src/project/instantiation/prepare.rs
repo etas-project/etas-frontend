@@ -327,6 +327,34 @@ pub(crate) fn prepare_from_targets(
                     }
                 }
                 if let Some(method) = types.facts.selected_method(*call)
+                    && let etas_types::method::MethodTarget::External { identity } = &method.target
+                    && method
+                        .instantiation
+                        .deferred_effect_row_obligations
+                        .is_empty()
+                {
+                    let owner_bindings = method
+                        .owner_bindings
+                        .iter()
+                        .map(|(parameter, argument)| {
+                            Ok((*parameter, substitution.substitute(*argument)?))
+                        })
+                        .collect::<Result<Vec<_>, etas_types::TypeSubstitutionError>>()?;
+                    let application = super::witness::ForeignMethodInstantiation {
+                        identity: identity.clone(),
+                        arguments: bind_call(
+                            &mut substitution,
+                            &method.signature,
+                            &method.instantiation,
+                        )?,
+                        owner_bindings,
+                    };
+                    if foreign_seen.insert(application.clone()) {
+                        foreign_methods.push(application);
+                    }
+                    continue;
+                }
+                if let Some(method) = types.facts.selected_method(*call)
                     && matches!(
                         method.target,
                         etas_types::method::MethodTarget::BoundSpec { .. }

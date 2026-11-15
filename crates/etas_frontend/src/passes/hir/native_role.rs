@@ -74,15 +74,37 @@ pub(crate) fn bindings(
                 HirItem::Enum(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target.qualified_path == ["std", "result", "Result"]
-                        && result_shape(hir, source),
+                    match target
+                        .qualified_path
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                    {
+                        ["std", "result", "Result"] => result_shape(hir, source),
+                        ["std", "option", "Option"] => option_shape(hir, source),
+                        _ => false,
+                    },
                 ),
                 HirItem::Flow(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
                     target.kind == etas_std::StdSymbolKind::Constructor
-                        && matches!(target.qualified_path.as_slice(), [std, result, name] if std == "std" && result == "result" && (name == "Ok" || name == "Err"))
-                        && result_constructor(hir, source, &target.name),
+                        && match target
+                            .qualified_path
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .as_slice()
+                        {
+                            ["std", "result", "Ok" | "Err"] => {
+                                result_constructor(hir, source, &target.name)
+                            }
+                            ["std", "option", "Some" | "None"] => {
+                                option_constructor(hir, source, &target.name)
+                            }
+                            _ => false,
+                        },
                 ),
                 HirItem::Spec(source) => (
                     source.symbol,
@@ -160,6 +182,85 @@ fn result_shape(hir: &HirProgram, source: &etas_hir::HirEnumDecl) -> bool {
                     if matches!(hir.types.get(*field), Some(etas_hir::HirType::Path { path, args, .. })
                         if args.is_empty() && path.resolution == etas_hir::ResolveResult::Resolved(source.type_params[position])))
         })
+}
+
+fn option_shape(hir: &HirProgram, source: &etas_hir::HirEnumDecl) -> bool {
+    source.type_params.len() == 1 && source.variants.len() == 2
+        && source.variants.iter().zip(["Some", "None"]).all(|(variant, name)| {
+            hir.symbols.get(variant.symbol).is_some_and(|symbol| symbol.name == name)
+                && variant.field_names.is_none()
+                && if name == "None" { variant.fields.is_empty() } else {
+                    matches!(variant.fields.as_slice(), [field]
+                        if matches!(hir.types.get(*field), Some(etas_hir::HirType::Path { path, args, .. })
+                            if args.is_empty() && path.resolution == etas_hir::ResolveResult::Resolved(source.type_params[0])))
+                }
+        })
+}
+
+fn option_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &str) -> bool {
+    let block = &hir.blocks[source.body.block()];
+    let expression = match (block.stmts.as_slice(), block.final_expr) {
+        ([statement], None) => match hir.stmts.get(*statement) {
+            Some(etas_hir::HirStmt::Return {
+                value: Some(value), ..
+            }) => *value,
+            _ => return false,
+        },
+        ([], Some(expression)) => expression,
+        _ => return false,
+    };
+    let (callee, args) = match hir.exprs.get(expression) {
+        Some(HirExpr::Call { callee, args, .. }) => (*callee, args.as_slice()),
+        Some(HirExpr::Path(_)) if name == "None" => (expression, &[][..]),
+        _ => return false,
+    };
+    let Some(HirExpr::Path(path)) = hir.exprs.get(callee) else {
+        return false;
+    };
+    let etas_hir::ResolveResult::Resolved(variant) = path.resolution else {
+        return false;
+    };
+    let Some(symbol) = hir.symbols.get(variant) else {
+        return false;
+    };
+    let etas_hir::SymbolDef::EnumVariant { enum_item, .. } = symbol.def else {
+        return false;
+    };
+    let Some(HirItem::Enum(owner)) = hir.items.get(enum_item) else {
+        return false;
+    };
+    let declaration = hir.symbols.get(owner.symbol).unwrap();
+    let module = hir.modules_arena[declaration.defining_module]
+        .name
+        .as_ref()
+        .unwrap();
+    let signature = source.type_params.len() == 1
+        && source.params.len() == usize::from(name == "Some")
+        && source.effects.as_ref().is_some_and(|row| row.effects.is_empty() && row.tail.is_none())
+        && source.return_type.is_some_and(|ty| matches!(hir.types.get(ty), Some(etas_hir::HirType::Path { path, args, .. })
+            if path.resolution == etas_hir::ResolveResult::Resolved(owner.symbol)
+                && matches!(args.as_slice(), [inner]
+                    if matches!(hir.types.get(*inner), Some(etas_hir::HirType::Path { path, args, .. })
+                        if args.is_empty() && path.resolution == etas_hir::ResolveResult::Resolved(source.type_params[0])))));
+    signature
+        && symbol.name == name
+        && declaration.name == "Option"
+        && module
+            .segments
+            .iter()
+            .map(|part| part.name.as_str())
+            .eq(["std", "option"])
+        && option_shape(hir, owner)
+        && if name == "None" {
+            args.is_empty()
+        } else {
+            hir.symbols.get(source.params[0]).and_then(|parameter| parameter.declared_type)
+                .is_some_and(|ty| matches!(hir.types.get(ty), Some(etas_hir::HirType::Path { path, args, .. })
+                    if args.is_empty() && path.resolution == etas_hir::ResolveResult::Resolved(source.type_params[0])))
+                && matches!(args, [etas_hir::HirArg::Positional(value)]
+                    if matches!(hir.exprs.get(*value), Some(HirExpr::Path(path))
+                        if path.resolution == etas_hir::ResolveResult::Resolved(source.params[0])))
+        }
 }
 
 fn result_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &str) -> bool {

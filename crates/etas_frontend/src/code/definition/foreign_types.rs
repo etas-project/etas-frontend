@@ -13,6 +13,14 @@ pub(crate) struct ForeignTypeBindings {
     bindings: HashMap<TypeId, ForeignTypeBinding>,
     specs: HashMap<DefinitionKey, ForeignSpecBinding>,
     methods: HashMap<etas_code::MethodId, ForeignMethodBinding>,
+    effects: HashMap<etas_effects::EffectTagId, ForeignEffectBinding>,
+}
+
+#[derive(Clone, etas_core::RetainedSize)]
+struct ForeignEffectBinding {
+    identity: DefinitionKey,
+    source: etas_effects::EffectTagId,
+    catalog: Arc<DefinitionCatalog>,
 }
 
 #[derive(Clone, etas_core::RetainedSize)]
@@ -46,7 +54,10 @@ impl std::fmt::Debug for ForeignTypeBindings {
 
 impl ForeignTypeBindings {
     pub(crate) fn is_empty(&self) -> bool {
-        self.bindings.is_empty() && self.specs.is_empty() && self.methods.is_empty()
+        self.bindings.is_empty()
+            && self.specs.is_empty()
+            && self.methods.is_empty()
+            && self.effects.is_empty()
     }
 
     pub(crate) fn relocate_checked(
@@ -57,6 +68,7 @@ impl ForeignTypeBindings {
     ) -> Result<Self, ProjectionError> {
         let mut result = Self {
             methods: self.methods.clone(),
+            effects: self.effects.clone(),
             ..Self::default()
         };
         for (source, binding) in &self.bindings {
@@ -106,6 +118,7 @@ impl ForeignTypeBindings {
     ) -> Result<Self, ProjectionError> {
         let mut result = Self {
             methods: self.methods.clone(),
+            effects: self.effects.clone(),
             ..Self::default()
         };
         for (id, binding) in &self.bindings {
@@ -316,6 +329,44 @@ impl ForeignTypeBindings {
             }
             CheckedSpecRef::Std(_) | CheckedSpecRef::Canonical(_) => false,
         }
+    }
+
+    pub(crate) fn bind_effect(
+        &mut self,
+        catalog: &Arc<DefinitionCatalog>,
+        source: etas_effects::EffectTagId,
+        target: etas_effects::EffectTagId,
+    ) -> Result<(), ProjectionError> {
+        let identity = catalog.native_effect_identity(source)?.clone();
+        self.effects.insert(
+            target,
+            ForeignEffectBinding {
+                identity,
+                source,
+                catalog: catalog.clone(),
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn effects(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            etas_effects::EffectTagId,
+            &DefinitionKey,
+            etas_effects::EffectTagId,
+            &DefinitionCatalog,
+        ),
+    > {
+        self.effects.iter().map(|(target, binding)| {
+            (
+                *target,
+                &binding.identity,
+                binding.source,
+                binding.catalog.as_ref(),
+            )
+        })
     }
 
     pub(crate) fn iter(

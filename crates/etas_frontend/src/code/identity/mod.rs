@@ -1194,6 +1194,16 @@ impl DefinitionIdentityIndex {
                 index.bind_effect(tag.id, key.clone())?;
             }
         }
+        if let Some(bindings) = checked.foreign_type_bindings {
+            for (target, identity, source, catalog) in bindings.effects() {
+                if catalog.native_effect_identity(source)? != identity {
+                    return Err(ProjectionError::MissingIdentity(
+                        "foreign checked effect".into(),
+                    ));
+                }
+                index.bind_effect(target, identity.clone())?;
+            }
+        }
         // Inherent identities do not depend on projected spec arguments. Make
         // them available before projecting implementation headers that use them.
         for (symbol, id) in super::definition::inherent_method_identities(checked, &index, origins)?

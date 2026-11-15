@@ -544,6 +544,9 @@ impl EffectSemantics<'_> {
                         (Type::Result { .. }, ReturnObservationInfo::Result(value)) => {
                             ReturnObservation::Result(*value)
                         }
+                        (Type::Option(_), ReturnObservationInfo::Option(value)) => {
+                            ReturnObservation::Option(*value)
+                        }
                         _ => return None,
                     };
                     exits.record(

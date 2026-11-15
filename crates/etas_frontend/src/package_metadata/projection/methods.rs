@@ -29,6 +29,7 @@ impl ProjectMetadataProjection<'_> {
             Some(Type::Result { .. }) => {
                 self.checked.types.known_std_types.result_enum.unwrap_or(ty)
             }
+            Some(Type::Option(_)) => self.checked.types.known_std_types.option_enum.unwrap_or(ty),
             _ => ty,
         };
         let subjects = selection

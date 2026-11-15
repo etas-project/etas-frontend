@@ -205,6 +205,21 @@ impl EffectRegistry {
         self.tags.values()
     }
 
+    /// Carry a checked foreign effect in a value ABI, without introducing a
+    /// lexical symbol, action implementation, or default handler.
+    pub fn register_carried_effect(&mut self, source: &EffectTag, name: String) -> EffectTagId {
+        let id = EffectTagId(self.next_dynamic_tag());
+        let mut tag = source.clone();
+        tag.id = id;
+        tag.name = name.clone();
+        self.tags.insert(id, tag);
+        assert!(
+            self.names.insert(name, id).is_none(),
+            "carried effect identity"
+        );
+        id
+    }
+
     pub fn named_tags(&self) -> impl Iterator<Item = (&str, EffectTagId)> {
         self.names.iter().map(|(name, tag)| (name.as_str(), *tag))
     }

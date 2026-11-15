@@ -18,7 +18,7 @@ pub(super) fn declaration<E>(
         ctx.ctx.interner.store(),
         symbol,
         ctx.ctx.symbol_type(symbol.id)?,
-        ctx.ctx.known_std_types().result_enum,
+        ctx.ctx.known_std_types(),
     )?;
     let variant = ctx.ctx.enum_layout(owner)?.variants.get(variant_index)?;
     (variant.name == crate::facts::enums::constructor_name(symbol)).then(|| variant.clone())

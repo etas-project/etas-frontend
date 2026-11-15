@@ -360,9 +360,13 @@ impl EffectSemantics<'_> {
             .types
             .facts
             .enum_constructor(&self.types.store, declaration)
-            && Some(owner) == self.types.facts.known_std_types.result_enum
         {
-            return Some(ReturnObservation::Result(variant.name == "Ok"));
+            if Some(owner) == self.types.facts.known_std_types.result_enum {
+                return Some(ReturnObservation::Result(variant.name == "Ok"));
+            }
+            if Some(owner) == self.types.facts.known_std_types.option_enum {
+                return Some(ReturnObservation::Option(variant.name == "Some"));
+            }
         }
         Some(
             if matches!(declaration.def, SymbolDef::EnumVariant { .. }) {

@@ -399,7 +399,7 @@ fn std_native_declarations_bind_checked_primitives_with_source_owned_names() {
         "native.es",
         r#"
 module std.text;
-@std.binding("std.text.trim")
+@std.binding("std.text.uppercase")
 public flow trim(value: string) -> string ![] {}
 @std.binding("std.collections.array_push")
 public flow append<U>(values: Array<U>, value: U) -> Array<U> ![] {}
@@ -428,7 +428,7 @@ public flow execute<T, effect E>(body: (std.task.Scheduler) -> T ![E]) -> T ![E]
 #[test]
 fn std_native_abi_mismatch_has_a_source_location() {
     let package = SourcePackage::new();
-    package.write("bad_native.es", "module std.text; @std.binding(\"std.text.trim\") public flow bad(value: string) -> string ![Console] {}");
+    package.write("bad_native.es", "module std.text; @std.binding(\"std.text.uppercase\") public flow bad(value: string) -> string ![Console] {}");
     let output = Frontend.check_standard_library_source(package.load().input);
     assert!(output.checked.is_none());
     let mismatch = output

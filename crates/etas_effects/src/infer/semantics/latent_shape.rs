@@ -83,6 +83,10 @@ impl LatentTypeShapes {
                 .any(|ty| self.opaque_parameters.contains(ty))
     }
 
+    pub(super) fn has_parameters(&self, ty: TypeId) -> bool {
+        !self.shapes[ty.0 as usize].parameters.is_empty()
+    }
+
     fn transfer(&self, types: &TypeOutput, ty: TypeId, descriptor: bool) -> Shape {
         let value = types.store.get(ty).expect("indexed checked type shape");
         let mut shape = Shape::default();

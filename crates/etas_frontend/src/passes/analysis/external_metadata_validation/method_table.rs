@@ -61,12 +61,18 @@ pub(super) fn validate(
             let paths = subject_paths
                 .get(owner.subject())
                 .ok_or_else(|| fail("published method subject has no declaration origin"))?;
-            let result_role = method.self_type.kind == etas_package_metadata::TypeKind::Result
-                && std_registry
-                    .lookup_qualified(&["std", "result", "Result"])
+            let builtin_path = match method.self_type.kind {
+                etas_package_metadata::TypeKind::Result => Some(["std", "result", "Result"]),
+                etas_package_metadata::TypeKind::Option => Some(["std", "option", "Option"]),
+                _ => None,
+            };
+            let source_role = builtin_path.is_some_and(|path| {
+                std_registry
+                    .lookup_qualified(&path)
                     .and_then(|symbol| std_registry.declaration_key(symbol.id))
-                    == Some(owner.subject());
-            if !paths.contains(&method.self_type.path) && !result_role {
+                    == Some(owner.subject())
+            });
+            if !paths.contains(&method.self_type.path) && !source_role {
                 return Err(fail(
                     "published method receiver disagrees with its canonical subject",
                 ));

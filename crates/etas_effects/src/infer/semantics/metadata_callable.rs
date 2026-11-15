@@ -455,6 +455,11 @@ impl EffectSemantics<'_> {
         let (_, node, _) = self
             .metadata_callable(source)
             .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+        // A generic return recipe can instantiate to ordinary data. Only
+        // callable or still-symbolic result types need callable source evidence.
+        if !self.expr_type_contains_flow(call) && !self.expr_type_has_parameters(call) {
+            return Ok(());
+        }
         if let Some(returned) = &node.returned_sources {
             // Receiver, callback and generic arguments are already captured by
             // the checked method application, not a second invocation here.

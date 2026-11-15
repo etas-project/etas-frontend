@@ -120,7 +120,7 @@ impl EffectSemantics<'_> {
         let arguments = self.checked_method_arguments(call)?;
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
-            if !self.expr_type_contains_flow(expr) {
+            if !self.expr_type_contains_flow(expr) && !self.symbolic_contract_expr(state, expr) {
                 continue;
             }
             let sources = self

@@ -22,6 +22,7 @@ pub enum ResourceHandleFact {
 )]
 pub struct KnownStdTypes {
     pub result_enum: Option<TypeId>,
+    pub option_enum: Option<TypeId>,
     pub directory_list_limit_error: Option<TypeId>,
     pub file_read_limit_error: Option<TypeId>,
     pub filesystem_io_error: Option<TypeId>,
