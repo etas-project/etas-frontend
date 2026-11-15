@@ -47,6 +47,8 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             .lookup_qualified(&binding.qualified_path)
             .expect("checked source role contract");
         let mut contract = native.clone();
+        let role = etas_std::StdSourceRole::from_path(&binding.qualified_path.join("."))
+            .expect("checked compiler role ABI");
         let item = ctx
             .hir
             .symbols
@@ -61,15 +63,23 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             etas_hir::HirItem::Flow(source) => &source.type_params,
             _ => unreachable!("checked source role declaration"),
         };
-        if let etas_std::StdDecl::Type(declaration) = &mut contract.decl {
-            for (parameter, source) in declaration.params.iter_mut().zip(parameters) {
-                parameter.name = ctx.hir.symbols.get(*source).unwrap().name.clone();
-            }
-            if declaration.kind == etas_std::TypeDeclKind::Spec {
-                ctx.signature_facts
-                    .std_spec_aliases
-                    .insert(binding.symbol, native.qualified_path.clone());
-            }
+        contract.decl = etas_std::StdDecl::Type(
+            role.declaration(
+                parameters
+                    .iter()
+                    .zip(role.parameter_kinds())
+                    .map(|(source, kind)| etas_std::StdGenericParam {
+                        name: ctx.hir.symbols.get(*source).unwrap().name.clone(),
+                        kind: *kind,
+                        bounds: Vec::new(),
+                    })
+                    .collect(),
+            ),
+        );
+        if role == etas_std::StdSourceRole::Index {
+            ctx.signature_facts
+                .std_spec_aliases
+                .insert(binding.symbol, native.qualified_path.clone());
         }
         let fact = lower_std_symbol(ctx, &registry, binding.symbol, &contract);
         ctx.signature_facts

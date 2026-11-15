@@ -3,14 +3,54 @@ use etas_hir::{
     HirAnnotationArg, HirExpr, HirItem, HirLiteral, HirProgram, HirTypeDeclBody, SymbolKind,
     Visibility,
 };
-use etas_std::{RuntimeTypeRole, StdDecl, StdGenericParamKind, StdRegistry};
+use etas_std::{StdGenericParamKind, StdSourceRole};
 
 use crate::StandardLibraryMode;
+
+pub(crate) fn bind_parameters(
+    hir: &HirProgram,
+    registry: &etas_std::StdRegistry,
+    bindings: &[etas_types::StdSymbolBindingInput],
+) -> etas_std::StdRegistry {
+    let mut builder = etas_std::StdRegistryBuilder::from_registry(registry.clone());
+    for binding in bindings {
+        let role = StdSourceRole::from_path(&binding.qualified_path.join("."))
+            .expect("checked compiler role ABI");
+        let item = hir
+            .symbols
+            .get(binding.symbol)
+            .unwrap()
+            .defining_item
+            .unwrap();
+        let parameters = match &hir.items[item] {
+            HirItem::Type(source) => &source.type_params,
+            HirItem::Enum(source) => &source.type_params,
+            HirItem::Spec(source) => &source.type_params,
+            HirItem::Flow(source) => &source.type_params,
+            _ => unreachable!("checked source role declaration"),
+        };
+        let native = registry
+            .lookup_qualified(&binding.qualified_path)
+            .expect("compiler role query identity");
+        builder.source_type_parameters(
+            native.id,
+            parameters
+                .iter()
+                .zip(role.parameter_kinds())
+                .map(|(source, kind)| etas_std::StdGenericParam {
+                    name: hir.symbols.get(*source).unwrap().name.clone(),
+                    kind: *kind,
+                    bounds: Vec::new(),
+                })
+                .collect(),
+        );
+    }
+    builder.finish()
+}
 
 pub(crate) fn bindings(
     hir: &HirProgram,
     mode: StandardLibraryMode,
-    registry: &StdRegistry,
 ) -> (Vec<etas_types::StdSymbolBindingInput>, Vec<Diagnostic>) {
     let mut result = Vec::new();
     let mut diagnostics = Vec::new();
@@ -41,7 +81,7 @@ pub(crate) fn bindings(
             let target = match annotation.args.as_slice() {
                 [HirAnnotationArg::Positional { value, .. }] => match hir.exprs.get(*value) {
                     Some(HirExpr::Literal(HirLiteral::String { value, .. })) => {
-                        registry.lookup_qualified(&value.split('.').collect::<Vec<_>>())
+                        StdSourceRole::from_path(value)
                     }
                     _ => None,
                 },
@@ -49,67 +89,53 @@ pub(crate) fn bindings(
             };
             let Some(target) = target else {
                 diagnostics.push(invalid(
-                    "std.role requires one string naming a native role contract",
+                    "std.role requires one string naming a compiler role ABI",
                 ));
                 continue;
             };
-            let StdDecl::Type(native) = &target.decl else {
-                diagnostics.push(invalid("std.role requires a type role contract"));
-                continue;
-            };
+            let target_path = target
+                .path()
+                .split('.')
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
             let declaration = hir.items.get(*item).expect("source role item");
             let (source_symbol, parameters, shape) = match declaration {
                 HirItem::Type(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    matches!(
-                        native.runtime_role,
-                        Some(
-                            RuntimeTypeRole::Task
-                                | RuntimeTypeRole::Scheduler
-                                | RuntimeTypeRole::Continuation
-                        )
-                    ) && matches!(source.body, HirTypeDeclBody::Bodyless),
+                    target.runtime_role().is_some()
+                        && matches!(source.body, HirTypeDeclBody::Bodyless),
                 ),
                 HirItem::Enum(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    match target
-                        .qualified_path
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .as_slice()
-                    {
-                        ["std", "result", "Result"] => result_shape(hir, source),
-                        ["std", "option", "Option"] => option_shape(hir, source),
+                    match target {
+                        StdSourceRole::Result => result_shape(hir, source),
+                        StdSourceRole::Option => option_shape(hir, source),
                         _ => false,
                     },
                 ),
                 HirItem::Flow(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target.kind == etas_std::StdSymbolKind::Constructor
-                        && match target
-                            .qualified_path
-                            .iter()
-                            .map(String::as_str)
-                            .collect::<Vec<_>>()
-                            .as_slice()
-                        {
-                            ["std", "result", "Ok" | "Err"] => {
-                                result_constructor(hir, source, &target.name)
-                            }
-                            ["std", "option", "Some" | "None"] => {
-                                option_constructor(hir, source, &target.name)
-                            }
-                            _ => false,
-                        },
+                    match target {
+                        StdSourceRole::Ok | StdSourceRole::Err => result_constructor(
+                            hir,
+                            source,
+                            target.path().rsplit('.').next().unwrap(),
+                        ),
+                        StdSourceRole::Some | StdSourceRole::None => option_constructor(
+                            hir,
+                            source,
+                            target.path().rsplit('.').next().unwrap(),
+                        ),
+                        _ => false,
+                    },
                 ),
                 HirItem::Spec(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target.qualified_path == ["std", "core", "Index"]
+                    target == StdSourceRole::Index
                         && matches!(source.kind, etas_hir::HirSpecKind::TypeSpec)
                         && source.items.is_empty()
                         && source.bounds.is_empty(),
@@ -131,10 +157,10 @@ pub(crate) fn bindings(
                 .map(|part| part.name.clone())
                 .collect::<Vec<_>>();
             path.push(symbol.name.clone());
-            let parameters_match = parameters.len() == native.params.len()
+            let parameters_match = parameters.len() == target.parameter_kinds().len()
                 && parameters
                     .iter()
-                    .zip(&native.params)
+                    .zip(target.parameter_kinds())
                     .all(|(source, native)| {
                         let kind = hir
                             .symbols
@@ -145,20 +171,20 @@ pub(crate) fn bindings(
                         etas_hir::SymbolDef::TypeParam { bounds, .. } if !bounds.is_empty());
                         unbounded
                             && matches!(
-                                (kind, native.kind),
+                                (kind, *native),
                                 (SymbolKind::TypeParam, StdGenericParamKind::Type)
                                     | (SymbolKind::EffectParam, StdGenericParamKind::EffectRow)
                             )
                     });
             if symbol.visibility != Visibility::Public
-                || path != target.qualified_path
+                || path != target_path
                 || !shape
                 || !parameters_match
             {
                 diagnostics.push(invalid("std.role requires the public canonical declaration with its checked body and generic type/effect parameter shape"));
                 continue;
             }
-            if !seen.insert(target.id) {
+            if !seen.insert(target) {
                 diagnostics.push(invalid(
                     "a native role can be bound to only one std source declaration",
                 ));
@@ -166,7 +192,7 @@ pub(crate) fn bindings(
             }
             result.push(etas_types::StdSymbolBindingInput {
                 symbol: source_symbol,
-                qualified_path: target.qualified_path.clone(),
+                qualified_path: target_path,
             });
         }
     }

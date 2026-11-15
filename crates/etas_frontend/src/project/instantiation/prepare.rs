@@ -526,7 +526,11 @@ pub(super) fn bind_call(
             CallableGenericParamKind::Type => {
                 let ty = types
                     .get(&param.name)
-                    .ok_or("native invocation has no checked type binding")?;
+                    .ok_or_else(|| format!(
+                        "native invocation has no checked type binding for `{}`; checked parameters: {:?}",
+                        param.name,
+                        fact.type_bindings.iter().map(|(name, _)| name).collect::<Vec<_>>()
+                    ))?;
                 substitution
                     .substitute(*ty)
                     .map(NativeGenericArgument::Type)

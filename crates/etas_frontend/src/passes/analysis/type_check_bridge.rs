@@ -898,7 +898,6 @@ fn std_signature_input(
         input.role_bindings = super::super::hir::native_role::bindings(
             hir,
             context.input.options.standard_library_mode,
-            registry,
         )
         .0;
     }

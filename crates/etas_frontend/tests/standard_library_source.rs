@@ -347,11 +347,11 @@ fn source_task_runtime_roles_keep_their_checked_opaque_abi() {
         r#"
 module std.task;
 @std.role("std.task.Task")
-public type Task<T, effect E>;
+public type Task<Output, effect Remaining>;
 @std.role("std.task.Scheduler")
 public type Scheduler;
 @std.role("std.task.Continuation")
-public type Continuation<T>;
+public type Continuation<ActionOutput>;
 @std.binding("std.task.run")
 public flow execute<T, effect E>(body: (Scheduler) -> T ![E]) -> T ![E] {}
 "#,

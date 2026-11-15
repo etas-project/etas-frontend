@@ -53,11 +53,15 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
             context.input.options.standard_library_mode,
             &context.std_registry,
         );
-        let (_, role_diagnostics) = super::native_role::bindings(
-            &hir,
-            context.input.options.standard_library_mode,
-            &context.std_registry,
-        );
+        let (roles, role_diagnostics) =
+            super::native_role::bindings(&hir, context.input.options.standard_library_mode);
+        if !roles.is_empty() {
+            context.std_registry = std::sync::Arc::new(super::native_role::bind_parameters(
+                &hir,
+                &context.std_registry,
+                &roles,
+            ));
+        }
         hir.diagnostics.extend(role_diagnostics);
         let hir = match etas_hir::HirRevision::try_new(hir) {
             Ok(revision) => revision,

@@ -150,13 +150,20 @@ prefix matching is not a valid substitute.
 without `main`, using the normal project pipeline. The driver must discover
 the manifest's source root with `ProjectSourceLoadScope::FullSourceTree` first.
 Public declarations in any module part become the source module's exports;
-remaining primitive/type imports use the transitional legacy bootstrap contract.
+remaining primitive/type imports use explicit compiler/host bootstrap contracts.
 Embedded legacy bodies are excluded, and all supplied private bodies are checked.
 `StandardLibraryMode::SourceBootstrap` has its own compiler-options fingerprint.
-This entry point does not yet provide an artifact provider or the final minimal
-bootstrap contract. Consumer compilation continues to use the legacy provider.
+It does not construct the complete legacy registry. The driver packages the
+checked result for the verified artifact provider; legacy remains the release
+default. The final minimal bootstrap and full std migration are still pending.
 
-For a source-root smoke check while the driver build command is being added:
+`std.role` checks the explicit `StdSourceRole` compiler ABI, not a copied public
+registry declaration. Validated source parameters update the session query view
+before aliases and signatures are lowered. This lets Task, Continuation,
+Option and Result own their generic names in Etas without coupling native calls
+or runtime type identities to temporary compiler binders.
+
+For a frontend-only source-root check:
 
 ```bash
 cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas-core/crates/etas_std/library
@@ -165,7 +172,7 @@ cargo run --offline -p etas_frontend --example check_std_source -- /path/to/etas
 `library_hir::LibraryHirImage` archives the checked library's HIR, private and
 generic bodies, declaration/method identities, source maps, type/effect facts,
 native generic applications, module/import bindings, reflection paths, exact
-compile options and a validated native registry image. Source paths remain relative to the package. Schema 4 uses
+compile options and a validated native registry image. Source paths remain relative to the package. Schema 11 uses
 CBOR so optional fields and dynamic tool-schema values retain their structure;
 unordered indexes use canonical serialization order.
 
