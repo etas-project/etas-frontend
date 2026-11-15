@@ -159,13 +159,29 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         .known_std_types
         .directory_list_limit_error = registry
         .lookup_qualified(&["std", "fs", "ListLimitError"])
-        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))
+        .or_else(|| {
+            registry.native_enum_reference("std.fs.ListLimitError")?;
+            Some(crate::lower::std::lower_std_type(
+                ctx,
+                registry,
+                &etas_std::StdType::Named("std.fs.ListLimitError".into()),
+            ))
+        });
     ctx.signature_facts.known_std_types.json_value = registry
         .lookup_qualified(&["std", "json", "JsonValue"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.file_read_limit_error = registry
         .lookup_qualified(&["std", "fs", "ReadLimitError"])
-        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))
+        .or_else(|| {
+            registry.native_enum_reference("std.fs.ReadLimitError")?;
+            Some(crate::lower::std::lower_std_type(
+                ctx,
+                registry,
+                &etas_std::StdType::Named("std.fs.ReadLimitError".into()),
+            ))
+        });
     ctx.signature_facts.known_std_types.filesystem_io_error = registry
         .lookup_qualified(&["std", "fs", "IOError"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))

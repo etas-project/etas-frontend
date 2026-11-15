@@ -504,10 +504,15 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
     let source = fs::read_to_string(maintained.join("library/std/fs/mod.es")).unwrap();
     fs::write(
         package.0.join("library/std/fs/mod.es"),
-        source.replace(
-            "WorkspacePath<R ~ Region>;",
-            "WorkspacePath<Authority ~ Region>;",
-        ),
+        source
+            .replace(
+                "WorkspacePath<R ~ Region>;",
+                "WorkspacePath<Authority ~ Region>;",
+            )
+            .replace(
+                "public enum ReadLimitError {",
+                "public enum ReadLimitError { SdkOnly,",
+            ),
     )
     .unwrap();
     let output = Frontend.check_standard_library_source(package.load().input);
@@ -535,6 +540,30 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
     assert!(checked.types.known_std_types.opaque_values.iter().any(|ty| {
         matches!(checked.type_store.get(*ty), Some(etas_types::Type::Nominal(nominal)) if nominal.name == "std.fs.IOError")
     }));
+    let limit = checked.types.known_std_types.file_read_limit_error.unwrap();
+    let variants = &checked.types.enum_layouts[&limit].variants;
+    assert!(variants.iter().any(|variant| variant.name == "SdkOnly"));
+    let payload = &variants
+        .iter()
+        .find(|variant| variant.name == "LimitExceeded")
+        .unwrap()
+        .fields;
+    assert!(matches!(
+        checked.type_store.get(payload[0]),
+        Some(etas_types::Type::Primitive(
+            etas_types::PrimitiveType::USize
+        ))
+    ));
+    let stat = checked
+        .types
+        .std_intrinsic_calls
+        .values()
+        .find(|call| call.qualified_path == ["std", "fs", "stat"])
+        .unwrap();
+    assert_eq!(
+        stat.signature.output,
+        checked.types.qualified_action_signatures["std.effects.actions.Fs.stat"].output
+    );
     let error = checked.types.known_std_types.filesystem_io_error.unwrap();
     assert!(checked.types.known_std_types.opaque_values.contains(&error));
     let call = checked

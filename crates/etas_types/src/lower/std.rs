@@ -740,6 +740,26 @@ fn lower_named_std_type_with_scope(
         }));
     }
 
+    if let Some(reference) = registry.native_record_reference(name) {
+        if let Some(symbol) = ctx.symbols.canonical_path(ctx.hir, &reference.path)
+            && let Some(crate::SymbolTypeFact::NominalType { constructor, .. }) =
+                ctx.symbol_fact(symbol)
+        {
+            return TypeId(constructor.0);
+        }
+        if let Some(ty) = ctx.external_type_paths.get(&reference.path) {
+            return *ty;
+        }
+        // The source declaration completes this same nominal identity. Creating
+        // a second, pre-filled nominal would split the checked native signature.
+        return ctx.interner.intern(Type::Nominal(crate::NominalTypeRef {
+            read_only_erased_view: false,
+            name: reference.path.join("."),
+            params: Vec::new(),
+            representation: None,
+        }));
+    }
+
     if registry.native_opaque_reference(name).is_some() {
         return ctx.interner.intern(Type::Nominal(crate::NominalTypeRef {
             read_only_erased_view: false,

@@ -76,6 +76,7 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             .extend(native_enum_reference_diagnostics(
                 &hir.hir,
                 &context.std_registry,
+                types,
             ));
 
         context
@@ -83,6 +84,14 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             .extend(native_opaque_reference_diagnostics(
                 &hir.hir,
                 &context.std_registry,
+            ));
+
+        context
+            .diagnostics
+            .extend(native_record_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+                types,
             ));
 
         for (item, target, span) in
@@ -280,6 +289,7 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
 fn native_enum_reference_diagnostics(
     hir: &etas_hir::HirProgram,
     registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
 ) -> Vec<etas_core::Diagnostic> {
     let mut diagnostics = Vec::new();
     for reference in registry.native_enum_references() {
@@ -329,21 +339,49 @@ fn native_enum_reference_diagnostics(
                 "native enum ABI reference requires no type parameters".into(),
             ));
         }
-        for required in &reference.required_unit_variants {
-            match declaration
+        let layout =
+            types
+                .facts
+                .symbol_types
+                .get(&declaration.symbol)
+                .and_then(|fact| match fact {
+                    etas_types::SymbolTypeFact::Type { constructor } => types
+                        .facts
+                        .enum_layouts
+                        .get(&etas_types::TypeId(constructor.0)),
+                    _ => None,
+                });
+        for (required, fields) in reference.required_variants() {
+            let variant = declaration
                 .variants
                 .iter()
-                .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == *required)
-            {
-                Some(variant) if variant.fields.is_empty() => {}
-                Some(variant) => diagnostics.push(error(
-                    variant.span,
-                    format!("native enum ABI requires unit variant `{required}`"),
-                )),
-                None => diagnostics.push(error(
-                    span,
-                    format!("native enum ABI requires unit variant `{required}`"),
-                )),
+                .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == required);
+            let matches = layout
+                .and_then(|layout| {
+                    layout
+                        .variants
+                        .iter()
+                        .find(|variant| variant.name == required)
+                })
+                .is_some_and(|variant| {
+                    variant.fields.len() == fields.len()
+                        && variant.fields.iter().zip(fields).all(|(actual, expected)| {
+                            native_primitive_matches(
+                                &types.store,
+                                *actual,
+                                &etas_std::StdType::Primitive(*expected),
+                            )
+                        })
+                });
+            if !matches {
+                let reason = if fields.is_empty() {
+                    format!("native enum ABI requires unit variant `{required}`")
+                } else {
+                    format!(
+                        "native enum ABI requires variant `{required}` with checked payload {fields:?}"
+                    )
+                };
+                diagnostics.push(error(variant.map_or(span, |variant| variant.span), reason));
             }
         }
     }
@@ -544,6 +582,67 @@ fn native_opaque_reference_diagnostics(
                     symbol.definition_span,
                     format!(
                         "native ABI references `{}` as an opaque type without generic parameters",
+                        reference.path.join(".")
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+fn native_primitive_matches(
+    store: &etas_types::TypeStore,
+    actual: etas_types::TypeId,
+    expected: &etas_std::StdType,
+) -> bool {
+    matches!(store.get(actual), Some(etas_types::Type::Primitive(primitive))
+        if etas_std::StdType::parse(primitive.source_name()) == *expected)
+}
+
+fn native_record_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_record_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        for (_, item) in hir.items.iter() {
+            let Some(symbol) = item.symbol().and_then(|symbol| hir.symbols.get(symbol)) else {
+                continue;
+            };
+            if symbol.name != *name
+                || !hir.modules_arena[symbol.defining_module]
+                    .name
+                    .as_ref()
+                    .is_some_and(|path| {
+                        path.segments
+                            .iter()
+                            .map(|part| &part.name)
+                            .eq(module.iter())
+                    })
+            {
+                continue;
+            }
+            let representation = match types.facts.symbol_types.get(&symbol.id) {
+                Some(etas_types::SymbolTypeFact::NominalType { representation, .. }) => {
+                    *representation
+                }
+                _ => None,
+            };
+            let valid = matches!(item, HirItem::Type(declaration) if declaration.type_params.is_empty())
+                && representation.and_then(|ty| types.store.get(ty)).is_some_and(|ty| {
+                    matches!(ty, etas_types::Type::Record(record) if record.fields.len() == reference.fields.len()
+                        && reference.fields.iter().all(|field| record.fields.iter().find(|actual| actual.name == field.name)
+                            .is_some_and(|actual| native_primitive_matches(&types.store, actual.ty, &field.ty))))
+                });
+            if !valid {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    symbol.definition_span,
+                    format!(
+                        "native record ABI requires `{}` with its checked host payload fields",
                         reference.path.join(".")
                     ),
                 ));
