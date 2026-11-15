@@ -115,13 +115,31 @@ pub(super) fn collect_handler_for_requests<E>(
                 } else {
                     symbol.name.clone()
                 };
-                if let ResolveResult::Resolved(owner) = arm.action.effect.path.resolution
-                    && let Some(SymbolDef::ImportAlias { path, .. }) =
-                        ctx.ctx.hir.symbols.get(owner).map(|symbol| &symbol.def)
-                    && matches!(ctx.ctx.std_registry.lookup_qualified(path).map(|symbol| &symbol.decl),
+                if let ResolveResult::Resolved(owner) = arm.action.effect.path.resolution {
+                    let source = ctx
+                        .ctx
+                        .hir
+                        .source_import_targets
+                        .get(&owner)
+                        .copied()
+                        .unwrap_or(owner);
+                    let declaration = ctx
+                        .ctx
+                        .source_type_role(source)
+                        .and_then(|id| ctx.ctx.std_registry.symbol(id))
+                        .or_else(|| {
+                            match ctx.ctx.hir.symbols.get(owner).map(|symbol| &symbol.def) {
+                                Some(SymbolDef::ImportAlias { path, .. }) => {
+                                    ctx.ctx.std_registry.lookup_qualified(path)
+                                }
+                                _ => None,
+                            }
+                        });
+                    if matches!(declaration.map(|symbol| &symbol.decl),
                         Some(etas_std::StdDecl::Effect(effect)) if effect.core && effect.name == "Error")
-                {
-                    name = "Error".into();
+                    {
+                        name = "Error".into();
+                    }
                 }
                 handled.push(EffectRef {
                     name,

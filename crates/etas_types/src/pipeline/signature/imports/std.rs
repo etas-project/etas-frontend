@@ -61,21 +61,20 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             etas_hir::HirItem::Enum(source) => &source.type_params,
             etas_hir::HirItem::Spec(source) => &source.type_params,
             etas_hir::HirItem::Flow(source) => &source.type_params,
+            etas_hir::HirItem::Effect(source) => &source.type_params,
             _ => unreachable!("checked source role declaration"),
         };
-        contract.decl = etas_std::StdDecl::Type(
-            role.declaration(
-                parameters
-                    .iter()
-                    .zip(role.parameter_kinds())
-                    .enumerate()
-                    .map(|(index, (source, kind))| etas_std::StdGenericParam {
-                        name: ctx.hir.symbols.get(*source).unwrap().name.clone(),
-                        kind: *kind,
-                        bounds: role.parameter_bounds(index),
-                    })
-                    .collect(),
-            ),
+        contract.decl = role.query_declaration(
+            parameters
+                .iter()
+                .zip(role.parameter_kinds())
+                .enumerate()
+                .map(|(index, (source, kind))| etas_std::StdGenericParam {
+                    name: ctx.hir.symbols.get(*source).unwrap().name.clone(),
+                    kind: *kind,
+                    bounds: role.parameter_bounds(index),
+                })
+                .collect(),
         );
         if role.is_spec() {
             ctx.signature_facts

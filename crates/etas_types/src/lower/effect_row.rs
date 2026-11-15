@@ -117,6 +117,17 @@ fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -
                 .join("."),
         );
     };
+    if let Some(native) = ctx.source_type_role(owner)
+        && let Some(etas_std::StdSymbol {
+            decl: etas_std::StdDecl::Effect(declaration),
+            ..
+        }) = ctx.std_registry.symbol(native)
+    {
+        return Some(match member {
+            None => declaration.name.clone(),
+            Some(member) => format!("{}.{member}", declaration.name),
+        });
+    }
     if member.is_none()
         && matches!(
             ctx.hir.symbols.get(owner).map(|symbol| &symbol.def),

@@ -163,7 +163,7 @@ impl EffectRegistry {
     ) -> Result<Self, EffectPipelineError> {
         let mut registry = Self::with_standard_effects_from(std_registry);
         registry.register_dependency_metadata(dependency_metadata)?;
-        registry.register_hir_effects(hir, dependency_metadata)?;
+        registry.register_hir_effects(hir, dependency_metadata, &types.facts, std_registry)?;
         registry.register_hir_effect_extensions(hir);
         registry.register_hir_actions(hir, &types.facts)?;
         registry.register_memory_places(types.store.iter());
@@ -439,17 +439,38 @@ impl EffectRegistry {
 
     fn register_standard_library_descriptors(&mut self, std_registry: &StdRegistry) {
         for symbol in std_registry.symbols() {
-            if symbol.kind != StdSymbolKind::Effect || !is_std_effect_symbol(&symbol.qualified_path)
-            {
+            if symbol.kind != StdSymbolKind::Effect {
+                continue;
+            }
+            let source_bound = std_registry.declaration_key(symbol.id).is_some();
+            if !is_std_effect_symbol(&symbol.qualified_path) && !source_bound {
                 continue;
             }
             let StdDecl::Effect(effect) = &symbol.decl else {
                 continue;
             };
-            if effect.core && self.tag_by_name(&effect.name).is_some() {
+            let qualified = symbol.qualified_path.join(".");
+            if effect.core
+                && let Some(existing) = self.tag_by_name(&effect.name)
+            {
+                self.names.insert(qualified, existing);
                 continue;
             }
             let Some(stable_id) = effect.stable_id else {
+                if source_bound {
+                    let id = EffectTagId(self.next_dynamic_tag());
+                    self.tags.insert(
+                        id,
+                        EffectTag {
+                            id,
+                            name: qualified.clone(),
+                            core: None,
+                            runtime_requirement: None,
+                            high_impact_ack: false,
+                        },
+                    );
+                    self.names.insert(qualified, id);
+                }
                 continue;
             };
             let Some(runtime_requirement) = effect
@@ -466,8 +487,20 @@ impl EffectRegistry {
                 runtime_requirement,
                 effect.high_impact_ack,
             );
+            self.names.insert(qualified, id);
+        }
+        // Resolve the source inheritance graph after every canonical tag exists.
+        for symbol in std_registry.symbols() {
+            let StdDecl::Effect(effect) = &symbol.decl else {
+                continue;
+            };
+            let Some(id) = self.tag_by_name(&symbol.qualified_path.join(".")) else {
+                continue;
+            };
             for parent in &effect.extends {
-                let Some(parent) = self.tag_by_name(parent) else {
+                let Some(parent) =
+                    self.tag_by_path(&parent.split('.').map(str::to_owned).collect::<Vec<_>>())
+                else {
                     continue;
                 };
                 self.add_extension(id, parent);
@@ -672,6 +705,8 @@ impl EffectRegistry {
         &mut self,
         hir: &HirProgram,
         dependencies: &DependencyEffectMetadata,
+        types: &etas_types::TypeFacts,
+        std_registry: &StdRegistry,
     ) -> Result<(), EffectPipelineError> {
         let mut bindings = BTreeMap::new();
         for binding in &dependencies.source_bindings {
@@ -686,6 +721,21 @@ impl EffectRegistry {
             let HirItem::Effect(effect) = item else {
                 continue;
             };
+            if let Some(native) = types.source_type_roles.get(&effect.symbol) {
+                let Some(StdDecl::Effect(declaration)) =
+                    std_registry.symbol(*native).map(|s| &s.decl)
+                else {
+                    return Err(invalid_dependency_metadata(
+                        "source effect role has no execution contract",
+                    ));
+                };
+                let id = self
+                    .standard_tag_by_id(declaration.stable_id.expect("effect execution tag"))
+                    .expect("registered source effect execution tag");
+                self.symbol_tags.insert(effect.symbol, id);
+                self.register_effect_names(hir, effect, id);
+                continue;
+            }
             if let Some(existing) = self.tag_by_symbol(effect.symbol) {
                 self.register_effect_names(hir, effect, existing);
                 continue;
@@ -699,10 +749,15 @@ impl EffectRegistry {
                         "source effect binding has no matching dependency tag",
                     )
                 })?;
-                if self
-                    .dependency_tag_paths
-                    .get(&id)
-                    .is_none_or(|candidate| candidate != path)
+                let source_standard = std_registry.lookup_qualified(path).is_some_and(|symbol| {
+                    symbol.kind == StdSymbolKind::Effect
+                        && std_registry.declaration_key(symbol.id).is_some()
+                });
+                if !source_standard
+                    && self
+                        .dependency_tag_paths
+                        .get(&id)
+                        .is_none_or(|candidate| candidate != path)
                 {
                     return Err(invalid_dependency_metadata(
                         "source effect binding does not identify a dependency tag",

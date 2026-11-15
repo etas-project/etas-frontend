@@ -1190,6 +1190,12 @@ impl DefinitionIdentityIndex {
                 && let Some(tag) = decl
                     .stable_id
                     .and_then(|id| checked.effect_registry.standard_tag_by_id(id))
+                    .or_else(|| {
+                        checked.std_registry.declaration_key(symbol.id)?;
+                        checked
+                            .effect_registry
+                            .tag_by_name(&symbol.qualified_path.join("."))
+                    })
             {
                 let identity = index
                     .paths

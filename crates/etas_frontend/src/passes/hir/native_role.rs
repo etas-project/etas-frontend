@@ -27,26 +27,157 @@ pub(crate) fn bind_parameters(
             HirItem::Enum(source) => &source.type_params,
             HirItem::Spec(source) => &source.type_params,
             HirItem::Flow(source) => &source.type_params,
+            HirItem::Effect(source) => &source.type_params,
             _ => unreachable!("checked source role declaration"),
         };
         let native = registry
             .lookup_qualified(&binding.qualified_path)
             .expect("compiler role query identity");
-        builder.source_type_parameters(
-            native.id,
-            parameters
+        let parameters = parameters
+            .iter()
+            .zip(role.parameter_kinds())
+            .enumerate()
+            .map(|(index, (source, kind))| etas_std::StdGenericParam {
+                name: hir.symbols.get(*source).unwrap().name.clone(),
+                kind: *kind,
+                bounds: role.parameter_bounds(index),
+            })
+            .collect();
+        if let HirItem::Effect(source) = &hir.items[item] {
+            let extends = source
+                .extends
                 .iter()
-                .zip(role.parameter_kinds())
-                .enumerate()
-                .map(|(index, (source, kind))| etas_std::StdGenericParam {
-                    name: hir.symbols.get(*source).unwrap().name.clone(),
-                    kind: *kind,
-                    bounds: role.parameter_bounds(index),
+                .map(|parent| {
+                    let etas_hir::ResolveResult::Resolved(symbol) = parent.path.resolution else {
+                        unreachable!("resolved source effect parent");
+                    };
+                    canonical_path(hir, symbol).join(".")
                 })
-                .collect(),
-        );
+                .collect();
+            builder.source_effect_declaration(native.id, parameters, extends);
+        } else {
+            builder.source_type_parameters(native.id, parameters);
+        }
     }
     builder.finish()
+}
+
+/// Connect the remaining native action contracts to validated source effect
+/// owners while their signatures are still supplied by the bootstrap.
+pub(crate) fn bind_effect_actions(
+    hir: &mut HirProgram,
+    registry: &etas_std::StdRegistry,
+    bindings: &[etas_types::StdSymbolBindingInput],
+) {
+    use etas_hir::{ResolveResult, SymbolData, SymbolDef, SyntheticSymbolReason};
+    let effects = bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                registry
+                    .lookup_qualified(&binding.qualified_path)
+                    .map(|s| &s.decl),
+                Some(etas_std::StdDecl::Effect(_))
+            )
+        })
+        .map(|binding| (binding.qualified_path.clone(), binding.symbol))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut owners = effects
+        .values()
+        .map(|symbol| (*symbol, *symbol))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for symbol in hir.symbols.iter() {
+        if let SymbolDef::ImportAlias { path, .. } = &symbol.def
+            && let Some(owner) = effects.get(path)
+        {
+            owners.insert(symbol.id, *owner);
+        }
+    }
+    loop {
+        let additional = hir
+            .source_import_targets
+            .iter()
+            .filter_map(|(alias, target)| {
+                (!owners.contains_key(alias))
+                    .then(|| owners.get(target).map(|owner| (*alias, *owner)))
+                    .flatten()
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if additional.is_empty() {
+            break;
+        }
+        owners.extend(additional);
+    }
+    let mut actions = std::collections::BTreeMap::new();
+    for (path, owner) in effects {
+        let owner_data = hir.symbols.get(owner).unwrap().clone();
+        for native in registry.symbols() {
+            let etas_std::StdDecl::EffectAction(action) = &native.decl else {
+                continue;
+            };
+            if Some(&action.owner) != path.last() {
+                continue;
+            }
+            let existing = hir
+                .standard_action_targets
+                .iter()
+                .filter_map(|(symbol, target)| (*target == native.id).then_some(*symbol))
+                .min();
+            let symbol = existing.unwrap_or_else(|| {
+                let symbol = hir.symbols.alloc(SymbolData {
+                    name: format!("{}.{}", action.owner, action.name),
+                    kind: SymbolKind::EffectAction,
+                    visibility: Visibility::Public,
+                    defining_module: owner_data.defining_module,
+                    defining_item: None,
+                    def: SymbolDef::Synthetic {
+                        reason: SyntheticSymbolReason::QualifiedEffectAction,
+                    },
+                    declared_type: None,
+                    definition_span: owner_data.definition_span,
+                });
+                hir.standard_action_targets.insert(symbol, native.id);
+                symbol
+            });
+            hir.symbols
+                .insert_member(owner, action.name.clone(), symbol);
+            actions.insert((owner, action.name.clone()), symbol);
+        }
+    }
+    let resolve = |action: &etas_hir::ResolvedActionRef| {
+        let ResolveResult::Resolved(owner) = action.effect.path.resolution else {
+            return None;
+        };
+        let owner = owners.get(&owner)?;
+        actions.get(&(*owner, action.action.clone())).copied()
+    };
+    let updates = hir
+        .handler_arms
+        .iter()
+        .filter_map(|(id, arm)| resolve(&arm.action).map(|symbol| (id, symbol)))
+        .collect::<Vec<_>>();
+    for (id, symbol) in updates {
+        hir.handler_arms.get_mut(id).unwrap().action.action_symbol =
+            ResolveResult::Resolved(symbol);
+    }
+    let updates = hir
+        .exprs
+        .iter()
+        .filter_map(|(id, expression)| match expression {
+            HirExpr::Perform { action, .. } | HirExpr::Infer { action, .. } => {
+                resolve(action).map(|symbol| (id, symbol))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (id, symbol) in updates {
+        match hir.exprs.get_mut(id).unwrap() {
+            HirExpr::Perform { action, .. } | HirExpr::Infer { action, .. } => {
+                action.action_symbol = ResolveResult::Resolved(symbol)
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub(crate) fn bindings(
@@ -134,6 +265,11 @@ pub(crate) fn bindings(
                         _ => false,
                     },
                 ),
+                HirItem::Effect(source) => (
+                    source.symbol,
+                    source.type_params.as_slice(),
+                    target.effect_execution().is_some() && source.body.actions().is_empty(),
+                ),
                 HirItem::Spec(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
@@ -144,7 +280,7 @@ pub(crate) fn bindings(
                 ),
                 _ => {
                     diagnostics.push(invalid(
-                        "std.role requires its canonical type, enum or spec declaration",
+                        "std.role requires its canonical type, enum, spec or effect declaration",
                     ));
                     continue;
                 }

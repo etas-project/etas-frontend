@@ -221,7 +221,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                     AstItemKind::Enum | AstItemKind::Error => metadata
                         .enums
                         .push(self.type_signature(path, visibility, export)?),
-                    AstItemKind::Effect => metadata.effects.push(named_signature(path, visibility)),
+                    AstItemKind::Effect => metadata
+                        .effects
+                        .push(self.type_signature(path, visibility, export)?),
                     AstItemKind::Protocol => {
                         metadata.protocols.push(named_signature(path, visibility))
                     }
@@ -428,6 +430,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             Some(HirItem::Type(decl)) => (decl.symbol, &decl.type_params),
             Some(HirItem::TypeAlias(decl)) => (decl.symbol, &decl.type_params),
             Some(HirItem::Enum(decl)) => (decl.symbol, &decl.type_params),
+            Some(HirItem::Effect(decl)) => (decl.symbol, &decl.type_params),
             _ => return Err(PackageMetadataError::MissingExportSignature { path }),
         };
         let names = params
@@ -476,11 +479,14 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             })
             .collect::<Result<Vec<_>, PackageMetadataError>>()?;
-        let ty = if self.checked.types.source_type_roles.contains_key(&symbol)
+        let ty = if matches!(self.checked.hir.items.get(item), Some(HirItem::Effect(_))) {
+            None
+        } else if self.checked.types.source_type_roles.contains_key(&symbol)
             && !matches!(
                 self.checked.hir.items.get(item),
                 Some(etas_hir::HirItem::Enum(_))
-            ) {
+            )
+        {
             Some(MetadataType {
                 kind: MetadataTypeKind::Nominal,
                 path: path.clone(),
@@ -2045,6 +2051,25 @@ impl<'a> ProjectMetadataProjection<'a> {
     ) -> Result<Vec<String>, PackageMetadataError> {
         if let Some(path) = self.action_ref_path(action) {
             return Ok(path);
+        }
+        // A native action's canonical declaration may live outside its effect's
+        // source module (for example std.effects.actions.Fs.read).
+        if self.effect_registry.standard_tag_by_id(action.tag.0) == Some(action.tag) {
+            for symbol in self.checked.std_registry.symbols() {
+                let etas_std::StdDecl::EffectAction(native) = &symbol.decl else {
+                    continue;
+                };
+                if native.stable_id != Some(action.action.0) {
+                    continue;
+                }
+                let owner_matches = self.checked.std_registry.symbols().any(|owner| {
+                    matches!(&owner.decl, etas_std::StdDecl::Effect(effect)
+                        if effect.name == native.owner && effect.stable_id == Some(action.tag.0))
+                });
+                if owner_matches {
+                    return Ok(symbol.qualified_path.clone());
+                }
+            }
         }
         let owner = self.effect_tag_metadata_path(action.tag)?;
         let action = self

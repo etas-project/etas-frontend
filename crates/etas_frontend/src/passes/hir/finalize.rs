@@ -61,6 +61,7 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
                 &context.std_registry,
                 &roles,
             ));
+            super::native_role::bind_effect_actions(&mut hir, &context.std_registry, &roles);
         }
         hir.diagnostics.extend(role_diagnostics);
         let hir = match etas_hir::HirRevision::try_new(hir) {
