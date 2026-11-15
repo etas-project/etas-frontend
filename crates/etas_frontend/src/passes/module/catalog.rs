@@ -111,10 +111,14 @@ impl Pass<ProjectContext> for BuildModuleCatalogPass {
         // Enum constructor namespaces participate in ordinary group, wildcard
         // and public imports, retaining the owning source declaration.
         for (module_id, module) in modules.modules.iter() {
-            for export in module.visibility_exports.items.values() {
-                if export.item.kind != crate::AstItemKind::Enum {
-                    continue;
-                }
+            let mut enums = module
+                .visibility_exports
+                .items
+                .values()
+                .filter(|export| export.item.kind == crate::AstItemKind::Enum)
+                .collect::<Vec<_>>();
+            enums.sort_by_key(|export| &export.name);
+            for export in enums {
                 let parsed = context
                     .parsed_sources
                     .iter()
