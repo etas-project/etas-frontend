@@ -740,6 +740,15 @@ fn lower_named_std_type_with_scope(
         }));
     }
 
+    if registry.native_opaque_reference(name).is_some() {
+        return ctx.interner.intern(Type::Nominal(crate::NominalTypeRef {
+            read_only_erased_view: false,
+            name: name.to_owned(),
+            params: Vec::new(),
+            representation: None,
+        }));
+    }
+
     ctx.interner.intern(Type::Named(NamedTypeRef {
         source_parameter: None,
         name: name.to_owned(),

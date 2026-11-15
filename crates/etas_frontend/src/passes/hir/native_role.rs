@@ -37,10 +37,11 @@ pub(crate) fn bind_parameters(
             parameters
                 .iter()
                 .zip(role.parameter_kinds())
-                .map(|(source, kind)| etas_std::StdGenericParam {
+                .enumerate()
+                .map(|(index, (source, kind))| etas_std::StdGenericParam {
                     name: hir.symbols.get(*source).unwrap().name.clone(),
                     kind: *kind,
-                    bounds: Vec::new(),
+                    bounds: role.parameter_bounds(index),
                 })
                 .collect(),
         );
@@ -134,7 +135,7 @@ pub(crate) fn bindings(
                 HirItem::Spec(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target == StdSourceRole::Index
+                    target.is_spec()
                         && matches!(source.kind, etas_hir::HirSpecKind::TypeSpec)
                         && source.items.is_empty()
                         && source.bounds.is_empty(),
@@ -160,15 +161,24 @@ pub(crate) fn bindings(
                 && parameters
                     .iter()
                     .zip(target.parameter_kinds())
-                    .all(|(source, native)| {
+                    .enumerate()
+                    .all(|(index, (source, native))| {
                         let kind = hir
                             .symbols
                             .get(*source)
                             .expect("source role parameter")
                             .kind;
-                        let unbounded = !matches!(&hir.symbols.get(*source).unwrap().def,
-                        etas_hir::SymbolDef::TypeParam { bounds, .. } if !bounds.is_empty());
-                        unbounded
+                        let expected = target.parameter_bounds(index);
+                        let bounds_match = match &hir.symbols.get(*source).unwrap().def {
+                            etas_hir::SymbolDef::TypeParam { bounds, .. } => {
+                                bounds.len() == expected.len() && bounds.iter().zip(&expected).all(|(bound, native)| {
+                                    bound.args.is_empty() && matches!(bound.path.resolution,
+                                        etas_hir::ResolveResult::Resolved(symbol) if canonical_path(hir, symbol) == native.path)
+                                })
+                            }
+                            _ => expected.is_empty(),
+                        };
+                        bounds_match
                             && matches!(
                                 (kind, *native),
                                 (SymbolKind::TypeParam, StdGenericParamKind::Type)
@@ -348,4 +358,21 @@ fn result_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &s
         && matches!(args.as_slice(), [etas_hir::HirArg::Positional(value)]
             if matches!(hir.exprs.get(*value), Some(HirExpr::Path(path))
                 if path.resolution == etas_hir::ResolveResult::Resolved(source.params[0])))
+}
+
+fn canonical_path(hir: &HirProgram, symbol: etas_hir::SymbolId) -> Vec<String> {
+    let symbol = hir.symbols.get(symbol).unwrap();
+    if let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def {
+        return path.clone();
+    }
+    let mut path = hir.modules_arena[symbol.defining_module]
+        .name
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .map(|part| part.name.clone())
+        .collect::<Vec<_>>();
+    path.push(symbol.name.clone());
+    path
 }

@@ -78,6 +78,13 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
                 &context.std_registry,
             ));
 
+        context
+            .diagnostics
+            .extend(native_opaque_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+            ));
+
         for (item, target, span) in
             super::super::hir::native_binding::declarations(&hir.hir, &context.std_registry)
         {
@@ -506,4 +513,42 @@ flow main() -> string { return concat(["a", "b"]); }
         };
         assert_eq!(checked.optimized_intrinsic, optimized_intrinsic);
     }
+}
+
+fn native_opaque_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_opaque_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        for (_, item) in hir.items.iter() {
+            let Some(symbol) = item.symbol().and_then(|symbol| hir.symbols.get(symbol)) else {
+                continue;
+            };
+            let owner = &hir.modules_arena[symbol.defining_module];
+            if symbol.name != *name
+                || !owner.name.as_ref().is_some_and(|path| {
+                    path.segments
+                        .iter()
+                        .map(|part| &part.name)
+                        .eq(module.iter())
+                })
+            {
+                continue;
+            }
+            if !matches!(item, HirItem::Type(declaration) if declaration.type_params.is_empty() && matches!(declaration.body, etas_hir::HirTypeDeclBody::Bodyless))
+            {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    symbol.definition_span,
+                    format!(
+                        "native ABI references `{}` as an opaque type without generic parameters",
+                        reference.path.join(".")
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
 }

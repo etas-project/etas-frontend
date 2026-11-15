@@ -68,15 +68,16 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
                 parameters
                     .iter()
                     .zip(role.parameter_kinds())
-                    .map(|(source, kind)| etas_std::StdGenericParam {
+                    .enumerate()
+                    .map(|(index, (source, kind))| etas_std::StdGenericParam {
                         name: ctx.hir.symbols.get(*source).unwrap().name.clone(),
                         kind: *kind,
-                        bounds: Vec::new(),
+                        bounds: role.parameter_bounds(index),
                     })
                     .collect(),
             ),
         );
-        if role == etas_std::StdSourceRole::Index {
+        if role.is_spec() {
             ctx.signature_facts
                 .std_spec_aliases
                 .insert(binding.symbol, native.qualified_path.clone());
@@ -167,7 +168,15 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.filesystem_io_error = registry
         .lookup_qualified(&["std", "fs", "IOError"])
-        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))
+        .or_else(|| {
+            registry.native_opaque_reference("std.fs.IOError")?;
+            Some(crate::lower::std::lower_std_type(
+                ctx,
+                registry,
+                &etas_std::StdType::Named("std.fs.IOError".into()),
+            ))
+        });
     ctx.signature_facts.known_std_types.text_error = registry
         .lookup_qualified(&["std", "text", "TextError"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol))
@@ -188,6 +197,14 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
     ctx.signature_facts.known_std_types.ordered_set = registry
         .lookup_qualified(&["std", "collections", "OrderedSet"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+    for reference in registry.native_opaque_references() {
+        let ty = crate::lower::std::lower_std_type(
+            ctx,
+            registry,
+            &etas_std::StdType::Named(reference.path.join(".")),
+        );
+        ctx.signature_facts.known_std_types.opaque_values.insert(ty);
+    }
     for symbol in registry.symbols() {
         if let etas_std::StdDecl::Type(declaration) = &symbol.decl
             && let Some(role) = declaration.runtime_role

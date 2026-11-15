@@ -493,3 +493,63 @@ fn native_enum_payload_requirement_is_checked_at_the_source_variant() {
     let range = diagnostic.primary.span.range;
     assert!(source[range.start.0 as usize..range.end.0 as usize].contains("ParseFailure(string)"));
 }
+
+#[test]
+fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
+    let package = SourcePackage::new();
+    fs::create_dir_all(package.0.join("library/std/fs")).unwrap();
+    let maintained = etas_std::library::source_checkout_manifest()
+        .parent()
+        .unwrap();
+    let source = fs::read_to_string(maintained.join("library/std/fs/mod.es")).unwrap();
+    fs::write(
+        package.0.join("library/std/fs/mod.es"),
+        source.replace(
+            "WorkspacePath<R ~ Region>;",
+            "WorkspacePath<Authority ~ Region>;",
+        ),
+    )
+    .unwrap();
+    let output = Frontend.check_standard_library_source(package.load().input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let path = checked
+        .std_registry
+        .lookup_qualified(&["std", "fs", "WorkspacePath"])
+        .unwrap();
+    let etas_std::StdDecl::Type(declaration) = &path.decl else {
+        unreachable!()
+    };
+    assert_eq!(declaration.params[0].name, "Authority");
+    assert_eq!(
+        declaration.params[0].bounds[0].path,
+        ["std", "fs", "Region"]
+    );
+    // IOError is an ordinary source nominal, without a language role or copied declaration.
+    assert!(
+        checked
+            .std_registry
+            .lookup_qualified(&["std", "fs", "IOError"])
+            .is_none()
+    );
+    assert!(checked.types.known_std_types.opaque_values.iter().any(|ty| {
+        matches!(checked.type_store.get(*ty), Some(etas_types::Type::Nominal(nominal)) if nominal.name == "std.fs.IOError")
+    }));
+    let error = checked.types.known_std_types.filesystem_io_error.unwrap();
+    assert!(checked.types.known_std_types.opaque_values.contains(&error));
+    let call = checked
+        .types
+        .std_intrinsic_calls
+        .values()
+        .find(|call| call.qualified_path == ["std", "fs", "read_bytes"])
+        .unwrap();
+    assert_eq!(
+        call.signature
+            .requested_actions
+            .as_ref()
+            .unwrap()
+            .effects
+            .len(),
+        1
+    );
+}
