@@ -272,6 +272,7 @@ fn checked_targets(
             ),
             control,
             phase: crate::project::instantiation::PreparationPhase::Types,
+            handlers: None,
         },
         &[],
         None,

@@ -377,6 +377,21 @@ impl StandardLibrary {
             .collect();
         let mut interner = TypeInterner::from_store(base_program.type_store.as_ref().clone());
         let mut declarations = correspondence.declarations().clone();
+        let parameters = source.native_type_parameters();
+        for ty in &reachable {
+            if declarations.contains_key(ty) {
+                continue;
+            }
+            if let Some(identity) = parameters.get(ty) {
+                let Some(etas_types::Type::Named(parameter)) = consumer.type_store.get(*ty) else {
+                    return Err("checked generic parameter has no named type".into());
+                };
+                let target = interner
+                    .intern_canonical_parameter(identity.clone(), parameter.name.clone())
+                    .map_err(str::to_owned)?;
+                declarations.insert(*ty, target);
+            }
+        }
         methods::reserve_parameters(&imported_methods, &mut interner, &mut declarations)?;
         let foreign = etas_types::ty::relocate_foreign_type_graph(
             interner,

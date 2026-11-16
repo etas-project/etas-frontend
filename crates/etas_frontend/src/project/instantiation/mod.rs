@@ -1,4 +1,6 @@
+mod handlers;
 mod index;
+pub(crate) use handlers::HandlerContexts;
 mod prepare;
 mod rows;
 mod targets;

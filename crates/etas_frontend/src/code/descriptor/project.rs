@@ -150,6 +150,35 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         self.declaration_ref(declaration.checked_type, declaration)
     }
 
+    /// Action binders describe payload types; they do not create a callable
+    /// body or an executable action declaration in another checked program.
+    pub(crate) fn project_action_signature(
+        &mut self,
+        owner: GenericOwner,
+        signature: &etas_types::EffectActionSignature,
+    ) -> Result<(), ProjectionError> {
+        self.ensure_edges(signature.params.len().saturating_add(1))?;
+        let generics = signature
+            .generic_params
+            .iter()
+            .map(GenericDeclaration::from)
+            .collect::<Vec<_>>();
+        let scope = self.scope(owner, &generics)?;
+        for parameter in &signature.generic_params {
+            if parameter.kind == etas_types::CallableGenericParamKind::Type {
+                self.type_ref(parameter.subject, scope)?;
+            }
+        }
+        for ty in signature
+            .params
+            .iter()
+            .chain(std::iter::once(&signature.output))
+        {
+            self.type_ref(*ty, scope)?;
+        }
+        Ok(())
+    }
+
     pub fn project_closed_types(
         &mut self,
         owner: GenericOwner,

@@ -58,11 +58,11 @@ pub fn checked_type_effect_row(
 }
 
 fn action_name(registry: &EffectRegistry, action: &crate::ActionRef) -> Result<String, String> {
-    let descriptor = registry
-        .action_signature(action)
+    let name = registry
+        .action_name(action.tag, action.action)
         .ok_or("solved row has no action descriptor")?;
     let owner = registry
         .tag_name(action.tag)
         .ok_or("solved action has no owner descriptor")?;
-    Ok(format!("{owner}.{}", descriptor.name))
+    Ok(format!("{owner}.{name}"))
 }

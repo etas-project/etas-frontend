@@ -434,6 +434,48 @@ impl DefinitionCatalog {
         &self.type_origins
     }
 
+    /// Only unambiguous checked binders have an identity outside their scope.
+    /// Legacy anonymous templates may reuse one TypeId across declarations.
+    pub(crate) fn native_type_parameters(
+        &self,
+    ) -> BTreeMap<etas_types::TypeId, etas_types::ty::CanonicalTypeParameterIdentity> {
+        use etas_code::descriptor::TypeInfo;
+        use etas_types::ty::CanonicalTypeParameterIdentity;
+        let mut parameters =
+            BTreeMap::<etas_types::TypeId, Option<CanonicalTypeParameterIdentity>>::new();
+        for origin in &self.type_origins {
+            let TypeInfo::Parameter(reference) =
+                &self.graph.data().types[origin.descriptor.0 as usize]
+            else {
+                continue;
+            };
+            let parameter = &self.graph.data().binders[reference.0 as usize];
+            let Ok(identity) = CanonicalTypeParameterIdentity::new_scoped(
+                parameter.owner.clone(),
+                parameter.position,
+            ) else {
+                continue;
+            };
+            parameters
+                .entry(origin.local)
+                .and_modify(|previous| {
+                    if previous.as_ref() != Some(&identity) {
+                        *previous = None;
+                    }
+                })
+                .or_insert(Some(identity));
+        }
+        for (ty, _) in self.checked.type_store.iter() {
+            if let Some(identity) = self.checked.type_store.parameter_identity(ty) {
+                parameters.insert(ty, Some(identity.clone()));
+            }
+        }
+        parameters
+            .into_iter()
+            .filter_map(|(ty, identity)| identity.map(|identity| (ty, identity)))
+            .collect()
+    }
+
     pub fn native_type_declarations(
         &self,
     ) -> impl Iterator<Item = (etas_types::TypeId, &DefinitionKey)> {

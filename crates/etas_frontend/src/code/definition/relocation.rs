@@ -19,12 +19,34 @@ impl NativeTypeCorrespondence {
         source: &DefinitionCatalog,
         target: &DefinitionCatalog,
     ) -> Result<Self, ProjectionError> {
-        Self::from_inputs(
+        let mut correspondence = Self::from_inputs(
             source.checked_program().as_ref().into(),
             &source.identities,
             target.checked_program().as_ref().into(),
             &target.identities,
-        )
+        )?;
+        let mut targets = BTreeMap::new();
+        for (ty, identity) in target.native_type_parameters() {
+            targets
+                .entry(identity)
+                .and_modify(|previous| {
+                    if target
+                        .checked_program()
+                        .type_store
+                        .parameter_identity(ty)
+                        .is_some()
+                    {
+                        *previous = ty;
+                    }
+                })
+                .or_insert(ty);
+        }
+        for (ty, identity) in source.native_type_parameters() {
+            if let Some(target) = targets.get(&identity) {
+                correspondence.declarations.insert(ty, *target);
+            }
+        }
+        Ok(correspondence)
     }
 
     /// Build the same canonical correspondence from signature-stage facts.
@@ -97,14 +119,10 @@ impl NativeTypeCorrespondence {
             }
         }
         let mut actions = BTreeMap::new();
-        for action in to.effect_registry.action_signatures() {
-            let identity = target_identities.effect_tag(action.owner)?;
-            let reference = etas_effects::ActionRef {
-                tag: action.owner,
-                action: action.id,
-            };
+        for (reference, name) in to.effect_registry.action_identities() {
+            let identity = target_identities.effect_tag(reference.tag)?;
             if actions
-                .insert((identity, action.name.as_str()), reference.clone())
+                .insert((identity, name), reference.clone())
                 .is_some_and(|old| old != reference)
             {
                 return Err(ProjectionError::Invalid(
@@ -113,19 +131,19 @@ impl NativeTypeCorrespondence {
             }
         }
         for (name, action) in from.effect_registry.named_actions() {
-            let signature = from
+            let action_name = from
                 .effect_registry
-                .action_signature(action)
+                .action_name(action.tag, action.action)
                 .ok_or_else(|| {
                     ProjectionError::Invalid("source action alias has no descriptor".into())
                 })?;
             let owner = source_identities.effect_tag(action.tag)?;
-            if let Some(target_action) = actions.get(&(owner, signature.name.as_str())) {
+            if let Some(target_action) = actions.get(&(owner, action_name)) {
                 let owner = to
                     .effect_registry
                     .tag_name(target_action.tag)
                     .ok_or_else(|| ProjectionError::Invalid("target action has no owner".into()))?;
-                let canonical = format!("{owner}.{}", signature.name);
+                let canonical = format!("{owner}.{action_name}");
                 let target_name =
                     if to.effect_registry.action_by_name(name).as_ref() == Some(target_action) {
                         name
@@ -220,6 +238,33 @@ mod tests {
             SymbolTypeFact::NominalType { constructor, .. }
             | SymbolTypeFact::Type { constructor } => TypeId(constructor.0),
             _ => panic!("expected nominal type"),
+        }
+    }
+
+    #[test]
+    fn action_parameters_follow_their_effect_and_action_identity() {
+        let (_, source, _) = catalog(
+            "module app; effect Query { action<T> value(value: T) -> T; } effect Other { action<T> value(value: T) -> T; }",
+        );
+        let (_, target, _) = catalog(
+            "module app; effect Other { action<T> value(value: T) -> T; } effect Query { action<T> value(value: T) -> T; }",
+        );
+        let correspondence = NativeTypeCorrespondence::build(&source, &target).unwrap();
+        let parameters = |catalog: &DefinitionCatalog| {
+            catalog
+                .native_action_signatures()
+                .unwrap()
+                .into_iter()
+                .filter(|action| action.effect.module() == ["app"])
+                .map(|action| (action.effect, action.signature.generic_params[0].subject))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let targets = parameters(&target);
+        for (effect, parameter) in parameters(&source) {
+            assert_eq!(
+                correspondence.declarations().get(&parameter),
+                targets.get(&effect)
+            );
         }
     }
 

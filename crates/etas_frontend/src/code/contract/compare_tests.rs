@@ -149,7 +149,16 @@ fn preserved_generic_output_requires_reachable_residual_evidence() {
         residual_requirements(&original, owner, Some(root), true, true, None).unwrap(),
         Some(BTreeSet::new())
     );
-    let value = *original.effects.latent_effects.keys().next().unwrap();
+    let value = original
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(value, expr)| {
+            (matches!(expr, etas_hir::HirExpr::Lambda { .. })
+                && original.hir.index().expr_item.get(&value) == Some(&owner))
+            .then_some(value)
+        })
+        .unwrap();
     let mut with_residual = original.clone();
     Arc::make_mut(&mut Arc::make_mut(&mut with_residual).effects)
         .latent_effects

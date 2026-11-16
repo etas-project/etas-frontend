@@ -221,17 +221,17 @@ impl DefinitionDescriptorProjector<'_> {
         };
         let owner = self.identities.effect_tag(tag)?.clone();
         let target = if let Some(action) = action {
-            let signature = self
+            let action_name = self
                 .checked
                 .effect_registry
-                .action_signature(action)
+                .action_name(action.tag, action.action)
                 .ok_or_else(|| {
                     ProjectionError::Invalid("checked action has no registry descriptor".into())
                 })?;
-            self.text(&signature.name)?;
+            self.text(action_name)?;
             EffectTargetInfo::Action {
                 effect: owner,
-                name: signature.name.clone(),
+                name: action_name.into(),
             }
         } else {
             EffectTargetInfo::Effect(owner)
@@ -284,10 +284,9 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 ActionTraceDomain::TaskAwait { .. } => TraceInfo::Empty,
                 ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::Parallel(_) => {
-                    TraceInfo::UnknownOrder(self.analysis_row(
-                        &EffectRow::closed(trace.action_set()),
-                        scope,
-                    )?)
+                    TraceInfo::UnknownOrder(
+                        self.analysis_row(&EffectRow::closed(trace.action_set()), scope)?,
+                    )
                 }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     self.ensure_edges(parts.len())?;

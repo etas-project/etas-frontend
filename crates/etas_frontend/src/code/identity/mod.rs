@@ -1429,18 +1429,18 @@ impl DefinitionIdentityIndex {
         name: &str,
     ) -> Result<etas_code::descriptor::EffectTargetInfo, ProjectionError> {
         if let Some(action) = checked.effect_registry.action_by_name(name) {
-            let signature = checked
+            let action_name = checked
                 .effect_registry
-                .action_signature(&action)
+                .action_name(action.tag, action.action)
                 .ok_or_else(|| ProjectionError::MissingIdentity(name.into()))?;
             let effect = self
                 .effect_tags
-                .get(&signature.owner)
+                .get(&action.tag)
                 .ok_or_else(|| ProjectionError::MissingIdentity(name.into()))?
                 .clone();
             return Ok(etas_code::descriptor::EffectTargetInfo::Action {
                 effect,
-                name: signature.name.clone(),
+                name: action_name.into(),
             });
         }
         let key = checked

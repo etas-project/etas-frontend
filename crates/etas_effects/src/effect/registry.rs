@@ -125,10 +125,20 @@ pub struct EffectRegistry {
     dependency_action_paths: BTreeMap<ActionRef, Vec<String>>,
     standard_actions: BTreeMap<EffectActionId, EffectActionSig>,
     action_names: BTreeMap<String, ActionRef>,
+    #[serde(default)]
+    carried_actions: BTreeMap<ActionRef, CarriedActionIdentity>,
     actions_by_owner: BTreeMap<EffectTagId, Vec<SymbolId>>,
     extensions: ExtensionGraph,
     memory_places: BTreeMap<etas_types::TypeId, MemoryPlaceDecl>,
     unresolved_dependency_extensions: Vec<UnresolvedDependencyEffectExtension>,
+}
+
+/// A checked foreign row member. It deliberately carries no payload ABI,
+/// source symbol, default handler or executable implementation.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+struct CarriedActionIdentity {
+    name: String,
+    selectors: Vec<EffectActionArgKind>,
 }
 
 fn invalid_dependency_metadata(reason: impl Into<String>) -> EffectPipelineError {
@@ -220,6 +230,67 @@ impl EffectRegistry {
         id
     }
 
+    pub fn register_carried_action(
+        &mut self,
+        owner: EffectTagId,
+        name: &str,
+        selectors: &[EffectActionArgKind],
+    ) -> ActionRef {
+        let qualified = format!(
+            "{}.{}",
+            self.tag_name(owner).expect("carried action owner"),
+            name
+        );
+        if let Some(action) = self.action_by_name(&qualified) {
+            return action;
+        }
+        let action = ActionRef {
+            tag: owner,
+            action: EffectActionId(self.next_dynamic_action()),
+        };
+        self.carried_actions.insert(
+            action.clone(),
+            CarriedActionIdentity {
+                name: name.into(),
+                selectors: selectors.into(),
+            },
+        );
+        self.action_names.insert(qualified, action.clone());
+        action
+    }
+
+    pub fn action_identities(&self) -> impl Iterator<Item = (ActionRef, &str)> {
+        self.action_signatures()
+            .map(|signature| {
+                (
+                    ActionRef {
+                        tag: signature.owner,
+                        action: signature.id,
+                    },
+                    signature.name.as_str(),
+                )
+            })
+            .chain(
+                self.carried_actions
+                    .iter()
+                    .map(|(action, identity)| (action.clone(), identity.name.as_str())),
+            )
+    }
+
+    pub fn action_selectors(&self, action: &ActionRef) -> Option<&[EffectActionArgKind]> {
+        self.action_signature(action)
+            .map(|signature| signature.effect_args.as_slice())
+            .or_else(|| {
+                self.carried_actions
+                    .get(action)
+                    .map(|identity| identity.selectors.as_slice())
+            })
+    }
+
+    pub fn is_carried_action(&self, action: &ActionRef) -> bool {
+        self.carried_actions.contains_key(action)
+    }
+
     pub fn named_tags(&self) -> impl Iterator<Item = (&str, EffectTagId)> {
         self.names.iter().map(|(name, tag)| (name.as_str(), *tag))
     }
@@ -291,6 +362,11 @@ impl EffectRegistry {
             .or_else(|| self.local_action_signature(&action_ref))
             .or_else(|| self.dependency_action_signature(&action_ref))
             .map(|signature| signature.name.as_str())
+            .or_else(|| {
+                self.carried_actions
+                    .get(&action_ref)
+                    .map(|identity| identity.name.as_str())
+            })
     }
 
     pub fn action_by_name(&self, name: &str) -> Option<ActionRef> {
@@ -1106,6 +1182,7 @@ impl EffectRegistry {
             .map(|id| id.0)
             .chain(self.dependency_actions.keys().map(|id| id.0))
             .chain(self.actions.values().map(|signature| signature.id.0))
+            .chain(self.carried_actions.keys().map(|action| action.action.0))
             .max()
             .unwrap_or(FIRST_DYNAMIC_TAG - 1)
             .saturating_add(1)

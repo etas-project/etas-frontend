@@ -365,6 +365,17 @@ fn build_selected(
             None,
         )?;
     }
+    for action in super::actions::native_signatures(&checked, &identities)? {
+        if !action.signature.generic_params.is_empty() {
+            projector.project_action_signature(
+                GenericOwner::Action {
+                    effect: action.effect,
+                    name: action.name,
+                },
+                action.signature,
+            )?;
+        }
+    }
     let projection = projector.finish_native()?;
     let mut catalog = DefinitionCatalog {
         checked,
