@@ -245,6 +245,7 @@ pub(crate) fn bindings(
                     match target {
                         StdSourceRole::Result => result_shape(hir, source),
                         StdSourceRole::Option => option_shape(hir, source),
+                        StdSourceRole::Limit => source.type_params.is_empty(),
                         _ => false,
                     },
                 ),

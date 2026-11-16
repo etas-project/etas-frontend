@@ -99,6 +99,20 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             .insert(binding.symbol, native.id);
     }
     for symbol in registry.symbols() {
+        if let etas_std::StdDecl::Requirement(requirement) = &symbol.decl {
+            let scope = registry
+                .module(symbol.module)
+                .map(|module| module.path.as_slice());
+            let signature = crate::lower::std::lower_std_requirement_signature(
+                ctx,
+                &registry,
+                requirement,
+                scope,
+            );
+            ctx.signature_facts
+                .std_callable_signatures
+                .insert(symbol.id, signature);
+        }
         let Some(
             etas_std::StdImplementationRef::Source { .. }
             | etas_std::StdImplementationRef::Artifact { .. },

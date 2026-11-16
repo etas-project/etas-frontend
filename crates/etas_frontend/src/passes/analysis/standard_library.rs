@@ -71,6 +71,12 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             );
         };
 
+        context.diagnostics.extend(native_limit_role_diagnostics(
+            &hir.hir,
+            &context.std_registry,
+            types,
+        ));
+
         context
             .diagnostics
             .extend(native_enum_reference_diagnostics(
@@ -292,6 +298,70 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             ArtifactSet::one(CHECKED_STD_LIBRARY_IMPLEMENTATIONS),
         )
     }
+}
+
+/// Runtime limit payloads use the already checked primitive requirement ABI;
+/// source supplies the enum declaration and may add unrelated variants.
+fn native_limit_role_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (_, item) in hir.items.iter() {
+        let HirItem::Enum(source) = item else {
+            continue;
+        };
+        let is_limit = types
+            .facts
+            .source_type_roles
+            .get(&source.symbol)
+            .and_then(|id| registry.symbol(*id))
+            .is_some_and(|symbol| {
+                etas_std::StdSourceRole::from_path(&symbol.qualified_path.join("."))
+                    == Some(etas_std::StdSourceRole::Limit)
+            });
+        if !is_limit {
+            continue;
+        }
+        let Some(etas_types::SymbolTypeFact::Type { constructor }) =
+            types.facts.symbol_types.get(&source.symbol)
+        else {
+            unreachable!("checked limit role");
+        };
+        let layout = &types.facts.enum_layouts[&etas_types::TypeId(constructor.0)];
+        for native in registry.symbols() {
+            let etas_std::StdDecl::Requirement(requirement) = &native.decl else {
+                continue;
+            };
+            if !matches!(
+                requirement.semantics,
+                etas_std::RequirementSemantics::Limit(_)
+            ) {
+                continue;
+            }
+            let expected = &types.facts.std_callable_signatures[&native.id];
+            let valid = layout
+                .variants
+                .iter()
+                .find(|variant| variant.name == native.name)
+                .is_some_and(|variant| {
+                    variant.field_names.is_none() && variant.fields == expected.params
+                });
+            if !valid {
+                let span = source
+                    .variants
+                    .iter()
+                    .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == native.name)
+                    .map_or(source.span, |variant| variant.span);
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, span,
+                    format!("runtime Limit requires positional variant `{}` matching its checked primitive payload ABI", native.name),
+                ));
+            }
+        }
+    }
+    diagnostics
 }
 
 fn native_enum_reference_diagnostics(

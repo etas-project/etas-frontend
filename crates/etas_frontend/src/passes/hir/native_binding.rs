@@ -27,7 +27,10 @@ pub(crate) fn declarations(
                     hir.exprs.get(*value)
                 && let Some(symbol) =
                     registry.lookup_qualified(&value.split('.').collect::<Vec<_>>())
-                && matches!(symbol.decl, etas_std::StdDecl::Flow(_))
+                && matches!(
+                    symbol.decl,
+                    etas_std::StdDecl::Flow(_) | etas_std::StdDecl::Requirement(_)
+                )
                 && symbol.intrinsic.is_some()
             {
                 result.push((*item, symbol.id, annotation.span));

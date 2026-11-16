@@ -118,18 +118,27 @@ fn lower_std_decl_with_kind(
             ty: lower_std_type_with_scope(ctx, registry, &value.ty, scope),
         },
         StdDecl::Requirement(requirement) => SymbolTypeFact::Flow {
-            signature: CallableSignature {
-                generic_params: Vec::new(),
-                params: requirement
-                    .params
-                    .iter()
-                    .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
-                    .collect(),
-                output: lower_named_std_type_with_scope(ctx, registry, "Limit", scope),
-                effects: None,
-                requested_actions: None,
-            },
+            signature: lower_std_requirement_signature(ctx, registry, requirement, scope),
         },
+    }
+}
+
+pub fn lower_std_requirement_signature(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    requirement: &etas_std::RequirementDecl,
+    scope: Option<&[String]>,
+) -> CallableSignature {
+    CallableSignature {
+        generic_params: Vec::new(),
+        params: requirement
+            .params
+            .iter()
+            .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+            .collect(),
+        output: lower_named_std_type_with_scope(ctx, registry, "Limit", scope),
+        effects: None,
+        requested_actions: None,
     }
 }
 
@@ -760,10 +769,10 @@ fn lower_named_std_type_with_scope(
         }));
     }
 
-    if registry.native_opaque_reference(name).is_some() {
+    if let Some(reference) = registry.native_opaque_reference(name) {
         return ctx.interner.intern(Type::Nominal(crate::NominalTypeRef {
             read_only_erased_view: false,
-            name: name.to_owned(),
+            name: reference.path.join("."),
             params: Vec::new(),
             representation: None,
         }));
@@ -916,6 +925,49 @@ fn lower_std_enum_layout(
     };
     let constructors = registry.enum_constructors(owner.id).collect::<Vec<_>>();
     if constructors.is_empty() {
+        if matches!(&owner.decl, StdDecl::Type(declaration)
+            if declaration.runtime_role == Some(etas_std::RuntimeTypeRole::Limit))
+        {
+            // Bootstrap clients may use a limit before loading its source enum.
+            // Derive only the execution payload layout from the existing ABI;
+            // no public constructor declarations are registered here.
+            ctx.signature_facts.enum_layouts.insert(
+                ty,
+                crate::EnumLayoutFact {
+                    type_params: Vec::new(),
+                    variants: Vec::new(),
+                },
+            );
+            let variants = registry
+                .symbols()
+                .filter_map(|symbol| match &symbol.decl {
+                    StdDecl::Requirement(requirement)
+                        if matches!(
+                            requirement.semantics,
+                            etas_std::RequirementSemantics::Limit(_)
+                        ) =>
+                    {
+                        Some((requirement.name.clone(), requirement.params.clone()))
+                    }
+                    _ => None,
+                })
+                .map(|(name, fields)| crate::EnumVariantLayoutFact {
+                    name,
+                    field_names: None,
+                    fields: fields
+                        .iter()
+                        .map(|field| lower_std_type_with_scope(ctx, registry, field, scope))
+                        .collect(),
+                })
+                .collect();
+            ctx.signature_facts.enum_layouts.insert(
+                ty,
+                crate::EnumLayoutFact {
+                    type_params: Vec::new(),
+                    variants,
+                },
+            );
+        }
         return;
     }
     // Reserve the layout before descending into recursive enum fields.
