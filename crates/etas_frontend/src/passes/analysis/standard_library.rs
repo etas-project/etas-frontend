@@ -71,6 +71,11 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
             );
         };
 
+        context.diagnostics.extend(native_action_diagnostics(
+            &hir.hir,
+            &context.std_registry,
+            types,
+        ));
         context.diagnostics.extend(native_limit_role_diagnostics(
             &hir.hir,
             &context.std_registry,
@@ -834,6 +839,69 @@ fn native_projection_reference_diagnostics(
                         "native getter ABI requires `{}` with its checked projected fields",
                         reference.path.join(".")
                     ),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// Public action signatures belong to source; retained host contracts constrain
+/// the request ABI before an independently built bundle can be published.
+fn native_action_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (_, item) in hir.items.iter() {
+        let HirItem::Effect(effect) = item else {
+            continue;
+        };
+        for action in effect.body.actions() {
+            let Some(target) = hir.standard_action_targets.get(&action.symbol) else {
+                continue;
+            };
+            let Some(source) = types.facts.action_signatures.get(&action.symbol) else {
+                continue;
+            };
+            let expected = &types.facts.std_callable_signatures[target];
+            let source_callable = etas_types::CallableSignature {
+                generic_params: source.generic_params.clone(),
+                params: source.params.clone(),
+                output: source.output,
+                effects: None,
+                requested_actions: None,
+            };
+            let etas_std::StdDecl::EffectAction(native) = &registry.symbol(*target).unwrap().decl
+            else {
+                unreachable!()
+            };
+            let selectors_match = source
+                .selector_param_names
+                .iter()
+                .map(|name| source.generic_params.iter().position(|p| &p.name == name))
+                .collect::<Vec<_>>()
+                == native
+                    .selector_param_names
+                    .iter()
+                    .map(|name| native.type_params.iter().position(|p| &p.name == name))
+                    .collect::<Vec<_>>()
+                && source
+                    .effect_args
+                    .iter()
+                    .all(|kind| matches!(kind, etas_types::EffectActionArgKind::Type))
+                && native
+                    .effect_args
+                    .iter()
+                    .all(|kind| matches!(kind, etas_std::EffectActionArgKind::Type));
+            if !selectors_match
+                || !native_signatures_match(&source_callable, expected, &types.store, &types.facts)
+                    .unwrap_or(false)
+            {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, action.span,
+                    format!("std action ABI differs from `{}`; match its generic bounds, selectors, parameters and result", registry.symbol(*target).unwrap().qualified_path.join(".")),
                 ));
             }
         }

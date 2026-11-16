@@ -70,7 +70,20 @@ fn collect_action(
     let (effect_args, selector_param_names, selector_defaults) =
         action_effect_selector_signature(ctx, action);
     let signature = EffectActionSignature {
-        default_handler_effects: None,
+        default_handler_effects: ctx
+            .hir
+            .standard_action_targets
+            .get(&action.symbol)
+            .and_then(|target| ctx.std_registry.symbol(*target))
+            .and_then(|symbol| match &symbol.decl {
+                etas_std::StdDecl::EffectAction(declaration) => Some(declaration.clone()),
+                _ => None,
+            })
+            .and_then(|declaration| {
+                let registry = ctx.std_registry.clone();
+                crate::lower::std::lower_std_effect_action_signature(ctx, &registry, &declaration)
+                    .default_handler_effects
+            }),
         generic_params: action
             .type_params
             .iter()

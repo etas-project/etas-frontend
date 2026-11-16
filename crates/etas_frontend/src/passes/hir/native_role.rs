@@ -62,8 +62,8 @@ pub(crate) fn bind_parameters(
     builder.finish()
 }
 
-/// Connect the remaining native action contracts to validated source effect
-/// owners while their signatures are still supplied by the bootstrap.
+/// Bind source actions to their execution ABI. Empty effect declarations still
+/// expose transitional actions while the remaining modules are migrated.
 pub(crate) fn bind_effect_actions(
     hir: &mut HirProgram,
     registry: &etas_std::StdRegistry,
@@ -118,11 +118,31 @@ pub(crate) fn bind_effect_actions(
             if Some(&action.owner) != path.last() {
                 continue;
             }
-            let existing = hir
-                .standard_action_targets
-                .iter()
-                .filter_map(|(symbol, target)| (*target == native.id).then_some(*symbol))
-                .min();
+            let source_action = owner_data
+                .defining_item
+                .and_then(|item| match &hir.items[item] {
+                    HirItem::Effect(effect) => effect
+                        .body
+                        .actions()
+                        .iter()
+                        .find(|source| {
+                            hir.symbols
+                                .get(source.symbol)
+                                .unwrap()
+                                .name
+                                .rsplit('.')
+                                .next()
+                                == Some(action.name.as_str())
+                        })
+                        .map(|source| source.symbol),
+                    _ => None,
+                });
+            let existing = source_action.or_else(|| {
+                hir.standard_action_targets
+                    .iter()
+                    .filter_map(|(symbol, target)| (*target == native.id).then_some(*symbol))
+                    .min()
+            });
             let symbol = existing.unwrap_or_else(|| {
                 let symbol = hir.symbols.alloc(SymbolData {
                     name: format!("{}.{}", action.owner, action.name),
@@ -139,6 +159,16 @@ pub(crate) fn bind_effect_actions(
                 hir.standard_action_targets.insert(symbol, native.id);
                 symbol
             });
+            hir.standard_action_targets.insert(symbol, native.id);
+            // Aliases resolve through the source action so every use shares its
+            // checked generic binders, rather than an independently lowered ABI.
+            if source_action.is_some() {
+                for (alias, target) in hir.standard_action_targets.clone() {
+                    if target == native.id && alias != symbol {
+                        hir.source_import_targets.insert(alias, symbol);
+                    }
+                }
+            }
             hir.symbols
                 .insert_member(owner, action.name.clone(), symbol);
             actions.insert((owner, action.name.clone()), symbol);
@@ -269,7 +299,7 @@ pub(crate) fn bindings(
                 HirItem::Effect(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    target.effect_execution().is_some() && source.body.actions().is_empty(),
+                    target.effect_execution().is_some(),
                 ),
                 HirItem::Spec(source) => (
                     source.symbol,

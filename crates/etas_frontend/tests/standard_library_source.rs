@@ -501,6 +501,15 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
     let maintained = etas_std::library::source_checkout_manifest()
         .parent()
         .unwrap();
+    fs::create_dir_all(package.0.join("library/std/effects")).unwrap();
+    fs::write(
+        package.0.join("library/std/effects/mod.es"),
+        fs::read_to_string(maintained.join("library/std/effects/mod.es"))
+            .unwrap()
+            .replace("<R ~ Region>", "<Scope ~ Region>")
+            .replace("WorkspacePath<R>", "WorkspacePath<Scope>"),
+    )
+    .unwrap();
     let source = fs::read_to_string(maintained.join("library/std/fs/mod.es")).unwrap();
     fs::write(
         package.0.join("library/std/fs/mod.es"),
@@ -554,6 +563,30 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
             etas_types::PrimitiveType::USize
         ))
     ));
+    let native_stat = checked
+        .std_registry
+        .lookup_qualified(&["std", "effects", "actions", "Fs", "stat"])
+        .unwrap();
+    let source_stat = checked
+        .hir
+        .standard_action_targets
+        .iter()
+        .find_map(|(symbol, target)| {
+            (*target == native_stat.id
+                && matches!(
+                    checked.hir.symbols.get(*symbol).map(|s| &s.def),
+                    Some(etas_hir::SymbolDef::EffectAction { .. })
+                ))
+            .then_some(*symbol)
+        })
+        .unwrap();
+    assert_eq!(
+        checked.types.action_signatures[&source_stat].generic_params[0].name,
+        "Scope"
+    );
+    let stable = checked.effect_registry.action(source_stat).unwrap();
+    assert_eq!(stable.id.0, 139);
+    assert!(stable.has_default_handler);
     let stat = checked
         .types
         .std_intrinsic_calls

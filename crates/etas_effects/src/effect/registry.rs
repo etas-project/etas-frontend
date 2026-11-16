@@ -965,7 +965,9 @@ impl EffectRegistry {
         types: &etas_types::TypeFacts,
     ) -> Result<(), EffectPipelineError> {
         let mut next_user_action = self.next_dynamic_action();
-        for (symbol, signature) in &types.action_signatures {
+        let mut actions = types.action_signatures.iter().collect::<Vec<_>>();
+        actions.sort_by_key(|(symbol, _)| **symbol);
+        for (symbol, signature) in actions {
             let Some(owner) =
                 action_owner_symbol(hir, *symbol).and_then(|owner| self.tag_by_symbol(owner))
             else {
@@ -1018,7 +1020,10 @@ impl EffectRegistry {
                 output: signature.output,
                 returns_never: signature.returns_never,
                 runtime_requirement: self.runtime_requirement_reason(owner),
-                high_impact_ack: false,
+                high_impact_ack: self
+                    .standard_actions
+                    .get(&action_id)
+                    .is_some_and(|native| native.high_impact_ack),
             };
             if let Some(metadata) = self.dependency_actions.get(&action_id)
                 && (metadata.owner != owner
