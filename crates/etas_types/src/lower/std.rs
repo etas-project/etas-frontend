@@ -880,7 +880,7 @@ fn lower_std_type_constructor(
             })),
         }
     };
-    if !matches!(kind, TypeDeclKind::Spec | TypeDeclKind::Primitive) {
+    if kind != TypeDeclKind::Spec {
         if !ctx.signature_facts.type_generics.contains_key(&ty) {
             // Transitive signature types own the same binders as direct imports.
             ctx.signature_facts.type_generics.insert(ty, Vec::new());
@@ -890,6 +890,7 @@ fn lower_std_type_constructor(
         let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
         if let Some(identity) = ctx.reflection_declaration_identity(&path).cloned()
             && identity.kind() == etas_code::DefinitionKind::Type
+            && kind != TypeDeclKind::Primitive
         {
             ctx.signature_facts
                 .reflection_type_identities
