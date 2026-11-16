@@ -102,6 +102,7 @@ fn children(node: &TypeInfo) -> Vec<TypeInfoRef> {
             .collect(),
         TypeInfo::Task { output, .. } => vec![*output],
         TypeInfo::Primitive(_)
+        | TypeInfo::AgentContext(_)
         | TypeInfo::Parameter(_)
         | TypeInfo::Function(_)
         | TypeInfo::Handler { .. } => Vec::new(),

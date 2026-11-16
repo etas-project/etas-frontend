@@ -364,6 +364,7 @@ fn finite_trace_paths(
         *budget = budget.checked_sub(1)?;
         match step {
             Step::Visit(Trace::Empty) => values.push(BTreeSet::from([vec![]])),
+            Step::Visit(Trace::DefaultHandler { body, .. }) => pending.push(Step::Visit(body)),
             Step::Visit(Trace::Event(event)) => {
                 values.push(BTreeSet::from([vec![FiniteTraceAtom::Action(
                     event.action.clone(),

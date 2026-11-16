@@ -4,15 +4,54 @@ use crate::{SolverFailure, ValidationRequest};
 
 use super::state::BodyPipelineState;
 mod coverage;
+mod tool_reference;
 mod writable_place;
 
 pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &BodyPipelineState) {
+    tool_reference::validate(ctx, state);
     for failure in &state.solver_report.failures {
         ctx.diagnostics.push(diagnostic_for_solver_failure(failure));
     }
 
     for validation in &state.validations {
         match validation {
+            ValidationRequest::AgentContext { ty, active, span } => {
+                let resolved = crate::substitute_type_params(
+                    &mut ctx.interner,
+                    *ty,
+                    &Default::default(),
+                    &state.solver_report.substitutions,
+                );
+                let valid = resolved
+                    .as_ref()
+                    .is_ok_and(|ty| match ctx.interner.store().get(*ty) {
+                        Some(crate::Type::AgentContext(_)) => active.is_some(),
+                        Some(crate::Type::Named(_)) => {
+                            state.owner_params.iter().any(|param| param.subject == *ty)
+                                || ctx.item_signature(state.item).is_some_and(|signature| {
+                                    let callable = match signature {
+                                        crate::ItemSignature::Flow(callable)
+                                        | crate::ItemSignature::Tool(callable) => Some(callable),
+                                        crate::ItemSignature::Agent(agent) => agent.callable(),
+                                        crate::ItemSignature::TopLevelLet(_) => None,
+                                    };
+                                    callable.is_some_and(|callable| {
+                                        callable
+                                            .generic_params
+                                            .iter()
+                                            .any(|param| param.subject == *ty)
+                                    })
+                                })
+                        }
+                        _ => false,
+                    });
+                if !valid {
+                    ctx.diagnostics.push(Diagnostic::type_check(
+                        etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                        "step/invoke requires the current checked agent method or an inherited inference request context",
+                    ));
+                }
+            }
             ValidationRequest::LambdaParameter { ty, span }
             | ValidationRequest::EmptySequence { ty, span }
             | ValidationRequest::EmptyBrace { ty, span } => {

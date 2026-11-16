@@ -725,7 +725,8 @@ impl<'a> TypeSubstitutionEngine<'a> {
             | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
-            | Type::MemoryPlace(_) => {}
+            | Type::MemoryPlace(_)
+            | Type::AgentContext(_) => {}
         }
         Ok(dependencies)
     }
@@ -954,6 +955,7 @@ impl<'a> TypeSubstitutionEngine<'a> {
             | Type::Var(_)
             | Type::Enum(_)
             | Type::Named(_)
+            | Type::AgentContext(_)
             | Type::Nominal(_) => {
                 if self.is_relocation() {
                     return Err(TypeSubstitutionError::MissingTypeIdentity(ty));

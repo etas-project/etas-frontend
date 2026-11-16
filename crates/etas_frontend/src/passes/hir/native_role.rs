@@ -266,7 +266,7 @@ pub(crate) fn bindings(
                     source.symbol,
                     source.type_params.as_slice(),
                     (target.is_bodyless_type() && matches!(source.body, HirTypeDeclBody::Bodyless))
-                        || (target.is_projected_type()
+                        || ((target.is_projected_type() || target.is_represented_type())
                             && matches!(source.body, HirTypeDeclBody::Representation(_))),
                 ),
                 HirItem::Enum(source) => (
@@ -276,6 +276,9 @@ pub(crate) fn bindings(
                         StdSourceRole::Result => result_shape(hir, source),
                         StdSourceRole::Option => option_shape(hir, source),
                         StdSourceRole::Limit => source.type_params.is_empty(),
+                        StdSourceRole::NativeContextPolicy
+                        | StdSourceRole::NativeRetentionPolicy
+                        | StdSourceRole::NativeJsonValue => source.type_params.is_empty(),
                         _ => false,
                     },
                 ),

@@ -48,12 +48,7 @@ impl DefinitionDescriptorProjector<'_> {
             EffectArgRef::Type(ty) => StaticEffectArgInfo::Type(self.type_ref(*ty, scope)?),
             EffectArgRef::Path(path) => match self.identities.callable_path(path)? {
                 Some(id) => StaticEffectArgInfo::Callable(id.clone()),
-                None => StaticEffectArgInfo::Resource(
-                    self.identities
-                        .path(path)
-                        .ok_or_else(|| ProjectionError::MissingIdentity(path.join(".")))?
-                        .clone(),
-                ),
+                None => self.identities.resource_path(&self.checked, path)?,
             },
             EffectArgRef::String(value) => {
                 self.text(value)?;

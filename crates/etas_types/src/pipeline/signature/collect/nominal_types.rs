@@ -67,6 +67,19 @@ fn collect_type_decl(
         .source_type_roles
         .contains_key(&decl.symbol)
     {
+        if ctx
+            .signature_facts
+            .source_type_roles
+            .get(&decl.symbol)
+            .and_then(|native| ctx.std_registry.symbol(*native))
+            .and_then(|symbol| etas_std::StdSourceRole::from_path(&symbol.qualified_path.join(".")))
+            .is_some_and(etas_std::StdSourceRole::is_represented_type)
+        {
+            state.symbol_types.insert(
+                decl.symbol,
+                ctx.signature_facts.symbol_types[&decl.symbol].clone(),
+            );
+        }
         return;
     }
     let name = canonical_source_type_name(ctx, decl.symbol)

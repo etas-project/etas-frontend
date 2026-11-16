@@ -448,6 +448,7 @@ impl Builder<'_, '_> {
                 target,
                 etas_effects::ParameterCallTarget::SpecMethod { .. }
                     | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::AgentTools(_)
             ) {
                 // These carry their checked receiver/member/generic interface
                 // directly in the trace; they are not callable parameter labels.

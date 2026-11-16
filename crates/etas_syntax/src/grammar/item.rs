@@ -891,13 +891,20 @@ impl Parser<'_> {
                     "action selector declaration cannot use `_`; omit the selector at perform/handler sites to request wildcard matching",
                 ));
             }
-            ActionSelectorParam::Type(param)
+            if this.cursor.at_punct(Punct::Colon) {
+                this.cursor.bump();
+                let kind = this.path();
+                ActionSelectorParam::Value { name: param.name, kind }
+            } else {
+                ActionSelectorParam::Type(param)
+            }
         });
         self.expect_punct(Punct::Gt, "expected `>` after action selectors");
         params
             .into_iter()
             .filter(|param| match param {
                 ActionSelectorParam::Type(param) => param.name.text != "_",
+                ActionSelectorParam::Value { name, .. } => name.text != "_",
             })
             .collect()
     }

@@ -299,7 +299,14 @@ pub struct HirEffectActionDecl {
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirActionSelectorParam {
-    Type { symbol: SymbolId },
+    Type {
+        symbol: SymbolId,
+    },
+    Value {
+        name: String,
+        kind: Vec<String>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]

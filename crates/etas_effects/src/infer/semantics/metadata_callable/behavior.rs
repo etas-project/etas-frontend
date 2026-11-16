@@ -8,7 +8,9 @@ use etas_package_metadata::{
     CallableValueInterpreterFeature as I,
 };
 
-pub(super) fn lower(behavior: &CallableValueBehavior) -> (Determinism, InterpreterSupport) {
+pub(in crate::infer::semantics) fn lower(
+    behavior: &CallableValueBehavior,
+) -> (Determinism, InterpreterSupport) {
     let host = HostRequirementSet {
         kinds: behavior
             .host_requirements
@@ -60,7 +62,7 @@ pub(super) fn lower(behavior: &CallableValueBehavior) -> (Determinism, Interpret
     (lower_determinism(behavior.determinism), support)
 }
 
-pub(super) fn lower_determinism(value: D) -> Determinism {
+pub(in crate::infer::semantics) fn lower_determinism(value: D) -> Determinism {
     match value {
         D::Deterministic => Determinism::Deterministic,
         D::RuntimeMediated => Determinism::RuntimeMediated,

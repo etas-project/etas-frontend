@@ -12,3 +12,20 @@ pub struct CheckedAgentInferenceFact {
     pub schema: crate::TypeId,
     pub action_symbol: SymbolId,
 }
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct CheckedAgentControllerFact {
+    pub context: crate::TypeId,
+    pub step: CheckedAgentOperationFact,
+    pub invoke: CheckedAgentOperationFact,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct CheckedAgentOperationFact {
+    pub target: etas_std::StdSymbolId,
+    pub signature: crate::CallableSignature,
+}

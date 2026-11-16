@@ -221,6 +221,13 @@ impl<'a> TypePipelineContext<'a> {
             .or_else(|| self.lookup(|facts| &facts.symbol_types, &symbol))
     }
 
+    pub(crate) fn external_agent_reflection(
+        &self,
+        symbol: etas_hir::SymbolId,
+    ) -> Option<&crate::facts::reflection::ExternalAgentReflectionFact> {
+        self.lookup(|facts| &facts.external_agent_reflections, &symbol)
+    }
+
     pub(crate) fn reflection_declaration_identity(
         &self,
         path: &[String],
@@ -300,6 +307,13 @@ impl<'a> TypePipelineContext<'a> {
         self.signature_facts
             .agent_signature(component)
             .or_else(|| self.signature_base?.facts.agent_signature(component))
+    }
+
+    pub(crate) fn agent_method(
+        &self,
+        method: etas_hir::SymbolId,
+    ) -> Option<&crate::facts::signatures::AgentMethodSignature> {
+        self.lookup(|facts| &facts.agent_methods, &method)
     }
 
     pub(crate) fn action_signature(

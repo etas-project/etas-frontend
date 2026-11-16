@@ -55,6 +55,17 @@ impl DefinitionDescriptorProjector<'_> {
         self.ensure_edges(width)?;
         let data = data.clone();
         let (constructor, arguments) = match data {
+            Type::AgentContext(context) => {
+                let method = match context {
+                    etas_types::AgentContextRef::Portable(method) => *method,
+                    etas_types::AgentContextRef::Source(symbol) => self
+                        .identities
+                        .method(symbol)
+                        .ok_or(ProjectionError::MissingCallable(symbol))?
+                        .clone(),
+                };
+                return Ok(TypeInfo::AgentContext(method));
+            }
             Type::Existential { bounds } => {
                 let mut bounds = self.project_bounds(
                     bounds

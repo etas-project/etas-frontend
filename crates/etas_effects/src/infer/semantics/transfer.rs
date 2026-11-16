@@ -136,7 +136,8 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     state,
                 );
             };
-            let Some((invocation, summary)) = self.agent_infer_summary(fact, action, span) else {
+            let Some((invocation, summary)) = self.agent_infer_summary(expr, fact, action, span)
+            else {
                 return self.incomplete_at(
                     span,
                     "agent inference requires its canonical action descriptor and solved model-tool summaries",
@@ -813,6 +814,7 @@ impl EffectSemantics<'_> {
                     | Type::MemoryPlace(_)
                     | Type::ResourceHandle(_),
                 )
+                | Some(Type::AgentContext(_))
                 | None => return false,
             }
         }

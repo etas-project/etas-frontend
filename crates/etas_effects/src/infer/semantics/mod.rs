@@ -7,6 +7,7 @@ mod callback_contract;
 pub mod calls;
 mod capture_environment;
 mod constructor;
+mod default_behavior;
 mod definition_contract;
 pub mod engine;
 mod existential;

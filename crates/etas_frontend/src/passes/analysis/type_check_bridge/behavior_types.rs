@@ -5,6 +5,13 @@ pub(super) fn collect(
 ) -> Result<Vec<etas_types::ExternalTypeInput>, crate::code::descriptor::ProjectionError> {
     let mut types = Vec::new();
     for summary in &metadata.effect_summaries {
+        if let Some(behavior) = summary
+            .default_handler_effects
+            .as_ref()
+            .and_then(|effects| effects.behavior.as_ref())
+        {
+            collect_parts(&mut types, vec![Part::Behavior(behavior)])?;
+        }
         let mut traces = vec![&summary.action_trace];
         while let Some(trace) = traces.pop() {
             match trace {
@@ -20,7 +27,10 @@ pub(super) fn collect(
                 }
                 crate::ProjectExternalActionTraceInput::Seq(parts)
                 | crate::ProjectExternalActionTraceInput::Choice(parts) => traces.extend(parts),
-                crate::ProjectExternalActionTraceInput::Repeat(part) => traces.push(part),
+                crate::ProjectExternalActionTraceInput::Repeat(part)
+                | crate::ProjectExternalActionTraceInput::DefaultHandler { body: part, .. } => {
+                    traces.push(part)
+                }
                 _ => {}
             }
         }
@@ -130,6 +140,8 @@ pub(super) fn collect(
 }
 
 enum Part<'a> {
+    Behavior(&'a etas_package_metadata::DefaultBehavior),
+    Footprint(&'a etas_package_metadata::EffectFootprint),
     Target(&'a etas_package_metadata::CallableRequestTarget),
     Graph(&'a etas_package_metadata::CallableValueGraph),
     Trace(&'a etas_package_metadata::ActionTrace),
@@ -150,7 +162,91 @@ fn collect_parts(
     use etas_package_metadata::{ActionTrace, CallableRequestTarget, SpecMethodGenericArgument};
     while let Some(part) = pending.pop() {
         match part {
+            Part::Behavior(behavior) => {
+                pending.push(Part::Footprint(&behavior.direct));
+                for entry in &behavior.guarded {
+                    for ty in entry
+                        .guards
+                        .iter()
+                        .flat_map(|guard| &guard.args)
+                        .filter_map(|arg| arg.ty.as_ref())
+                    {
+                        add(types, ty)?;
+                    }
+                    pending.push(Part::Footprint(&entry.footprint));
+                }
+            }
+            Part::Footprint(footprint) => {
+                pending.extend(
+                    [
+                        &footprint.escaping_effects,
+                        &footprint.requested_actions,
+                        &footprint.default_actions,
+                        &footprint.handled_actions,
+                    ]
+                    .into_iter()
+                    .map(Part::Row),
+                );
+                if let Some(requests) = &footprint.handler_requests {
+                    for action in &requests.actions {
+                        for ty in action.action.args.iter().filter_map(|arg| arg.ty.as_ref()) {
+                            add(types, ty)?;
+                        }
+                        if let Some(signature) = &action.signature {
+                            for ty in signature
+                                .params
+                                .iter()
+                                .chain(std::iter::once(&signature.output))
+                            {
+                                add(types, ty)?;
+                            }
+                        }
+                        for binding in action.type_bindings.iter().flatten() {
+                            add(types, &binding.ty)?;
+                        }
+                    }
+                    for parameter in &requests.parameters {
+                        pending.push(Part::Target(&parameter.parameter));
+                        for ty in parameter
+                            .excluded
+                            .iter()
+                            .flat_map(|effect| &effect.args)
+                            .filter_map(|arg| arg.ty.as_ref())
+                        {
+                            add(types, ty)?;
+                        }
+                    }
+                }
+                for requirement in footprint
+                    .requirements
+                    .trace_requirements
+                    .iter()
+                    .chain(&footprint.requirements.trace_obligations)
+                {
+                    if let etas_package_metadata::MethodTraceRequirement::Clause(clause) =
+                        requirement
+                    {
+                        pending.extend(
+                            [
+                                &clause.pattern,
+                                &clause.guard,
+                                &clause.target,
+                                &clause.obligation,
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .map(Part::Row),
+                        );
+                        for bound in &clause.selector_bounds {
+                            for ty in &bound.spec_args {
+                                add(types, ty)?;
+                            }
+                        }
+                    }
+                }
+            }
             Part::Target(CallableRequestTarget::Parameter(_)) => {}
+            Part::Target(CallableRequestTarget::AgentTools(context)) => add(types, context)?,
             Part::Target(CallableRequestTarget::SpecMethod(method)) => {
                 add(types, &method.receiver)?;
                 for ty in &method.spec_args {
@@ -180,6 +276,9 @@ fn collect_parts(
                     }
                 }
                 for node in &graph.values {
+                    if let Some(behavior) = &node.default_handler_effects.behavior {
+                        pending.push(Part::Behavior(behavior));
+                    }
                     for ty in node.params.iter().chain(std::iter::once(&node.output)) {
                         add(types, ty)?;
                     }
@@ -221,7 +320,9 @@ fn collect_parts(
                 ActionTrace::Seq(parts) | ActionTrace::Choice(parts) => {
                     pending.extend(parts.iter().map(Part::Trace))
                 }
-                ActionTrace::Repeat(part) => pending.push(Part::Trace(part)),
+                ActionTrace::Repeat(part) | ActionTrace::DefaultHandler { body: part, .. } => {
+                    pending.push(Part::Trace(part))
+                }
                 _ => {}
             },
             Part::Row(row) => {

@@ -1,5 +1,7 @@
 pub(crate) mod analysis;
+mod default_behavior;
 mod default_handlers;
+pub use default_behavior::{DefaultBehavior, EffectFootprint};
 pub mod domain;
 pub use default_handlers::{DefaultHandlerContribution, DefaultHandlerEffects};
 mod outcome;

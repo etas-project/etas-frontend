@@ -302,6 +302,20 @@ impl<'a> TypeProjection<'a> {
                 metadata.path = vec!["std".into(), "task".into(), "Continuation".into()];
                 metadata.children.push(self.ty(continuation.action_output)?);
             }
+            Type::AgentContext(context) => {
+                metadata.kind = MetadataTypeKind::AgentContext;
+                metadata.agent_context = Some(match context {
+                    etas_types::AgentContextRef::Source(symbol) => self
+                        .identities
+                        .and_then(|identities| identities.method(*symbol))
+                        .cloned()
+                        .ok_or_else(|| PackageMetadataError::UnsupportedType {
+                            ty,
+                            reason: "agent context has no canonical method identity".into(),
+                        })?,
+                    etas_types::AgentContextRef::Portable(method) => (**method).clone(),
+                });
+            }
             Type::Refined { .. }
             | Type::Schema(_)
             | Type::MemoryPlace(_)

@@ -174,6 +174,9 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
     ctx.signature_facts.known_std_types.result_enum = registry
         .lookup_qualified(&["std", "result", "Result"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
+    ctx.signature_facts.known_std_types.code.tool_ref = registry
+        .lookup_qualified(&["std", "agent", "ToolRef"])
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.message = registry
         .lookup_qualified(&["std", "agent", "message", "Message"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
@@ -236,6 +239,17 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
         .lookup_qualified(&["std", "collections", "OrderedSet"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     for reference in registry.native_opaque_references() {
+        let ty = crate::lower::std::lower_std_type(
+            ctx,
+            registry,
+            &etas_std::StdType::Named(reference.path.join(".")),
+        );
+        ctx.signature_facts.known_std_types.opaque_values.insert(ty);
+    }
+    for reference in registry
+        .native_type_references()
+        .filter(|reference| reference.opaque)
+    {
         let ty = crate::lower::std::lower_std_type(
             ctx,
             registry,

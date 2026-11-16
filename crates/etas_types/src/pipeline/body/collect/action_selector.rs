@@ -301,6 +301,11 @@ fn static_type_selector<E>(
 ) -> Option<TypeId> {
     match ctx.ctx.hir.types.get(ty)?.clone() {
         HirType::Path { path, args, .. } => {
+            if let Some(method) = crate::lower::type_ref::agent_context_ref(ctx.ctx, &path)
+                && args.is_empty()
+            {
+                return Some(ctx.ctx.interner.intern(Type::AgentContext(method)));
+            }
             let declaration = type_arg_from_path(ctx, &path)?;
             if args.is_empty() {
                 Some(declaration)

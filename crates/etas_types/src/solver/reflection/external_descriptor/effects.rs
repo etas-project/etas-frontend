@@ -121,6 +121,14 @@ impl ExternalDescriptorMatcher<'_> {
                 (ExternalEffectArgInput::Path(path), StaticEffectArgInfo::Resource(expected)) => {
                     self.identity(path, expected)?
                 }
+                (
+                    ExternalEffectArgInput::Path(path),
+                    StaticEffectArgInfo::ResourceProjection { root, fields },
+                ) => {
+                    path.len() > fields.len()
+                        && path.ends_with(fields)
+                        && self.identity(&path[..path.len() - fields.len()], root)?
+                }
                 (ExternalEffectArgInput::Path(path), StaticEffectArgInfo::Callable(expected)) => {
                     if let Some(declaration) = expected.as_declaration() {
                         self.identity(path, declaration)?

@@ -741,6 +741,54 @@ fn lower_named_std_type_with_scope(
         return lower_std_type_decl_with_name(ctx, registry, decl, Some(&identity));
     }
 
+    let scoped = scope.map(|scope| format!("{}.{}", scope.join("."), name));
+    if let Some(reference) = scoped
+        .as_deref()
+        .and_then(|path| registry.native_type_reference(path))
+        .or_else(|| registry.native_type_reference(name))
+    {
+        if let Some(symbol) = ctx.symbols.canonical_path(ctx.hir, &reference.path)
+            && let Some(
+                crate::SymbolTypeFact::Type { constructor }
+                | crate::SymbolTypeFact::NominalType { constructor, .. },
+            ) = ctx.symbol_fact(symbol)
+        {
+            return TypeId(constructor.0);
+        }
+        if let Some(ty) = ctx.external_type_paths.get(&reference.path) {
+            return *ty;
+        }
+        if reference.is_enum {
+            return ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
+                name: reference.path.join("."),
+            }));
+        }
+        let source_parameters = ctx
+            .symbols
+            .canonical_path(ctx.hir, &reference.path)
+            .and_then(|symbol| ctx.hir.symbols.get(symbol))
+            .and_then(|symbol| symbol.defining_item)
+            .and_then(|item| match &ctx.hir.items[item] {
+                etas_hir::HirItem::Type(declaration) => Some(declaration.type_params.as_slice()),
+                _ => None,
+            });
+        let params = (0..reference.parameters.len())
+            .map(|index| {
+                source_parameters
+                    .and_then(|parameters| parameters.get(index))
+                    .and_then(|symbol| ctx.hir.symbols.get(*symbol))
+                    .map(|symbol| symbol.name.clone())
+                    .unwrap_or_else(|| format!("$native{index}"))
+            })
+            .collect();
+        return ctx.interner.intern(Type::Nominal(crate::NominalTypeRef {
+            read_only_erased_view: false,
+            name: reference.path.join("."),
+            params,
+            representation: None,
+        }));
+    }
+
     if registry.native_enum_reference(name).is_some() {
         // The checked source enum supplies its layout and constructor facts.
         // A host ABI reference supplies only this canonical nominal identity.
@@ -809,7 +857,7 @@ fn lookup_scoped_std_type_decl<'a>(
     path.push(name.to_owned());
     let symbol = registry.lookup_qualified(&path)?;
     match &symbol.decl {
-        StdDecl::Type(decl) => Some((path.join("."), decl)),
+        StdDecl::Type(decl) => Some((symbol.qualified_path.join("."), decl)),
         _ => None,
     }
 }
@@ -818,27 +866,21 @@ fn lookup_std_type_decl<'a>(
     registry: &'a StdRegistry,
     name: &str,
 ) -> Option<(String, &'a etas_std::TypeDecl)> {
-    let (identity, symbol) = if name.contains('.') {
+    let symbol = if name.contains('.') {
         let path = name.split('.').collect::<Vec<_>>();
-        (name.to_owned(), registry.lookup_qualified(&path)?)
+        registry.lookup_qualified(&path)?
     } else {
-        let symbol = registry
+        registry
             .lookup_prelude_in_namespace(name, etas_std::StdNamespace::Type)
             .and_then(|symbol| registry.symbol(symbol.id))
             .or_else(|| {
                 let mut matches = registry.symbols().filter(|symbol| symbol.name == name);
                 let first = matches.next()?;
                 matches.next().is_none().then_some(first)
-            })?;
-        let mut path = registry
-            .module(symbol.module)
-            .map_or_else(Vec::new, |module| module.path.clone());
-        path.push(symbol.name.clone());
-        let identity = path.join(".");
-        (identity, symbol)
+            })?
     };
     match &symbol.decl {
-        StdDecl::Type(decl) => Some((identity, decl)),
+        StdDecl::Type(decl) => Some((symbol.qualified_path.join("."), decl)),
         _ => None,
     }
 }

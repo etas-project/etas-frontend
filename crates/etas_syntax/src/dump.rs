@@ -591,6 +591,7 @@ impl AstDump for ast::EffectActionDecl {
                     .iter()
                     .map(|param| match param {
                         ast::ActionSelectorParam::Type(param) => param.name.text.as_str(),
+                        ast::ActionSelectorParam::Value { name, .. } => name.text.as_str(),
                     })
                     .collect::<Vec<_>>()
                     .join(",")

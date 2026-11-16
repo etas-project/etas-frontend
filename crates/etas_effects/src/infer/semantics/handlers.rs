@@ -163,10 +163,43 @@ impl EffectSemantics<'_> {
                         body_escaping: result.summary.escaping_effects.clone(),
                     });
                 }
-                let mut remaining_requests = result.summary.handler_requests.clone();
-                remaining_requests.subtract_handled(&coverage, &definitely_handled);
-                result.summary.subtract_handled_effects(&coverage, &handled);
-                result.summary.handler_requests = remaining_requests;
+                if let Err(reason) =
+                    result
+                        .summary
+                        .apply_handler_coverage(&coverage, &handled, &definitely_handled)
+                {
+                    control.join_normal(self.incomplete_at(span, reason, result));
+                    return control;
+                }
+                for trace in result
+                    .exits
+                    .exits
+                    .iter_mut()
+                    .map(|exit| &mut exit.trace)
+                    .chain(
+                        result
+                            .exits
+                            .parameter_exits
+                            .iter_mut()
+                            .map(|exit| &mut exit.prefix),
+                    )
+                {
+                    match crate::infer::default_behavior::subtract_default_trace(
+                        trace,
+                        &coverage,
+                        &definitely_handled,
+                    ) {
+                        Ok(filtered) => *trace = filtered,
+                        Err(reason) => {
+                            control.join_normal(self.incomplete_at(span, reason, result));
+                            return control;
+                        }
+                    }
+                }
+                result
+                    .summary
+                    .handler_requests
+                    .subtract_handled(&coverage, &definitely_handled);
                 let remaining = result.summary.escaping_effects.clone();
                 if !value_completion {
                     result
@@ -679,11 +712,16 @@ impl EffectSemantics<'_> {
     }
 
     fn remove_handled_runtime_support(&self, summary: &mut EffectSummary, handled: &EffectRow) {
+        summary.map_behavior_parts(|summary| self.remove_handled_runtime_support(summary, handled));
         let removed = self.host_requirements_for_row(handled);
         if removed.is_empty() {
             return;
         }
         summary.support = summary.support.without_host_requirements(&removed);
+        let remaining = summary.escaping_effects.clone();
+        let defaults = summary.default_actions.clone();
+        self.apply_runtime_support_for_row(summary, &remaining);
+        self.apply_runtime_support_for_row(summary, &defaults);
     }
 
     fn host_requirements_for_row(&self, row: &EffectRow) -> Vec<HostRequirementKind> {

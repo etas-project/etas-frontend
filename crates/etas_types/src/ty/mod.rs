@@ -61,6 +61,29 @@ pub struct TypeId(pub u32);
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
+pub enum AgentContextRef {
+    Source(etas_hir::SymbolId),
+    Portable(Box<etas_code::MethodId>),
+}
+
+impl From<etas_hir::SymbolId> for AgentContextRef {
+    fn from(method: etas_hir::SymbolId) -> Self {
+        Self::Source(method)
+    }
+}
+
+impl std::fmt::Display for AgentContextRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Source(symbol) => symbol.0.fmt(formatter),
+            Self::Portable(method) => method.fingerprint().fmt(formatter),
+        }
+    }
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum Type {
     Existential {
         bounds: Vec<crate::CheckedSpecBound>,
@@ -90,6 +113,7 @@ pub enum Type {
     Tuple(Vec<TypeId>),
     Enum(EnumTypeRef),
     Function(FlowType),
+    AgentContext(AgentContextRef),
     Handler(HandlerType),
     Task(TaskType),
     SchedulerHandle,

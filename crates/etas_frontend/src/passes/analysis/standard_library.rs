@@ -877,24 +877,20 @@ fn native_action_diagnostics(
             else {
                 unreachable!()
             };
-            let selectors_match = source
-                .selector_param_names
-                .iter()
-                .map(|name| source.generic_params.iter().position(|p| &p.name == name))
-                .collect::<Vec<_>>()
-                == native
+            let selectors_match =
+                source
                     .selector_param_names
                     .iter()
-                    .map(|name| native.type_params.iter().position(|p| &p.name == name))
+                    .map(|name| source.generic_params.iter().position(|p| &p.name == name))
                     .collect::<Vec<_>>()
-                && source
-                    .effect_args
-                    .iter()
-                    .all(|kind| matches!(kind, etas_types::EffectActionArgKind::Type))
-                && native
-                    .effect_args
-                    .iter()
-                    .all(|kind| matches!(kind, etas_std::EffectActionArgKind::Type));
+                    == native
+                        .selector_param_names
+                        .iter()
+                        .map(|name| native.type_params.iter().position(|p| &p.name == name))
+                        .collect::<Vec<_>>()
+                    && source.effect_args.iter().zip(&native.effect_args).all(
+                        |(source, native)| native_selector_kind_matches(registry, source, native),
+                    );
             if !selectors_match
                 || !native_signatures_match(&source_callable, expected, &types.store, &types.facts)
                     .unwrap_or(false)
@@ -907,4 +903,25 @@ fn native_action_diagnostics(
         }
     }
     diagnostics
+}
+
+fn native_selector_kind_matches(
+    registry: &etas_std::StdRegistry,
+    source: &etas_types::EffectActionArgKind,
+    native: &etas_std::EffectActionArgKind,
+) -> bool {
+    use etas_std::EffectActionArgKind as N;
+    use etas_types::EffectActionArgKind as S;
+    match (source, native) {
+        (S::Type, N::Type)
+        | (S::MemoryPlace, N::MemoryPlace)
+        | (S::StringPattern, N::StringPattern) => true,
+        (S::StaticResourcePath { ty: source }, N::StaticResourcePath { ty: native }) => {
+            source == native.as_ref()
+                || registry
+                    .native_type_reference(native)
+                    .is_some_and(|reference| reference.path.join(".") == *source)
+        }
+        _ => false,
+    }
 }

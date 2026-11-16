@@ -21,6 +21,7 @@ pub(crate) fn substitute_parameter_calls(
         Choice(usize),
         Parallel(usize),
         TaskStart(etas_hir::HirExprId),
+        DefaultHandler(crate::EffectSet),
         Repeat,
     }
     let mut pending = vec![Work::Visit(root)];
@@ -28,6 +29,10 @@ pub(crate) fn substitute_parameter_calls(
     while let Some(work) = pending.pop() {
         match work {
             Work::Visit(trace) => match trace {
+                ActionTraceDomain::DefaultHandler { guards, body } => {
+                    pending.push(Work::DefaultHandler(guards.clone()));
+                    pending.push(Work::Visit(body));
+                }
                 ActionTraceDomain::ParameterCall {
                     target,
                     parameter,
@@ -116,6 +121,15 @@ pub(crate) fn substitute_parameter_calls(
                     .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
                 values.push(ActionTraceDomain::TaskStart {
                     task_site,
+                    body: Box::new(body),
+                });
+            }
+            Work::DefaultHandler(guards) => {
+                let body = values
+                    .pop()
+                    .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+                values.push(ActionTraceDomain::DefaultHandler {
+                    guards,
                     body: Box::new(body),
                 });
             }

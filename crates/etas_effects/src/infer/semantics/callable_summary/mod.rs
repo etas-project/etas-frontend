@@ -95,10 +95,9 @@ impl CallableSummaryPlan {
                 } => calls.extend(parameter_calls.iter().map(|call| (call.target, call.span))),
                 ActionTraceDomain::Seq(parts)
                 | ActionTraceDomain::Choice(parts)
-                | ActionTraceDomain::Parallel(parts) => {
-                    pending.extend(parts)
-                }
+                | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
                 ActionTraceDomain::Repeat(inner)
+                | ActionTraceDomain::DefaultHandler { body: inner, .. }
                 | ActionTraceDomain::TaskStart { body: inner, .. } => pending.push(inner),
                 ActionTraceDomain::Empty
                 | ActionTraceDomain::Event(_)

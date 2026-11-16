@@ -41,6 +41,7 @@ use crate::{AstItemKind, CheckedProject, ModuleOrigin};
 use super::{PackageMetadataBuildInput, PackageMetadataError, PackageMetadataHeader};
 
 mod callable_returns;
+mod default_behavior;
 mod methods;
 mod re_exports;
 mod request_templates;
@@ -66,7 +67,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         }
     }
 
-    fn with_identities<'b>(
+    pub(super) fn with_identities<'b>(
         &'b self,
         identities: Option<&'b crate::code::identity::DefinitionIdentityIndex>,
     ) -> ProjectMetadataProjection<'b> {
@@ -513,6 +514,13 @@ impl<'a> ProjectMetadataProjection<'a> {
             Some(MetadataType {
                 kind: MetadataTypeKind::Nominal,
                 path: path.clone(),
+                children: match self.checked.types.symbol_types.get(&symbol) {
+                    Some(etas_types::SymbolTypeFact::NominalType {
+                        representation: Some(ty),
+                        ..
+                    }) => vec![self.metadata_type_in_generic_scope(*ty, &names)?],
+                    _ => Vec::new(),
+                },
                 projected_fields: match self.checked.types.symbol_types.get(&symbol) {
                     Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => self
                         .checked
@@ -1493,6 +1501,21 @@ impl<'a> ProjectMetadataProjection<'a> {
                     &effect_generic_names,
                 )?,
             };
+            let direct_effects = self.public_direct_effect_metadata(
+                summary,
+                &public_effects,
+                &type_generic_names,
+                &effect_generic_names,
+            )?;
+            let mut default_behavior = self.default_behavior_metadata(
+                summary,
+                &type_generic_names,
+                &effect_generic_names,
+                &self.trace_parameter_labels(*item)?,
+            )?;
+            if let Some(behavior) = &mut default_behavior {
+                behavior.direct.escaping_effects = direct_effects.clone();
+            }
             summaries.push(MetadataEffectSummary {
                 residual_checks: summary.residual_checks.iter().cloned().collect(),
                 behavior: callable_returns::behavior(summary),
@@ -1503,12 +1526,8 @@ impl<'a> ProjectMetadataProjection<'a> {
                 )?,
                 returned_callables: self.returned_callables(*item, summary, identities)?,
                 default_handler_effects: Some(etas_package_metadata::DefaultHandlerEffects {
-                    direct_effects: self.public_direct_effect_metadata(
-                        summary,
-                        &public_effects,
-                        &type_generic_names,
-                        &effect_generic_names,
-                    )?,
+                    behavior: default_behavior,
+                    direct_effects,
                     default_actions: self.effect_row_metadata(
                         &summary.default_actions,
                         &type_generic_names,
@@ -1518,6 +1537,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                         .default_handler_effects
                         .iter()
                         .flat_map(|effects| &effects.handlers)
+                        .filter(|handler| summary.default_actions.effects.contains(&handler.action))
                         .map(|handler| {
                             Ok(etas_package_metadata::DefaultHandlerContribution {
                                 action: self.summary_effect_ref_metadata(
@@ -1872,6 +1892,19 @@ impl<'a> ProjectMetadataProjection<'a> {
     ) -> Result<MetadataActionTrace, PackageMetadataError> {
         Ok(match trace {
             ActionTraceDomain::Empty => MetadataActionTrace::Empty,
+            ActionTraceDomain::DefaultHandler { guards, body } => {
+                MetadataActionTrace::DefaultHandler {
+                    guards: guards
+                        .iter()
+                        .map(|guard| self.summary_effect_ref_metadata(guard, type_generic_names))
+                        .collect::<Result<_, _>>()?,
+                    body: Box::new(self.action_trace_metadata(
+                        body,
+                        type_generic_names,
+                        parameters,
+                    )?),
+                }
+            }
             ActionTraceDomain::Event(event) => {
                 MetadataActionTrace::Event(MetadataActionTraceEvent {
                     action: self.summary_effect_ref_metadata(&event.action, type_generic_names)?,
@@ -1890,7 +1923,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             }
             ActionTraceDomain::ParameterCall { target, .. } => MetadataActionTrace::ParameterCall {
-                parameter: self.callable_request_target(*target, parameters)?,
+                parameter: self.callable_request_target(*target, parameters, type_generic_names)?,
             },
             ActionTraceDomain::TaskAwait { .. } => MetadataActionTrace::Empty,
             ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::Parallel(_) => {
@@ -1934,7 +1967,11 @@ impl<'a> ProjectMetadataProjection<'a> {
                 parameter_calls: parameter_calls
                     .iter()
                     .map(|call| {
-                        let target = self.callable_request_target(call.target, parameters)?;
+                        let target = self.callable_request_target(
+                            call.target,
+                            parameters,
+                            type_generic_names,
+                        )?;
                         Ok((target.fingerprint()?, target))
                     })
                     .collect::<Result<BTreeMap<_, _>, PackageMetadataError>>()?

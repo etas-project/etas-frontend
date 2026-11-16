@@ -66,13 +66,6 @@ fn lower_objects(
     }).collect()
 }
 
-pub(crate) fn lower_package_effect_row(
-    value: &metadata::EffectRow,
-    types: &TypeOutput,
-) -> Result<etas_effects::ExternalEffectRowMetadata, String> {
-    row(value, &CheckedExternalTypeResolver::new(types))
-}
-
 pub(crate) fn lower_callable_request_target(
     target: &metadata::CallableRequestTarget,
     types: &TypeOutput,
@@ -88,6 +81,9 @@ fn request_target(
         ExternalCallableRequestTarget as Target, ExternalSpecMethodGenericArgument as Argument,
     };
     Ok(match target {
+        metadata::CallableRequestTarget::AgentTools(context) => {
+            Target::AgentTools(type_id(context, resolver)?)
+        }
         metadata::CallableRequestTarget::Parameter(parameter) => {
             Target::Parameter(parameter.clone())
         }
@@ -186,6 +182,12 @@ fn lower_graph(
                 requested_actions: row(&node.requested_actions, resolver)?,
                 handled_requested_actions: row(&node.handled_requested_actions, resolver)?,
                 default_handler_effects: etas_effects::ExternalDefaultHandlerEffectsMetadata {
+                    behavior: node
+                        .default_handler_effects
+                        .behavior
+                        .as_ref()
+                        .map(|value| default_behavior(value, resolver))
+                        .transpose()?,
                     direct_effects: row(&node.default_handler_effects.direct_effects, resolver)?,
                     default_actions: row(&node.default_handler_effects.default_actions, resolver)?,
                     handlers: node
@@ -263,6 +265,56 @@ fn request_template(
     })
 }
 
+pub(crate) fn lower_default_behavior(
+    value: &metadata::DefaultBehavior,
+    types: &TypeOutput,
+) -> Result<etas_effects::ExternalDefaultBehaviorMetadata, String> {
+    default_behavior(value, &CheckedExternalTypeResolver::new(types))
+}
+
+fn default_behavior(
+    value: &metadata::DefaultBehavior,
+    resolver: &CheckedExternalTypeResolver<'_>,
+) -> Result<etas_effects::ExternalDefaultBehaviorMetadata, String> {
+    Ok(etas_effects::ExternalDefaultBehaviorMetadata {
+        direct: effect_footprint(&value.direct, resolver)?,
+        guarded: value
+            .guarded
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry
+                        .guards
+                        .iter()
+                        .map(|guard| effect(guard, resolver))
+                        .collect::<Result<_, _>>()?,
+                    effect_footprint(&entry.footprint, resolver)?,
+                ))
+            })
+            .collect::<Result<_, String>>()?,
+    })
+}
+
+fn effect_footprint(
+    value: &metadata::EffectFootprint,
+    resolver: &CheckedExternalTypeResolver<'_>,
+) -> Result<etas_effects::ExternalEffectFootprintMetadata, String> {
+    Ok(etas_effects::ExternalEffectFootprintMetadata {
+        escaping_effects: row(&value.escaping_effects, resolver)?,
+        requested_actions: row(&value.requested_actions, resolver)?,
+        default_actions: row(&value.default_actions, resolver)?,
+        handled_actions: row(&value.handled_actions, resolver)?,
+        handler_requests: value
+            .handler_requests
+            .as_ref()
+            .map(|requests| request_template(requests, resolver))
+            .transpose()?,
+        residual_checks: value.residual_checks.clone(),
+        behavior: value.behavior.clone(),
+        requirements: super::method_requirements::lower_in_scope(&value.requirements, resolver)?,
+    })
+}
+
 fn type_id(
     ty: &metadata::Type,
     resolver: &CheckedExternalTypeResolver<'_>,
@@ -271,7 +323,7 @@ fn type_id(
     resolver.type_id(&projected).map_err(|error| error.message)
 }
 
-fn row(
+pub(super) fn row(
     row: &metadata::EffectRow,
     resolver: &CheckedExternalTypeResolver<'_>,
 ) -> Result<etas_effects::ExternalEffectRowMetadata, String> {
@@ -321,6 +373,13 @@ fn trace(
     use etas_effects::ExternalActionTraceMetadata as T;
     Ok(match value {
         metadata::ActionTrace::Empty => T::Empty,
+        metadata::ActionTrace::DefaultHandler { guards, body } => T::DefaultHandler {
+            guards: guards
+                .iter()
+                .map(|guard| effect(guard, resolver))
+                .collect::<Result<_, _>>()?,
+            body: Box::new(trace(body, resolver)?),
+        },
         metadata::ActionTrace::Event(event) => T::Event {
             action: effect(&event.action, resolver)?,
             source: match event.source {

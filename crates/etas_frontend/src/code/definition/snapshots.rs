@@ -32,6 +32,7 @@ pub(super) fn export(
             DefinitionSnapshots {
                 agents: Vec::new(),
                 flows: Vec::new(),
+                tools: Vec::new(),
                 methods: Vec::new(),
             },
             DefinitionBodies {
@@ -81,12 +82,23 @@ pub(super) fn export(
         });
     }
     let mut flows = Vec::with_capacity(flow_headers.len());
+    let mut tools = Vec::new();
     for header in flow_headers {
         let item = catalog.item_owner(&header.id).ok_or_else(|| {
             ProjectionError::MissingIdentity("published flow native declaration".into())
         })?;
-        let frozen = catalog.freeze_flow_view(header, item)?;
-        flows.push(DefinitionSnapshotInfo {
+        let is_tool = header
+            .id
+            .as_declaration()
+            .is_some_and(|identity| identity.kind() == etas_code::DefinitionKind::Tool);
+        let frozen = if is_tool {
+            let contract = super::FrozenDefinitionContract::capture_tool(&catalog, header)?;
+            catalog.freeze_contract(contract, item, None)?
+        } else {
+            catalog.freeze_flow_view(header, item)?
+        };
+        let snapshots = if is_tool { &mut tools } else { &mut flows };
+        snapshots.push(DefinitionSnapshotInfo {
             identity: frozen.identity().clone(),
             revision: catalog.source_revision(&frozen, &syntax)?,
             dependencies: frozen.dependency_info()?,
@@ -136,6 +148,7 @@ pub(super) fn export(
         DefinitionSnapshots {
             agents,
             flows,
+            tools,
             methods,
         },
         DefinitionBodies { entries },
@@ -150,7 +163,25 @@ impl DefinitionCatalog {
     ) -> Result<RevisionInputs, ProjectionError> {
         let contract = environment.contract();
         let (definition, content) = match contract.entry() {
-            Some(callable) => (callable.clone(), self.body_content(callable, syntax)?),
+            Some(callable) => {
+                let item = self.item_owner(callable).ok_or_else(|| {
+                    ProjectionError::MissingIdentity("revision callable declaration".into())
+                })?;
+                let content = if self.is_declared_host_tool(item) {
+                    // A Host tool has a declared contract, not an editable source
+                    // body. Its invocation still requires the current binding.
+                    CodeFingerprint::of_parts(
+                        "etas.code.declared-host-tool.v1",
+                        [
+                            callable.fingerprint().as_bytes().as_slice(),
+                            contract.fingerprint().as_bytes().as_slice(),
+                        ],
+                    )
+                } else {
+                    self.body_content(callable, syntax)?
+                };
+                (callable.clone(), content)
+            }
             None => (
                 CallableId::declaration(contract.identity().clone())?,
                 CodeFingerprint::of_bytes("etas.code.absent-default-body.v1", b""),

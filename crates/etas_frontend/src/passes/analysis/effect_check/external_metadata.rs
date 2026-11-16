@@ -6,8 +6,6 @@ use std::{
 use etas_core::{Diagnostic, EffectDiagnosticCode, Span};
 use etas_types::{EffectArgRef, TypeOutput};
 
-mod method_requirements;
-
 use super::anchors::ExternalImportAnchorIndex;
 use crate::{
     ProjectEnvironmentInput, ProjectExternalActionArgKindInput,
@@ -76,7 +74,10 @@ pub(super) fn external_implementations(
                         graph: std::sync::Arc::new(method.callable.clone()),
                         values: crate::project::lower_callable_graph(&method.callable, types)?,
                         objects: crate::project::lower_callable_objects(&method.callable, types)?,
-                        requirements: method_requirements::lower(&method.requirements, types)?,
+                        requirements: crate::project::lower_method_requirements(
+                            &method.requirements,
+                            types,
+                        )?,
                         callable_contract: contracts.get_callable(
                             &etas_code::CallableId::method(method.identity.clone()),
                         )?,
@@ -597,6 +598,7 @@ fn external_effect_summary_metadata(
             .as_ref()
             .map(|effects| {
                 Ok::<_, String>(etas_effects::ExternalDefaultHandlerEffectsMetadata {
+                    behavior: effects.behavior.as_ref().map(|value| crate::project::lower_default_behavior(value, types)).transpose()?,
                     direct_effects: external_effect_row(&effects.direct_effects, types)?,
                     default_actions: external_effect_row(&effects.default_actions, types)?,
                     handlers: effects
@@ -644,6 +646,15 @@ fn external_action_trace(
     types: &TypeOutput,
 ) -> Result<etas_effects::ExternalActionTraceMetadata, String> {
     Ok(match trace {
+        ProjectExternalActionTraceInput::DefaultHandler { guards, body } => {
+            etas_effects::ExternalActionTraceMetadata::DefaultHandler {
+                guards: guards
+                    .iter()
+                    .map(|guard| lower_external_effect_metadata(guard, types))
+                    .collect::<Result<_, _>>()?,
+                body: Box::new(external_action_trace(body, types)?),
+            }
+        }
         ProjectExternalActionTraceInput::Empty => etas_effects::ExternalActionTraceMetadata::Empty,
         ProjectExternalActionTraceInput::Event { action, source } => {
             etas_effects::ExternalActionTraceMetadata::Event {

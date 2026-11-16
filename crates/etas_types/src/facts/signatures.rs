@@ -27,6 +27,7 @@ pub struct AgentEntrySignature {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct AgentMethodSignature {
+    pub context_type: TypeId,
     pub private_to: Option<etas_hir::HirModuleId>,
     pub inherent: bool,
     pub agent: HirItemId,

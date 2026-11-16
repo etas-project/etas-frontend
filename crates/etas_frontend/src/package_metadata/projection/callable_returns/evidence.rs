@@ -9,8 +9,14 @@ impl ProjectMetadataProjection<'_> {
         &self,
         target: ParameterCallTarget,
         labels: &BTreeMap<ParameterCallTarget, String>,
+        type_names: &BTreeSet<String>,
     ) -> Result<CallableRequestTarget, PackageMetadataError> {
         match target {
+            ParameterCallTarget::AgentTools(context) => {
+                let mut context = self.metadata_type(context)?;
+                normalize_generic_type(&mut context, type_names);
+                Ok(CallableRequestTarget::AgentTools(Box::new(context)))
+            }
             ParameterCallTarget::SpecMethod { call, environment } => self
                 .spec_method_invocation(call, environment)
                 .map(|method| CallableRequestTarget::SpecMethod(Box::new(method))),

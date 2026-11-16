@@ -142,6 +142,17 @@ fn action_effect_selector_signature(
     let mut defaults = Vec::new();
     for selector in &action.selector_params {
         match selector {
+            HirActionSelectorParam::Value { name, kind, .. } => {
+                let kind = kind.join(".");
+                kinds.push(match kind.as_str() {
+                    "MemoryPlace" => EffectActionArgKind::MemoryPlace,
+                    "string" | "std.core.string" => EffectActionArgKind::StringPattern,
+                    _ => EffectActionArgKind::StaticResourcePath { ty: kind },
+                });
+                // Value selectors do not substitute an inferred type binder.
+                names.push(name.clone());
+                defaults.push(None);
+            }
             HirActionSelectorParam::Type { symbol } => {
                 let Some(symbol_data) = ctx.hir.symbols.get(*symbol) else {
                     continue;

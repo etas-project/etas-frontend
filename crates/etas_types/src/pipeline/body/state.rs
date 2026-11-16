@@ -21,6 +21,7 @@ pub struct BodyPipelineState {
     pub handler_finish_stack: Vec<Option<TypeId>>,
     pub handler_finish_candidates: Vec<Vec<(TypeId, crate::ConstraintOrigin)>>,
     pub handler_depth: usize,
+    pub(in crate::pipeline) agent_contexts: Vec<TypeId>,
     pub(in crate::pipeline) action_requests: Vec<super::collect::handler_request::ActionRequest>,
     pub(in crate::pipeline) request_scope_depth: usize,
 }
@@ -41,6 +42,7 @@ impl BodyPipelineState {
             handler_finish_stack: Vec::new(),
             handler_finish_candidates: Vec::new(),
             handler_depth: 0,
+            agent_contexts: Vec::new(),
             action_requests: Vec::new(),
             request_scope_depth: 0,
         }

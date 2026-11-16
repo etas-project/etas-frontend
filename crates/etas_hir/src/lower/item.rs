@@ -1077,14 +1077,32 @@ impl LowerCtx {
             .type_params
             .iter()
             .cloned()
-            .chain(decl.selector_params.iter().map(|selector| match selector {
-                ast::ActionSelectorParam::Type(parameter) => parameter.clone(),
-            }))
+            .chain(
+                decl.selector_params
+                    .iter()
+                    .filter_map(|selector| match selector {
+                        ast::ActionSelectorParam::Type(parameter) => Some(parameter.clone()),
+                        ast::ActionSelectorParam::Value { .. } => None,
+                    }),
+            )
             .collect::<Vec<_>>();
         let type_params = self.lower_type_params(&parameters, scope, item_id);
-        let selector_params = type_params[decl.type_params.len()..]
+        let mut selector_types = type_params[decl.type_params.len()..].iter();
+        let selector_params = decl
+            .selector_params
             .iter()
-            .map(|symbol| HirActionSelectorParam::Type { symbol: *symbol })
+            .map(|selector| match selector {
+                ast::ActionSelectorParam::Type(_) => HirActionSelectorParam::Type {
+                    symbol: *selector_types
+                        .next()
+                        .expect("lowered selector type parameter"),
+                },
+                ast::ActionSelectorParam::Value { name, kind } => HirActionSelectorParam::Value {
+                    name: name.text.clone(),
+                    kind: kind.segments.iter().map(|part| part.text.clone()).collect(),
+                    span: name.span.cover(kind.span),
+                },
+            })
             .collect();
         let params = self.lower_params(&decl.params, scope, item_id);
         let return_type = self.lower_type(&decl.return_type, scope, item_id);

@@ -412,6 +412,7 @@ pub struct EffectActionDecl {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ActionSelectorParam {
     Type(TypeParam),
+    Value { name: Name, kind: Path },
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

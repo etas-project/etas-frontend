@@ -1253,9 +1253,9 @@ fn action_span(trace: &ActionTraceDomain, action: &Effect) -> Option<Span> {
         | ActionTraceDomain::Parallel(parts) => {
             parts.iter().find_map(|part| action_span(part, action))
         }
-        ActionTraceDomain::Repeat(inner) | ActionTraceDomain::TaskStart { body: inner, .. } => {
-            action_span(inner, action)
-        }
+        ActionTraceDomain::Repeat(inner)
+        | ActionTraceDomain::TaskStart { body: inner, .. }
+        | ActionTraceDomain::DefaultHandler { body: inner, .. } => action_span(inner, action),
         ActionTraceDomain::Empty
         | ActionTraceDomain::Event(_)
         | ActionTraceDomain::ParameterCall { .. }

@@ -133,7 +133,8 @@ pub(super) fn validate_bindings<E>(
                     | crate::Type::SchedulerHandle
                     | crate::Type::Prompt
                     | crate::Type::PromptPart
-                    | crate::Type::MemoryPlace(_),
+                    | crate::Type::MemoryPlace(_)
+                    | crate::Type::AgentContext(_),
                 ) => {}
                 None => incomplete = true,
             }

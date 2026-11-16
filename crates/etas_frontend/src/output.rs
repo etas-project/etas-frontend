@@ -1059,6 +1059,7 @@ pub enum ProjectExternalEffectArgInput {
     Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub enum ProjectExternalTypeInput {
+    AgentContext(etas_code::MethodId),
     Existential {
         bounds: Vec<ProjectExternalSpecBoundInput>,
     },
@@ -1198,6 +1199,7 @@ pub struct ProjectExternalParameterRequestInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalDefaultHandlerEffectsInput {
+    pub behavior: Option<etas_package_metadata::DefaultBehavior>,
     pub direct_effects: ProjectExternalEffectRowInput,
     pub default_actions: ProjectExternalEffectRowInput,
     pub handlers: Vec<ProjectExternalDefaultHandlerContributionInput>,
@@ -1224,6 +1226,10 @@ pub struct ProjectExternalDefaultHandlerContributionInput {
 pub enum ProjectExternalActionTraceInput {
     #[default]
     Empty,
+    DefaultHandler {
+        guards: Vec<ProjectExternalEffectRefInput>,
+        body: Box<ProjectExternalActionTraceInput>,
+    },
     Event {
         action: ProjectExternalEffectRefInput,
         source: ProjectExternalActionTraceEventSourceInput,
@@ -1588,6 +1594,21 @@ impl std::ops::Deref for CheckedProgramData {
 }
 
 impl CheckedProgramData {
+    pub fn requires_definition_catalog(&self) -> bool {
+        if !self.types.agent_inferences.is_empty() {
+            return true;
+        }
+        !self.types.reflections.is_empty()
+            || self.types.std_intrinsic_calls.values().any(|fact| {
+                matches!(
+                    fact.intrinsic,
+                    etas_std::intrinsic::runtime::TOOL_REFERENCE
+                        | etas_std::intrinsic::runtime::AGENT_STEP
+                        | etas_std::intrinsic::runtime::TOOL_INVOKE
+                )
+            })
+    }
+
     /// Residual plans every execution of this program must install. Plans are
     /// descriptions of required enforcement, not installation evidence.
     pub fn residual_plans(&self) -> &crate::residual::CheckedResidualPlans {

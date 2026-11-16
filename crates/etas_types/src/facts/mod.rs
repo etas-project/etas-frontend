@@ -106,6 +106,8 @@ pub struct TypeFacts {
     pub definition_operations: HashMap<HirExprId, reflection::CheckedDefinitionOperation>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub agent_inferences: HashMap<HirExprId, CheckedAgentInferenceFact>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub agent_controllers: HashMap<HirExprId, inference::CheckedAgentControllerFact>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, CheckedHandlerActionFact>,
     #[serde(default)]

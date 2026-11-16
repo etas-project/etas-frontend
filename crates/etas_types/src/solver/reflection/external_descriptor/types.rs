@@ -70,6 +70,9 @@ impl ExternalDescriptorMatcher<'_> {
             return self.ty(input, *target, &nested, depth + 1);
         }
         match (input, expected) {
+            (ExternalTypeInput::AgentContext(actual), TypeInfo::AgentContext(expected)) => {
+                Ok(actual == expected)
+            }
             (
                 ExternalTypeInput::Existential { bounds },
                 TypeInfo::Existential { bounds: expected },

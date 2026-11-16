@@ -151,33 +151,6 @@ impl EffectSemantics<'_> {
         (self.hir.items.get(item)?.symbol() == Some(symbol)).then_some(item)
     }
 
-    pub(crate) fn item_effect_path(&self, item: HirItemId) -> Option<Vec<String>> {
-        let symbol = match self.hir.items.get(item)? {
-            etas_hir::HirItem::Flow(flow) => flow.symbol,
-            etas_hir::HirItem::Agent(agent) => agent.symbol,
-            etas_hir::HirItem::Tool(tool) => tool.symbol,
-            etas_hir::HirItem::TopLevelLet(value) => value.symbol,
-            _ => return None,
-        };
-        let symbol = self.hir.symbols.get(symbol)?;
-        let mut path = self
-            .hir
-            .modules_arena
-            .get(symbol.defining_module)?
-            .name
-            .as_ref()
-            .map(|module| {
-                module
-                    .segments
-                    .iter()
-                    .map(|segment| segment.name.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        path.push(symbol.name.clone());
-        Some(path)
-    }
-
     pub(crate) fn incomplete_summary(
         &mut self,
         span: Span,
