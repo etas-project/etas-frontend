@@ -17,16 +17,16 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/etas-project/etas-frontend"
 
 [workspace.dependencies]
-etas_cache = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_cache" }
-etas_core = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_core" }
-etas_code = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_code" }
-etas_builtin = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_builtin" }
-etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_std" }
-etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_utils" }
+etas_cache = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_cache" }
+etas_core = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_core" }
+etas_code = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_code" }
+etas_builtin = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_builtin" }
+etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_std" }
+etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_utils" }
 etas_syntax = { path = "crates/etas_syntax" }
 etas_hir = { path = "crates/etas_hir" }
 etas_hir_analysis = { path = "crates/etas_hir_analysis" }
-etas_package_metadata = { git = "https://github.com/etas-project/etas-core.git", rev = "f492500182251eebfcb34658d638bd6ca76e2099", package = "etas_package_metadata" }
+etas_package_metadata = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_package_metadata" }
 etas_types = { path = "crates/etas_types" }
 etas_effects = { path = "crates/etas_effects" }
 etas_frontend = { path = "crates/etas_frontend" }
