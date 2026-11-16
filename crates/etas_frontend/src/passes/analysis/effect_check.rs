@@ -196,6 +196,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 PARSED_SOURCE_SET,
             ]))
             .produces(global_with_diagnostics([
+                TYPE_OUTPUT,
                 EFFECT_OUTPUT,
                 VERIFIED_RESIDUAL_PLANS,
             ]))
@@ -206,6 +207,44 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         context: &mut ProjectContext,
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
+    ) -> PassResult {
+        let limit = context
+            .candidate
+            .as_ref()
+            .map_or_else(
+                etas_code::descriptor::DescriptorLimits::default,
+                |candidate| candidate.descriptor_limits,
+            )
+            .max_nodes;
+        for _ in 0..limit {
+            let mut requested = None;
+            let result = self.run_once(context, manager, &mut requested);
+            let Some(ty) = requested else {
+                return result;
+            };
+            let types = context.types.as_mut().expect("checked type phase");
+            let mut interner = etas_types::TypeInterner::from_store(types.store.as_ref().clone());
+            let before = interner.store().len();
+            interner.intern(ty);
+            assert!(
+                interner.store().len() > before,
+                "requested type must be absent from the checked store"
+            );
+            types.store = std::sync::Arc::new(interner.into_store());
+        }
+        pipeline_failure(etas_effects::EffectPipelineError::AnalysisLimitExceeded {
+            resource: "request type materializations",
+            limit,
+        })
+    }
+}
+
+impl RunEffectPipelinePass {
+    fn run_once(
+        &mut self,
+        context: &mut ProjectContext,
+        manager: &mut PassManager<ProjectContext>,
+        requested: &mut Option<etas_types::Type>,
     ) -> PassResult {
         context.residual_plans = None;
         context.residual_support = None;
@@ -376,11 +415,16 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         };
         let result = etas_effects::RunEffectPipeline::run_prepared(
             input,
-            prepared,
+            prepared.clone(),
             manager.execution_control_handle(),
         );
         let pipeline_output = match result {
             Ok(output) => output,
+            Err(etas_effects::EffectPipelineError::TypeMaterializationRequired(ty)) => {
+                context.prepared_effect_registry = Some(prepared);
+                *requested = Some(ty);
+                return PassResult::unchanged();
+            }
             Err(error) => return pipeline_failure(error),
         };
         let mut output = pipeline_output.effects;
@@ -454,7 +498,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         context.effects = Some(output.into());
         PassResult::changed(
             PreservedArtifacts::All,
-            ArtifactSet::from([EFFECT_OUTPUT, VERIFIED_RESIDUAL_PLANS]),
+            ArtifactSet::from([TYPE_OUTPUT, EFFECT_OUTPUT, VERIFIED_RESIDUAL_PLANS]),
         )
     }
 }

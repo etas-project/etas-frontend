@@ -100,6 +100,7 @@ impl EffectSemantics<'_> {
                     &owner_bindings,
                     &rows,
                     None,
+                    Some(reference.owner),
                 )?
             }
             LatentSource::StdReference { value, .. } => self
@@ -130,6 +131,13 @@ impl EffectSemantics<'_> {
             &parameters,
             &rows,
             None,
+            Some(
+                reference
+                    .environment
+                    .map(|id| self.callable_environment(id).map(|env| env.owner))
+                    .transpose()?
+                    .unwrap_or(reference.owner),
+            ),
         )
     }
 }

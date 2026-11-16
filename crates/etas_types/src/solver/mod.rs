@@ -347,6 +347,7 @@ impl TypeSolver {
                     callee,
                     generic_params,
                     generic_args,
+                    selector_bindings,
                     arg_exprs,
                     args,
                     output,
@@ -390,6 +391,7 @@ impl TypeSolver {
                             callee,
                             generic_params,
                             explicit_generic_args: generic_args,
+                            selector_bindings,
                             arg_exprs,
                             args: &args,
                             output,
@@ -676,6 +678,7 @@ struct CallableConstraintSolveInput<'a> {
     callee: TypeId,
     generic_params: &'a [crate::CallableGenericParam],
     explicit_generic_args: &'a [crate::CallableGenericArg],
+    selector_bindings: &'a [(String, TypeId)],
     arg_exprs: &'a [Option<etas_hir::HirExprId>],
     args: &'a [TypeId],
     output: TypeId,
@@ -787,6 +790,7 @@ fn solve_callable_constraint(
                         && !generic_param_names.contains(&param.name)
                 })
                 .map(|param| (param.name.clone(), param.subject))
+                .chain(input.selector_bindings.iter().cloned())
                 .collect(),
             initial_substitutions,
         },

@@ -12,9 +12,17 @@ pub(crate) fn instantiate(
     span: Span,
 ) -> Result<Vec<SpecObligation>, ValidationRequest> {
     if parameters.len() != arguments.len()
-        || parameters
-            .iter()
-            .any(|param| param.kind != CallableGenericParamKind::Type)
+        || parameters.iter().zip(arguments).any(|(param, argument)| {
+            param.kind == CallableGenericParamKind::Effect
+                && !matches!(
+                    interner.store().get(*argument),
+                    Some(crate::Type::Handler(crate::HandlerType {
+                        produced: crate::HandlerProducedEffects::Infer,
+                        result: None,
+                        ..
+                    }))
+                )
+        })
     {
         return Err(ValidationRequest::Diagnostic {
             code: TypeDiagnosticCode::ArityMismatch,

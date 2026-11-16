@@ -356,3 +356,95 @@ flow main() -> i32 { return handle { hidden() } with { Echo.value(_) => { resume
         edited.output.diagnostics
     );
 }
+
+#[test]
+fn prefix_generics_keep_a_uniform_handler_across_distinct_payloads() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(r#"
+module app;
+effect Echo { action<T> value(payload: T) -> T; }
+flow hidden() -> string ![Echo.value] { return perform Echo.value("hidden"); }
+flow main() -> i32 {
+    let Uniform = handler { Echo.value(value) => { resume value; } };
+    let first = handle { perform Echo.value(7) } with Uniform;
+    let second = handle { hidden() } with Uniform;
+    return handle {
+        let a: i32 = perform Echo.value(first);
+        let b: string = perform Echo.value(second);
+        if a == 7 && b == "hidden" { 0 } else { 1 }
+    } with { Echo.value(value) => { resume value; } };
+}
+"#)));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(output.checked.is_some());
+}
+
+#[test]
+fn inferred_task_request_rows_survive_body_cache_reuse() {
+    use etas_frontend::{
+        CheckRequest, FrontendSession, ProjectChangeSet, ProjectRevision, SourceChange,
+        SourceVersion,
+    };
+    let source = r#"module main;
+import std.task.{Async, Task, Scheduler, run, start, await};
+import std.task.scheduler.{park, requeue};
+effect Echo { action<T, effect E> task(value: Task<T, ![E]>) -> Task<T, ![E]>; }
+flow forward<T, effect E>(value: Task<T, ![E]>) -> Task<T, ![E]> ![Echo.task] {
+    return perform Echo.task(value);
+}
+flow unrelated() -> i32 ![] { return 1; }
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        return handle {
+            let task = forward(start(() => 7));
+            let value: i32 = await(task);
+            value
+        } with {
+            Echo.task(value) => { resume value; }
+            Async.await(task) as continuation => { park(scheduler, task, continuation); }
+            Async.yield() as continuation => { requeue(scheduler, continuation, ()); }
+        };
+    });
+}
+"#;
+    let mut session = FrontendSession::new();
+    let project = session.open_project(ProjectInput::single_source(SourceInput::anonymous(source)));
+    let first = session
+        .check(project, CheckRequest::full_project())
+        .unwrap();
+    assert!(
+        first.output.diagnostics.is_empty(),
+        "{:?}",
+        first.output.diagnostics
+    );
+    assert!(first.output.checked.is_some());
+    session
+        .apply_changes(
+            project,
+            ProjectChangeSet {
+                revision: ProjectRevision(1),
+                source_changes: vec![SourceChange::Replace {
+                    source: etas_core::SourceId(0),
+                    version: SourceVersion(1),
+                    text: source.replace("return 1;", "return 2;"),
+                }],
+                dependency_overlay_changes: Vec::new(),
+                environment_change: None,
+                option_changes: Vec::new(),
+            },
+        )
+        .unwrap();
+    let second = session.check(project, CheckRequest::incremental()).unwrap();
+    assert!(
+        second.output.diagnostics.is_empty(),
+        "{:?}",
+        second.output.diagnostics
+    );
+    assert!(second.output.checked.is_some());
+    assert!(first.output.type_body_outputs.iter().any(|(unit, body)| {
+        second
+            .output
+            .type_body_outputs
+            .get(unit)
+            .is_some_and(|reused| std::sync::Arc::ptr_eq(body, reused))
+    }));
+}

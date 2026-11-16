@@ -132,7 +132,31 @@ pub fn lower_path_type(
         .join(".");
     let args = args
         .iter()
-        .filter_map(|arg| lower_type_ref(ctx, *arg))
+        .filter_map(|arg| {
+            if let HirType::Path { path, args, .. } = &ctx.hir.types[*arg]
+                && args.is_empty()
+                && let ResolveResult::Resolved(symbol) = path.resolution
+                && let Some(symbol) = ctx
+                    .symbols
+                    .canonical_symbol(ctx.hir, symbol)
+                    .and_then(|id| ctx.hir.symbols.get(id))
+                && symbol.kind == etas_hir::SymbolKind::EffectParam
+            {
+                let row = ctx
+                    .bound_effect_parameter(symbol.id)
+                    .cloned()
+                    .unwrap_or_else(|| crate::EffectRowRef {
+                        effects: vec![],
+                        tail: Some(symbol.name.clone()),
+                    });
+                return Some(ctx.interner.intern(Type::Handler(HandlerType {
+                    handled: row,
+                    produced: HandlerProducedEffects::Infer,
+                    result: None,
+                })));
+            }
+            lower_type_ref(ctx, *arg)
+        })
         .collect::<Vec<_>>();
     lower_named_path(ctx, path, &name, args, span)
 }
@@ -167,6 +191,7 @@ fn lower_named_path(
                     crate::SymbolTypeFact::TypeAlias { .. }
                         | crate::SymbolTypeFact::NominalType { .. }
                         | crate::SymbolTypeFact::Agent { .. }
+                        | crate::SymbolTypeFact::Type { .. }
                 )
             )
         {
@@ -415,8 +440,23 @@ fn apply_alias_type(
     if params.is_empty() {
         return target;
     }
-    let substitutions = params.into_iter().zip(args).collect();
-    match crate::substitute_named_params(&mut ctx.interner, target, &substitutions) {
+    let mut rows = std::collections::HashMap::new();
+    let mut substitutions = std::collections::HashMap::new();
+    for (name, argument) in params.into_iter().zip(args) {
+        if let Some(Type::Handler(HandlerType {
+            handled,
+            produced: HandlerProducedEffects::Infer,
+            result: None,
+        })) = ctx.interner.store().get(argument)
+        {
+            rows.insert(name.clone(), handled.clone());
+        }
+        substitutions.insert(name, argument);
+    }
+    match crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &substitutions, None)
+        .with_effect_arguments(&rows)
+        .substitute(target)
+    {
         Ok(ty) => ty,
         Err(error) => {
             ctx.diagnostics.push(Diagnostic::type_check(
@@ -618,11 +658,32 @@ fn known_or_named_path(
     }
 }
 
-fn applied_or_constructor(
+pub(super) fn applied_or_constructor(
     ctx: &mut TypePipelineContext<'_>,
     base: TypeId,
     args: Vec<TypeId>,
 ) -> TypeId {
+    match (ctx.interner.store().get(base).cloned(), args.as_slice()) {
+        (Some(Type::Task(_)), [output, row]) => {
+            if let Some(Type::Handler(HandlerType {
+                handled,
+                produced: HandlerProducedEffects::Infer,
+                result: None,
+            })) = ctx.interner.store().get(*row)
+            {
+                let effects = handled.clone();
+                return ctx.interner.intern(Type::Task(crate::TaskType {
+                    output: *output,
+                    effects,
+                }));
+            }
+        }
+        (Some(Type::Continuation(mut continuation)), [output]) => {
+            continuation.action_output = *output;
+            return ctx.interner.intern(Type::Continuation(continuation));
+        }
+        _ => {}
+    }
     if args.is_empty() {
         base
     } else {

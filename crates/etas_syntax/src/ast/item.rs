@@ -400,7 +400,9 @@ impl EffectBody {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EffectActionDecl {
     pub name: Name,
+    /// Static selector binders after the action name.
     pub selector_params: Vec<ActionSelectorParam>,
+    /// Inferred signature binders before the action name.
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: TypeExpr,

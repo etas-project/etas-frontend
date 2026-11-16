@@ -847,14 +847,9 @@ impl Parser<'_> {
 
     pub(crate) fn effect_action_decl(&mut self, owner: Option<&str>) -> EffectActionDecl {
         let start = self.expect_keyword(Keyword::Action, "expected `action`");
+        let type_params = self.type_params();
         let name = self.name("expected action name");
         let selector_params = self.action_selector_params();
-        let type_params = selector_params
-            .iter()
-            .map(|param| match param {
-                ActionSelectorParam::Type(param) => param.clone(),
-            })
-            .collect();
         let params = self.param_list();
         self.expect_punct(Punct::Arrow, "expected action return type");
         let return_type = self.type_expr();

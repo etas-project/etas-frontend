@@ -583,6 +583,7 @@ impl AstDump for ast::EffectDecl {
 impl AstDump for ast::EffectActionDecl {
     fn dump(&self, f: &mut AstDumpWriter) {
         let mut fields = name_fields(f, &self.name);
+        push_type_params(f, &mut fields, &self.type_params);
         if !self.selector_params.is_empty() {
             fields.push(format!(
                 "selectors={}",

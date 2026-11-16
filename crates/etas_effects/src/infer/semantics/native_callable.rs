@@ -213,6 +213,7 @@ impl EffectSemantics<'_> {
             &type_parameters,
             &rows,
             None,
+            Some(snapshot.owner),
         )?;
         let mut bindings = snapshot
             .parameters

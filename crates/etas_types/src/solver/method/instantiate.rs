@@ -146,6 +146,7 @@ pub(super) fn probe(
             callee: candidate.ty,
             generic_params: &candidate.signature.generic_params,
             explicit_generic_args: call.generic_args,
+            selector_bindings: &[],
             arg_exprs: &ordered_exprs,
             args: &ordered_types,
             output,

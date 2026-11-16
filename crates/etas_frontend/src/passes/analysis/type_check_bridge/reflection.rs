@@ -71,6 +71,7 @@ pub(in crate::passes::analysis) fn signature_input_for_environment(
                 )
             })?;
             standard_effects.insert(effect.name.clone(), key.clone());
+            standard_effects.insert(symbol.qualified_path.join("."), key.clone());
             if effect.stable_id.is_some() {
                 effect_targets.insert(effect.name.clone(), EffectTargetInfo::Effect(key.clone()));
             }

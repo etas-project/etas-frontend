@@ -164,6 +164,33 @@ impl HirProgram {
         }
         Some(path)
     }
+    /// The body synthesized for a trusted native declaration has no concrete
+    /// caller scope. Its binding provenance survives in the checked image.
+    pub fn native_binding_owner(&self, call: crate::HirExprId) -> Option<&crate::HirFlowDecl> {
+        let crate::HirExpr::Call { callee, .. } = self.exprs.get(call)? else {
+            return None;
+        };
+        let crate::HirExpr::Path(path) = self.exprs.get(*callee)? else {
+            return None;
+        };
+        let crate::ResolveResult::Resolved(symbol) = path.resolution else {
+            return None;
+        };
+        let symbol = self.symbols.get(symbol)?;
+        if !matches!(
+            symbol.def,
+            crate::SymbolDef::ImportAlias {
+                origin: crate::ImportAliasOrigin::NativeBinding,
+                ..
+            }
+        ) {
+            return None;
+        }
+        let crate::HirItem::Flow(flow) = self.items.get(symbol.defining_item?)? else {
+            return None;
+        };
+        Some(flow)
+    }
 }
 
 #[cfg(test)]

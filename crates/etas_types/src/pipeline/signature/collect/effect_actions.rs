@@ -2,9 +2,8 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 use etas_hir::{HirActionSelectorParam, HirEffectActionDecl, HirImplItem, HirItem, SymbolKind};
 
 use crate::{
-    CallableGenericParam, CallableGenericParamKind, CheckedSpecBound, CheckedSpecRef,
-    EffectActionArgKind, EffectActionSignature, EffectArgRef, NamedTypeRef, PrimitiveType,
-    SymbolTypeFact, Type,
+    CallableGenericParamKind, EffectActionArgKind, EffectActionSignature, EffectArgRef,
+    EffectRowRef, PrimitiveType, SymbolTypeFact, Type,
     lower::type_ref::lower_type_ref,
     pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState},
 };
@@ -69,48 +68,52 @@ fn collect_action(
     );
     let (effect_args, selector_param_names, selector_defaults) =
         action_effect_selector_signature(ctx, action);
-    let signature = EffectActionSignature {
-        default_handler_effects: ctx
-            .hir
-            .standard_action_targets
-            .get(&action.symbol)
-            .and_then(|target| ctx.std_registry.symbol(*target))
-            .and_then(|symbol| match &symbol.decl {
-                etas_std::StdDecl::EffectAction(declaration) => Some(declaration.clone()),
-                _ => None,
-            })
-            .and_then(|declaration| {
-                let registry = ctx.std_registry.clone();
-                crate::lower::std::lower_std_effect_action_signature(ctx, &registry, &declaration)
-                    .default_handler_effects
-            }),
-        generic_params: action
-            .type_params
-            .iter()
-            .filter_map(|param| {
-                let name = ctx.hir.symbols.get(*param)?.name.clone();
-                let bounds = state
-                    .type_param_bounds
-                    .get(param)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|bound| CheckedSpecBound {
-                        spec: CheckedSpecRef::Source(bound.spec_symbol),
-                        args: bound.args,
-                    })
-                    .collect();
-                Some(CallableGenericParam {
-                    kind: CallableGenericParamKind::Type,
-                    subject: ctx.interner.intern(Type::Named(NamedTypeRef {
-                        source_parameter: Some(*param),
-                        name: name.clone(),
-                    })),
-                    name,
-                    bounds,
+    let generic_params = super::callables::callable_generic_params(ctx, state, &action.type_params);
+    let default_handler_effects = ctx
+        .hir
+        .standard_action_targets
+        .get(&action.symbol)
+        .and_then(|target| ctx.std_registry.symbol(*target))
+        .and_then(|symbol| match &symbol.decl {
+            etas_std::StdDecl::EffectAction(declaration) => Some(declaration.clone()),
+            _ => None,
+        })
+        .and_then(|declaration| {
+            let registry = ctx.std_registry.clone();
+            let native =
+                crate::lower::std::lower_std_effect_action_signature(ctx, &registry, &declaration);
+            let rows = native
+                .generic_params
+                .iter()
+                .zip(&generic_params)
+                .filter(|(a, b)| {
+                    a.kind == CallableGenericParamKind::Effect
+                        && b.kind == CallableGenericParamKind::Effect
                 })
+                .map(|(a, b)| {
+                    (
+                        a.name.clone(),
+                        EffectRowRef {
+                            effects: vec![],
+                            tail: Some(b.name.clone()),
+                        },
+                    )
+                })
+                .collect();
+            native.default_handler_effects.map(|row| {
+                crate::TypeSubstitutionEngine::materializing(
+                    &mut ctx.interner,
+                    &std::collections::HashMap::new(),
+                    None,
+                )
+                .with_effect_arguments(&rows)
+                .substitute_effect_row(row)
+                .expect("checked native handler row")
             })
-            .collect(),
+        });
+    let signature = EffectActionSignature {
+        default_handler_effects,
+        generic_params,
         params,
         output,
         effect_args,

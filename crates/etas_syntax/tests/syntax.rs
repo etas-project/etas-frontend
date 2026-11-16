@@ -792,7 +792,7 @@ policy ReportsOnly {
     let etas_syntax::ast::EffectBody::Block { actions, .. } = &effect.body else {
         panic!("expected effect block");
     };
-    assert_eq!(actions[0].type_params.len(), 1);
+    assert_eq!(actions[0].selector_params.len(), 1);
     assert!(matches!(parsed.value.items[3].item, Item::Error(_)));
 
     let dump = dump_ast(
@@ -1922,4 +1922,25 @@ flow invalid() -> char {
     );
     let dump = dump_ast(&parsed.value, DumpOptions::default());
     assert!(!dump.contains("value=\\0"), "{dump}");
+}
+
+#[test]
+fn action_signature_generics_are_distinct_from_selectors() {
+    let parsed = parse_program(source(r#"
+effect Examples {
+    action<T, effect E> await(task: Task<T, ![E]>) -> T;
+    action choose<Output>(schema: Schema<Output>) -> Output;
+    action<T> select<Key>(key: Key, value: T) -> T;
+}
+"#));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let Item::Effect(effect) = &parsed.value.items[0].item else { panic!("effect") };
+    let actions = effect.body.actions();
+    assert_eq!(actions[0].type_params.len(), 2);
+    assert_eq!(actions[0].type_params[1].kind, TypeParamKind::Effect);
+    assert!(actions[0].selector_params.is_empty());
+    assert!(actions[1].type_params.is_empty());
+    assert_eq!(actions[1].selector_params.len(), 1);
+    assert_eq!(actions[2].type_params.len(), 1);
+    assert_eq!(actions[2].selector_params.len(), 1);
 }

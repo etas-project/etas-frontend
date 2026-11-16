@@ -20,6 +20,8 @@ pub enum EffectStage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EffectPipelineError {
+    /// The type phase must intern this solved request ABI before analysis resumes.
+    TypeMaterializationRequired(etas_types::Type),
     InvalidSourceIdentity {
         source: etas_core::SourceId,
         reason: String,
@@ -69,6 +71,10 @@ pub enum EffectPipelineError {
 impl std::fmt::Display for EffectPipelineError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TypeMaterializationRequired(ty) => write!(
+                formatter,
+                "effect request requires a materialized type: {ty:?}"
+            ),
             Self::InvalidSourceIdentity { source, reason } => write!(
                 formatter,
                 "invalid effect source identity for {source:?}: {reason}"

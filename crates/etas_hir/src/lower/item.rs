@@ -1073,18 +1073,18 @@ impl LowerCtx {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
-        let type_params = self.lower_type_params(&decl.type_params, scope, item_id);
-        let mut type_param_symbols = type_params.iter().copied();
-        let selector_params = decl
-            .selector_params
+        let parameters = decl
+            .type_params
             .iter()
-            .map(|param| match param {
-                ast::ActionSelectorParam::Type(_) => HirActionSelectorParam::Type {
-                    symbol: type_param_symbols
-                        .next()
-                        .expect("action type selector lowered into a type parameter symbol"),
-                },
-            })
+            .cloned()
+            .chain(decl.selector_params.iter().map(|selector| match selector {
+                ast::ActionSelectorParam::Type(parameter) => parameter.clone(),
+            }))
+            .collect::<Vec<_>>();
+        let type_params = self.lower_type_params(&parameters, scope, item_id);
+        let selector_params = type_params[decl.type_params.len()..]
+            .iter()
+            .map(|symbol| HirActionSelectorParam::Type { symbol: *symbol })
             .collect();
         let params = self.lower_params(&decl.params, scope, item_id);
         let return_type = self.lower_type(&decl.return_type, scope, item_id);

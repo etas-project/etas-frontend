@@ -234,6 +234,7 @@ fn collect_selected_call<E>(
         callee: candidate.ty,
         generic_params: candidate.signature.generic_params,
         generic_args: checked_args,
+        selector_bindings: Vec::new(),
         arg_exprs: args
             .iter()
             .map(|arg| {

@@ -204,7 +204,9 @@ fn materialize_task_calls(
                 .or_else(|| task_owner_scope(view.index(), hir, *call, &run_callbacks)),
             _ => task_owner_scope(view.index(), hir, *call, &run_callbacks),
         };
-        let Some(owner_scope) = owner_scope else {
+        let Some(owner_scope) =
+            owner_scope.or_else(|| hir.native_binding_owner(*call).map(|flow| flow.scope))
+        else {
             diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
                 span,

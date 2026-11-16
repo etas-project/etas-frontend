@@ -113,6 +113,7 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) inputs: EffectMaterializationInputs,
     pub(crate) diagnostics: Vec<Diagnostic>,
     diagnostic_materialization_errors: Vec<crate::EffectPipelineError>,
+    pub(super) requested_types: std::cell::RefCell<Vec<etas_types::Type>>,
     pub(crate) tool_bindings: &'a [ToolProviderBindingMetadata],
     pub(crate) external_summaries:
         &'a [crate::AnchoredExternalMetadata<ExternalEffectSummaryMetadata>],
@@ -271,6 +272,7 @@ impl<'a> EffectSemantics<'a> {
             inputs: EffectMaterializationInputs::default(),
             diagnostics: Vec::new(),
             diagnostic_materialization_errors: Vec::new(),
+            requested_types: Default::default(),
             tool_bindings,
             external_summaries,
         };
@@ -325,6 +327,12 @@ impl<'a> EffectSemantics<'a> {
             .collect();
         self.inputs.callable_environments =
             std::sync::Arc::unwrap_or_clone(self.callable_environments.into_inner());
+        self.diagnostic_materialization_errors.extend(
+            self.requested_types
+                .into_inner()
+                .into_iter()
+                .map(crate::EffectPipelineError::TypeMaterializationRequired),
+        );
         (
             self.inputs,
             self.diagnostics,

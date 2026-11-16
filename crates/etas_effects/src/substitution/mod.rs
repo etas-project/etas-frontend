@@ -75,6 +75,9 @@ pub(crate) trait SummaryMapper {
         }
     }
     fn ty(&mut self, ty: TypeId) -> Result<TypeId, Self::Error>;
+    fn request_type(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
+        self.ty(ty)
+    }
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error>;
     fn event(
         &mut self,

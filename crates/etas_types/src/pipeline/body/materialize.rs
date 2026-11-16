@@ -259,6 +259,18 @@ fn materialize_generic_type_instances(
         .map(|(expr, fact)| (*expr, fact.clone()))
         .collect::<Vec<_>>();
     instantiations.sort_unstable_by_key(|(expr, _)| *expr);
+    let callees = state
+        .constraints
+        .iter()
+        .filter_map(|constraint| match constraint {
+            crate::TypeConstraint::Callable {
+                call: Some(expr),
+                callee,
+                ..
+            } => Some((*expr, *callee)),
+            _ => None,
+        })
+        .collect::<std::collections::HashMap<_, _>>();
     let mut replacements = std::collections::HashMap::new();
     for (expr, fact) in instantiations {
         let source = state
@@ -282,7 +294,7 @@ fn materialize_generic_type_instances(
         let types = std::collections::HashMap::new();
         let source_parameters = std::collections::HashMap::new();
         let rows = fact.effect_row_bindings.into_iter().collect();
-        let materialized = crate::TypeSubstitutionEngine::materializing(
+        let mut engine = crate::TypeSubstitutionEngine::materializing(
             &mut ctx.interner,
             &types,
             Some(&state.solver_report.substitutions),
@@ -291,8 +303,13 @@ fn materialize_generic_type_instances(
         // the checked callee's subjects, never a caller's reused display name.
         .with_type_parameters(&parameters)
         .with_source_parameters(&source_parameters)
-        .with_effect_arguments(&rows)
-        .substitute(source)?;
+        .with_effect_arguments(&rows);
+        // Effects consumes the complete request ABI through a read-only type
+        // store, including payloads whose inferred rows differ from the template.
+        if let Some(callee) = callees.get(&expr) {
+            engine.substitute(*callee)?;
+        }
+        let materialized = engine.substitute(source)?;
         if materialized != source {
             replacements.insert(source, materialized);
         }

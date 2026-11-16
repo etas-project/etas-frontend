@@ -10,6 +10,7 @@ use crate::{DependencyEffectMetadata, EffectPipelineError, EffectRegistry};
 /// Session-local declaration registry, pinned to the exact checked HIR,
 /// signature prefix, standard registry and dependency metadata. It is not a
 /// serialized artifact or permission to skip final type validation.
+#[derive(Clone)]
 pub struct PreparedEffectRegistry {
     hir: HirRevision,
     base: etas_types::ty::SharedTypeBase,

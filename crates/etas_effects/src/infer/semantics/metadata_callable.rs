@@ -272,6 +272,10 @@ impl EffectSemantics<'_> {
                 &type_parameters,
                 &rows,
                 None,
+                source
+                    .environment
+                    .map(|id| self.callable_environment(id).map(|env| env.owner))
+                    .transpose()?,
             )
             .map_err(|error| match error {
                 EffectSpecializationError::InvalidCallableReturnSources => {

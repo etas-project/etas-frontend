@@ -88,6 +88,7 @@ pub(super) fn record_task_owners(ctx: &mut TypePipelineContext<'_>, state: &mut 
             continue;
         }
         let Some(owner_scope) = task_owner_scope(view.index(), ctx.hir, expr, &run_callbacks)
+            .or_else(|| ctx.hir.native_binding_owner(expr).map(|flow| flow.scope))
         else {
             ctx.diagnostics.push(Diagnostic::type_check(
                 TypeDiagnosticCode::InvalidTaskScope,

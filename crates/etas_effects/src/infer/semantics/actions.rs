@@ -103,6 +103,22 @@ impl EffectSemantics<'_> {
                     state,
                 );
             };
+            let rows = self
+                .types
+                .facts
+                .generic_instantiations
+                .get(&expr)
+                .into_iter()
+                .flat_map(|fact| fact.effect_row_bindings.iter().cloned())
+                .collect();
+            let names = std::collections::HashMap::new();
+            let row = match etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
+                .with_effect_arguments(&rows)
+                .substitute_effect_row(row.clone())
+            {
+                Ok(row) => row,
+                Err(error) => return self.incomplete_at(span, error.to_string(), state),
+            };
             let Some(effects) = row
                 .effects
                 .iter()

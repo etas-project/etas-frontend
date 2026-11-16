@@ -156,7 +156,13 @@ impl EffectSemantics<'_> {
             &checked.types,
             &metadata.generic_params,
         )?;
-        self.specialize_summary_with_bindings(&summary, &[], &checked.types, &rows)
+        self.specialize_summary_with_bindings(
+            &summary,
+            &[],
+            &checked.types,
+            &rows,
+            self.hir.index().expr_item.get(&instantiation).copied(),
+        )
     }
 
     fn separate_symbolic_parameter_requests(
@@ -399,6 +405,7 @@ impl EffectSemantics<'_> {
             &bindings,
             &type_bindings,
             &effect_row_bindings,
+            state.owner,
         )?;
         let inferred_parameters =
             self.inferred_callback_parameters(&parameter_targets, &signature.input)?;

@@ -42,19 +42,35 @@ impl EffectSemantics<'_> {
                 }
             }
         }
-        let substitutions = bindings.iter().cloned().collect();
-        let lower = |ty| {
-            etas_types::substitute_named_params_in_store(&self.types.store, ty, &substitutions)
-        };
+        let instantiation = self.types.facts.generic_instantiations.get(&expr);
+        let types = parameters
+            .iter()
+            .filter_map(|parameter| {
+                bindings
+                    .iter()
+                    .find(|(name, _)| name == &parameter.name)
+                    .map(|(_, ty)| (parameter.subject, *ty))
+            })
+            .collect();
+        let rows = instantiation
+            .into_iter()
+            .flat_map(|fact| fact.effect_row_bindings.iter().cloned())
+            .collect();
+        let names = std::collections::HashMap::new();
+        let sources = std::collections::HashMap::new();
+        let mut engine = etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
+            .with_type_parameters(&types)
+            .with_source_parameters(&sources)
+            .with_effect_arguments(&rows);
         Ok(RequestInstantiationSummary::action(
             action,
             bindings,
             etas_types::ActionRequestSignature {
                 params: inputs
                     .iter()
-                    .map(|ty| lower(*ty))
+                    .map(|ty| engine.substitute(*ty))
                     .collect::<Result<_, _>>()?,
-                output: lower(output)?,
+                output: engine.substitute(output)?,
             },
         ))
     }

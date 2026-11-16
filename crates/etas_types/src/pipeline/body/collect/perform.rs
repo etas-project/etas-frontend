@@ -167,20 +167,21 @@ pub fn collect_perform<E>(
         output: signature.output,
         effects: signature.default_handler_effects.clone(),
     }));
-    let explicit_generic_args = generic_args
+    let selector_bindings = signature
+        .selector_param_names
         .iter()
-        .map(|arg| match arg {
-            HirGenericArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty)
-                .map(crate::CallableGenericArg::Type),
-            HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
+        .zip(&signature.selector_defaults)
+        .filter_map(|(name, argument)| match argument {
+            Some(crate::EffectArgRef::Type(ty)) => Some((name.clone(), *ty)),
+            _ => None,
         })
-        .collect::<Option<Vec<_>>>()
-        .unwrap_or_default();
+        .collect();
     ctx.emit(TypeConstraint::Callable {
         call: Some(expr),
         callee,
         generic_params: signature.generic_params,
-        generic_args: explicit_generic_args,
+        generic_args: Vec::new(),
+        selector_bindings,
         arg_exprs: args
             .iter()
             .map(|arg| {

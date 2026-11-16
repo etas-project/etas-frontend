@@ -27,7 +27,7 @@ pub(crate) fn map_requests<M: SummaryMapper>(
                 .map(|bindings| {
                     bindings
                         .iter()
-                        .map(|(name, ty)| Ok((name.clone(), mapper.ty(*ty)?)))
+                        .map(|(name, ty)| Ok((name.clone(), mapper.request_type(*ty)?)))
                         .collect::<Result<_, M::Error>>()
                 })
                 .transpose()?,
@@ -39,9 +39,9 @@ pub(crate) fn map_requests<M: SummaryMapper>(
                         params: signature
                             .params
                             .iter()
-                            .map(|ty| mapper.ty(*ty))
+                            .map(|ty| mapper.request_type(*ty))
                             .collect::<Result<_, _>>()?,
-                        output: mapper.ty(signature.output)?,
+                        output: mapper.request_type(signature.output)?,
                     })
                 })
                 .transpose()?,

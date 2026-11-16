@@ -119,6 +119,8 @@ pub enum TypeConstraint {
         callee: TypeId,
         generic_params: Vec<CallableGenericParam>,
         generic_args: Vec<CallableGenericArg>,
+        /// Checked action selectors bind a subset of signature parameters.
+        selector_bindings: Vec<(String, TypeId)>,
         arg_exprs: Vec<Option<etas_hir::HirExprId>>,
         args: Vec<TypeId>,
         output: TypeId,

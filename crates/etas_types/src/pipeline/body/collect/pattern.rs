@@ -291,6 +291,7 @@ fn collect_constructor_variant<E>(
         callee,
         generic_params: signature.generic_params,
         generic_args: Vec::new(),
+        selector_bindings: Vec::new(),
         arg_exprs: Vec::new(),
         args: arg_tys,
         output: ty,

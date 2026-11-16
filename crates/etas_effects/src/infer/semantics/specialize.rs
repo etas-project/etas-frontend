@@ -195,10 +195,9 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Result<Option<EffectSummary>, EffectSpecializationError> {
-        let Some(origin) = self.task_origin(expr, &mut std::collections::HashSet::new()) else {
-            return Ok(None);
-        };
-        let Some(task) = self.types.facts.task_owners.get(&origin) else {
+        let Some((origin, task_row)) =
+            self.task_value_row(expr, &mut std::collections::HashSet::new())
+        else {
             return Ok(None);
         };
         let checked = self.call_generic_bindings(origin);
@@ -212,7 +211,7 @@ impl EffectSemantics<'_> {
             &checked.deferred_effect_rows,
             &existing,
         )?;
-        let mut effects = self.row_from_type_ref(&task.effects);
+        let mut effects = self.row_from_type_ref(task_row);
         if let Some(open) = effects.open
             && let Some(binding) = solved
                 .iter()
@@ -228,30 +227,37 @@ impl EffectSemantics<'_> {
         Ok(Some(summary))
     }
 
-    fn task_origin(
+    fn task_value_row(
         &self,
         expr: HirExprId,
         visited: &mut std::collections::HashSet<HirExprId>,
-    ) -> Option<HirExprId> {
+    ) -> Option<(HirExprId, &etas_types::EffectRowRef)> {
         if !visited.insert(expr) {
             return None;
         }
-        if self.types.facts.task_owners.contains_key(&expr) {
-            return Some(expr);
+        // Follow local values to the call whose checked row arguments produced
+        // the Task. A source forwarding flow has no task_owners entry itself.
+        if let etas_hir::HirExpr::Path(path) = self.hir.exprs.get(expr)?
+            && let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
+        {
+            let initializer = match &self.hir.symbols.get(symbol)?.def {
+                etas_hir::SymbolDef::Local { initializer, .. }
+                | etas_hir::SymbolDef::PatternBinding { initializer, .. } => *initializer,
+                etas_hir::SymbolDef::TopLevelLet { initializer, .. } => Some(*initializer),
+                _ => None,
+            };
+            if let Some(initializer) = initializer {
+                return self.task_value_row(initializer, visited);
+            }
         }
-        let etas_hir::HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
-            return None;
-        };
-        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-            return None;
-        };
-        let initializer = match &self.hir.symbols.get(symbol)?.def {
-            etas_hir::SymbolDef::Local { initializer, .. }
-            | etas_hir::SymbolDef::PatternBinding { initializer, .. } => *initializer,
-            etas_hir::SymbolDef::TopLevelLet { initializer, .. } => Some(*initializer),
+        if let Some(task) = self.types.facts.task_owners.get(&expr) {
+            return Some((expr, &task.effects));
+        }
+        let ty = self.types.facts.expr_types.get(&expr)?;
+        match self.types.store.get(*ty)? {
+            etas_types::Type::Task(task) => Some((expr, &task.effects)),
             _ => None,
-        }?;
-        self.task_origin(initializer, visited)
+        }
     }
 
     pub(crate) fn latent_summary_for_origins(
@@ -387,6 +393,9 @@ impl EffectSemantics<'_> {
             &type_parameters,
             &effect_row_bindings,
             residual_bindings.as_ref(),
+            state
+                .owner
+                .or_else(|| self.hir.index().expr_item.get(&site.call).copied()),
         )?;
         let param_types = params
             .iter()
@@ -508,6 +517,7 @@ impl EffectSemantics<'_> {
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
         effect_row_bindings: &[(String, EffectRow)],
+        owner: Option<etas_hir::HirItemId>,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         self.specialize_summary_with_residual_bindings(
             summary,
@@ -516,6 +526,7 @@ impl EffectSemantics<'_> {
             &std::collections::HashMap::new(),
             effect_row_bindings,
             None,
+            owner,
         )
     }
 
@@ -532,6 +543,7 @@ impl EffectSemantics<'_> {
                 etas_code::residual::identity::GenericArgumentIdentity,
             >,
         >,
+        owner: Option<etas_hir::HirItemId>,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         if bindings.is_empty()
             && type_bindings.is_empty()
@@ -550,6 +562,7 @@ impl EffectSemantics<'_> {
                 rows: effect_row_bindings,
                 residual_bindings,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+                owner,
                 types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
                     .with_type_parameters(type_parameters),
             },
