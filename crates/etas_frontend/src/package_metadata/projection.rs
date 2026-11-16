@@ -479,8 +479,31 @@ impl<'a> ProjectMetadataProjection<'a> {
                 })
             })
             .collect::<Result<Vec<_>, PackageMetadataError>>()?;
+        let primitive_role = self
+            .checked
+            .types
+            .source_type_roles
+            .get(&symbol)
+            .and_then(|_| match self.checked.types.symbol_types.get(&symbol) {
+                Some(etas_types::SymbolTypeFact::Type { constructor })
+                    if matches!(
+                        self.checked.type_store.get(TypeId(constructor.0)),
+                        Some(Type::Primitive(_))
+                    ) =>
+                {
+                    Some(TypeId(constructor.0))
+                }
+                _ => None,
+            });
         let ty = if matches!(self.checked.hir.items.get(item), Some(HirItem::Effect(_))) {
             None
+        } else if let Some(primitive) = primitive_role {
+            Some(MetadataType {
+                kind: MetadataTypeKind::Alias,
+                path: path.clone(),
+                children: vec![self.metadata_type_in_generic_scope(primitive, &names)?],
+                ..Default::default()
+            })
         } else if self.checked.types.source_type_roles.contains_key(&symbol)
             && !matches!(
                 self.checked.hir.items.get(item),

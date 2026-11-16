@@ -251,6 +251,20 @@ impl DefinitionDescriptorProjector<'_> {
         scope: usize,
     ) -> Result<TypeInfo, ProjectionError> {
         let parameters = self.scopes[scope].own_binders.clone();
+        if declaration.kind == TypeDeclKind::Primitive
+            && let etas_std::StdType::Primitive(primitive) =
+                etas_std::StdType::parse(&declaration.name)
+        {
+            return Ok(TypeInfo::Alias {
+                definition: identity.clone(),
+                parameters,
+                target: self.standard_ref(
+                    StdType::Primitive(primitive),
+                    scope,
+                    identity.module(),
+                )?,
+            });
+        }
         if declaration.kind == TypeDeclKind::Enum {
             let mut path = identity.module().to_vec();
             path.extend_from_slice(identity.declaration());

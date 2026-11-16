@@ -871,15 +871,16 @@ fn lower_std_type_constructor(
                     representation: None,
                 }))
             }
-            TypeDeclKind::Primitive | TypeDeclKind::Spec => {
-                ctx.interner.intern(Type::Named(NamedTypeRef {
-                    source_parameter: None,
-                    name: name.to_owned(),
-                }))
+            TypeDeclKind::Primitive => {
+                lower_std_type_with_scope(ctx, registry, &StdType::parse(&declaration.name), scope)
             }
+            TypeDeclKind::Spec => ctx.interner.intern(Type::Named(NamedTypeRef {
+                source_parameter: None,
+                name: name.to_owned(),
+            })),
         }
     };
-    if kind != TypeDeclKind::Spec {
+    if !matches!(kind, TypeDeclKind::Spec | TypeDeclKind::Primitive) {
         if !ctx.signature_facts.type_generics.contains_key(&ty) {
             // Transitive signature types own the same binders as direct imports.
             ctx.signature_facts.type_generics.insert(ty, Vec::new());
