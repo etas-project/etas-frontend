@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use etas_hir::{
     ExprView, HirArg, HirExpr, HirExprId, HirItem, HirItemId, HirLambdaBody, HirProgram, HirStmt,
-    HirVisitor, ResolveResult, SymbolDef, walk_block, walk_expr_tree,
+    HirVisitor, ResolveResult, SymbolDef, walk_block_tree, walk_expr_tree,
 };
 use etas_std::{IntrinsicMemoryAccess, StdRegistry, intrinsic::runtime::*};
 use etas_types::TypeFacts;
@@ -33,15 +33,53 @@ pub(super) fn analyze(
             assigned_symbol(hir, *target)
         })
         .collect::<HashSet<_>>();
+    // A nominally non-Memory action can be redirected by a Source handler.
+    // Only trivial resumptions and task orchestration are transparent here;
+    // other handler bodies still need a handler-aware resource proof.
+    let opaque_actions = hir
+        .handler_arms
+        .iter()
+        .filter_map(|(_, arm)| {
+            let mut scanner = HandlerSafety {
+                types,
+                safe: true,
+                nested: 0,
+            };
+            walk_block_tree(view, arm.body, &mut scanner);
+            if scanner.safe {
+                return None;
+            }
+            let ResolveResult::Resolved(symbol) = arm.action.action_symbol else {
+                return None;
+            };
+            Some(hir.canonical_source_symbol(symbol).unwrap_or(symbol))
+        })
+        .collect::<HashSet<_>>();
     let mut callables = HashMap::new();
     let mut closures = HashMap::new();
     for item in view.items() {
-        let HirItem::Flow(flow) = item.data() else {
-            continue;
+        let (parameters, block) = match item.data() {
+            HirItem::Flow(flow) => (flow.params.clone(), flow.body.block()),
+            HirItem::Tool(tool) => match &tool.body {
+                etas_hir::HirToolBody::Source(body) => (tool.params.clone(), body.block()),
+                _ => continue,
+            },
+            HirItem::Agent(agent) => match agent.body.block() {
+                Some(block) => (agent.params.clone(), block),
+                None => continue,
+            },
+            _ => continue,
         };
-        let mut scanner =
-            Scanner::new(hir, types, standard, effects, &mutated, flow.params.clone());
-        walk_block(view, flow.body.block(), &mut scanner);
+        let mut scanner = Scanner::new(
+            hir,
+            types,
+            standard,
+            effects,
+            &mutated,
+            &opaque_actions,
+            parameters,
+        );
+        walk_block_tree(view, block, &mut scanner);
         callables.insert(item.id(), scanner.plan);
         let mut pending = scanner.closures;
         while let Some(expr) = pending.pop() {
@@ -51,9 +89,17 @@ pub(super) fn analyze(
             let HirExpr::Lambda { params, body, .. } = &hir.exprs[expr] else {
                 unreachable!()
             };
-            let mut scanner = Scanner::new(hir, types, standard, effects, &mutated, params.clone());
+            let mut scanner = Scanner::new(
+                hir,
+                types,
+                standard,
+                effects,
+                &mutated,
+                &opaque_actions,
+                params.clone(),
+            );
             match body {
-                HirLambdaBody::Block(block) => walk_block(view, *block, &mut scanner),
+                HirLambdaBody::Block(block) => walk_block_tree(view, *block, &mut scanner),
                 HirLambdaBody::Expr(expr) => walk_expr_tree(view, *expr, &mut scanner),
             }
             pending.extend(scanner.closures);
@@ -69,6 +115,7 @@ struct Scanner<'a> {
     standard: &'a StdRegistry,
     effects: &'a etas_effects::EffectFacts,
     mutated: &'a HashSet<etas_hir::SymbolId>,
+    opaque_actions: &'a HashSet<etas_hir::SymbolId>,
     plan: ResourceGuardCallablePlan,
     closures: Vec<HirExprId>,
     nested: usize,
@@ -81,6 +128,7 @@ impl<'a> Scanner<'a> {
         standard: &'a StdRegistry,
         effects: &'a etas_effects::EffectFacts,
         mutated: &'a HashSet<etas_hir::SymbolId>,
+        opaque_actions: &'a HashSet<etas_hir::SymbolId>,
         parameters: Vec<etas_hir::SymbolId>,
     ) -> Self {
         Self {
@@ -89,6 +137,7 @@ impl<'a> Scanner<'a> {
             standard,
             effects,
             mutated,
+            opaque_actions,
             plan: ResourceGuardCallablePlan {
                 parameters,
                 complete: true,
@@ -100,7 +149,25 @@ impl<'a> Scanner<'a> {
     }
 
     fn may_access_memory(&self, expr: HirExprId) -> bool {
-        let Some(summary) = self.effects.expr_effects.get(&expr) else {
+        if self
+            .effects
+            .performed_actions
+            .get(&expr)
+            .and_then(|fact| fact.action_symbol)
+            .is_some_and(|symbol| {
+                self.opaque_actions
+                    .contains(&self.hir.canonical_source_symbol(symbol).unwrap_or(symbol))
+            })
+        {
+            return true;
+        }
+        let Some(summary) = self
+            .effects
+            .performed_actions
+            .get(&expr)
+            .map(|fact| &fact.summary)
+            .or_else(|| self.effects.expr_effects.get(&expr))
+        else {
             return true;
         };
         if summary.requested_actions.open.is_some() || summary.escaping_effects.open.is_some() {
@@ -128,6 +195,17 @@ impl<'a> Scanner<'a> {
     }
 
     fn call(&mut self, expr: HirExprId) {
+        if self.types.selected_method(expr).is_some_and(|method| {
+            method.signature.effects.is_some()
+                && method
+                    .signature
+                    .effects
+                    .iter()
+                    .chain(&method.signature.requested_actions)
+                    .all(|row| row.tail.is_none() && row.effects.is_empty())
+        }) {
+            return;
+        }
         if let Some(fact) = self.types.std_intrinsic_calls.get(&expr) {
             let descriptor = self
                 .standard
@@ -176,6 +254,7 @@ impl<'a> Scanner<'a> {
                     | MEMORY_CONTAINS
                     | MEMORY_PUT
                     | MEMORY_PUT_VERSIONED
+                    | MEMORY_INSERT
                     | MEMORY_DELETE
                     | MEMORY_DELETE_VERSIONED
             );
@@ -219,11 +298,39 @@ impl<'a> Scanner<'a> {
             self.plan.opaque_memory |= self.may_access_memory(expr);
             return;
         };
+        let qualified = path
+            .segments
+            .iter()
+            .map(|segment| segment.name.clone())
+            .collect::<Vec<_>>();
+        if self.standard.lookup_qualified(&qualified).is_some_and(|symbol| {
+            symbol.kind == etas_std::StdSymbolKind::Constructor || matches!(
+                &symbol.decl,
+                etas_std::StdDecl::Flow(flow) if flow.public_effects.is_empty()
+                    && flow.public_effect_tail.is_none() && flow.requested_actions.is_empty()
+                    && flow.requested_action_tail.is_none()
+            )
+        }) { return; }
         let ResolveResult::Resolved(symbol) = path.resolution else {
             self.plan.complete = false;
             self.plan.opaque_memory |= self.may_access_memory(expr);
             return;
         };
+        if self
+            .hir
+            .symbols
+            .get(self.hir.canonical_source_symbol(symbol).unwrap_or(symbol))
+            .is_some_and(|symbol| match &symbol.def {
+                SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. } => true,
+                SymbolDef::ImportAlias { path, .. } => self
+                    .standard
+                    .lookup_qualified(path)
+                    .is_some_and(|symbol| symbol.kind == etas_std::StdSymbolKind::Constructor),
+                _ => false,
+            })
+        {
+            return;
+        }
         let item = self
             .hir
             .canonical_source_symbol(symbol)
@@ -232,18 +339,20 @@ impl<'a> Scanner<'a> {
                 SymbolDef::Item { item } => Some(item),
                 _ => None,
             });
-        if let Some(item) =
-            item.filter(|item| matches!(self.hir.items.get(*item), Some(HirItem::Flow(_))))
-        {
-            let arguments = args.iter().map(argument).collect::<Vec<_>>();
-            self.plan.complete &= arguments.iter().all(|expr| match &self.hir.exprs[*expr] {
-                HirExpr::Literal(_) => true,
-                HirExpr::Path(path) => {
-                    matches!(path.resolution, ResolveResult::Resolved(_))
-                        && read_only(self.hir, *expr, self.mutated)
-                }
-                _ => false,
-            });
+        if let Some(item) = item.filter(|item| {
+            matches!(
+                self.hir.items.get(*item),
+                Some(HirItem::Flow(_) | HirItem::Tool(_) | HirItem::Agent(_))
+            )
+        }) {
+            let arguments = args
+                .iter()
+                .map(argument)
+                .map(|expr| read_only(self.hir, expr, self.mutated).then_some(expr))
+                .collect::<Vec<_>>();
+            // Only arguments used as resource selectors need to be frozen.
+            // The runtime resolves those lazily; a nested Command.read result,
+            // for example, must never be evaluated during task admission.
             self.plan.calls.push(ResourceGuardCall {
                 callable: item,
                 arguments,
@@ -251,6 +360,43 @@ impl<'a> Scanner<'a> {
         } else {
             self.plan.complete = false;
             self.plan.opaque_memory |= self.may_access_memory(expr);
+        }
+    }
+}
+
+struct HandlerSafety<'a> {
+    types: &'a TypeFacts,
+    safe: bool,
+    nested: usize,
+}
+
+impl<'view, 'hir> HirVisitor<'view, 'hir> for HandlerSafety<'_> {
+    fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
+        if matches!(expr.data(), HirExpr::Lambda { .. }) {
+            self.nested += 1;
+        }
+        if self.nested != 0 {
+            return;
+        }
+        match expr.data() {
+            HirExpr::Call { .. } | HirExpr::MethodCall { .. } | HirExpr::SpecMethodCall { .. } => {
+                self.safe &= self
+                    .types
+                    .std_intrinsic_calls
+                    .get(&expr.id())
+                    .is_some_and(|fact| {
+                        fact.qualified_path
+                            .get(1)
+                            .is_some_and(|part| part == "task")
+                    });
+            }
+            HirExpr::Perform { .. } | HirExpr::Infer { .. } => self.safe = false,
+            _ => {}
+        }
+    }
+    fn exit_expr(&mut self, expr: ExprView<'view, 'hir>) {
+        if matches!(expr.data(), HirExpr::Lambda { .. }) {
+            self.nested -= 1;
         }
     }
 }
@@ -269,8 +415,10 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for Scanner<'_> {
                 self.call(expr.id())
             }
             HirExpr::Perform { .. } | HirExpr::Infer { .. } => {
-                self.plan.complete = false;
-                self.plan.opaque_memory |= self.may_access_memory(expr.id());
+                if self.may_access_memory(expr.id()) {
+                    self.plan.complete = false;
+                    self.plan.opaque_memory = true;
+                }
             }
             _ => {}
         }
