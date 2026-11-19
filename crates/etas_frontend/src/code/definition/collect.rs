@@ -113,7 +113,7 @@ fn build_selected(
     let mut callables = BTreeMap::new();
     let mut callable_bindings = HashMap::new();
     for (id, symbol, item) in pending {
-        if !selected_callable(&checked, &identities, symbol, item, selection)? {
+        if !selected_callable(&checked, Some(&identities), symbol, item, selection)? {
             continue;
         }
         if selection.is_some()
@@ -425,7 +425,7 @@ fn build_selected(
 
 pub(crate) fn selected_callable(
     checked: &CheckedProgram,
-    identities: &DefinitionIdentityIndex,
+    identities: Option<&DefinitionIdentityIndex>,
     symbol: etas_hir::SymbolId,
     item: HirItemId,
     selection: Option<&BTreeSet<HirItemId>>,
@@ -434,6 +434,11 @@ pub(crate) fn selected_callable(
         return Ok(true);
     };
     if let Some(method) = checked.types.type_impl_methods.get(&symbol) {
+        let identities = identities.ok_or_else(|| {
+            ProjectionError::MissingIdentity(
+                "public method requires canonical package origins".into(),
+            )
+        })?;
         let id = identities
             .method(symbol)
             .ok_or(ProjectionError::MissingCallable(symbol))?;

@@ -33,8 +33,6 @@ impl ProjectMetadataProjection<'_> {
                 | MethodTarget::Agent { symbol, callable } => (symbol, callable),
                 _ => continue,
             };
-            let identities = identities
-                .ok_or_else(|| invalid("public method requires canonical package origins"))?;
             if !crate::code::definition::selected_callable(
                 self.checked,
                 identities,
@@ -46,6 +44,8 @@ impl ProjectMetadataProjection<'_> {
             {
                 continue;
             }
+            let identities = identities
+                .ok_or_else(|| invalid("public method requires canonical package origins"))?;
             let identity = identities
                 .method(symbol)
                 .cloned()

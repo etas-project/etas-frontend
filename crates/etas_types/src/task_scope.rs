@@ -2,8 +2,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    ItemSignature, SymbolTypeFact, Type, TypeFacts, TypeStore,
+    ItemSignature, SymbolTypeFact, Type, TypeFacts,
     facts::{CheckedMethodCallFact, concurrency::ScopedCallbackFact},
+    pipeline::context::TypePipelineContext,
 };
 use etas_hir::{
     HirArg, HirBodyKind, HirExpr, HirExprId, HirFlowBody, HirItem, HirOwner, HirProgram,
@@ -13,7 +14,13 @@ use etas_hir::{
 /// A callback is scoped only if every use is a call inside a drained scope or a
 /// transfer to another callable with this same checked promise. Cycles alone
 /// establish no promise; inference grows from the actual scope-entry mechanism.
-pub(crate) fn infer(hir: &HirProgram, store: &TypeStore, facts: &mut TypeFacts) {
+pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
+    let hir = ctx.hir;
+    let view = ctx
+        .hir_view
+        .get_or_insert_with(|| etas_hir::HirTreeView::new(hir));
+    let store = ctx.interner.store();
+    let facts = &mut ctx.signature_facts;
     for (_, item) in hir.items.iter() {
         if let HirItem::Flow(flow) = item
             && matches!(
@@ -33,7 +40,6 @@ pub(crate) fn infer(hir: &HirProgram, store: &TypeStore, facts: &mut TypeFacts) 
             );
         }
     }
-    let view = etas_hir::HirTreeView::new(hir);
     let mut uses: HashMap<SymbolId, Vec<HirExprId>> = HashMap::new();
     for (expr, value) in hir.exprs.iter() {
         if let HirExpr::Path(path) = value

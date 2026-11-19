@@ -64,12 +64,13 @@ pub fn run_from_input<'a>(
     imports::external::apply_external_signature_input(ctx, &input.external);
     run_with_annotations(ctx, input.annotation_validation);
     imports::source::apply_source_signature_input(ctx, &input.source);
-    crate::task_scope::infer(ctx.hir, ctx.interner.store(), &mut ctx.signature_facts);
+    crate::task_scope::infer(ctx);
     imports::reflection::apply(ctx, &input.reflection);
 }
 
 pub fn run(ctx: &mut TypePipelineContext<'_>) {
     run_with_annotations(ctx, crate::AnnotationValidationMode::Immediate);
+    crate::task_scope::infer(ctx);
 }
 
 fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::AnnotationValidationMode) {
@@ -138,7 +139,6 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     validate::exported_contracts::validate_exported_contracts(ctx, &state);
     collect::methods::collect(ctx, &mut state);
     materialize::materialize_signature_facts(ctx, state);
-    crate::task_scope::infer(ctx.hir, ctx.interner.store(), &mut ctx.signature_facts);
     validate::type_applications::run(ctx);
     if mode == crate::AnnotationValidationMode::Immediate {
         ctx.diagnostics

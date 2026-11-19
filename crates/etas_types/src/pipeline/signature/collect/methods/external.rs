@@ -49,7 +49,23 @@ pub(super) fn collect(ctx: &TypePipelineContext<'_>) -> Vec<MethodSignatureFact>
                 let member = members
                     .get(&implementation.member)
                     .expect("validated external method has a declared spec member");
+                let declaration = member
+                    .signature_in(&ctx.signature_facts)
+                    .expect("validated external method has a declared signature");
+                fact.signature.parameter_interface = declaration.parameter_interface.clone();
                 fact.parameter_names = member.parameter_names.iter().cloned().map(Some).collect();
+                if method.receiver == crate::method::MethodReceiver::Component {
+                    fact.parameter_names.insert(0, None);
+                    if let Some(parameters) = &mut fact.signature.parameter_interface {
+                        parameters.insert(
+                            0,
+                            crate::ParameterInterface {
+                                name: None,
+                                default: None,
+                            },
+                        );
+                    }
+                }
                 fact.owner = MethodOwner::Spec(implementation.spec.clone());
                 fact.spec_member = Some(implementation.member.clone());
                 fact.evidence = MethodEvidence::Implementation {

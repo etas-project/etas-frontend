@@ -13,8 +13,8 @@ pub(super) fn collect(
     let mut result = Vec::new();
     let view = ctx
         .hir_view
-        .clone()
-        .unwrap_or_else(|| HirTreeView::new(ctx.hir));
+        .get_or_insert_with(|| HirTreeView::new(ctx.hir))
+        .clone();
     let mut methods = state.type_impl_methods.values().collect::<Vec<_>>();
     methods.sort_by_key(|method| method.symbol);
     for method in methods {
