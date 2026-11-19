@@ -21,7 +21,23 @@ impl ProjectMetadataProjection<'_> {
             }
             for export in module.visibility_exports.items.values() {
                 if export.visibility == etas_hir::Visibility::Public {
-                    selection.insert(self.hir_item_for_export(export)?);
+                    let item = self.hir_item_for_export(export)?;
+                    selection.insert(item);
+                    if let Some(group) = self
+                        .checked
+                        .items
+                        .get(item)
+                        .and_then(etas_hir::HirItem::symbol)
+                        .and_then(|symbol| self.checked.hir.flow_overload_group(symbol))
+                    {
+                        for symbol in group {
+                            if let Some(etas_hir::SymbolDef::Item { item }) =
+                                self.checked.symbols.get(*symbol).map(|symbol| &symbol.def)
+                            {
+                                selection.insert(*item);
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -16,13 +16,10 @@ pub(super) fn project(
     type_names: &BTreeSet<String>,
     effect_names: &BTreeSet<String>,
     labels: &BTreeMap<etas_effects::ParameterCallTarget, String>,
-    requirements_published: bool,
 ) -> Result<Option<ProjectedSummary>, PackageMetadataError> {
-    if !summary.residual_checks.is_empty()
-        || (!requirements_published
-            && (summary.requirements.iter().next().is_some()
-                || summary.trace_spec_obligations.iter().next().is_some()))
-    {
+    // The canonical default-behavior footprint publishes each node's execution
+    // requirements, including nested returned closures and named helpers.
+    if !summary.residual_checks.is_empty() {
         return Ok(None);
     }
     let Some(behavior) = behavior(summary) else {

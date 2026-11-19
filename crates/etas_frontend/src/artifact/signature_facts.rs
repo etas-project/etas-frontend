@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize, etas_core::RetainedSize)]
 pub(crate) enum PersistedItemSignature {
     Flow {
+        parameter_interface: Option<Vec<etas_types::ParameterInterface>>,
         generic_params: Vec<CallableGenericParam>,
         input: Vec<TypeId>,
         output: TypeId,
@@ -17,6 +18,7 @@ pub(crate) enum PersistedItemSignature {
         signature: AgentSignature,
     },
     Tool {
+        parameter_interface: Option<Vec<etas_types::ParameterInterface>>,
         generic_params: Vec<CallableGenericParam>,
         input: Vec<TypeId>,
         output: TypeId,
@@ -32,6 +34,7 @@ impl PersistedItemSignature {
     pub(crate) fn from_frontend(signature: &ItemSignature) -> Self {
         match signature {
             ItemSignature::Flow(signature) => Self::Flow {
+                parameter_interface: signature.parameter_interface.clone(),
                 generic_params: signature.generic_params.clone(),
                 input: signature.params.clone(),
                 output: signature.output,
@@ -48,6 +51,7 @@ impl PersistedItemSignature {
                 signature: signature.clone(),
             },
             ItemSignature::Tool(signature) => Self::Tool {
+                parameter_interface: signature.parameter_interface.clone(),
                 generic_params: signature.generic_params.clone(),
                 input: signature.params.clone(),
                 output: signature.output,
@@ -67,12 +71,14 @@ impl PersistedItemSignature {
     pub(crate) fn into_frontend(self) -> ItemSignature {
         match self {
             Self::Flow {
+                parameter_interface,
                 generic_params,
                 input,
                 output,
                 effects,
                 requested_actions,
             } => ItemSignature::Flow(FlowSignature {
+                parameter_interface,
                 generic_params,
                 params: input,
                 output,
@@ -81,12 +87,14 @@ impl PersistedItemSignature {
             }),
             Self::Agent { signature } => ItemSignature::Agent(signature),
             Self::Tool {
+                parameter_interface,
                 generic_params,
                 input,
                 output,
                 effects,
                 requested_actions,
             } => ItemSignature::Tool(ToolSignature {
+                parameter_interface,
                 generic_params,
                 params: input,
                 output,

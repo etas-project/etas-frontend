@@ -114,7 +114,8 @@ impl DefinitionDescriptorProjector<'_> {
                         | GenericOwner::ImplementationPattern(owner) => owner.module(),
                         GenericOwner::Method(method) => method.implementation().module(),
                         GenericOwner::Implementation(implementation) => implementation.module(),
-                        GenericOwner::Action { effect, .. } => effect.module(),
+                        GenericOwner::Action { effect, .. }
+                        | GenericOwner::ActionOverload { effect, .. } => effect.module(),
                     }
                     .to_vec();
                     let arguments = bound

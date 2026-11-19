@@ -92,10 +92,12 @@ impl NativeTypeCorrespondence {
         let mut tags = BTreeMap::new();
         for tag in to.effect_registry.tags() {
             let identity = target_identities.effect_tag(tag.id)?;
-            if tags.insert(identity, tag.id).is_some() {
-                return Err(ProjectionError::Invalid(
-                    "ambiguous target effect identity".into(),
-                ));
+            if let Some(previous) = tags.insert(identity, tag.id) {
+                return Err(ProjectionError::Invalid(format!(
+                    "ambiguous target effect identity {identity:?}: `{}` and `{}`",
+                    to.effect_registry.tag_name(previous).unwrap_or("<unnamed>"),
+                    to.effect_registry.tag_name(tag.id).unwrap_or("<unnamed>"),
+                )));
             }
         }
         let mut effect_names = HashMap::new();
@@ -302,6 +304,35 @@ mod tests {
             assert_eq!(
                 correspondence.declarations().get(&parameter),
                 targets.get(&effect)
+            );
+        }
+        let (_, source, _) = catalog(
+            "module app; effect Query { action<T> value(value: T) -> T; action<U> value(value: Array<U>) -> U; }",
+        );
+        let (_, target, _) = catalog(
+            "module app; effect Query { action<U> value(value: Array<U>) -> U; action<T> value(value: T) -> T; }",
+        );
+        let correspondence = NativeTypeCorrespondence::build(&source, &target).unwrap();
+        let overload_parameters = |catalog: &DefinitionCatalog| {
+            catalog
+                .native_action_signatures()
+                .unwrap()
+                .into_iter()
+                .filter(|action| action.effect.module() == ["app"])
+                .map(|action| {
+                    (
+                        (action.effect, action.overload.unwrap()),
+                        action.signature.generic_params[0].subject,
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let targets = overload_parameters(&target);
+        assert_eq!(targets.len(), 2);
+        for (identity, parameter) in overload_parameters(&source) {
+            assert_eq!(
+                correspondence.declarations().get(&parameter),
+                targets.get(&identity)
             );
         }
     }

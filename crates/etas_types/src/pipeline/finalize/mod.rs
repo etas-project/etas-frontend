@@ -1,5 +1,6 @@
 mod effect_rows;
 mod handler;
+pub mod task_rows;
 pub use handler::{
     HandlerInstantiationProof, HandlerRequestProof, complete_handler_instantiations,
 };

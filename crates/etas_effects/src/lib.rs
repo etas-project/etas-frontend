@@ -3,13 +3,16 @@ pub mod effect;
 mod external_trace;
 pub mod facts;
 pub mod infer;
+mod parameter_defaults;
 pub mod pipeline;
 mod pipeline_error;
 pub mod requirement;
 pub mod residual;
 mod residual_identity;
 pub mod substitution;
+pub mod suspension;
 pub mod trace_spec;
+mod updating;
 pub mod validate;
 
 pub use effect::{
@@ -44,8 +47,8 @@ pub use infer::{
     HostRequirementSet, InterpreterFeatureKind, InterpreterOrchestrationRequirementSet,
     InterpreterSupport, MetadataCallableSource, MetadataObjectSource, OutcomeAnalysisGap,
     ParameterArgumentValue, ParameterCallTarget, ParameterExitArgument, ParameterExitFact,
-    ParameterHandlerScopeRef, ParameterRequest, RequestInstantiationSummary, ResidualCheckSet,
-    ReturnObservation, RuntimeRequirementReason,
+    ParameterHandlerScopeRef, ParameterRequest, ProjectedReturnSources,
+    RequestInstantiationSummary, ResidualCheckSet, ReturnObservation, RuntimeRequirementReason,
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,

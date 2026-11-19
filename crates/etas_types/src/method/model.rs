@@ -21,6 +21,20 @@ pub enum MethodReceiver {
     Value { slot: u32 },
     Component,
     Associated,
+    Updating { slot: u32 },
+}
+
+impl MethodReceiver {
+    pub fn value_slot(self) -> Option<u32> {
+        match self {
+            Self::Value { slot } | Self::Updating { slot } => Some(slot),
+            Self::Component | Self::Associated => None,
+        }
+    }
+
+    pub fn is_updating(self) -> bool {
+        matches!(self, Self::Updating { .. })
+    }
 }
 
 #[derive(
@@ -40,7 +54,8 @@ pub enum MethodTarget {
     Source {
         symbol: SymbolId,
         callable: HirItemId,
-        body: HirBodyRef,
+        // Explicit VM execution declarations have no source AST body.
+        body: Option<HirBodyRef>,
     },
     Standard {
         qualified_path: Vec<String>,

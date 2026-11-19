@@ -88,6 +88,7 @@ pub(super) fn prepare(
             &source,
             &identities,
             &declarations,
+            &target,
             interner.store(),
             control,
         )

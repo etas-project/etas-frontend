@@ -20,7 +20,7 @@ use crate::{
 
 mod restore;
 
-const SCHEMA: u32 = 15;
+const SCHEMA: u32 = 68;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryHirSource {
@@ -38,6 +38,10 @@ pub struct LibraryHirImage {
     pub package: PackageKey,
     pub declarations: BTreeMap<DefinitionKey, HirItemId>,
     pub methods: BTreeMap<MethodId, HirItemId>,
+    pub parameter_defaults: BTreeMap<
+        etas_code::descriptor::ParameterDefaultInfo,
+        crate::code::parameter_defaults::ParameterDefaultUnit,
+    >,
     pub sources: Vec<LibraryHirSource>,
     pub program: HirProgram,
     pub type_store: etas_types::TypeStore,
@@ -85,6 +89,9 @@ impl LibraryHirImage {
                 .map_err(error)?,
         };
         let identities = DefinitionIdentityIndex::build(checked, &origins).map_err(error)?;
+        let parameter_defaults =
+            crate::code::parameter_defaults::collect_units(checked.into(), &identities)
+                .map_err(error)?;
         let mut declarations = BTreeMap::new();
         let mut methods = BTreeMap::new();
         for (item, declaration) in checked.hir.items.iter() {
@@ -137,6 +144,7 @@ impl LibraryHirImage {
             package,
             declarations,
             methods,
+            parameter_defaults,
             sources,
             program: checked.hir.program().clone(),
             type_store: checked.type_store.as_ref().clone(),
@@ -218,7 +226,12 @@ impl LibraryHirImage {
         package_root: &Path,
         registry: std::sync::Arc<etas_std::StdRegistry>,
     ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
-        restore::restore(self, package_root, registry)
+        restore::restore(
+            self,
+            package_root,
+            registry,
+            &etas_utils::ProfileHandle::disabled(),
+        )
     }
 
     /// Restore using the image's validated query view, without constructing the
@@ -227,13 +240,21 @@ impl LibraryHirImage {
         self,
         package_root: &Path,
     ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
+        self.into_checked_from_image_profiled(package_root, &etas_utils::ProfileHandle::disabled())
+    }
+
+    pub fn into_checked_from_image_profiled(
+        self,
+        package_root: &Path,
+        profile: &etas_utils::ProfileHandle,
+    ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
         let registry = std::sync::Arc::new(
             self.native_registry
                 .clone()
                 .into_registry()
                 .map_err(error)?,
         );
-        self.into_checked(package_root, registry)
+        restore::restore(self, package_root, registry, profile)
     }
 }
 

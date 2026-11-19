@@ -209,12 +209,16 @@ fn collect_pattern_symbols(
             HirPat::Binding { symbol, .. } => {
                 symbols.insert(*symbol);
             }
+            HirPat::ListCons { head, tail, .. } => pending.extend([*head, *tail]),
             HirPat::Tuple { elems, .. } => pending.extend(elems.iter().copied()),
             HirPat::Record { fields, .. } => {
                 pending.extend(fields.iter().filter_map(|field| field.pat));
             }
             HirPat::Variant { args, .. } => pending.extend(args.iter().copied()),
-            HirPat::Wildcard { .. } | HirPat::Literal(_) | HirPat::Error { .. } => {}
+            HirPat::EmptyList { .. }
+            | HirPat::Wildcard { .. }
+            | HirPat::Literal(_)
+            | HirPat::Error { .. } => {}
         }
     }
 }

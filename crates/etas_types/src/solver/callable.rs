@@ -57,6 +57,7 @@ pub fn solve_callable(
     solve_callable_with_named_substitutions(
         store,
         CallableSolveInput {
+            argument_slots: None,
             callee,
             generic_param_names: &[],
             explicit_generic_args: &[],
@@ -70,6 +71,7 @@ pub fn solve_callable(
 }
 
 pub struct CallableSolveInput<'a> {
+    pub argument_slots: Option<&'a [u32]>,
     pub callee: TypeId,
     pub generic_param_names: &'a [String],
     pub explicit_generic_args: &'a [TypeId],
@@ -85,6 +87,7 @@ pub fn solve_callable_with_named_substitutions(
     input: CallableSolveInput<'_>,
 ) -> SolverReport {
     let CallableSolveInput {
+        argument_slots,
         callee,
         generic_param_names,
         explicit_generic_args,
@@ -109,7 +112,7 @@ pub fn solve_callable_with_named_substitutions(
         });
         return report;
     };
-    if flow.input.len() != args.len() {
+    if argument_slots.is_none() && flow.input.len() != args.len() {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
             span: origin.span,
@@ -121,6 +124,21 @@ pub fn solve_callable_with_named_substitutions(
         });
         return report;
     }
+    let inputs = match argument_slots {
+        Some(slots) => slots
+            .iter()
+            .map(|slot| flow.input.get(*slot as usize).copied())
+            .collect::<Option<Vec<_>>>(),
+        None => Some(flow.input.clone()),
+    };
+    let Some(inputs) = inputs.filter(|inputs| inputs.len() == args.len()) else {
+        report.push(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::ArityMismatch,
+            span: origin.span,
+            message: "call arguments differ from their checked parameter positions".into(),
+        });
+        return report;
+    };
     let mut type_substitutions =
         TypeBindings::new(initial_named_substitutions, generic_param_names);
     apply_explicit_generic_args(
@@ -130,10 +148,10 @@ pub fn solve_callable_with_named_substitutions(
         explicit_generic_args,
         &mut type_substitutions,
     );
-    for (actual, expected) in args.iter().copied().zip(flow.input.iter().copied()) {
+    for (actual, expected) in args.iter().copied().zip(inputs.iter().copied()) {
         infer_type_substitution(store, expected, actual, &mut type_substitutions);
     }
-    for (actual, expected) in args.iter().copied().zip(flow.input.iter().copied()) {
+    for (actual, expected) in args.iter().copied().zip(inputs.iter().copied()) {
         let mut arg_unifier = TypeUnifier::with_substitution(store, report.substitutions.clone());
         let unified = unify_schematic_type(
             store,
@@ -167,9 +185,9 @@ pub fn solve_callable_with_named_substitutions(
     }) && !unresolved_output_schematics_are_input_bound(
         store,
         flow.output,
-        &flow.input,
+        &inputs,
         &type_substitutions,
-    ) && !inputs_contain_fresh_type_var(store, &flow.input)
+    ) && !inputs_contain_fresh_type_var(store, &inputs)
         && (matches!(store.get(output), Some(Type::Var(_))) || output == flow.output)
     {
         report.push(SolverFailure {
@@ -321,6 +339,36 @@ fn unify_schematic_type(
             // The row solver checks the latent row after value-type inference.
             unify_schematic_type(store, lhs.output, rhs.output, named_substitutions, unifier)
         }
+        (Some(Type::Handler(lhs)), Some(Type::Handler(rhs))) => {
+            // Effect arguments of source constructors use Handler row types.
+            // Their rows are solved with function/task rows after value types.
+            match (lhs.result, rhs.result) {
+                (Some(lhs), Some(rhs)) => {
+                    unify_schematic_type(store, lhs, rhs, named_substitutions, unifier)
+                }
+                _ => true,
+            }
+        }
+        (Some(Type::Continuation(expected)), Some(Type::Continuation(actual))) => {
+            // Continuation<T> names the action result. The captured answer and
+            // residual row stay on the actual binder; an unspelled formal
+            // context does not replace or manufacture either one.
+            continuation_context_accepts(expected, actual)
+                && unify_schematic_type(
+                    store,
+                    expected.action_output,
+                    actual.action_output,
+                    named_substitutions,
+                    unifier,
+                )
+                && match (expected.handled_answer, actual.handled_answer) {
+                    (Some(expected), Some(actual)) => {
+                        unify_schematic_type(store, expected, actual, named_substitutions, unifier)
+                    }
+                    (None, _) => true,
+                    _ => false,
+                }
+        }
         (Some(Type::Function(lhs)), Some(Type::Function(rhs)))
             if lhs.input.len() == rhs.input.len() =>
         {
@@ -355,6 +403,25 @@ fn unify_schematic_type(
         }
         _ => unifier.unify(schematic, actual).is_ok(),
     }
+}
+
+fn continuation_context_accepts(
+    expected: &crate::ContinuationType,
+    actual: &crate::ContinuationType,
+) -> bool {
+    expected.residual_effects.as_ref().is_none_or(|expected| {
+        actual.residual_effects.as_ref().is_some_and(|actual| {
+            expected.tail == actual.tail
+                && expected
+                    .effects
+                    .iter()
+                    .all(|effect| actual.effects.contains(effect))
+                && actual
+                    .effects
+                    .iter()
+                    .all(|effect| expected.effects.contains(effect))
+        })
+    })
 }
 
 fn unresolved_output_schematics_are_input_bound(
@@ -881,6 +948,28 @@ fn infer_type_substitution(
                 infer_type_substitution(store, expected.output, actual.output, substitutions);
             }
         }
+        Some(Type::Handler(expected)) => {
+            if let Some(Type::Handler(actual)) = store.get(actual)
+                && let (Some(expected), Some(actual)) = (expected.result, actual.result)
+            {
+                infer_type_substitution(store, expected, actual, substitutions);
+            }
+        }
+        Some(Type::Continuation(expected)) => {
+            if let Some(Type::Continuation(actual)) = store.get(actual) {
+                infer_type_substitution(
+                    store,
+                    expected.action_output,
+                    actual.action_output,
+                    substitutions,
+                );
+                if let (Some(expected), Some(actual)) =
+                    (expected.handled_answer, actual.handled_answer)
+                {
+                    infer_type_substitution(store, expected, actual, substitutions);
+                }
+            }
+        }
         Some(Type::Tuple(expected_elements)) => {
             if let Some(Type::Tuple(actual_elements)) = store.get(actual) {
                 for (expected, actual) in expected_elements
@@ -1132,6 +1221,40 @@ fn is_assignable_to_schematic(
             Some(Type::Primitive(crate::PrimitiveType::Never)) => true,
             _ => false,
         },
+        Some(Type::Handler(expected)) => match store.get(actual) {
+            Some(Type::Handler(actual)) => match (actual.result, expected.result) {
+                (Some(actual), Some(expected)) => {
+                    is_assignable_to_schematic(store, actual, expected, substitutions, solved)
+                }
+                _ => true,
+            },
+            _ => false,
+        },
+        Some(Type::Continuation(expected)) => match store.get(actual) {
+            Some(Type::Continuation(actual)) => {
+                continuation_context_accepts(expected, actual)
+                    && is_assignable_to_schematic(
+                        store,
+                        actual.action_output,
+                        expected.action_output,
+                        substitutions,
+                        solved,
+                    )
+                    && match (expected.handled_answer, actual.handled_answer) {
+                        (Some(expected), Some(actual)) => is_assignable_to_schematic(
+                            store,
+                            actual,
+                            expected,
+                            substitutions,
+                            solved,
+                        ),
+                        (None, _) => true,
+                        _ => false,
+                    }
+            }
+            Some(Type::Primitive(crate::PrimitiveType::Never)) => true,
+            _ => false,
+        },
         Some(Type::Function(expected)) => match store.get(actual) {
             Some(Type::Function(actual)) if expected.input.len() == actual.input.len() => {
                 actual
@@ -1204,6 +1327,15 @@ fn is_schematic_assignable_to(
                 substitutions,
                 solver_substitutions,
             ),
+            _ => false,
+        },
+        Some(Type::Handler(from)) => match store.get(to) {
+            Some(Type::Handler(to)) => match (from.result, to.result) {
+                (Some(from), Some(to)) => {
+                    is_schematic_assignable_to(store, from, to, substitutions, solver_substitutions)
+                }
+                _ => true,
+            },
             _ => false,
         },
         Some(Type::Array(from)) => match store.get(to) {

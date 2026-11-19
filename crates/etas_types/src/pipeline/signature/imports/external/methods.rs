@@ -5,6 +5,20 @@ pub(super) fn prepare(
     metadata: &crate::ExternalPublicMetadataInput,
     span: etas_core::Span,
 ) {
+    for implementation in &metadata.spec_impls {
+        let Some(owner) = &implementation.owner else {
+            continue;
+        };
+        if let Err(reason) = crate::lower::external::reserve_external_generic_parameters(
+            ctx,
+            &implementation.generic_params,
+            Some(&etas_code::descriptor::GenericOwner::Implementation(
+                owner.clone(),
+            )),
+        ) {
+            incomplete_external_type_facts(ctx, span, reason.into());
+        }
+    }
     for method in &metadata.methods {
         let owner = etas_code::descriptor::GenericOwner::Implementation(
             method.identity.implementation().clone(),
@@ -52,6 +66,15 @@ pub(super) fn apply(
             continue;
         };
         let mut signature = CallableSignature {
+            parameter_interface: Some(
+                metadata
+                    .method_parameter_interfaces
+                    .get(&method.identity)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        crate::call_interface::required_parameters(&method.parameter_names)
+                    }),
+            ),
             generic_params,
             params: method
                 .params
@@ -66,6 +89,15 @@ pub(super) fn apply(
         let mut parameter_names = method.parameter_names.clone();
         if method.receiver == crate::method::MethodReceiver::Component {
             signature.params.insert(0, self_type);
+            if let Some(parameters) = &mut signature.parameter_interface {
+                parameters.insert(
+                    0,
+                    crate::ParameterInterface {
+                        name: None,
+                        default: None,
+                    },
+                );
+            }
             parameter_names.insert(0, None);
         }
         ctx.signature_facts

@@ -35,6 +35,39 @@ pub struct SourceMap {
 }
 
 impl SourceMap {
+    pub fn is_collection_literal(&self, expr: HirExprId) -> bool {
+        matches!(
+            self.expr_sources.get(&expr),
+            Some(
+                HirOrigin::Desugared {
+                    desugaring: DesugaringKind::CollectionLiteral,
+                    ..
+                } | HirOrigin::Synthetic {
+                    reason: SyntheticOriginReason::CollectionLiteral,
+                    ..
+                }
+            )
+        )
+    }
+
+    pub fn mark_collection_literal(&mut self, expr: HirExprId, span: Span) {
+        let origin = match self
+            .expr_sources
+            .get(&expr)
+            .and_then(HirOrigin::primary_syntax)
+        {
+            Some(primary) => HirOrigin::Desugared {
+                primary,
+                related: Vec::new(),
+                desugaring: DesugaringKind::CollectionLiteral,
+            },
+            None => HirOrigin::Synthetic {
+                span,
+                reason: SyntheticOriginReason::CollectionLiteral,
+            },
+        };
+        self.expr_sources.insert(expr, origin);
+    }
     /// Generated body locations retain their own diagnostic source while name
     /// lookup uses the definition's original module-part environment.
     pub fn lexical_source(&self, source: SourceId) -> SourceId {
@@ -117,6 +150,7 @@ impl HirOrigin {
 )]
 pub enum DesugaringKind {
     MatchStatementExpr,
+    CollectionLiteral,
 }
 
 #[derive(
@@ -124,6 +158,7 @@ pub enum DesugaringKind {
 )]
 pub enum SyntheticOriginReason {
     LoweringGenerated,
+    CollectionLiteral,
     Recovery,
 }
 
@@ -148,6 +183,9 @@ pub struct SourceMapBuilder {
 }
 
 impl SourceMapBuilder {
+    pub fn mark_collection_literal(&mut self, expr: HirExprId, span: Span) {
+        self.source_map.mark_collection_literal(expr, span);
+    }
     pub fn bind_lexical_source(&mut self, generated: SourceId, definition: SourceId) -> bool {
         if generated == definition {
             return true;

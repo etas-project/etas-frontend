@@ -61,7 +61,7 @@ pub(crate) fn check(
                 let Some(etas_std::StdSymbol {
                     decl: etas_std::StdDecl::Type(decl),
                     ..
-                }) = registry.lookup_qualified(path)
+                }) = registry.lookup_type_dependency(path)
                 else {
                     return Err("existential bound has no standard spec declaration".into());
                 };

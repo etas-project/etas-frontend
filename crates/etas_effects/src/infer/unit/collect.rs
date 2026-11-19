@@ -24,6 +24,17 @@ impl EffectUnitCollector {
     fn collect_semantic_units(&mut self, semantic_units: &[HirSemanticUnit]) {
         for unit in semantic_units {
             match unit {
+                HirSemanticUnit::ParameterDefault {
+                    owner,
+                    parameter,
+                    expr,
+                } => {
+                    self.units.insert(EffectUnit::ParameterDefault {
+                        owner: *owner,
+                        parameter: *parameter,
+                        expr: *expr,
+                    });
+                }
                 HirSemanticUnit::Item(item) | HirSemanticUnit::TopLevelLet(item) => {
                     self.units.insert(EffectUnit::Item(*item));
                 }
@@ -185,6 +196,17 @@ flow main(input: string) -> string {
 
         for semantic_unit in semantic_units {
             match semantic_unit {
+                HirSemanticUnit::ParameterDefault {
+                    owner,
+                    parameter,
+                    expr,
+                } => {
+                    assert!(effect_units.contains(&EffectUnit::ParameterDefault {
+                        owner,
+                        parameter,
+                        expr,
+                    }));
+                }
                 HirSemanticUnit::Item(item) | HirSemanticUnit::TopLevelLet(item) => {
                     assert!(
                         effect_units.contains(&EffectUnit::Item(item)),

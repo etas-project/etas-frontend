@@ -21,7 +21,24 @@ impl EffectSemantics<'_> {
         site: CallSite<crate::infer::unit::EffectUnit>,
         mut state: EffectState,
     ) -> EffectState {
-        if let Some(metadata) = self.external_reference_metadata(site.callee_expr).cloned() {
+        let metadata = if let Some(selected) = self.types.facts.library_flow_calls.get(&site.call) {
+            match self
+                .external_metadata_for_callable(&selected.callable)
+                .cloned()
+            {
+                Some(metadata) => Some(metadata),
+                None => {
+                    return self.incomplete_at(
+                        site.span,
+                        "selected library overload has no checked effect contract",
+                        state,
+                    );
+                }
+            }
+        } else {
+            self.external_reference_metadata(site.callee_expr).cloned()
+        };
+        if let Some(metadata) = metadata {
             match self.external_call_summary_from_metadata(&metadata, &site, &mut state, None) {
                 Ok(Some(summary)) => {
                     if summary.exits.is_some() {

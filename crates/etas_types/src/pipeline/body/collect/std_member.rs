@@ -276,6 +276,7 @@ pub fn std_type_member_candidates_for_symbol<E>(
 pub(super) fn std_overload_candidates<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
+    args: &[etas_hir::HirArg],
 ) -> Option<Vec<CallableCandidate>> {
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
         return None;
@@ -307,28 +308,60 @@ pub(super) fn std_overload_candidates<E>(
     if registry.flow_declarations(symbol.id).count() < 2 {
         return None;
     }
-    let descriptor = symbol.intrinsic.as_ref()?;
-    registry
-        .flow_declarations(symbol.id)
-        .enumerate()
-        .map(|(overload, flow)| {
-            let signature = crate::lower::std::lower_std_flow_signature(
-                ctx.ctx,
-                &registry,
-                flow,
-                symbol.qualified_path.split_last().map(|(_, scope)| scope),
-            );
-            let mut candidate =
-                callable_candidate_from_fact(ctx, SymbolTypeFact::Flow { signature }, true)?;
-            candidate.operation = crate::CallableCandidateOperation::StdIntrinsic {
-                qualified_path: symbol.qualified_path.clone(),
-                intrinsic: descriptor.id.0,
-                overload,
-                has_receiver: false,
-            };
-            Some(candidate)
+    let names = args
+        .iter()
+        .map(|arg| match arg {
+            etas_hir::HirArg::Positional(_) => None,
+            etas_hir::HirArg::Named { name, .. } => Some(name.clone()),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for (overload, flow) in registry.flow_declarations(symbol.id).enumerate() {
+        let (signature, operation) =
+            if let Some(binding) = registry.flow_body_binding(symbol.id, overload) {
+                let facts = ctx
+                    .ctx
+                    .signature_base
+                    .map_or(&ctx.ctx.signature_facts, |base| &base.facts);
+                let signature = facts
+                    .library_callable_signatures
+                    .get(&binding.callable)?
+                    .clone();
+                let interface = signature.parameter_interface.as_ref()?;
+                let Ok(arguments) = crate::ArgumentBinding::bind(interface, &names) else {
+                    continue;
+                };
+                let operation = crate::CallableCandidateOperation::LibraryFlow {
+                    symbol: symbol.id,
+                    overload,
+                    callable: binding.callable.clone(),
+                    arguments,
+                };
+                (signature, operation)
+            } else {
+                let descriptor = symbol.intrinsic.as_ref()?;
+                let signature = crate::lower::std::lower_std_flow_signature(
+                    ctx.ctx,
+                    &registry,
+                    flow,
+                    symbol.qualified_path.split_last().map(|(_, scope)| scope),
+                );
+                (
+                    signature,
+                    crate::CallableCandidateOperation::StdIntrinsic {
+                        qualified_path: symbol.qualified_path.clone(),
+                        intrinsic: descriptor.id.0,
+                        overload,
+                        has_receiver: false,
+                    },
+                )
+            };
+        let mut candidate =
+            callable_candidate_from_fact(ctx, SymbolTypeFact::Flow { signature }, true)?;
+        candidate.operation = operation;
+        candidates.push(candidate);
+    }
+    Some(candidates)
 }
 
 pub fn std_member_callable_signature<E>(

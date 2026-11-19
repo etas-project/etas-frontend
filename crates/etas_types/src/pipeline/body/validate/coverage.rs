@@ -175,6 +175,10 @@ impl Coverage<'_, '_> {
             Type::Primitive(PrimitiveType::Unit) => Some(vec![ctor("tuple", vec![])]),
             Type::Option(inner) => Some(vec![ctor("Some", vec![inner]), ctor("None", vec![])]),
             Type::Result { ok, err } => Some(vec![ctor("Ok", vec![ok]), ctor("Err", vec![err])]),
+            Type::List(inner) => Some(vec![
+                ctor("list.empty", vec![]),
+                ctor("list.cons", vec![inner, ty]),
+            ]),
             Type::Tuple(fields) => Some(vec![ctor("tuple", fields)]),
             Type::Record(record) => Some(vec![Constructor {
                 tag: Tag::Structural("record"),
@@ -192,6 +196,10 @@ impl Coverage<'_, '_> {
                 };
                 // Projection unfolds one representation layer; recursive fields remain identities.
                 match self.ctx.interner.store().get(representation).cloned() {
+                    Some(Type::List(inner)) => Some(vec![
+                        ctor("list.empty", vec![]),
+                        ctor("list.cons", vec![inner, ty]),
+                    ]),
                     Some(Type::Record(record)) => Some(vec![Constructor {
                         tag: Tag::Structural("record"),
                         fields: record.fields.iter().map(|f| f.ty).collect(),
@@ -224,6 +232,10 @@ impl Coverage<'_, '_> {
                 },
                 Vec::new(),
             ),
+            HirPat::EmptyList { .. } => self.positional(Tag::Structural("list.empty"), vec![], ty),
+            HirPat::ListCons { head, tail, .. } => {
+                self.positional(Tag::Structural("list.cons"), vec![head, tail], ty)
+            }
             HirPat::Tuple { elems, .. } => self.positional(Tag::Structural("tuple"), elems, ty),
             HirPat::Variant { path, args, .. } => {
                 let tag = self.variant_tag(&path, ty);

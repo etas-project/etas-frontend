@@ -521,6 +521,7 @@ mod tests {
                 TypeInfo::Function(SignatureInfo {
                     generics: vec![],
                     parameters: vec![ParameterInfo {
+                        default: None,
                         name: Some("f".into()),
                         ty: TypeInfoRef(2),
                     }],
@@ -543,6 +544,7 @@ mod tests {
                 TraceInfo::Event(action("second")),
                 TraceInfo::Seq(vec![TraceInfoRef(0), TraceInfoRef(1)]),
                 TraceInfo::ParameterCall(ParameterCallInfo {
+                    projection: Vec::new(),
                     callable,
                     signature: TypeInfoRef(1),
                     position: 0,

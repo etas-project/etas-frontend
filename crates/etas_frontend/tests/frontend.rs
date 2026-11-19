@@ -9183,6 +9183,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -9345,6 +9346,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -9682,6 +9684,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -12265,6 +12268,7 @@ fn frontend_check_project_rejects_malformed_external_action_selector_metadata() 
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
                 "math".to_owned(),
@@ -12346,6 +12350,8 @@ fn frontend_replays_std_spec_evidence_without_consumer_import_aliases() {
             if evidence_kind != "satisfaction" {
                 environment.external_public_metadata[0].spec_impls.push(
                     etas_frontend::ProjectExternalSpecImplInput {
+                        owner: None,
+                        generic_params: vec![],
                         self_type: self_type.clone(),
                         spec: spec.clone(),
                         args: args.clone(),
@@ -12423,6 +12429,7 @@ fn frontend_external_selector_names_are_kind_checked() {
         environment.external_public_metadata[0]
             .actions
             .push(ProjectExternalActionSignatureInput {
+                default_handler_effects: None,
                 path: vec![
                     "dep".into(),
                     "math".into(),

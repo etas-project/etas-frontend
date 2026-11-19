@@ -334,6 +334,7 @@ mod tests {
                 overload: 0,
                 callable_type: callable,
                 signature: crate::CallableSignature {
+                    parameter_interface: None,
                     params: vec![callback],
                     output: task,
                     effects: Some(EffectRowRef {

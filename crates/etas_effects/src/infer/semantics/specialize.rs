@@ -254,10 +254,12 @@ impl EffectSemantics<'_> {
             return Some((expr, &task.effects));
         }
         let ty = self.types.facts.expr_types.get(&expr)?;
-        match self.types.store.get(*ty)? {
-            etas_types::Type::Task(task) => Some((expr, &task.effects)),
-            _ => None,
-        }
+        etas_types::source_execution::task(
+            &self.types.store,
+            &self.types.facts.known_std_types,
+            *ty,
+        )
+        .map(|task| (expr, task.effects))
     }
 
     pub(crate) fn latent_summary_for_origins(
@@ -355,6 +357,7 @@ impl EffectSemantics<'_> {
                 parameters: Some(&type_parameters),
                 rows: &effect_row_bindings,
             },
+            &mut BTreeSet::new(),
         )?;
         self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
@@ -565,14 +568,21 @@ impl EffectSemantics<'_> {
                 residual_bindings,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 owner,
-                types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
-                    .with_type_parameters(type_parameters),
+                types: etas_types::TypeSubstitutionEngine::existing_indexed(
+                    &self.types.store,
+                    self.type_lookup(),
+                    &names,
+                )
+                .with_type_parameters(type_parameters),
             },
             summary,
         )
     }
 
     pub(crate) fn unit_params(&self, unit: EffectUnit) -> Option<Vec<etas_hir::SymbolId>> {
+        if let EffectUnit::ParameterDefault { parameter, .. } = unit {
+            return self.hir.preceding_parameters(parameter).map(<[_]>::to_vec);
+        }
         if let EffectUnit::AnonymousFlow { value, .. } = unit {
             return match self.hir.exprs.get(value)? {
                 HirExpr::Lambda { params, .. } => Some(params.clone()),

@@ -85,6 +85,7 @@ impl EffectStaticStringOracle<'_, '_> {
             return None;
         };
         let return_expr = match flow.body {
+            HirFlowBody::Decl { .. } | HirFlowBody::Runtime { .. } => return None,
             HirFlowBody::Expr { expr, .. } => expr,
             HirFlowBody::Block(block) => {
                 let block = self.semantics.hir.blocks.get(block)?;

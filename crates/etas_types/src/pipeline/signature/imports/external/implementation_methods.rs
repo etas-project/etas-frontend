@@ -98,6 +98,11 @@ pub(super) fn apply(
                 .signature_in(&ctx.signature_facts)
                 .cloned()
                 .ok_or("external spec method signature is missing")?;
+            if method.updating_receiver != provided.receiver.is_updating()
+                || (method.receiver_param.is_some() && provided.receiver.value_slot().is_none())
+            {
+                return Err("external method receiver mode differs from its spec".into());
+            }
             let mut actual = provided.signature.clone();
             if provided.receiver == crate::method::MethodReceiver::Component {
                 actual.params.remove(0);

@@ -11,7 +11,7 @@ pub use outcome::{
     CallableReturnReference, CallableReturnSource, ExitTraceFact, FrozenSourceLocation,
     HandlerGapEvidence, MetadataCallableSource, MetadataObjectSource, OutcomeAnalysisGap,
     ParameterArgumentValue, ParameterExitArgument, ParameterExitFact, ParameterHandlerScopeRef,
-    ReturnObservation,
+    ProjectedReturnSources, ReturnObservation,
 };
 pub use requests::{ActionRequestInstance, ParameterRequest, RequestInstantiationSummary};
 pub(crate) mod memory_provenance;

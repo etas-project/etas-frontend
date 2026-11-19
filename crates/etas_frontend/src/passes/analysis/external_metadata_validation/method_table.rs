@@ -3,6 +3,31 @@ use super::*;
 #[cfg(test)]
 mod tests;
 
+pub(super) fn compiler_scalar_subject(
+    registry: &etas_std::StdRegistry,
+    subject: &etas_code::DefinitionKey,
+    name: &str,
+) -> bool {
+    if !matches!(
+        etas_std::StdType::parse(name),
+        etas_std::StdType::Primitive(_)
+    ) {
+        return false;
+    }
+    let Ok(package) = crate::code::identity::standard_package_key(registry) else {
+        return false;
+    };
+    // Primitive subjects belong to the compiler contract, even when the
+    // source provider publishes no corresponding language-type API symbol.
+    etas_code::DefinitionKey::new(
+        package,
+        vec!["std".into(), "core".into()],
+        vec![name.into()],
+        etas_code::DefinitionKind::Type,
+    )
+    .is_ok_and(|expected| &expected == subject)
+}
+
 pub(super) fn validate(
     environment: &ProjectEnvironmentInput,
     std_registry: &etas_std::StdRegistry,
@@ -58,9 +83,13 @@ pub(super) fn validate(
                     "published method has an invalid or duplicate canonical owner",
                 ));
             }
-            let paths = subject_paths
-                .get(owner.subject())
-                .ok_or_else(|| fail("published method subject has no declaration origin"))?;
+            let scalar_subject = method.self_type.kind
+                == etas_package_metadata::TypeKind::Primitive
+                && compiler_scalar_subject(std_registry, owner.subject(), &method.self_type.name);
+            let paths = subject_paths.get(owner.subject());
+            if paths.is_none() && !scalar_subject {
+                return Err(fail("published method subject has no declaration origin"));
+            }
             let builtin_path = match method.self_type.kind {
                 etas_package_metadata::TypeKind::Array => Some(["std", "collections", "Array"]),
                 etas_package_metadata::TypeKind::List => Some(["std", "collections", "List"]),
@@ -78,7 +107,10 @@ pub(super) fn validate(
                     .and_then(|symbol| std_registry.declaration_key(symbol.id))
                     == Some(owner.subject())
             });
-            if !paths.contains(&method.self_type.path) && !source_role {
+            if !paths.is_some_and(|paths| paths.contains(&method.self_type.path))
+                && !source_role
+                && !scalar_subject
+            {
                 return Err(fail(
                     "published method receiver disagrees with its canonical subject",
                 ));

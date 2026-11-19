@@ -24,6 +24,19 @@ impl LowerCtx {
                     declared_type: None,
                     definition_span: span,
                 });
+                if kind == SymbolKind::Flow {
+                    let root = *self
+                        .flow_declarations
+                        .entry((self.current_module, name.clone()))
+                        .or_insert(symbol);
+                    if root != symbol {
+                        self.hir
+                            .flow_overloads
+                            .entry(root)
+                            .or_insert_with(|| vec![root])
+                            .push(symbol);
+                    }
+                }
                 self.insert_symbol(module_scope, &name, symbol, span);
                 if let Some(prefix) = module_qualified_prefix {
                     self.insert_symbol(module_scope, &format!("{prefix}.{name}"), symbol, span);
@@ -206,6 +219,15 @@ impl LowerCtx {
             ast::TypeDeclBody::Representation(ty) => {
                 HirTypeDeclBody::Representation(self.lower_type(ty, scope, item_id))
             }
+            ast::TypeDeclBody::Sequence {
+                element,
+                tail,
+                span,
+            } => HirTypeDeclBody::Sequence {
+                element: self.lower_type(element, scope, item_id),
+                tail: self.lower_type(tail, scope, item_id),
+                span: *span,
+            },
         };
         self.set_symbol_item(symbol, item_id);
         self.map_item(item_id, decl.span);
@@ -300,7 +322,8 @@ impl LowerCtx {
         let scope = self
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
-        let type_params = self.lower_impl_type_params(&decl.target, scope, item_id);
+        let mut type_params = self.lower_type_params(&decl.type_params, scope, item_id);
+        type_params.extend(self.lower_impl_type_params(&decl.target, scope, item_id));
         let target = match &decl.target {
             ast::ImplTarget::Agent { target, specs, .. } => {
                 return self.lower_agent_impl(decl, target, specs, item_id, parent_scope, scope);
@@ -610,6 +633,7 @@ impl LowerCtx {
             .map(|effects| self.lower_effect_row(effects, scope, item_id));
         HirFlowSignature {
             symbol,
+            receiver_mode: receiver_mode(&signature.params),
             type_params,
             receiver_type_param,
             params,
@@ -777,10 +801,7 @@ impl LowerCtx {
         let body = if let Some(overlay) = self.take_body_overlay(decl.span) {
             let flow = self.lower_overlay_flow(&overlay, scope, item_id);
             HirAgentBody::Source {
-                block: match flow {
-                    HirFlowBody::Block(block) => block,
-                    HirFlowBody::Expr { lowered_block, .. } => lowered_block,
-                },
+                block: flow.block(),
             }
         } else {
             match &decl.body {
@@ -888,6 +909,10 @@ impl LowerCtx {
             .scopes
             .alloc(Some(parent_scope), ScopeOwner::Item(item_id), decl.span);
         let type_params = self.lower_type_params(&decl.type_params, scope, item_id);
+        let annotations = self.lower_annotations(&decl.annotations, scope, item_id);
+        if !annotations.is_empty() {
+            self.hir.item_annotations.insert(item_id, annotations);
+        }
         let params = self.lower_params_with_receiver(&decl.params, scope, item_id, receiver_type);
         let return_type = decl
             .return_type
@@ -915,6 +940,7 @@ impl LowerCtx {
         self.set_symbol_item(symbol, item_id);
         HirFlowDecl {
             symbol,
+            receiver_mode: receiver_mode(&decl.params),
             type_params,
             params,
             return_type,
@@ -966,6 +992,9 @@ impl LowerCtx {
         item_id: HirItemId,
     ) -> HirFlowBody {
         match body {
+            ast::FlowBody::Decl { semicolon_span } => HirFlowBody::Decl {
+                span: *semicolon_span,
+            },
             ast::FlowBody::Block(block) => {
                 HirFlowBody::Block(self.lower_block(block, scope, item_id))
             }
@@ -991,6 +1020,7 @@ impl LowerCtx {
         item_id: HirItemId,
     ) -> HirFlowBody {
         let body_block = match body {
+            HirFlowBody::Decl { .. } | HirFlowBody::Runtime { .. } => return body,
             HirFlowBody::Block(block)
             | HirFlowBody::Expr {
                 lowered_block: block,
@@ -1106,12 +1136,17 @@ impl LowerCtx {
             .collect();
         let params = self.lower_params(&decl.params, scope, item_id);
         let return_type = self.lower_type(&decl.return_type, scope, item_id);
+        let default_handler_effects = decl
+            .default_handler_effects
+            .as_ref()
+            .map(|row| self.lower_effect_row(row, scope, item_id));
         HirEffectActionDecl {
             symbol,
             selector_params,
             type_params,
             params,
             return_type,
+            default_handler_effects,
             scope,
             span: decl.span,
         }
@@ -1138,5 +1173,15 @@ pub(super) fn hir_visibility(visibility: ast::Visibility) -> crate::Visibility {
     match visibility {
         ast::Visibility::Private => crate::Visibility::Private,
         ast::Visibility::Public => crate::Visibility::Public,
+    }
+}
+
+fn receiver_mode(params: &[ast::Param]) -> HirReceiverMode {
+    match params.first().map(|param| &param.ty) {
+        Some(ast::ParamType::SelfReceiver { updating: true, .. }) => HirReceiverMode::Updating,
+        Some(ast::ParamType::SelfReceiver {
+            updating: false, ..
+        }) => HirReceiverMode::Value,
+        _ => HirReceiverMode::None,
     }
 }

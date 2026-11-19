@@ -88,6 +88,12 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return;
         };
+        if let Some(source) = self.hir.canonical_source_symbol(symbol)
+            && source != symbol
+            && matches!(self.hir.symbols.get(source).map(|symbol| &symbol.def), Some(SymbolDef::Item { item }) if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Flow(_))))
+        {
+            return;
+        }
         let Some(SymbolDef::ImportAlias { path, .. }) =
             self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
         else {

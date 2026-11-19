@@ -295,10 +295,11 @@ impl CheckedResidualPlans {
     fn descriptor_input<'a>(&'a self, program: &'a CheckedProgramData) -> DescriptorInput<'a> {
         DescriptorInput {
             hir: &program.hir,
-            sources: None,
+            sources: Some(&program.sources),
             types: &program.types,
             type_store: &program.type_store,
             std_registry: &program.std_registry,
+            standard_library_mode: program.compile_options.standard_library_mode,
             resolved_imports: &program.resolved_imports,
             module_index: &program.module_index,
             effect_registry: &program.effect_registry,
@@ -444,7 +445,8 @@ impl CheckedResidualPlans {
             GenericOwner::Method(method) => CallableId::method(method.clone()),
             GenericOwner::Implementation(_)
             | GenericOwner::ImplementationPattern(_)
-            | GenericOwner::Action { .. } => {
+            | GenericOwner::Action { .. }
+            | GenericOwner::ActionOverload { .. } => {
                 return Err(owner_error(
                     "generic binder scope is not a callable revision owner",
                 ));

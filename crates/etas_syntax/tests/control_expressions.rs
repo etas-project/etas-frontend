@@ -79,3 +79,18 @@ fn semicolonized_and_non_tail_control_forms_remain_statements() {
         );
     }
 }
+
+#[test]
+fn else_if_expression_keeps_a_value_in_its_else_branch() {
+    let block = body("let result = if first { 1 } else if second { 2 } else { 3 };");
+    let Stmt::Let(binding) = &block.stmts[0] else {
+        panic!("binding");
+    };
+    let Expr::If(outer) = &binding.value else {
+        panic!("if expression");
+    };
+    assert!(matches!(
+        outer.else_branch.final_expr.as_deref(),
+        Some(Expr::If(_))
+    ));
+}

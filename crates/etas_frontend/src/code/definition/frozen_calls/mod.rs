@@ -14,6 +14,7 @@ use etas_hir::HirItemId;
 
 #[derive(etas_core::RetainedSize)]
 pub(crate) struct FrozenCalls<'a> {
+    pub sources: crate::SourceBundle,
     pub overlay: &'a crate::code::draft::DefaultBodyOverlay,
     pub hir: &'a etas_hir::HirRevision,
     pub types: &'a etas_types::TypeOutput,
@@ -102,10 +103,11 @@ impl FrozenCalls<'_> {
         let origins: DefinitionOrigins = frozen.origins_for_hir(self.hir)?;
         let input = DescriptorInput {
             hir: self.hir,
-            sources: None,
+            sources: Some(&self.sources),
             types: &self.types.facts,
             type_store: &self.types.store,
             std_registry: self.std_registry,
+            standard_library_mode: original.compile_options.standard_library_mode,
             resolved_imports: self.imports,
             module_index: self.modules,
             effect_registry: registry,
@@ -284,6 +286,9 @@ impl FrozenCalls<'_> {
                 }
             }
         }
+        output.external_parameter_projections =
+            relocation.external_parameter_projections.borrow().clone();
+        output.parameter_projections = relocation.parameter_projections.borrow().clone();
         output.method_evidence = relocation.into_method_evidence();
         Ok(output)
     }

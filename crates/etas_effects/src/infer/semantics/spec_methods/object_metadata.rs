@@ -67,8 +67,9 @@ impl EffectSemantics<'_> {
             }
         }
         let rows = self.type_row_arguments(&rows, Some(packed.owner))?;
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
-            .with_effect_arguments(&rows);
+        let mut substitution =
+            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &names)
+                .with_effect_arguments(&rows);
         let source_type = substitution.substitute(checked.source_type)?;
         let mut selected = None;
         for witness in &checked.witnesses {

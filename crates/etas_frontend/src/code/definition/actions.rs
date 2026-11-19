@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use etas_code::DefinitionKey;
+use etas_code::{CodeFingerprint, DefinitionKey, descriptor::DescriptorLimits};
 use etas_effects::{ActionRef, Effect};
 use etas_hir::{SymbolDef, SymbolId};
 use etas_types::{CheckedSpecRef, EffectActionSignature};
@@ -13,13 +13,18 @@ pub struct NativeActionSignature<'a> {
     pub name: String,
     pub action: ActionRef,
     pub signature: &'a EffectActionSignature,
+    pub overload: Option<CodeFingerprint>,
 }
 
 impl DefinitionCatalog {
     pub fn native_action_signatures(
         &self,
     ) -> Result<Vec<NativeActionSignature<'_>>, ProjectionError> {
-        native_signatures(self.checked_program(), &self.identities)
+        native_signatures(
+            self.checked_program(),
+            &self.identities,
+            DescriptorLimits::default(),
+        )
     }
 
     pub fn native_spec_identity<'a>(
@@ -104,6 +109,7 @@ fn standard_action(
 pub(super) fn native_signatures<'a>(
     checked: &'a crate::CheckedProgram,
     identities: &crate::code::identity::DefinitionIdentityIndex,
+    limits: DescriptorLimits,
 ) -> Result<Vec<NativeActionSignature<'a>>, ProjectionError> {
     let mut uses = BTreeMap::new();
     for fact in checked.effects.performed_actions.values() {
@@ -123,7 +129,24 @@ pub(super) fn native_signatures<'a>(
             bind(&mut uses, fact.action_symbol, action_ref(effect)?)?;
         }
     }
-    let mut actions = BTreeMap::<ActionRef, NativeActionSignature<'_>>::new();
+    let mut declarations = BTreeSet::new();
+    for (_, item) in checked.hir.items.iter() {
+        match item {
+            etas_hir::HirItem::Effect(effect) => {
+                declarations.extend(effect.body.actions().iter().map(|action| action.symbol))
+            }
+            etas_hir::HirItem::Impl(implementation) => {
+                for item in &implementation.items {
+                    if let etas_hir::HirImplItem::Action(action) = item {
+                        declarations.insert(action.symbol);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut actions =
+        BTreeMap::<(DefinitionKey, String), Vec<(SymbolId, NativeActionSignature<'_>)>>::new();
     for (symbol, signature) in &checked.types.action_signatures {
         let mut symbol = *symbol;
         let mut visited = BTreeSet::new();
@@ -173,19 +196,87 @@ pub(super) fn native_signatures<'a>(
             name: descriptor.name.clone(),
             action: reference.clone(),
             signature,
+            overload: None,
         };
-        if let Some(previous) = actions.get(&reference) {
-            if previous.signature != signature
-                || previous.effect != origin.effect
-                || previous.name != origin.name
-            {
+        actions
+            .entry((origin.effect.clone(), origin.name.clone()))
+            .or_default()
+            .push((symbol, origin));
+    }
+    let mut result = Vec::new();
+    for (_, aliases) in actions {
+        let first = &aliases[0].1;
+        let definitions = aliases
+            .iter()
+            .filter_map(|(symbol, _)| {
+                declarations
+                    .contains(symbol)
+                    .then(|| (*symbol, &checked.types.action_signatures[symbol]))
+            })
+            .collect::<BTreeMap<_, _>>();
+        for (symbol, alias) in &aliases {
+            let matches_signature = match definitions.get(symbol) {
+                Some(signature) => **signature == *alias.signature,
+                None if definitions.is_empty() => first.signature == alias.signature,
+                None => definitions
+                    .values()
+                    .any(|signature| *signature == alias.signature),
+            };
+            if !matches_signature || alias.effect != first.effect || alias.name != first.name {
+                let owner = first
+                    .effect
+                    .module()
+                    .iter()
+                    .chain(first.effect.declaration())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(".");
+                return Err(ProjectionError::Invalid(format!(
+                    "native action alias for {owner}.{} has an inconsistent checked signature: {:?}",
+                    first.name, alias.signature,
+                )));
+            }
+        }
+        if definitions.is_empty() {
+            result.push(aliases.into_iter().next().unwrap().1);
+            continue;
+        }
+        let overloaded = definitions.len() > 1;
+        let mut overloads = BTreeMap::new();
+        for (symbol, signature) in definitions {
+            let overload = if overloaded {
+                let mut projector = crate::code::descriptor::DefinitionDescriptorProjector::new(
+                    checked, identities, limits,
+                );
+                let inputs = projector.project_action_overload_inputs(
+                    &first.effect,
+                    &first.name,
+                    signature,
+                )?;
+                Some(projector.finish()?.type_fingerprint(inputs)?)
+            } else {
+                None
+            };
+            let origin = NativeActionSignature {
+                effect: first.effect.clone(),
+                name: first.name.clone(),
+                action: aliases
+                    .iter()
+                    .find(|(canonical, _)| *canonical == symbol)
+                    .unwrap()
+                    .1
+                    .action
+                    .clone(),
+                signature,
+                overload,
+            };
+            if overloads.insert(overload, origin).is_some() {
                 return Err(invalid(
-                    "native action aliases have inconsistent checked signatures",
+                    "action overloads have duplicate checked input signatures",
                 ));
             }
-        } else {
-            actions.insert(reference, origin);
         }
+        result.extend(overloads.into_values());
     }
-    Ok(actions.into_values().collect())
+    Ok(result)
 }

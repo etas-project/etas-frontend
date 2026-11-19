@@ -13,7 +13,7 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
         &mut self,
         context: &mut EffectPipelineContext<'a>,
         _pass_context: &PassContext<EffectPipelineContext<'a>>,
-        _manager: &mut PassManager<EffectPipelineContext<'a>>,
+        manager: &mut PassManager<EffectPipelineContext<'a>>,
     ) -> PassResult {
         let Some(registry) = context.registry.as_ref() else {
             return context.fail(missing(EffectStage::MaterializeFacts, "effect registry"));
@@ -32,7 +32,45 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
             context.input.reachable_items,
         );
         match effects {
-            Ok(effects) => context.effects = Some(effects),
+            Ok(mut effects) => {
+                let imported =
+                    crate::suspension::imported_contracts(
+                        context
+                            .input
+                            .external_summaries
+                            .iter()
+                            .filter_map(|summary| summary.metadata.callable_contract.as_ref())
+                            .chain(
+                                context.input.external_implementations.iter().filter_map(
+                                    |method| method.metadata.callable_contract.as_ref(),
+                                ),
+                            ),
+                    );
+                effects.facts.suspension = match crate::suspension::analyze(
+                    context.input.hir,
+                    context.input.types,
+                    &effects.facts,
+                    context.input.std_registry,
+                    &imported,
+                    manager.execution_control(),
+                ) {
+                    Ok(suspension) => suspension,
+                    Err(error) => return context.fail(EffectPipelineError::Interrupted(error)),
+                };
+                crate::updating::validate(
+                    context.input.hir,
+                    context.input.types,
+                    &mut effects,
+                    &imported,
+                    context.input.reachable_items,
+                );
+                crate::parameter_defaults::validate(
+                    context.input.hir,
+                    &mut effects,
+                    context.input.reachable_items,
+                );
+                context.effects = Some(effects);
+            }
             Err(error) => return context.fail(error),
         }
         produced(EFFECT_FACTS)

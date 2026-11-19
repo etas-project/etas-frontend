@@ -72,19 +72,13 @@ impl Drop for SourcePackage {
 #[test]
 fn adding_a_source_part_adds_public_std_flows_without_rust_registration_or_main() {
     let package = SourcePackage::new();
-    let text_algorithms = etas_std::library::source_checkout_manifest()
-        .parent()
-        .unwrap()
-        .join("library/std/text/native.es");
-    package.write("mod.es", &fs::read_to_string(text_algorithms).unwrap());
     assert_eq!(package.load().input.sources.len(), 2);
     package.write(
         "decorate.es",
         r#"
 module std.text;
-import std.text.char_count;
 public flow decorate(value: string) -> string { return "[" + value + "]"; }
-public flow decorated_width(value: string) -> usize { return char_count(decorate(value)); }
+public flow decorate_twice(value: string) -> string { return decorate(decorate(value)); }
 "#,
     );
     let loaded = package.load();
@@ -118,7 +112,7 @@ public flow render(value: string) -> string { return decorate(value); }
     }];
     let text = modules.modules.get(id).unwrap();
     assert_eq!(text.parts.len(), 3);
-    for flow in ["join", "decorate", "decorated_width"] {
+    for flow in ["join", "decorate", "decorate_twice"] {
         assert_eq!(
             text.visibility_exports.items[flow].visibility,
             etas_hir::Visibility::Public
@@ -168,21 +162,284 @@ fn checked_library_hir_round_trips_private_generic_bodies_with_portable_identiti
     let owner = etas_code::PackageKey::from_name_and_version("std", "0.2.2").unwrap();
     let make_image = || {
         let package = SourcePackage::new();
+        let maintained = etas_std::library::source_checkout_manifest();
+        let library = maintained.parent().unwrap().join("library/std");
+        fs::create_dir_all(package.0.join("library/std/math")).unwrap();
+        fs::copy(
+            library.join("math/complete.es"),
+            package.0.join("library/std/math/mod.es"),
+        )
+        .unwrap();
+        let message = fs::read_to_string(library.join("agent/message/complete.es")).unwrap();
+        let start = message
+            .find("@std.role(\"std.agent.message.Message\")")
+            .unwrap();
+        let end = message[start..].find(";\n").unwrap() + start + 2;
+        let directory = package.0.join("library/std/agent/message");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("mod.es"),
+            format!(
+                "module std.agent.message;\n{}\n{}",
+                &message[start..end],
+                r#"
+impl Message<Source> {
+    public flow with_body<Target>(self, value: Target) -> Message<Target> ![] {
+        return Message {
+            body = value,
+            content = value,
+            id = self.id,
+            from = self.from,
+            role = self.role,
+            session = self.session,
+            created_at = self.created_at,
+            provenance = self.provenance,
+        };
+    }
+    public flow payload(self) -> Source ![] { return self.content; }
+}
+public flow replaced_message(value: Message<string>) -> Message<i32> ![] {
+    return value.with_body(7);
+}
+"#
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(package.0.join("library/std/result")).unwrap();
+        fs::copy(
+            library.join("result/mod.es"),
+            package.0.join("library/std/result/mod.es"),
+        )
+        .unwrap();
+        let fs_source = fs::read_to_string(library.join("fs/mod.es")).unwrap();
+        let fs_header = &fs_source[..fs_source.find("public flow path<").unwrap()];
+        let fs_flows = [
+            "public flow root<",
+            "public flow relative_name<",
+            "public flow read_bytes<",
+            "public flow read_bytes_limited<",
+            "public flow write_bytes<",
+            "public flow list<",
+            "public flow list_limited<",
+            "public flow stat<",
+            "public flow atomic_replace<",
+        ]
+        .map(|start| {
+            let source = &fs_source[fs_source.find(start).unwrap()..];
+            &source[..source.find("\n}\n").unwrap() + 3]
+        });
+        fs::create_dir_all(package.0.join("library/std/fs")).unwrap();
+        fs::write(
+            package.0.join("library/std/fs/mod.es"),
+            format!("{fs_header}\n{}", fs_flows.join("\n")),
+        )
+        .unwrap();
+        let effects = fs::read_to_string(library.join("effects/mod.es")).unwrap();
+        let file_io = &effects[effects.find("@std.role(\"std.effects.FileIO\")").unwrap()..];
+        let file_io = &file_io[..file_io.find(';').unwrap() + 1];
+        let fs_effect = &effects[effects.find("@std.role(\"std.effects.Fs\")").unwrap()..];
+        fs::create_dir_all(package.0.join("library/std/effects")).unwrap();
+        fs::write(package.0.join("library/std/effects/mod.es"), format!("module std.effects;\nimport std.fs.{{Region, WorkspacePath, FsStat}};\n{file_io}\n{fs_effect}")).unwrap();
+        let collections = fs::read_to_string(library.join("collections/mod.es")).unwrap();
+        let range = &collections[collections
+            .find("@std.role(\"std.collections.Range\")")
+            .unwrap()..];
+        let range = &range[..range.find("\n};").unwrap() + 3];
+        let algorithms = fs::read_to_string(library.join("collections/algorithms.es")).unwrap();
+        let iteration = fs::read_to_string(library.join("collections/iteration.es")).unwrap();
+        let iterable = &iteration[iteration.find("public spec Iterable<T>").unwrap()..];
+        let iterable = &iterable[..iterable.find("\n}\n").unwrap() + 3];
+        let reverse = &algorithms[algorithms
+            .find("impl List<T> {\n    public flow reverse")
+            .unwrap()..];
+        let reverse = &reverse[..reverse.find("\n}\n").unwrap() + 3];
+        let constructors = &algorithms[algorithms.find("impl Range<T> {").unwrap()..];
+        let constructors = &constructors[..constructors.find("\n}\n").unwrap() + 3];
+        let target = package.0.join("library/std/collections/range.es");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let sequence_roles = &collections[..collections
+            .find("@std.role(\"std.collections.Range\")")
+            .unwrap()];
+        let slice_role = &collections[collections
+            .find("@std.role(\"std.collections.Slice\")")
+            .unwrap()
+            ..collections
+                .find("@std.role(\"std.collections.Iter\")")
+                .unwrap()];
+        fs::write(
+            target.parent().unwrap().join("primitives.es"),
+            format!("{sequence_roles}\n{slice_role}\n{iterable}\n{reverse}"),
+        )
+        .unwrap();
+        for relative in ["collections/order.es", "collections/ordered.es"] {
+            fs::copy(
+                library.join(relative),
+                package.0.join("library/std").join(relative),
+            )
+            .unwrap();
+        }
+        fs::write(
+            target,
+            format!("module std.collections;\n{range}\n{constructors}\n"),
+        )
+        .unwrap();
+        for relative in [
+            "runtime/error/complete.es",
+            "runtime/budget/mod.es",
+            "runtime/mod.es",
+            "runtime/checkpoint/mod.es",
+        ] {
+            let target = package.0.join("library/std").join(relative);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(library.join(relative), target).unwrap();
+        }
+        let data = fs::read_to_string(library.join("runtime/value/mod.es")).unwrap();
+        let data = &data[..data.find("    public flow tagged(").unwrap()];
+        let target = package.0.join("library/std/runtime/value/mod.es");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, format!("{data}\n}}\n")).unwrap();
+        let json = fs::read_to_string(library.join("json/complete.es")).unwrap();
+        let json = &json[..json.find("public flow parse(").unwrap()];
+        fs::create_dir_all(package.0.join("library/std/json")).unwrap();
+        fs::write(package.0.join("library/std/json/mod.es"), json).unwrap();
+        for relative in ["memory/context.es", "stream/clock.es"] {
+            let target = package.0.join("library/std").join(relative);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(library.join(relative), target).unwrap();
+        }
+        let memory = fs::read_to_string(library.join("memory/complete.es")).unwrap();
+        let error = memory
+            .lines()
+            .find(|line| line.starts_with("public type StorageError ="))
+            .unwrap();
+        fs::write(
+            package.0.join("library/std/memory/error.es"),
+            format!("module std.memory;\n{error}\n"),
+        )
+        .unwrap();
         package.write(
             "generic.es",
             r#"
 module std.text;
+public import std.text.Choice.{First as Begin, Second as End};
+public enum Choice { First, Second, }
+public flow classify(value: Choice) -> i32 ![] {
+    return match value { Begin => 1, End => 2 };
+}
 flow private_identity<T>(value: T) -> T { return value; }
 public flow generic_echo<T>(value: T) -> T { return private_identity<T>(value); }
 public spec Read<T> { flow read(self) -> T ![]; }
+public spec Update { flow update(var self, value: i32) -> unit ![]; }
 public type Container<T> = { value: T };
+impl Container<T> {
+    public flow replace(var self, value: T) -> T ![] {
+        let previous = self.value;
+        self = Container { value };
+        return previous;
+    }
+}
+public flow replaced_value() -> i32 ![] {
+    var value = Container { value = 3 };
+    let previous = value.replace(7);
+    return previous + value.value;
+}
 impl Container<T> ~ Read<T> {
     public flow read(self) -> T ![] { return self.value; }
 }
+impl Container<List<T>> {
+    public flow first(self) -> Option<T> ![] {
+        return match self.value { [] => None, value :: _ => Some(value) };
+    }
+    public flow count(self) -> usize ![] { return self.value.length; }
+}
+public flow literal_label() -> string ![] {
+    let face = char { bits = 128578 };
+    return std.text.generic_echo(string { scalars = ['A', face] });
+}
+public flow interval_total() -> usize ![] {
+    let interval = std.collections.Range<usize> { start = 1, end = 3, include_start = true, include_end = true };
+    let closed = std.collections.Range.closed(interval.start, interval.end);
+    return closed.start + closed.end;
+}
 public flow read_string<S ~ Read<string>>(value: S) -> string ![] { return value.read(); }
+public type Transform<T> = { callback: (T) -> T ![] };
+impl Transform<T> {
+    public flow apply(self, value: T) -> T ![] { return (self.callback)(value); }
+}
+public flow numeric_value<T ~ std.math.Number>(left: T, right: T) -> T ![] {
+    return std.math.abs(std.math.min(left + right, right));
+}
+public flow numeric_result() -> i32 ![] { return numeric_value(-7, 4); }
+type Files;
+impl Files ~ std.fs.Region;
+public flow portable_path() -> string ![] {
+    return std.fs.relative_name(std.fs.root<Files>());
+}
+public flow portable_checkpoint() -> unit ![] {
+    let checkpoint: (i32) -> unit ![] = std.runtime.checkpoint;
+    checkpoint(42);
+}
+public flow transformed_value() -> i32 ![] {
+    let transform = Transform { callback = (value: i32) => value + 1 };
+    let wide = Transform { callback = (value: u128) => value + 1 };
+    let increment = wide.apply(0);
+    return transform.apply(i32 { bits = increment.bits + 40 });
+}
 public flow describe() -> unit { let definition = ^generic_echo; return; }
 "#,
         );
+        fs::create_dir_all(package.0.join("library/std/core")).unwrap();
+        let core = fs::read_to_string(library.join("core/mod.es")).unwrap();
+        let termination = &core[..core.find("@std.role(\"std.core.Index\")").unwrap()];
+        fs::write(
+            package.0.join("library/std/core/termination.es"),
+            termination,
+        )
+        .unwrap();
+        fs::write(
+            package.0.join("library/std/core/mod.es"),
+            r#"
+module std.core;
+@std.role("std.core.Index")
+public spec Index { flow to_usize(self) -> Option<usize> ![]; }
+impl usize ~ Index {
+    public flow to_usize(self) -> Option<usize> ![] { return Some(self); }
+}
+impl bytes {
+    public flow size(self) -> usize ![] { return self.length; }
+}
+public flow byte_count(value: bytes) -> usize ![] { return value.size(); }
+public flow checked_index<I ~ Index>(value: I) -> Option<usize> ![] {
+    return value.to_usize();
+}
+public flow builtin_index() -> Option<usize> ![] {
+    let value: usize = 3;
+    return std.core.checked_index(std.text.generic_echo(value));
+}
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(package.0.join("library/std/collections")).unwrap();
+        fs::write(
+            package.0.join("library/std/collections/mod.es"),
+            r#"
+module std.collections;
+@std.role("std.collections.Iter")
+public type Iter<Element> = { next: () -> Option<(Element, Iter<Element>)> ![] };
+public flow numbers(start: i32, end: i32) -> Iter<i32> ![] {
+    return Iter { next = () => {
+        if start >= end { return None; }
+        return Some((start, numbers(start + 1, end)));
+    } };
+}
+public flow sum() -> i32 ![] {
+    var total: i32 = 0;
+    for value in numbers(1, 5) limit Iterations(4) { total = total + value; }
+    return total;
+}
+"#,
+        )
+        .unwrap();
         let mut loaded = package.load();
         loaded.input.environment.local_source_package = Some(owner);
         loaded.input.environment.stable_source_keys = loaded
@@ -243,6 +500,41 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
         "noncanonical image components: {changed:?}"
     );
     let restored = LibraryHirImage::decode(&bytes).unwrap();
+    assert!(
+        restored
+            .types
+            .spec_signatures
+            .values()
+            .any(|spec| { spec.name == "Index" && spec.methods.len() == 1 })
+    );
+    assert!(
+        restored
+            .program
+            .pats
+            .iter()
+            .any(|(_, pat)| matches!(pat, etas_hir::HirPat::EmptyList { .. }))
+    );
+    assert!(
+        restored
+            .program
+            .pats
+            .iter()
+            .any(|(_, pat)| matches!(pat, etas_hir::HirPat::ListCons { .. }))
+    );
+    assert!(
+        restored
+            .types
+            .std_spec_aliases
+            .values()
+            .any(|path| path == &["std", "math", "Number"])
+    );
+    assert!(
+        restored
+            .types
+            .spec_signatures
+            .values()
+            .any(|spec| spec.name == "Number" && spec.methods.is_empty())
+    );
     assert!(restored.encode().unwrap() == bytes);
     assert_eq!(
         restored.types.item_signatures.len(),
@@ -282,16 +574,216 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
     );
     assert!(linked.uses_environment(&first.environment));
     assert!(linked.entry.is_none());
+    let replace = linked
+        .types
+        .methods
+        .entries()
+        .find(|method| method.name == "replace")
+        .unwrap();
+    assert!(replace.receiver.is_updating());
+    let etas_types::method::MethodTarget::Source { callable, .. } = replace.target else {
+        panic!("restored source method");
+    };
+    assert!(
+        linked
+            .checked_callable_suspension(etas_frontend::CheckedCallableRoot::Item(callable))
+            .unwrap()
+            .proven_non_suspending()
+    );
+    let update = linked
+        .types
+        .methods
+        .entries()
+        .find(|method| method.name == "update")
+        .unwrap();
+    assert_eq!(
+        update.receiver,
+        etas_types::method::MethodReceiver::Updating { slot: 0 }
+    );
+    assert!(
+        linked
+            .types
+            .spec_signatures
+            .values()
+            .any(|spec| { spec.name == "Update" && spec.methods[0].updating_receiver })
+    );
+    assert_eq!(linked.effects.suspension, first.effects.suspension);
+    for name in [
+        "generic_echo",
+        "interval_total",
+        "replaced_message",
+        "portable_path",
+    ] {
+        let item = linked
+            .hir
+            .items
+            .iter()
+            .find_map(|(item, declaration)| {
+                let etas_hir::HirItem::Flow(flow) = declaration else {
+                    return None;
+                };
+                (linked.symbols.get(flow.symbol).unwrap().name == name).then_some(item)
+            })
+            .unwrap();
+        assert!(
+            linked
+                .checked_callable_suspension(etas_frontend::CheckedCallableRoot::Item(item))
+                .unwrap()
+                .proven_non_suspending(),
+            "{name}"
+        );
+    }
+    assert!(linked.types.known_std_types.index_error.is_some());
+    let money = linked
+        .types
+        .known_std_types
+        .runtime_type(etas_std::RuntimeTypeRole::Money)
+        .unwrap();
+    assert!(
+        matches!(linked.type_store.get(money), Some(etas_types::Type::Nominal(record)) if record.representation.is_some())
+    );
+    let transform = linked
+        .types
+        .type_impl_methods
+        .values()
+        .find(|method| method.name == "apply")
+        .unwrap();
+    let applications = linked
+        .checked_callable_applications(transform.body)
+        .unwrap();
+    assert_eq!(applications.len(), 2);
+    let mut argument_types = applications
+        .iter()
+        .map(|application| {
+            assert_eq!(application.owner_bindings().len(), 1);
+            assert_eq!(
+                application.signature().params[1],
+                application.signature().output
+            );
+            etas_types::ty::display_type(&linked.type_store, application.signature().output)
+        })
+        .collect::<Vec<_>>();
+    argument_types.sort();
+    assert_eq!(argument_types, ["i32", "u128"]);
     assert_eq!(
         linked.checked_reflections().len(),
         first.types.reflections.len()
     );
+    let capture = linked
+        .types
+        .type_impl_methods
+        .values()
+        .find(|method| method.name == "capture")
+        .unwrap();
+    assert!(matches!(
+        &linked.hir.items[capture.body],
+        etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+            body: etas_hir::HirFlowBody::Runtime {
+                role: etas_std::StdExecutionRole::CaptureData,
+                ..
+            },
+            ..
+        })
+    ));
+    assert!(
+        linked.effects.suspension[&etas_effects::EffectUnit::Item(capture.body)]
+            .proven_non_suspending()
+    );
+    for role in [
+        etas_std::StdExecutionRole::StorageContext,
+        etas_std::StdExecutionRole::StorageNonce,
+        etas_std::StdExecutionRole::StreamClock,
+    ] {
+        let item = linked
+            .hir
+            .items
+            .iter()
+            .find_map(|(item, declaration)| match declaration {
+                etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Runtime { role: actual, .. },
+                    ..
+                }) if *actual == role => Some(item),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            linked.effects.suspension[&etas_effects::EffectUnit::Item(item)]
+                .proven_non_suspending()
+        );
+        assert_eq!(
+            linked.effects.item_effects[&item].determinism,
+            etas_effects::Determinism::NonDeterministic
+        );
+        assert_eq!(
+            linked.effects.item_effects[&item].independent_determinism,
+            Some(etas_effects::Determinism::NonDeterministic)
+        );
+    }
+    let mut primitives = 0;
     for item in first.declarations.values() {
         if first.types.item_signatures.contains_key(item) {
-            assert!(linked.definition_sources.body(*item).is_some());
+            if let etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                body: etas_hir::HirFlowBody::Runtime { role, span },
+                ..
+            }) = &first.program.items[*item]
+            {
+                primitives += 1;
+                assert!(
+                    matches!(&linked.hir.items[*item], etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Runtime { role: restored, .. }, ..
+                }) if role == restored)
+                );
+                assert!(linked.definition_sources.source(span.source).is_some());
+                assert!(linked.definition_sources.body(*item).is_none());
+                let suspension = linked.effects.suspension[&etas_effects::EffectUnit::Item(*item)];
+                match role {
+                    etas_std::StdExecutionRole::Abort | etas_std::StdExecutionRole::CaptureData => {
+                        assert!(suspension.proven_non_suspending())
+                    }
+                    etas_std::StdExecutionRole::StorageContext
+                    | etas_std::StdExecutionRole::StorageNonce
+                    | etas_std::StdExecutionRole::StreamClock
+                    | etas_std::StdExecutionRole::TaskStart
+                    | etas_std::StdExecutionRole::TaskCancel
+                    | etas_std::StdExecutionRole::ParseBody
+                    | etas_std::StdExecutionRole::AgentWithBody
+                    | etas_std::StdExecutionRole::CallableWithBody
+                    | etas_std::StdExecutionRole::ToolReference
+                    | etas_std::StdExecutionRole::CurrentSession
+                    | etas_std::StdExecutionRole::MessageContextCapture
+                    | etas_std::StdExecutionRole::MessageContextRecord
+                    | etas_std::StdExecutionRole::PayloadConvert => {
+                        assert!(suspension.proven_non_suspending());
+                    }
+                    etas_std::StdExecutionRole::Checkpoint => {
+                        assert_eq!(
+                            suspension,
+                            etas_effects::suspension::SuspensionSummary::SUSPENDING
+                        );
+                        assert_eq!(
+                            linked.effects.item_effects[item].support,
+                            etas_effects::InterpreterSupport::from(
+                                etas_effects::RuntimeRequirementReason::Checkpoint
+                            )
+                        );
+                    }
+                    etas_std::StdExecutionRole::Requeue
+                    | etas_std::StdExecutionRole::Park
+                    | etas_std::StdExecutionRole::ScopeEnter
+                    | etas_std::StdExecutionRole::TaskNextCompletion => {
+                        assert_eq!(
+                            suspension,
+                            etas_effects::suspension::SuspensionSummary::SUSPENDING
+                        );
+                    }
+                }
+            } else {
+                assert!(linked.definition_sources.body(*item).is_some());
+            }
             assert!(linked.effects.item_effects.contains_key(item));
         }
     }
+    assert_eq!(primitives, 2);
 }
 
 #[test]
@@ -398,68 +890,6 @@ public flow execute<T, effect E>(body: (Scheduler) -> T ![E]) -> T ![E] {}
 }
 
 #[test]
-fn std_native_declarations_bind_checked_primitives_with_source_owned_names() {
-    let package = SourcePackage::new();
-    package.write(
-        "native.es",
-        r#"
-module std.text;
-@std.binding("std.text.uppercase")
-public flow trim(value: string) -> string ![] {}
-@std.binding("std.collections.array_push")
-public flow append<U>(values: Array<U>, value: U) -> Array<U> ![] {}
-@std.binding("std.task.run")
-public flow execute<T, effect E>(body: (std.task.Scheduler) -> T ![E]) -> T ![E] {}
-"#,
-    );
-    let checked = Frontend.check_standard_library_source(package.load().input);
-    assert!(checked.checked.is_some(), "{:?}", checked.diagnostics);
-    let program = checked.checked.unwrap();
-    let bound = program
-        .hir
-        .symbols
-        .iter()
-        .filter(|symbol| symbol.name.starts_with("$std_binding_"))
-        .collect::<Vec<_>>();
-    assert_eq!(bound.len(), 3);
-    for symbol in bound {
-        assert!(matches!(
-            symbol.def,
-            etas_hir::SymbolDef::ImportAlias { .. }
-        ));
-    }
-}
-
-#[test]
-fn std_native_abi_mismatch_has_a_source_location() {
-    let package = SourcePackage::new();
-    package.write("bad_native.es", "module std.text; @std.binding(\"std.text.uppercase\") public flow bad(value: string) -> string ![Console] {}");
-    let output = Frontend.check_standard_library_source(package.load().input);
-    assert!(output.checked.is_none());
-    let mismatch = output
-        .diagnostics
-        .iter()
-        .find(|diagnostic| {
-            diagnostic
-                .message
-                .contains("std native binding ABI differs")
-        })
-        .unwrap();
-    let sources = output.sources.as_ref().unwrap();
-    let source = sources
-        .files
-        .iter()
-        .find(|source| source.id == mismatch.primary.span.source)
-        .unwrap();
-    assert!(source.path.as_ref().unwrap().ends_with("bad_native.es"));
-    assert!(
-        source.text[mismatch.primary.span.range.start.0 as usize
-            ..mismatch.primary.span.range.end.0 as usize]
-            .starts_with("@std.binding")
-    );
-}
-
-#[test]
 fn native_enum_payload_requirement_is_checked_at_the_source_variant() {
     let package = SourcePackage::new();
     let maintained = etas_std::library::source_checkout_manifest()
@@ -502,21 +932,76 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
         .parent()
         .unwrap();
     fs::create_dir_all(package.0.join("library/std/effects")).unwrap();
-    fs::write(
-        package.0.join("library/std/effects/mod.es"),
-        fs::read_to_string(maintained.join("library/std/effects/mod.es"))
-            .unwrap()
+    let effects = fs::read_to_string(maintained.join("library/std/effects/mod.es")).unwrap();
+    let file_io = &effects[effects.find("@std.role(\"std.effects.FileIO\")").unwrap()..];
+    let file_io = &file_io[..file_io.find(';').unwrap() + 1];
+    let fs_effect = &effects[effects.find("@std.role(\"std.effects.Fs\")").unwrap()..];
+    fs::write(package.0.join("library/std/effects/mod.es"),
+        format!("module std.effects;\nimport std.fs.{{Region, WorkspacePath, FsStat}};\n{file_io}\n{fs_effect}")
             .replace("<R ~ Region>", "<Scope ~ Region>")
             .replace("WorkspacePath<R>", "WorkspacePath<Scope>"),
+    ).unwrap();
+    let source = fs::read_to_string(maintained.join("library/std/fs/mod.es")).unwrap();
+    let header = &source[..source.find("public flow path<").unwrap()];
+    let methods = [
+        "root",
+        "relative_name",
+        "read_bytes",
+        "read_bytes_limited",
+        "write_bytes",
+        "list",
+        "list_limited",
+        "stat",
+        "atomic_replace",
+    ]
+    .map(|name| {
+        let source = &source[source.find(&format!("public flow {name}<")).unwrap()..];
+        &source[..source.find("\n}\n").unwrap() + 3]
+    });
+    let source = format!("{header}\n{}", methods.join("\n"));
+    let library = maintained.join("library/std");
+    fs::create_dir_all(package.0.join("library/std/collections")).unwrap();
+    let collections = fs::read_to_string(library.join("collections/mod.es")).unwrap();
+    let sequences = &collections[..collections
+        .find("@std.role(\"std.collections.Range\")")
+        .unwrap()];
+    let iterator = &collections[collections
+        .rfind("@std.role(\"std.collections.Iter\")")
+        .unwrap()..];
+    let algorithms = fs::read_to_string(library.join("collections/algorithms.es")).unwrap();
+    let reverse = &algorithms[algorithms
+        .find("impl List<T> {\n    public flow reverse")
+        .unwrap()..];
+    let reverse = &reverse[..reverse.find("\n}\n").unwrap() + 3];
+    let iteration = fs::read_to_string(library.join("collections/iteration.es")).unwrap();
+    let iterable = &iteration[iteration.find("public spec Iterable<T>").unwrap()..];
+    let iterable = &iterable[..iterable.find("\n}\n").unwrap() + 3];
+    fs::write(
+        package.0.join("library/std/collections/mod.es"),
+        format!("{sequences}\n{iterator}\n{iterable}\n{reverse}\n"),
     )
     .unwrap();
-    let source = fs::read_to_string(maintained.join("library/std/fs/mod.es")).unwrap();
+    for relative in [
+        "collections/order.es",
+        "collections/ordered.es",
+        "result/mod.es",
+        "option/mod.es",
+    ] {
+        let target = package.0.join("library/std").join(relative);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(library.join(relative), target).unwrap();
+    }
+    let core = fs::read_to_string(library.join("core/mod.es")).unwrap();
+    let termination = &core[..core.find("@std.role(\"std.core.Index\")").unwrap()];
+    fs::create_dir_all(package.0.join("library/std/core")).unwrap();
+    fs::write(package.0.join("library/std/core/mod.es"), termination).unwrap();
+
     fs::write(
         package.0.join("library/std/fs/mod.es"),
         source
             .replace(
-                "WorkspacePath<R ~ Region>;",
-                "WorkspacePath<Authority ~ Region>;",
+                "public type WorkspacePath<R ~ Region>",
+                "public type WorkspacePath<Authority ~ Region>",
             )
             .replace(
                 "public enum ReadLimitError {",
@@ -546,9 +1031,20 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
             .lookup_qualified(&["std", "fs", "IOError"])
             .is_none()
     );
-    assert!(checked.types.known_std_types.opaque_values.iter().any(|ty| {
-        matches!(checked.type_store.get(*ty), Some(etas_types::Type::Nominal(nominal)) if nominal.name == "std.fs.IOError")
-    }));
+    let error = checked.types.known_std_types.filesystem_io_error.unwrap();
+    assert!(
+        matches!(checked.type_store.get(error), Some(etas_types::Type::Nominal(nominal))
+        if nominal.name == "std.fs.IOError" && nominal.representation.is_some())
+    );
+    let Some(etas_types::Type::Nominal(declaration)) = checked.type_store.get(error) else {
+        unreachable!()
+    };
+    assert!(matches!(
+        checked.type_store.get(declaration.representation.unwrap()),
+        Some(etas_types::Type::Primitive(
+            etas_types::PrimitiveType::String
+        ))
+    ));
     let limit = checked.types.known_std_types.file_read_limit_error.unwrap();
     let variants = &checked.types.enum_layouts[&limit].variants;
     assert!(variants.iter().any(|variant| variant.name == "SdkOnly"));
@@ -588,30 +1084,52 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
     assert_eq!(stable.id.0, 139);
     assert!(stable.has_default_handler);
     let stat = checked
-        .types
-        .std_intrinsic_calls
+        .effects
+        .performed_actions
         .values()
-        .find(|call| call.qualified_path == ["std", "fs", "stat"])
+        .find(|call| call.action_symbol == Some(source_stat))
         .unwrap();
     assert_eq!(
-        stat.signature.output,
+        checked.types.expr_types[&stat.expr],
+        checked.types.action_signatures[&source_stat].output
+    );
+    assert_eq!(
+        checked.types.expr_types[&stat.expr],
         checked.types.qualified_action_signatures["std.effects.actions.Fs.stat"].output
     );
-    let error = checked.types.known_std_types.filesystem_io_error.unwrap();
-    assert!(checked.types.known_std_types.opaque_values.contains(&error));
-    let call = checked
-        .types
-        .std_intrinsic_calls
-        .values()
-        .find(|call| call.qualified_path == ["std", "fs", "read_bytes"])
+    assert!(!checked.types.known_std_types.opaque_values.contains(&error));
+    let read = checked
+        .std_registry
+        .lookup_qualified(&["std", "effects", "actions", "Fs", "read"])
         .unwrap();
-    assert_eq!(
-        call.signature
-            .requested_actions
-            .as_ref()
-            .unwrap()
-            .effects
-            .len(),
-        1
-    );
+    let source_read = checked
+        .hir
+        .standard_action_targets
+        .iter()
+        .find_map(|(symbol, target)| {
+            (*target == read.id
+                && matches!(
+                    checked.hir.symbols.get(*symbol).map(|symbol| &symbol.def),
+                    Some(etas_hir::SymbolDef::EffectAction { .. })
+                ))
+            .then_some(*symbol)
+        })
+        .unwrap();
+    let call = checked
+        .effects
+        .performed_actions
+        .values()
+        .find(|call| call.action_symbol == Some(source_read))
+        .unwrap();
+    let signature = &checked.types.action_signatures[&source_read];
+    assert_eq!(call.args.len(), 2);
+    assert_eq!(signature.params.len(), 2);
+    assert!(matches!(
+        checked.type_store.get(signature.params[1]),
+        Some(etas_types::Type::Option(_))
+    ));
+    assert!(!checked.types.std_intrinsic_calls.values().any(|call| {
+        call.qualified_path
+            .starts_with(&["std".into(), "fs".into()])
+    }));
 }

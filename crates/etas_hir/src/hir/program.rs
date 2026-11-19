@@ -9,6 +9,12 @@ use crate::{
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirProgram {
+    /// Explicit provider choice; source syntax must not fall back per symbol to
+    /// the legacy collection representation or algorithm implementations.
+    pub source_standard_types: bool,
+    /// Definition-site expressions; the declared parameter type remains T.
+    #[serde(default, serialize_with = "crate::serde_ordered::map")]
+    pub parameter_defaults: HashMap<crate::SymbolId, crate::HirExprId>,
     pub modules: Vec<HirModuleId>,
     pub symbols: SymbolTable,
     pub scopes: ScopeTree,
@@ -21,6 +27,9 @@ pub struct HirProgram {
     pub source_import_targets: HashMap<crate::SymbolId, crate::SymbolId>,
     #[serde(serialize_with = "crate::serde_ordered::map")]
     pub standard_action_targets: HashMap<crate::SymbolId, etas_std::StdSymbolId>,
+    /// A lexical flow name may denote several checked input signatures.
+    #[serde(default, serialize_with = "crate::serde_ordered::map")]
+    pub flow_overloads: HashMap<crate::SymbolId, Vec<crate::SymbolId>>,
     pub exprs: HirExprArena,
     pub handler_arms: HirHandlerArmArena,
     pub stmts: HirStmtArena,
@@ -49,6 +58,76 @@ pub struct HirAgentMethod {
 }
 
 impl HirProgram {
+    pub fn flow_overload_group(&self, symbol: crate::SymbolId) -> Option<&[crate::SymbolId]> {
+        let direct = |symbol| {
+            self.flow_overloads
+                .get(&symbol)
+                .or_else(|| {
+                    self.flow_overloads
+                        .values()
+                        .find(|group| group.contains(&symbol))
+                })
+                .map(Vec::as_slice)
+        };
+        direct(symbol).or_else(|| direct(self.canonical_source_symbol(symbol)?))
+    }
+
+    pub(crate) fn flow_overload_root(
+        &self,
+        symbols: &[crate::SymbolId],
+    ) -> Option<crate::SymbolId> {
+        let group = self.flow_overload_group(*symbols.first()?)?;
+        symbols
+            .iter()
+            .all(|symbol| group.contains(symbol))
+            .then(|| group[0])
+    }
+
+    /// The authored declaration's parameter list, including its receiver when present.
+    pub fn parameter_list(&self, parameter: crate::SymbolId) -> Option<&[crate::SymbolId]> {
+        let crate::SymbolDef::Param { owner, .. } = self.symbols.get(parameter)?.def else {
+            return None;
+        };
+        match self.items.get(owner)? {
+            crate::HirItem::Flow(flow) => Some(&flow.params),
+            crate::HirItem::Tool(tool) => Some(&tool.params),
+            crate::HirItem::Agent(agent) => Some(&agent.params),
+            crate::HirItem::Effect(effect) => effect
+                .body
+                .actions()
+                .iter()
+                .find(|action| action.params.contains(&parameter))
+                .map(|action| action.params.as_slice()),
+            crate::HirItem::Spec(spec) => spec.items.iter().find_map(|member| match member {
+                crate::HirSpecItem::FlowSignature(signature)
+                    if signature.params.contains(&parameter) =>
+                {
+                    Some(signature.params.as_slice())
+                }
+                _ => None,
+            }),
+            crate::HirItem::Impl(implementation) => {
+                implementation.items.iter().find_map(|member| match member {
+                    crate::HirImplItem::Flow(flow) if flow.params.contains(&parameter) => {
+                        Some(flow.params.as_slice())
+                    }
+                    crate::HirImplItem::Action(action) if action.params.contains(&parameter) => {
+                        Some(action.params.as_slice())
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Parameters visible to this parameter's definition-site default expression.
+    pub fn preceding_parameters(&self, parameter: crate::SymbolId) -> Option<&[crate::SymbolId]> {
+        let parameters = self.parameter_list(parameter)?;
+        let index = parameters.iter().position(|symbol| *symbol == parameter)?;
+        Some(&parameters[..index])
+    }
+
     pub fn mark_block_optimized_out(&mut self, block: crate::HirBlockId) {
         self.optimized_out_blocks.insert(block);
     }

@@ -15,7 +15,11 @@ pub fn collect_pattern<E>(
     ctx.record_pat_type(pat, ty);
     match ctx.ctx.hir.pats[pat].clone() {
         HirPat::Binding { symbol, .. } => {
-            ctx.record_symbol_type(symbol, SymbolTypeFact::Local { ty, mutable: false });
+            let mutable = ctx.ctx.hir.symbols.get(symbol).is_some_and(|declaration| {
+                matches!(&declaration.def, etas_hir::SymbolDef::Local { binding, .. }
+                    if matches!(ctx.ctx.hir.stmts.get(*binding), Some(etas_hir::HirStmt::Var { .. })))
+            });
+            ctx.record_symbol_type(symbol, SymbolTypeFact::Local { ty, mutable });
         }
         HirPat::Wildcard { .. } => {}
         HirPat::Literal(literal) => {
@@ -28,6 +32,25 @@ pub fn collect_pattern<E>(
                 },
                 reason: AssignabilityReason::Pattern,
             });
+        }
+        HirPat::EmptyList { span } | HirPat::ListCons { span, .. } => {
+            let element = super::expr::sequence_element(ctx, ty, span);
+            let inner = element.unwrap_or_else(|| ctx.fresh_type_var());
+            let list = if element.is_some() {
+                ty
+            } else {
+                ctx.ctx.interner.intern(Type::List(inner))
+            };
+            ctx.emit(TypeConstraint::Assignable {
+                from: ty,
+                to: list,
+                origin: ConstraintOrigin { span },
+                reason: AssignabilityReason::Pattern,
+            });
+            if let HirPat::ListCons { head, tail, .. } = ctx.ctx.hir.pats[pat] {
+                collect_pattern(ctx, head, inner)?;
+                collect_pattern(ctx, tail, list)?;
+            }
         }
         HirPat::Tuple { elems, span } => {
             let expected_elems = match ctx.ctx.interner.store().get(ty) {
@@ -287,6 +310,7 @@ fn collect_constructor_variant<E>(
         effects: None,
     }));
     ctx.emit(TypeConstraint::Callable {
+        argument_slots: None,
         call: None,
         callee,
         generic_params: signature.generic_params,
@@ -318,6 +342,7 @@ fn constructor_signature<E>(
             Some(signature.clone())
         }
         SymbolTypeFact::Value { ty } => Some(CallableSignature {
+            parameter_interface: None,
             generic_params: Vec::new(),
             params: Vec::new(),
             output: *ty,

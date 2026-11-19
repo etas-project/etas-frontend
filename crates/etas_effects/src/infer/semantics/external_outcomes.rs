@@ -918,6 +918,7 @@ mod tests {
                         parameters: vec![ParameterInfo {
                             name: None,
                             ty: TypeInfoRef(0),
+                            default: None,
                         }],
                         output: TypeInfoRef(0),
                         declared_output: None,

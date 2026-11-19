@@ -755,7 +755,7 @@ impl EffectSemantics<'_> {
         self.signature_for_action_ref(action)
     }
 
-    fn block_type_is_never(&self, block: HirBlockId) -> bool {
+    pub(super) fn block_type_is_never(&self, block: HirBlockId) -> bool {
         let Some(block) = self.hir.blocks.get(block) else {
             return false;
         };

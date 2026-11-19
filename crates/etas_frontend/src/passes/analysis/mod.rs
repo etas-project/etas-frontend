@@ -1,3 +1,4 @@
+mod collection_literals;
 pub(crate) mod concurrency;
 mod cpu_parallel;
 mod definition_sources;
@@ -8,6 +9,7 @@ mod handler_instantiation;
 pub use handler_instantiation::ValidateHandlerInstantiationsPass;
 mod infer_callable_outputs;
 mod invocation_types;
+pub(crate) mod lexical_capture;
 pub use definition_sources::RetainDefinitionSourcesPass;
 pub use generic_effect_rows::MaterializeGenericEffectRowsPass;
 pub use invocation_types::{PrepareDirectInvocationTypesPass, PrepareInvocationTypesPass};

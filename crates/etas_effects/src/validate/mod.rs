@@ -383,7 +383,7 @@ impl ContractValidator<'_, '_> {
             } else {
                 PublicEffectContractSource::GeneratedCheckedMetadata
             };
-            let latent_flows = self
+            let mut latent_flows = self
                 .effects
                 .facts
                 .latent_effects
@@ -397,6 +397,7 @@ impl ContractValidator<'_, '_> {
                     inferred: latent.inferred.clone(),
                 })
                 .collect::<Vec<_>>();
+            latent_flows.sort_unstable_by_key(|latent| latent.value);
             let mut inferred = summary.escaping_effects.clone();
             if matches!(signature, etas_types::ItemSignature::TopLevelLet(_)) {
                 for latent in &latent_flows {

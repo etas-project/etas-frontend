@@ -88,6 +88,7 @@ fn emit_constructor<E>(
             effects: signature.effects,
         }));
     ctx.emit(TypeConstraint::Callable {
+        argument_slots: None,
         call: None,
         callee,
         generic_params: signature.generic_params,

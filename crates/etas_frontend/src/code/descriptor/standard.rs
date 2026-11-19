@@ -84,6 +84,7 @@ impl DefinitionDescriptorProjector<'_> {
                     .into_iter()
                     .map(|ty| {
                         Ok(ParameterInfo {
+                            default: None,
                             name: None,
                             ty: self.standard_ref(ty, scope, module)?,
                         })
@@ -103,6 +104,32 @@ impl DefinitionDescriptorProjector<'_> {
                 let output = self.standard_ref(*output, scope, module)?;
                 let effects = self.project_standard_row(effects, scope, module)?;
                 return Ok(TypeInfo::Task { output, effects });
+            }
+            StdType::Handler {
+                handled,
+                produced,
+                result,
+            } => {
+                return Ok(TypeInfo::Handler {
+                    handled: self.project_standard_row(handled, scope, module)?,
+                    produced: produced
+                        .map(|row| self.project_standard_row(row, scope, module))
+                        .transpose()?,
+                    result: result
+                        .map(|ty| self.standard_ref(*ty, scope, module))
+                        .transpose()?,
+                });
+            }
+            StdType::Existential { bounds } => {
+                let mut bounds = self.project_bounds(
+                    bounds
+                        .into_iter()
+                        .map(crate::code::identity::BoundDeclaration::Standard)
+                        .collect(),
+                    scope,
+                )?;
+                bounds.sort_by(|left, right| left.definition.cmp(&right.definition));
+                return Ok(TypeInfo::Existential { bounds });
             }
             StdType::NamedApplied { name, args } => {
                 let declaration = self.standard_declaration(&name, module)?;
@@ -336,7 +363,7 @@ impl DefinitionDescriptorProjector<'_> {
     }
 }
 
-fn primitive_info(primitive: etas_std::StdPrimitiveType) -> PrimitiveInfo {
+pub(crate) fn primitive_info(primitive: etas_std::StdPrimitiveType) -> PrimitiveInfo {
     use etas_std::StdPrimitiveType as P;
     match primitive {
         P::Unit => PrimitiveInfo::Unit,

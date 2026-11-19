@@ -200,6 +200,7 @@ fn external_dependency_action(
         selector_param_names: action.selector_param_names.clone(),
         selector_defaults,
         returns_never: action.returns_never,
+        has_default_handler: action.default_handler_effects.is_some(),
         runtime_requirement: None,
     })
 }
@@ -323,7 +324,12 @@ pub(super) fn external_effect_summaries(
                 continue;
             };
             seen.insert((package_identity.clone(), summary.item.clone()));
-            let contract = contracts.get(metadata.package, &summary.item);
+            let contract = match &summary.definition {
+                Some(definition) => etas_code::CallableId::declaration(definition.clone())
+                    .map_err(|error| error.to_string())
+                    .and_then(|identity| contracts.get_callable(&identity)),
+                None => contracts.get(metadata.package, &summary.item),
+            };
             match contract.and_then(|contract| {
                 external_effect_summary_metadata(
                     summary,
@@ -511,8 +517,8 @@ fn external_effect_summary_metadata(
     summary: &crate::ProjectExternalEffectSummaryInput,
     package: Option<String>,
     import_root: Option<String>,
-    param_names_by_item: &HashMap<Vec<String>, Vec<String>>,
-    generic_params_by_item: &HashMap<Vec<String>, ExternalGenericParams>,
+    param_names_by_item: &HashMap<ExternalCallableKey, Vec<String>>,
+    generic_params_by_item: &HashMap<ExternalCallableKey, ExternalGenericParams>,
     types: &TypeOutput,
     callable_contract: Option<etas_effects::ExternalCallableContract>,
 ) -> Result<etas_effects::ExternalEffectSummaryMetadata, String> {
@@ -524,7 +530,9 @@ fn external_effect_summary_metadata(
         else {
             return Err("external callable contract has no checked function signature".into());
         };
-        let params = param_names_by_item.get(&summary.item).map_or(0, Vec::len);
+        let params = param_names_by_item
+            .get(&(summary.definition.clone(), summary.item.clone()))
+            .map_or(0, Vec::len);
         if signature.parameters.len() != params {
             return Err(
                 "external callable contract and effect summary have different parameter arity"
@@ -618,19 +626,19 @@ fn external_effect_summary_metadata(
         import_root,
         item: summary.item.clone(),
         param_names: param_names_by_item
-            .get(&summary.item)
+            .get(&(summary.definition.clone(), summary.item.clone()))
             .cloned()
             .unwrap_or_default(),
         generic_params: generic_params_by_item
-            .get(&summary.item)
+            .get(&(summary.definition.clone(), summary.item.clone()))
             .map(|params| params.ordered.clone())
             .unwrap_or_default(),
         type_param_names: generic_params_by_item
-            .get(&summary.item)
+            .get(&(summary.definition.clone(), summary.item.clone()))
             .map(|params| params.type_params.clone())
             .unwrap_or_default(),
         effect_param_names: generic_params_by_item
-            .get(&summary.item)
+            .get(&(summary.definition.clone(), summary.item.clone()))
             .map(|params| params.effect_params.clone())
             .unwrap_or_default(),
         public_effects: external_effect_row(&summary.public_effects, types)?,
@@ -887,25 +895,32 @@ fn external_effect_args(
         .collect()
 }
 
+type ExternalCallableKey = (Option<etas_code::DefinitionKey>, Vec<String>);
+
 fn external_param_names_by_item(
     metadata: &ProjectExternalPublicMetadataInput,
-) -> HashMap<Vec<String>, Vec<String>> {
+) -> HashMap<ExternalCallableKey, Vec<String>> {
     metadata
         .flows
         .iter()
-        .map(|signature| (signature.path.clone(), signature.param_names.clone()))
-        .chain(
-            metadata
-                .agents
-                .iter()
-                .map(|signature| (signature.path.clone(), signature.param_names.clone())),
-        )
-        .chain(
-            metadata
-                .tools
-                .iter()
-                .map(|signature| (signature.path.clone(), signature.param_names.clone())),
-        )
+        .map(|signature| {
+            (
+                (signature.definition.clone(), signature.path.clone()),
+                signature.param_names.clone(),
+            )
+        })
+        .chain(metadata.agents.iter().map(|signature| {
+            (
+                (None, signature.path.clone()),
+                signature.param_names.clone(),
+            )
+        }))
+        .chain(metadata.tools.iter().map(|signature| {
+            (
+                (None, signature.path.clone()),
+                signature.param_names.clone(),
+            )
+        }))
         .collect()
 }
 
@@ -918,25 +933,25 @@ struct ExternalGenericParams {
 
 fn external_generic_params_by_item(
     metadata: &ProjectExternalPublicMetadataInput,
-) -> HashMap<Vec<String>, ExternalGenericParams> {
+) -> HashMap<ExternalCallableKey, ExternalGenericParams> {
     metadata
         .flows
         .iter()
         .map(|signature| {
             (
-                signature.path.clone(),
+                (signature.definition.clone(), signature.path.clone()),
                 split_external_generic_params(&signature.generic_params),
             )
         })
         .chain(metadata.agents.iter().map(|signature| {
             (
-                signature.path.clone(),
+                (None, signature.path.clone()),
                 split_external_generic_params(&signature.generic_params),
             )
         }))
         .chain(metadata.tools.iter().map(|signature| {
             (
-                signature.path.clone(),
+                (None, signature.path.clone()),
                 split_external_generic_params(&signature.generic_params),
             )
         }))

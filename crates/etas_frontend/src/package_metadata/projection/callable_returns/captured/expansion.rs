@@ -12,6 +12,7 @@ enum Part<'a> {
 pub(super) fn validate(
     root: &MetadataType,
     types: &BTreeMap<String, MetadataType>,
+    parameters: &BTreeMap<(etas_code::descriptor::GenericOwner, u32), MetadataType>,
     rows: &BTreeMap<String, MetadataEffectRow>,
 ) -> Result<(), PackageMetadataError> {
     let mut pending = vec![(Part::Type(root), 0, true)];
@@ -19,8 +20,7 @@ pub(super) fn validate(
     while let Some((part, depth, substitute)) = pending.pop() {
         if let Part::Type(ty) = part
             && substitute
-            && ty.kind == MetadataTypeKind::Var
-            && let Some(argument) = types.get(&ty.name)
+            && let Some(argument) = argument(ty, types, parameters)
         {
             pending.push((Part::Type(argument), depth, false));
             continue;
@@ -41,6 +41,7 @@ pub(super) fn validate(
                 pending.extend(
                     ty.children
                         .iter()
+                        .chain(ty.bounds.iter().flat_map(|bound| &bound.args))
                         .chain(
                             ty.fields
                                 .iter()
@@ -89,6 +90,21 @@ pub(super) fn validate(
     Ok(())
 }
 
+pub(super) fn argument<'a>(
+    ty: &MetadataType,
+    types: &'a BTreeMap<String, MetadataType>,
+    parameters: &'a BTreeMap<(etas_code::descriptor::GenericOwner, u32), MetadataType>,
+) -> Option<&'a MetadataType> {
+    match ty.kind {
+        MetadataTypeKind::Var => types.get(&ty.name),
+        MetadataTypeKind::Parameter => ty
+            .parameter
+            .as_ref()
+            .and_then(|parameter| parameters.get(&(parameter.owner.clone(), parameter.position))),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,7 +134,7 @@ mod tests {
         };
         let types = [("T".into(), array(array(variable("U"))))].into();
         assert!(
-            validate(&root, &types, &BTreeMap::new())
+            validate(&root, &types, &BTreeMap::new(), &BTreeMap::new())
                 .unwrap_err()
                 .to_string()
                 .contains("node budget")
@@ -133,7 +149,7 @@ mod tests {
         }
         let types = [("T".into(), array(variable("U")))].into();
         assert!(
-            validate(&root, &types, &BTreeMap::new())
+            validate(&root, &types, &BTreeMap::new(), &BTreeMap::new())
                 .unwrap_err()
                 .to_string()
                 .contains("depth budget")
@@ -143,7 +159,7 @@ mod tests {
     #[test]
     fn same_named_caller_parameters_are_not_rebound() {
         let types = [("T".into(), array(variable("T")))].into();
-        validate(&variable("T"), &types, &BTreeMap::new()).unwrap();
+        validate(&variable("T"), &types, &BTreeMap::new(), &BTreeMap::new()).unwrap();
     }
 
     #[test]
@@ -180,7 +196,7 @@ mod tests {
         )]
         .into();
         assert!(
-            validate(&root, &BTreeMap::new(), &rows)
+            validate(&root, &BTreeMap::new(), &BTreeMap::new(), &rows)
                 .unwrap_err()
                 .to_string()
                 .contains("node budget")

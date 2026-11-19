@@ -5,6 +5,50 @@ use etas_hir::{HirItem, SymbolDef};
 use super::{DefinitionDescriptorProjector, ProjectionError};
 
 impl DefinitionDescriptorProjector<'_> {
+    fn source_enum_observation(
+        &mut self,
+        ty: etas_types::TypeId,
+        selected: Option<etas_types::TypeId>,
+        name: &str,
+    ) -> Result<Option<ReturnObservationInfo>, ProjectionError> {
+        let constructor = match self.checked.type_store.get(ty) {
+            Some(etas_types::Type::Applied { constructor, .. }) => {
+                etas_types::TypeId(constructor.0)
+            }
+            _ => ty,
+        };
+        if selected != Some(constructor)
+            || !matches!(
+                self.checked.type_store.get(constructor),
+                Some(etas_types::Type::Enum(_))
+            )
+        {
+            return Ok(None);
+        }
+        let layout = self
+            .checked
+            .types
+            .enum_layouts
+            .get(&constructor)
+            .ok_or_else(|| {
+                ProjectionError::Invalid("source return enum has no checked layout".into())
+            })?;
+        if !layout.variants.iter().any(|variant| variant.name == name) {
+            return Err(ProjectionError::Invalid(
+                "source return observation has no checked enum variant".into(),
+            ));
+        }
+        let (declaration, _) = self
+            .identities
+            .method_subject(self.checked.type_store, ty)?;
+        let owner = declaration.identity.clone();
+        self.text(name)?;
+        Ok(Some(ReturnObservationInfo::Variant {
+            owner,
+            name: name.into(),
+        }))
+    }
+
     pub(super) fn can_project_parametric_outcomes(
         &self,
         exits: &CallableExitSummary,
@@ -162,8 +206,20 @@ impl DefinitionDescriptorProjector<'_> {
                         }
                         ReturnObservation::Unit => ReturnObservationInfo::Unit,
                         ReturnObservation::Bool(value) => ReturnObservationInfo::Bool(*value),
-                        ReturnObservation::Result(value) => ReturnObservationInfo::Result(*value),
-                        ReturnObservation::Option(value) => ReturnObservationInfo::Option(*value),
+                        ReturnObservation::Result(value) => self
+                            .source_enum_observation(
+                                *ty,
+                                self.checked.types.known_std_types.result_enum,
+                                if *value { "Ok" } else { "Err" },
+                            )?
+                            .unwrap_or(ReturnObservationInfo::Result(*value)),
+                        ReturnObservation::Option(value) => self
+                            .source_enum_observation(
+                                *ty,
+                                self.checked.types.known_std_types.option_enum,
+                                if *value { "Some" } else { "None" },
+                            )?
+                            .unwrap_or(ReturnObservationInfo::Option(*value)),
                         ReturnObservation::Variant(symbol) => {
                             let constructor = *symbol;
                             let symbol = self
@@ -243,6 +299,9 @@ impl DefinitionDescriptorProjector<'_> {
                 .as_deref()
                 .and_then(super::analysis::checked_argument_values);
             let call = super::analysis::parameter_call(
+                self.checked
+                    .effects
+                    .map(|effects| &effects.parameter_projections),
                 callable,
                 signature,
                 parameters,
@@ -260,27 +319,55 @@ impl DefinitionDescriptorProjector<'_> {
                     },
                 )?,
             )?;
-            let template = self
-                .types
-                .get(signature.0 as usize)
-                .and_then(Option::as_ref)
-                .and_then(|ty| match ty {
-                    TypeInfo::Function(owner) => owner.parameters.get(call.position as usize),
-                    _ => None,
-                })
-                .and_then(|parameter| self.types.get(parameter.ty.0 as usize))
-                .and_then(Option::as_ref)
-                .and_then(|ty| match ty {
-                    TypeInfo::Function(callback) => callback.effects,
-                    _ => None,
-                })
-                .and_then(|row| self.rows.get(row.0 as usize))
-                .and_then(Option::as_ref)
-                .ok_or_else(|| {
-                    ProjectionError::Invalid("parameter outcome has no checked callback row".into())
-                })?
-                .tail
-                .is_some();
+            let template = if let etas_effects::ParameterCallTarget::Projection(id) = exit.target {
+                let projection = self
+                    .checked
+                    .effects
+                    .and_then(|effects| effects.parameter_projections.get(&id))
+                    .ok_or_else(|| {
+                        ProjectionError::Invalid(
+                            "parameter outcome has no checked projection".into(),
+                        )
+                    })?;
+                let Some(etas_types::Type::Function(callback)) =
+                    self.checked.type_store.get(projection.ty)
+                else {
+                    return Err(ProjectionError::Invalid(
+                        "projected outcome is not callable".into(),
+                    ));
+                };
+                callback
+                    .effects
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ProjectionError::Invalid("projected callback has no checked row".into())
+                    })?
+                    .tail
+                    .is_some()
+            } else {
+                self.types
+                    .get(signature.0 as usize)
+                    .and_then(Option::as_ref)
+                    .and_then(|ty| match ty {
+                        TypeInfo::Function(owner) => owner.parameters.get(call.position as usize),
+                        _ => None,
+                    })
+                    .and_then(|parameter| self.types.get(parameter.ty.0 as usize))
+                    .and_then(Option::as_ref)
+                    .and_then(|ty| match ty {
+                        TypeInfo::Function(callback) => callback.effects,
+                        _ => None,
+                    })
+                    .and_then(|row| self.rows.get(row.0 as usize))
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        ProjectionError::Invalid(
+                            "parameter outcome has no checked callback row".into(),
+                        )
+                    })?
+                    .tail
+                    .is_some()
+            };
             let terminal = self.reserve_trace()?;
             self.traces[terminal.0 as usize] = Some(TraceInfo::Outcome(if template {
                 CallableOutcomeInfo::ParameterNonReturnTemplate(call)

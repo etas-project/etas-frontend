@@ -4,6 +4,7 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 
 mod behavior_types;
 mod impl_methods;
+mod parameter_interfaces;
 pub(super) mod reflection;
 
 use crate::{
@@ -92,7 +93,7 @@ fn external_signature_input(
             .external_public_metadata
             .iter()
             .filter(|metadata| anchors.package_span(metadata.package).is_some())
-            .map(convert_external_metadata)
+            .map(|metadata| convert_external_metadata(metadata, environment))
             .collect::<Result<_, _>>()?,
         symbol_bindings: Vec::new(),
         source_spec_bindings: Vec::new(),
@@ -393,8 +394,14 @@ fn external_effect_action_path(
 
 fn convert_external_metadata(
     metadata: &ProjectExternalPublicMetadataInput,
+    environment: &crate::ProjectEnvironmentInput,
 ) -> Result<etas_types::ExternalPublicMetadataInput, crate::code::descriptor::ProjectionError> {
+    let (parameter_interfaces, method_parameter_interfaces) =
+        parameter_interfaces::collect(environment, metadata)?;
     Ok(etas_types::ExternalPublicMetadataInput {
+        parameter_interfaces,
+        method_parameter_interfaces,
+        scoped_callbacks: metadata.scoped_callbacks.clone(),
         package: external_package_key(metadata.package),
         behavior_types: behavior_types::collect(metadata)?,
         types: metadata
@@ -492,6 +499,7 @@ fn convert_external_spec_signature(
             .iter()
             .map(|method| etas_types::ExternalSpecMethodInput {
                 name: method.name.clone(),
+                updating_receiver: method.updating_receiver,
                 receiver_param: method.receiver_param,
                 path: method.path.clone(),
                 signature: method
@@ -525,6 +533,8 @@ fn convert_external_spec_impl(
     implementation: &crate::ProjectExternalSpecImplInput,
 ) -> Result<etas_types::ExternalSpecImplInput, crate::code::descriptor::ProjectionError> {
     Ok(etas_types::ExternalSpecImplInput {
+        owner: implementation.owner.clone(),
+        generic_params: convert_external_generic_params(&implementation.generic_params),
         self_type: convert_external_type(&implementation.self_type),
         spec: implementation.spec.clone(),
         args: implementation
@@ -592,6 +602,12 @@ fn convert_external_flow_signature(
     signature: &ProjectExternalFlowSignatureInput,
 ) -> etas_types::ExternalFlowSignatureInput {
     etas_types::ExternalFlowSignatureInput {
+        definition: signature.definition.clone(),
+        parameter_interface: parameter_interfaces::from_declaration(
+            &signature.param_names,
+            signature.params.len(),
+            &signature.parameter_defaults,
+        ),
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
         param_names: signature.param_names.clone(),
@@ -629,6 +645,11 @@ fn convert_external_action_signature(
     signature: &ProjectExternalActionSignatureInput,
 ) -> etas_types::ExternalActionSignatureInput {
     etas_types::ExternalActionSignatureInput {
+        parameter_interface: parameter_interfaces::from_declaration(
+            &signature.param_names,
+            signature.params.len(),
+            &signature.parameter_defaults,
+        ),
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
         params: signature.params.iter().map(convert_external_type).collect(),
@@ -645,6 +666,10 @@ fn convert_external_action_signature(
             .collect(),
         output: convert_external_type(&signature.output),
         returns_never: signature.returns_never,
+        default_handler_effects: signature
+            .default_handler_effects
+            .as_ref()
+            .map(convert_external_effect_row),
     }
 }
 

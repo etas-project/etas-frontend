@@ -28,12 +28,16 @@ pub(super) fn collect(
         let body = view
             .item(method.body)
             .and_then(|item| item.body())
-            .expect("method declaration has an indexed body")
-            .id();
-        let receiver = if signature.params.first() == Some(&method.self_type) {
-            MethodReceiver::Value { slot: 0 }
-        } else {
-            MethodReceiver::Associated
+            .map(|body| body.id());
+        if body.is_none() && !matches!(flow.body, etas_hir::HirFlowBody::Runtime { .. }) {
+            // Unlinked prototypes are unavailable. Verified execution nodes are
+            // callable source definitions without an invented AST body.
+            continue;
+        }
+        let receiver = match flow.receiver_mode {
+            etas_hir::HirReceiverMode::None => MethodReceiver::Associated,
+            etas_hir::HirReceiverMode::Value => MethodReceiver::Value { slot: 0 },
+            etas_hir::HirReceiverMode::Updating => MethodReceiver::Updating { slot: 0 },
         };
         let constructor = match ctx.interner.store().get(method.self_type) {
             Some(Type::Applied { constructor, .. }) => crate::TypeId(constructor.0),
@@ -100,6 +104,22 @@ pub(super) fn collect(
                                 .find(|required| required.name == method.name)
                         });
                     if let Some(required) = required {
+                        let required_signature = required.signature.as_ref().or_else(|| {
+                            required.source_symbol().and_then(|symbol| {
+                                match state
+                                    .symbol_types
+                                    .get(&symbol)
+                                    .or_else(|| ctx.symbol_fact(symbol))
+                                {
+                                    Some(SymbolTypeFact::Flow { signature }) => Some(signature),
+                                    _ => None,
+                                }
+                            })
+                        });
+                        if let Some(signature) = required_signature {
+                            fact.signature.parameter_interface =
+                                signature.parameter_interface.clone();
+                        }
                         fact.spec_member = Some(required.identity.clone());
                         fact.parameter_names =
                             required.parameter_names.iter().cloned().map(Some).collect();
@@ -131,6 +151,15 @@ pub(super) fn collect(
     for method in agents {
         let mut signature = method.callable.clone();
         signature.params.insert(0, method.component);
+        if let Some(parameters) = &mut signature.parameter_interface {
+            parameters.insert(
+                0,
+                crate::ParameterInterface {
+                    name: None,
+                    default: None,
+                },
+            );
+        }
         let parameters = match &ctx.hir.items[method.body] {
             HirItem::Flow(flow) => &flow.params,
             HirItem::Agent(agent) => &agent.params,
@@ -204,7 +233,11 @@ pub(super) fn collect(
             result.push(MethodSignatureFact {
                 name: method.name.clone(),
                 owner: MethodOwner::Spec(spec_ref.clone()),
-                receiver: MethodReceiver::Value { slot: 0 },
+                receiver: if method.updating_receiver {
+                    MethodReceiver::Updating { slot: 0 }
+                } else {
+                    MethodReceiver::Value { slot: 0 }
+                },
                 receiver_type,
                 owner_params,
                 parameter_names: method.parameter_names.iter().cloned().map(Some).collect(),

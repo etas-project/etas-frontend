@@ -19,6 +19,8 @@ mod revision;
 mod tree;
 mod visit;
 
+pub use helpers::{for_each_expr_child, for_each_stmt_child};
+
 pub use model::{
     HirBodyKind, HirBodyRef, HirOwner, HirTreeChild, HirTreeIndex, HirTreeIndexDiagnostic,
     HirTreeIndexError, HirTreeNodeKind,

@@ -85,6 +85,148 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         match context.unit {
             EffectUnit::Item(item) => {
                 let span = self.hir.items[item].span();
+                if let Some(etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Runtime { role, .. },
+                    ..
+                })) = self.hir.items.get(item)
+                {
+                    let mut summary = EffectSummary::local();
+                    let outcome = match role {
+                        etas_std::StdExecutionRole::TaskNextCompletion
+                        | etas_std::StdExecutionRole::TaskCancel => {
+                            summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+                            summary.determinism = crate::Determinism::NonDeterministic;
+                            summary.independent_determinism =
+                                Some(crate::Determinism::NonDeterministic);
+                            let etas_types::ItemSignature::Flow(signature) =
+                                &self.types.facts.item_signatures[&item]
+                            else {
+                                unreachable!()
+                            };
+                            crate::CallableOutcome::Returned {
+                                ty: signature.output,
+                                observation: crate::ReturnObservation::Any,
+                            }
+                        }
+                        etas_std::StdExecutionRole::TaskStart => {
+                            let etas_hir::HirItem::Flow(flow) = &self.hir.items[item] else {
+                                unreachable!()
+                            };
+                            summary = self
+                                .summary_for_item_signature(item, span)
+                                .expect("task start signature");
+                            summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+                            summary.independent_determinism =
+                                Some(crate::Determinism::Deterministic);
+                            summary.action_trace = crate::ActionTraceDomain::ParameterCall {
+                                target: crate::ParameterCallTarget::Native(flow.params[0]),
+                                parameter: "body".into(),
+                                span,
+                            };
+                            let etas_types::ItemSignature::Flow(signature) =
+                                &self.types.facts.item_signatures[&item]
+                            else {
+                                unreachable!()
+                            };
+                            crate::CallableOutcome::Returned {
+                                ty: signature.output,
+                                observation: crate::ReturnObservation::Any,
+                            }
+                        }
+                        etas_std::StdExecutionRole::ScopeEnter => {
+                            let etas_hir::HirItem::Flow(flow) = &self.hir.items[item] else {
+                                unreachable!()
+                            };
+                            summary = self
+                                .summary_for_item_signature(item, span)
+                                .expect("scope signature");
+                            summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+                            summary.independent_determinism =
+                                Some(crate::Determinism::Deterministic);
+                            let target = crate::ParameterCallTarget::Native(flow.params[1]);
+                            summary.action_trace = crate::ActionTraceDomain::ParameterCall {
+                                target,
+                                parameter: "body".into(),
+                                span,
+                            };
+                            let etas_types::ItemSignature::Flow(signature) =
+                                &self.types.facts.item_signatures[&item]
+                            else {
+                                unreachable!()
+                            };
+                            crate::CallableOutcome::Returned {
+                                ty: signature.output,
+                                observation: crate::ReturnObservation::Any,
+                            }
+                        }
+                        etas_std::StdExecutionRole::Abort => crate::CallableOutcome::NonReturn,
+                        etas_std::StdExecutionRole::Requeue | etas_std::StdExecutionRole::Park => {
+                            summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
+                            crate::CallableOutcome::NonReturn
+                        }
+                        etas_std::StdExecutionRole::StorageContext
+                        | etas_std::StdExecutionRole::StorageNonce
+                        | etas_std::StdExecutionRole::StreamClock
+                        | etas_std::StdExecutionRole::CurrentSession
+                        | etas_std::StdExecutionRole::MessageContextCapture
+                        | etas_std::StdExecutionRole::MessageContextRecord => {
+                            // Local execution observations need no external host adapter,
+                            // but must never qualify as deterministic CPU-worker work.
+                            summary.determinism = crate::Determinism::NonDeterministic;
+                            summary.independent_determinism =
+                                Some(crate::Determinism::NonDeterministic);
+                            let etas_types::ItemSignature::Flow(signature) =
+                                &self.types.facts.item_signatures[&item]
+                            else {
+                                unreachable!()
+                            };
+                            crate::CallableOutcome::Returned {
+                                ty: signature.output,
+                                observation: crate::ReturnObservation::Any,
+                            }
+                        }
+                        etas_std::StdExecutionRole::CaptureData
+                        | etas_std::StdExecutionRole::PayloadConvert
+                        | etas_std::StdExecutionRole::ParseBody
+                        | etas_std::StdExecutionRole::AgentWithBody
+                        | etas_std::StdExecutionRole::CallableWithBody
+                        | etas_std::StdExecutionRole::ToolReference => {
+                            let etas_types::ItemSignature::Flow(signature) =
+                                &self.types.facts.item_signatures[&item]
+                            else {
+                                unreachable!()
+                            };
+                            crate::CallableOutcome::Returned {
+                                ty: signature.output,
+                                observation: crate::ReturnObservation::Any,
+                            }
+                        }
+                        etas_std::StdExecutionRole::Checkpoint => {
+                            summary.require_runtime(crate::RuntimeRequirementReason::Checkpoint);
+                            let etas_types::ItemSignature::Flow(signature) =
+                                &self.types.facts.item_signatures[&item]
+                            else {
+                                unreachable!()
+                            };
+                            crate::CallableOutcome::Returned {
+                                ty: signature.output,
+                                observation: crate::ReturnObservation::Unit,
+                            }
+                        }
+                    };
+                    summary.exits = Some(crate::CallableExitSummary {
+                        exits: vec![crate::ExitTraceFact {
+                            outcome,
+                            trace: summary.action_trace.clone(),
+                        }],
+                        ..Default::default()
+                    });
+                    self.inputs
+                        .unit_effects
+                        .insert(context.unit, summary.clone());
+                    self.callable_summaries.get_mut().invalidate();
+                    return summary;
+                }
                 if matches!(
                     self.hir.items.get(item),
                     Some(etas_hir::HirItem::Tool(etas_hir::HirToolDecl {
@@ -399,6 +541,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                 );
             }
         };
+        if let Err(error) = self.record_source_call_arguments(callee, &site, &state, None) {
+            return self.incomplete_at(site.span, error.to_string(), state);
+        }
         self.note_call_outcomes(site.call, Some(callee), &summary, &mut state);
         state.summary.seq_assign(&summary);
         state = self.validate_returned_flow_source(&site, state);
@@ -569,6 +714,11 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             return self.incomplete_at(site.span, error.to_string(), state);
                         }
                     };
+                    if let Err(error) =
+                        self.record_source_call_arguments(unit, &site, &state, environment)
+                    {
+                        return self.incomplete_at(site.span, error.to_string(), state);
+                    }
                     state = self.validate_returned_flow_source(&site, state);
                 } else if returns_flow {
                     state.local_latent_values.record_value_sources(
@@ -581,7 +731,15 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                     .as_ref()
                     .is_some_and(crate::CallableExitSummary::returns_only)
                 {
-                    if let LatentSource::Parameter { symbol, .. } = source {
+                    if let Some(target) = match source {
+                        LatentSource::Parameter { symbol, .. } => {
+                            Some(crate::ParameterCallTarget::Native(symbol))
+                        }
+                        LatentSource::Projection(id) => {
+                            Some(crate::ParameterCallTarget::Projection(id))
+                        }
+                        _ => None,
+                    } {
                         let Some(output) = self.types.facts.expr_types.get(&site.call).copied()
                         else {
                             return self.incomplete_at(
@@ -591,7 +749,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             );
                         };
                         parameter_calls.insert(crate::OutcomeAnalysisGap::ParameterCall {
-                            target: crate::ParameterCallTarget::Native(symbol),
+                            target,
                             output,
                             source: site.span.into(),
                         });
@@ -639,7 +797,7 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                             }
                         };
                         state.exits.record_parameter_exit(crate::ParameterExitFact {
-                            target: crate::ParameterCallTarget::Native(symbol),
+                            target,
                             output,
                             source: site.span.into(),
                             arguments,

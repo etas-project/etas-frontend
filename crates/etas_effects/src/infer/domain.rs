@@ -337,6 +337,8 @@ type WidenedTraceGroups = BTreeMap<EffectSet, (EffectSet, ParameterCallIndex)>;
     etas_core::RetainedSize,
 )]
 pub enum ParameterCallTarget {
+    Projection(etas_code::CodeFingerprint),
+    ExternalProjection(etas_code::CodeFingerprint),
     Native(etas_hir::SymbolId),
     AgentTools(etas_types::TypeId),
     SpecMethod {

@@ -13,6 +13,15 @@ impl EffectSemantics<'_> {
     pub(super) fn symbolic_contract_value(&self, ty: TypeId, sources: &[LatentSource]) -> bool {
         !sources.is_empty()
             && sources.iter().all(|source| match source {
+                LatentSource::Projection(id) => {
+                    self.parameter_projection(*id).is_some_and(|projection| {
+                        projection.ty == ty
+                            || self.descriptor_contract_type(projection.ty) == Some(ty)
+                            || self.generic_value_parameters(projection.ty).iter().any(
+                                |parameter| self.generic_value_parameters(ty).contains(parameter),
+                            )
+                    })
+                }
                 LatentSource::Parameter { symbol, .. } => {
                     let payloads = self.generic_parameter_payloads(*symbol);
                     self.symbol_value_type(*symbol).is_some_and(|parameter| {
@@ -76,6 +85,7 @@ impl EffectSemantics<'_> {
                     pending.extend([*key, *value]);
                 }
                 Some(Type::Tuple(elements)) => pending.extend(elements),
+                Some(Type::Nominal(nominal)) => pending.extend(nominal.representation),
                 Some(Type::Record(record)) => {
                     pending.extend(record.fields.iter().map(|field| field.ty));
                 }

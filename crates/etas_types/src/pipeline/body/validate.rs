@@ -54,6 +54,7 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &
             }
             ValidationRequest::LambdaParameter { ty, span }
             | ValidationRequest::EmptySequence { ty, span }
+            | ValidationRequest::SequenceElement { ty, span }
             | ValidationRequest::EmptyBrace { ty, span } => {
                 let resolved = crate::substitute_type_params(
                     &mut ctx.interner,
@@ -73,9 +74,18 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &
                                 matches!(
                                     ctx.interner.store().get(ty),
                                     Some(crate::Type::Array(_) | crate::Type::List(_))
-                                ),
+                                ) || crate::value_representation::sequence_element(
+                                    &mut ctx.interner,
+                                    ty,
+                                )
+                                .is_ok_and(|element| element.is_some()),
                                 etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
                                 "empty sequence literal requires an expected Array[T] or List[T] type",
+                            ),
+                            ValidationRequest::SequenceElement { .. } => (
+                                !matches!(ctx.interner.store().get(ty), Some(crate::Type::Var(_))),
+                                etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                                "sequence literal element type requires type context",
                             ),
                             ValidationRequest::EmptyBrace { .. } => (
                                 matches!(
@@ -122,6 +132,38 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: &
                         *span,
                         format!("handler completion type could not be resolved: {error}"),
                     )),
+                }
+            }
+            ValidationRequest::EqualityOperands { left, right, span } => {
+                for ty in [*left, *right] {
+                    let resolved = crate::substitute_type_params(
+                        &mut ctx.interner,
+                        ty,
+                        &Default::default(),
+                        &state.solver_report.substitutions,
+                    );
+                    match resolved {
+                        Ok(ty)
+                            if crate::source_execution::is_scoped_handle(
+                                ctx.interner.store(),
+                                ctx.known_std_types(),
+                                ty,
+                            ) =>
+                        {
+                            ctx.diagnostics.push(Diagnostic::type_check(
+                                etas_core::TypeDiagnosticCode::TypeMismatch,
+                                *span,
+                                "live Task, SchedulerHandle, and Continuation values cannot be compared",
+                            ));
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(error) => ctx.diagnostics.push(Diagnostic::type_check(
+                            etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                            *span,
+                            format!("equality operand type could not be resolved: {error}"),
+                        )),
+                    }
                 }
             }
             ValidationRequest::WritablePlace { target, span } => {

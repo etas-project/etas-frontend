@@ -194,14 +194,23 @@ pub(super) fn collect_handler_for_requests<E>(
                 HandlerProducedEffects::Infer => None,
                 HandlerProducedEffects::Explicit(row) => Some(row.clone()),
             };
-            let continuation_ty = ctx
-                .ctx
-                .interner
-                .intern(Type::Continuation(ContinuationType {
-                    action_output: resume_ty,
-                    handled_answer: expected_result,
-                    residual_effects: residual_effects.clone(),
-                }));
+            let continuation_ty = if ctx.ctx.hir.source_standard_types {
+                match ctx.ctx.known_std_types().execution.continuation {
+                    Some(owner) => ctx.ctx.interner.intern(Type::Applied {
+                        constructor: crate::TypeConstructorId(owner.0),
+                        args: vec![resume_ty],
+                    }),
+                    None => ctx.ctx.unknown_type(arm.span, "continuation binding requires the selected std.task.Continuation declaration"),
+                }
+            } else {
+                ctx.ctx
+                    .interner
+                    .intern(Type::Continuation(ContinuationType {
+                        action_output: resume_ty,
+                        handled_answer: expected_result,
+                        residual_effects: residual_effects.clone(),
+                    }))
+            };
             collect_pattern(ctx, continuation, continuation_ty)?;
             if action_signature.as_ref().is_some_and(|signature| {
                 matches!(

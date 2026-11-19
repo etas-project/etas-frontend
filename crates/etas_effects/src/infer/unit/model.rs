@@ -15,6 +15,11 @@ use etas_hir::{HirBlockId, HirExprId, HirHandlerArmId, HirItemId};
 )]
 pub enum EffectUnit {
     Item(HirItemId),
+    ParameterDefault {
+        owner: HirItemId,
+        parameter: etas_hir::SymbolId,
+        expr: HirExprId,
+    },
     HandlerArm {
         owner: HirItemId,
         arm: HirHandlerArmId,

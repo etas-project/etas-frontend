@@ -59,6 +59,9 @@ pub(super) fn signature(
             etas_package_metadata::MethodReceiver::Value { slot } => {
                 etas_types::method::MethodReceiver::Value { slot }
             }
+            etas_package_metadata::MethodReceiver::Updating { slot } => {
+                etas_types::method::MethodReceiver::Updating { slot }
+            }
             etas_package_metadata::MethodReceiver::Associated => {
                 etas_types::method::MethodReceiver::Associated
             }

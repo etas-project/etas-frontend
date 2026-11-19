@@ -39,9 +39,12 @@ pub(super) fn analyze(
         let HirItem::Flow(flow) = item.data() else {
             continue;
         };
+        let Some(block) = flow.body.as_block() else {
+            continue;
+        };
         let mut scanner =
             Scanner::new(hir, types, standard, effects, &mutated, flow.params.clone());
-        walk_block(view, flow.body.block(), &mut scanner);
+        walk_block(view, block, &mut scanner);
         callables.insert(item.id(), scanner.plan);
         let mut pending = scanner.closures;
         while let Some(expr) = pending.pop() {

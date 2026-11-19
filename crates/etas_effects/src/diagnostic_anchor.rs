@@ -72,6 +72,9 @@ pub(crate) fn project_span(hir: &HirProgram) -> Option<Span> {
 fn unit_span(hir: &HirProgram, unit: EffectUnit) -> Option<Span> {
     match unit {
         EffectUnit::Item(item) => hir.items.get(item).map(etas_hir::HirItem::span),
+        EffectUnit::ParameterDefault { expr, .. } => {
+            hir.exprs.get(expr).map(|expr| expr.span(&hir.blocks))
+        }
         EffectUnit::HandlerArm { arm, .. } => hir.handler_arms.get(arm).map(|arm| arm.span),
         EffectUnit::AnonymousFlow { value, .. } => {
             hir.exprs.get(value).map(|expr| expr.span(&hir.blocks))

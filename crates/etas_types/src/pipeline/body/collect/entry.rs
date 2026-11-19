@@ -15,11 +15,20 @@ pub fn collect_body_item<E>(
 ) -> Result<(), E> {
     checkpoint()?;
     let item = ctx.hir.items[state.item].clone();
+    if let HirItem::Flow(flow) = &item {
+        let facts = ctx
+            .signature_base
+            .map_or(&ctx.signature_facts, |base| &base.facts);
+        if let Some(method) = facts.type_impl_methods.get(&flow.symbol) {
+            state.owner_params = method.owner_params.clone();
+        }
+    }
+    super::defaults::collect(ctx, state, checkpoint)?;
     match item {
         HirItem::Flow(flow) => {
-            if let Some(method) = ctx.signature_facts.type_impl_methods.get(&flow.symbol) {
-                state.owner_params = method.owner_params.clone();
-            }
+            let Some(block) = flow.body.as_block() else {
+                return Ok(());
+            };
             state.expected_return =
                 ctx.item_signature(state.item)
                     .and_then(|signature| match signature {
@@ -41,8 +50,8 @@ pub fn collect_body_item<E>(
                 .is_none()
                 .then_some(expected)
                 .flatten();
-            let result = collect_block(&mut body, flow.body.block(), hint)?;
-            let final_expr = body.ctx.hir.blocks[flow.body.block()].final_expr;
+            let result = collect_block(&mut body, block, hint)?;
+            let final_expr = body.ctx.hir.blocks[block].final_expr;
             if let Some(mut candidates) = body.state.inferred_returns.take() {
                 if let Some(expr) = final_expr {
                     candidates.push((

@@ -21,7 +21,7 @@ pub(crate) struct LatentTypeShapes {
 }
 
 impl LatentTypeShapes {
-    pub(super) fn build(types: &TypeOutput, descriptor: impl Fn(TypeId) -> bool) -> Self {
+    pub(crate) fn build(types: &TypeOutput) -> Self {
         let mut result = Self {
             shapes: vec![Shape::default(); types.store.len()],
             opaque_parameters: types
@@ -59,7 +59,10 @@ impl LatentTypeShapes {
         // applications, whose concrete arguments may grow without a fixed depth.
         while let Some(ty) = pending.pop_front() {
             queued[ty.0 as usize] = false;
-            let shape = result.transfer(types, ty, descriptor(ty));
+            let descriptor = matches!(types.store.get(ty), Some(Type::Applied { constructor, args })
+                if args.len() == 1 && [types.facts.known_std_types.code.callable_definition,
+                    types.facts.known_std_types.code.agent_definition].contains(&Some(TypeId(constructor.0))));
+            let shape = result.transfer(types, ty, descriptor);
             if result.shapes[ty.0 as usize] == shape {
                 continue;
             }
@@ -74,7 +77,7 @@ impl LatentTypeShapes {
         result
     }
 
-    pub(super) fn contains(&self, ty: TypeId) -> bool {
+    pub(crate) fn contains(&self, ty: TypeId) -> bool {
         let shape = &self.shapes[ty.0 as usize];
         shape.callable
             || shape
@@ -83,13 +86,20 @@ impl LatentTypeShapes {
                 .any(|ty| self.opaque_parameters.contains(ty))
     }
 
-    pub(super) fn has_parameters(&self, ty: TypeId) -> bool {
+    pub(crate) fn has_parameters(&self, ty: TypeId) -> bool {
         !self.shapes[ty.0 as usize].parameters.is_empty()
     }
 
     fn transfer(&self, types: &TypeOutput, ty: TypeId, descriptor: bool) -> Shape {
         let value = types.store.get(ty).expect("indexed checked type shape");
         let mut shape = Shape::default();
+        if etas_types::source_execution::is_scoped_handle(
+            &types.store,
+            &types.facts.known_std_types,
+            ty,
+        ) {
+            return shape;
+        }
         if descriptor || matches!(value, Type::Function(_) | Type::Existential { .. }) {
             shape.callable = true;
         } else if matches!(value, Type::Named(_)) {
@@ -128,6 +138,13 @@ impl LatentTypeShapes {
 }
 
 fn children(types: &TypeOutput, ty: TypeId, value: &Type) -> Vec<TypeId> {
+    if etas_types::source_execution::is_scoped_handle(
+        &types.store,
+        &types.facts.known_std_types,
+        ty,
+    ) {
+        return Vec::new();
+    }
     match value {
         Type::Array(inner)
         | Type::List(inner)

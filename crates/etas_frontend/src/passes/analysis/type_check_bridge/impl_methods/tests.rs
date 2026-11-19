@@ -80,6 +80,9 @@ fn binary_owner_binders_lower_and_solve_a_shadowing_method_chain() {
         .external
         .metadata
         .push(etas_types::ExternalPublicMetadataInput {
+            scoped_callbacks: vec![],
+            parameter_interfaces: Default::default(),
+            method_parameter_interfaces: Default::default(),
             package,
             behavior_types,
             types: published

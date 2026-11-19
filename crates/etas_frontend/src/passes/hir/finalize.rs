@@ -48,11 +48,14 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
                 ));
             }
         };
-        super::native_binding::bind(
-            &mut hir,
-            context.input.options.standard_library_mode,
-            &context.std_registry,
-        );
+        if context.input.options.standard_library_mode
+            == crate::StandardLibraryMode::SourceBootstrap
+        {
+            context.std_registry = match super::source_types::bind(&hir, &context.std_registry) {
+                Ok(registry) => std::sync::Arc::new(registry),
+                Err(reason) => return PassResult::failed(reason),
+            };
+        }
         let (roles, role_diagnostics) =
             super::native_role::bindings(&hir, context.input.options.standard_library_mode);
         if !roles.is_empty() {
@@ -64,6 +67,18 @@ impl Pass<ProjectContext> for FinalizeProjectHirPass {
             super::native_role::bind_effect_actions(&mut hir, &context.std_registry, &roles);
         }
         hir.diagnostics.extend(role_diagnostics);
+        super::execution_role::bind(&mut hir, context.input.options.standard_library_mode);
+        for (_, item) in hir.items.iter() {
+            if let etas_hir::HirItem::Flow(flow) = item
+                && let etas_hir::HirFlowBody::Decl { span } = flow.body
+            {
+                hir.diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    span,
+                    "flow declaration has no verified runtime execution contract or source body",
+                ));
+            }
+        }
         let hir = match etas_hir::HirRevision::try_new(hir) {
             Ok(revision) => revision,
             Err(error) => {
@@ -107,11 +122,10 @@ fn build_hir_body_bindings(
             continue;
         };
         bindings.body_items.insert(body.clone(), item);
-        let Some(root_block) = item_body_block(hir_view, item) else {
-            continue;
-        };
-        bindings.ast_to_root_block.insert(body.clone(), root_block);
-        bindings.root_block_to_ast.insert(root_block, body.clone());
+        if let Some(root_block) = item_body_block(hir_view, item) {
+            bindings.ast_to_root_block.insert(body.clone(), root_block);
+            bindings.root_block_to_ast.insert(root_block, body.clone());
+        }
 
         let (blocks, exprs) = collect_item_hir_nodes(hir_view, item);
         for block in &blocks {

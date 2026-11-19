@@ -188,6 +188,10 @@ pub struct ExternalParameterRequestMetadata {
 )]
 pub enum ExternalCallableRequestTarget {
     Parameter(String),
+    ParameterProjection {
+        parameter: String,
+        path: Vec<etas_code::descriptor::ValueProjectionStep>,
+    },
     AgentTools(etas_types::TypeId),
     SpecMethod(std::sync::Arc<ExternalSpecMethodInvocation>),
 }
@@ -884,9 +888,12 @@ mod tests {
         )
         .unwrap();
         let graph = CallableValueGraph {
+            source_projections: Vec::new(),
+            parameter_projections: Vec::new(),
             objects: Vec::new(),
             sources: vec![CallableValueSource::Value(0)],
             values: vec![CallableValueNode {
+                returned_projections: Vec::new(),
                 residual_checks: vec![reference],
                 handler_requests: Some(Default::default()),
                 behavior: CallableValueBehavior {

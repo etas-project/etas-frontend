@@ -60,6 +60,7 @@ impl Pass<ProjectContext> for LowerOwnedSnapshotCowPass {
         if !replacements.is_empty() {
             super::facts::invalidate_replaced_expressions(
                 context,
+                &output.hir,
                 replacements.iter().flat_map(|(root, replacement)| {
                     std::iter::once(*root).chain(replacement.optimized_out.iter().copied())
                 }),

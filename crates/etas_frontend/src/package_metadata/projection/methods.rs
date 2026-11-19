@@ -23,38 +23,9 @@ impl ProjectMetadataProjection<'_> {
             return Ok(Vec::new());
         }
         let mut methods = BTreeMap::new();
+        let mut graph_errors = BTreeMap::new();
         let selection = self.exported_definition_items()?;
-        let head = |ty| {
-            identities
-                .and_then(|identities| {
-                    identities
-                        .method_subject(&self.checked.type_store, ty)
-                        .ok()
-                        .and_then(|(declaration, _)| declaration.checked_type)
-                })
-                .unwrap_or(ty)
-        };
-        let subjects = selection
-            .iter()
-            .filter_map(|item| {
-                let symbol = self.checked.items.get(*item)?.symbol()?;
-                match self.checked.types.symbol_types.get(&symbol)? {
-                    etas_types::SymbolTypeFact::Type { constructor }
-                    | etas_types::SymbolTypeFact::NominalType { constructor, .. } => {
-                        Some(TypeId(constructor.0))
-                    }
-                    etas_types::SymbolTypeFact::TypeAlias { target, .. } => Some(head(*target)),
-                    etas_types::SymbolTypeFact::Agent { signature } => {
-                        Some(head(signature.component))
-                    }
-                    _ => None,
-                }
-            })
-            .collect::<BTreeSet<_>>();
-        for method in declarations
-            .into_iter()
-            .filter(|method| subjects.contains(&head(method.receiver_type)))
-        {
+        for method in declarations {
             let (symbol, callable) = match method.target {
                 MethodTarget::Source {
                     symbol, callable, ..
@@ -85,6 +56,25 @@ impl ProjectMetadataProjection<'_> {
                 .filter(|param| param.kind == etas_types::CallableGenericParamKind::Type)
                 .map(|param| param.name.clone())
                 .collect();
+            let callable_graph =
+                match self.implementation_callable_graph(callable, Some(identities)) {
+                    Ok(graph) => graph,
+                    Err(error) => {
+                        let subject = identity.implementation().subject();
+                        let path = subject
+                            .module()
+                            .iter()
+                            .chain(subject.declaration())
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        graph_errors.insert(
+                            identity.clone(),
+                            format!("{path}.{}: {error}", identity.name()),
+                        );
+                        continue;
+                    }
+                };
             let published = etas_package_metadata::PublishedMethod {
                 identity: identity.clone(),
                 self_type: self.metadata_type_in_generic_scope(method.receiver_type, &names)?,
@@ -92,12 +82,15 @@ impl ProjectMetadataProjection<'_> {
                     MethodReceiver::Value { slot } => {
                         etas_package_metadata::MethodReceiver::Value { slot }
                     }
+                    MethodReceiver::Updating { slot } => {
+                        etas_package_metadata::MethodReceiver::Updating { slot }
+                    }
                     MethodReceiver::Associated => etas_package_metadata::MethodReceiver::Associated,
                     MethodReceiver::Component => etas_package_metadata::MethodReceiver::Component,
                 },
                 owner_params: self.callable_generic_params_metadata(&method.owner_params)?,
                 requirements: self.method_requirements(callable)?,
-                callable: self.implementation_callable_graph(callable, Some(identities))?,
+                callable: callable_graph,
             };
             published.validate()?;
             if let Some(previous) = methods.insert(identity, published.clone())
@@ -107,6 +100,12 @@ impl ProjectMetadataProjection<'_> {
                     "one method identity has conflicting checked declarations",
                 ));
             }
+        }
+        if !graph_errors.is_empty() {
+            return Err(invalid(&format!(
+                "public method callable graphs are unavailable:\n{}",
+                graph_errors.into_values().collect::<Vec<_>>().join("\n"),
+            )));
         }
         Ok(methods.into_values().collect())
     }

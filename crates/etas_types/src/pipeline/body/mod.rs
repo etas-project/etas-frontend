@@ -6,6 +6,8 @@ pub mod collect {
     pub mod call;
     pub mod callable_instantiation;
     pub mod callable_reference;
+    pub(super) mod collection_literals;
+    mod defaults;
     pub mod entry;
     pub mod enum_variant;
     pub mod expr;
@@ -72,6 +74,7 @@ fn run_with_checkpoint<E>(
             .symbol_types
             .extend(parameters.symbol_types.clone());
     }
+    crate::value_representation::materialize_output_types(&mut ctx.interner);
     collect_body_item(ctx, &mut state, checkpoint)?;
     let (obligations, validations) = crate::lower::type_application::take_obligations(ctx);
     state.spec_obligations.extend(obligations);
@@ -79,10 +82,7 @@ fn run_with_checkpoint<E>(
     checkpoint()?;
     ctx.interner.primitive(crate::PrimitiveType::I32);
     ctx.interner.primitive(crate::PrimitiveType::F64);
-    let spec_facts = ctx
-        .signature_base
-        .map(|base| base.specs.clone())
-        .unwrap_or_else(|| std::sync::Arc::new(crate::SpecFacts::from(&ctx.signature_facts)));
+    let spec_facts = ctx.spec_facts();
     let declarations = ctx
         .signature_base
         .map_or(&ctx.signature_facts, |base| &base.facts);
@@ -94,6 +94,22 @@ fn run_with_checkpoint<E>(
         ctx.hir.items[item].span(),
         checkpoint,
     )?;
+    if collect::collection_literals::finish_deferred(ctx, &mut state, checkpoint)? {
+        let (obligations, validations) = crate::lower::type_application::take_obligations(ctx);
+        state.spec_obligations.extend(obligations);
+        state.validations.extend(validations);
+        let declarations = ctx
+            .signature_base
+            .map_or(&ctx.signature_facts, |base| &base.facts);
+        solve::run(
+            &mut state,
+            &mut ctx.interner,
+            &spec_facts,
+            declarations,
+            ctx.hir.items[item].span(),
+            checkpoint,
+        )?;
+    }
     checkpoint()?;
     validate::run(ctx, &state);
     checkpoint()?;

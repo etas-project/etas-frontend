@@ -289,19 +289,18 @@ fn collect(
     environment: Option<CallableEnvironmentId>,
     instances: &mut BTreeSet<Descriptor>,
 ) {
-    for source in summary
-        .exits
-        .as_ref()
-        .and_then(|exits| exits.callable_return_sources())
-        .into_iter()
-        .flatten()
-    {
+    for source in super::descriptor_return_sources(summary) {
         match source {
             CallableReturnSource::Reference(mut reference) => {
                 reference.environment = reference.environment.or(environment);
                 instances.insert(Descriptor::Reference(reference));
             }
-            CallableReturnSource::Captured { unit, environment } => {
+            CallableReturnSource::Captured { unit, environment }
+            | CallableReturnSource::FrozenContract {
+                unit,
+                reference: None,
+                environment: Some(environment),
+            } => {
                 instances.insert(Descriptor::Captured(CapturedCallableId {
                     unit,
                     environment,

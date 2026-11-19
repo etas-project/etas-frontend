@@ -359,7 +359,8 @@ flow main() -> i32 { return handle { hidden() } with { Echo.value(_) => { resume
 
 #[test]
 fn prefix_generics_keep_a_uniform_handler_across_distinct_payloads() {
-    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(r#"
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
 module app;
 effect Echo { action<T> value(payload: T) -> T; }
 flow hidden() -> string ![Echo.value] { return perform Echo.value("hidden"); }
@@ -373,7 +374,8 @@ flow main() -> i32 {
         if a == 7 && b == "hidden" { 0 } else { 1 }
     } with { Echo.value(value) => { resume value; } };
 }
-"#)));
+"#,
+    )));
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(output.checked.is_some());
 }

@@ -90,6 +90,7 @@ pub struct DependencyEffectAction {
     #[serde(default)]
     pub selector_defaults: Vec<Option<etas_types::EffectArgRef>>,
     pub returns_never: bool,
+    pub has_default_handler: bool,
     pub runtime_requirement: Option<RuntimeRequirementReason>,
 }
 
@@ -187,15 +188,24 @@ impl EffectRegistry {
 
     pub fn with_standard_effects_from(std_registry: &StdRegistry) -> Self {
         let mut registry = Self::default();
-        registry.register_core("Agentic", AGENTIC_TAG, CoreEffect::Agentic);
-        registry.register_core("Network", NETWORK_TAG, CoreEffect::Network);
-        registry.register_core("FileIO", FILE_IO_TAG, CoreEffect::FileIO);
-        registry.register_core("Command", COMMAND_TAG, CoreEffect::Command);
-        registry.register_core("Memory", MEMORY_TAG, CoreEffect::Memory);
-        registry.register_core("Secret", SECRET_TAG, CoreEffect::Secret);
-        registry.register_core("Time", TIME_TAG, CoreEffect::Time);
-        registry.register_core("Human", HUMAN_TAG, CoreEffect::Human);
-        registry.register_core("Error", ERROR_TAG, CoreEffect::Error);
+        for (name, tag, core) in [
+            ("Agentic", AGENTIC_TAG, CoreEffect::Agentic),
+            ("Network", NETWORK_TAG, CoreEffect::Network),
+            ("FileIO", FILE_IO_TAG, CoreEffect::FileIO),
+            ("Command", COMMAND_TAG, CoreEffect::Command),
+            ("Memory", MEMORY_TAG, CoreEffect::Memory),
+            ("Secret", SECRET_TAG, CoreEffect::Secret),
+            ("Time", TIME_TAG, CoreEffect::Time),
+            ("Human", HUMAN_TAG, CoreEffect::Human),
+            ("Error", ERROR_TAG, CoreEffect::Error),
+        ] {
+            if std_registry
+                .lookup_qualified(&["std", "effects", name])
+                .is_some()
+            {
+                registry.register_core(name, tag, core);
+            }
+        }
         registry.register_standard_library_descriptors(std_registry);
         registry
     }
@@ -565,6 +575,20 @@ impl EffectRegistry {
             );
             self.names.insert(qualified, id);
         }
+        // Re-exports share their declaration's tag before dependency metadata
+        // is registered; otherwise each source spelling would allocate a tag.
+        for module in std_registry.modules() {
+            for (name, symbol) in std_registry.module_exports(module.id) {
+                if symbol.kind != StdSymbolKind::Effect {
+                    continue;
+                }
+                if let Some(tag) = self.tag_by_name(&symbol.qualified_path.join(".")) {
+                    let mut path = module.path.clone();
+                    path.push(name.to_owned());
+                    self.names.insert(path.join("."), tag);
+                }
+            }
+        }
         // Resolve the source inheritance graph after every canonical tag exists.
         for symbol in std_registry.symbols() {
             let StdDecl::Effect(effect) = &symbol.decl else {
@@ -843,6 +867,21 @@ impl EffectRegistry {
                 self.register_effect_names(hir, effect, id);
                 continue;
             }
+            if hir.source_standard_types
+                && let Some(module) = module_name_for_symbol(hir, effect.symbol)
+            {
+                let qualified = format!("{module}.{name}");
+                let path = qualified.split('.').collect::<Vec<_>>();
+                if std_registry.lookup_qualified(&path).is_some_and(|symbol| {
+                    symbol.kind == StdSymbolKind::Effect
+                        && std_registry.declaration_key(symbol.id).is_some()
+                }) && let Some(existing) = self.tag_by_name(&qualified)
+                {
+                    self.symbol_tags.insert(effect.symbol, existing);
+                    self.register_effect_names(hir, effect, existing);
+                    continue;
+                }
+            }
             if let Some(existing) = self
                 .tag_by_name(name)
                 .filter(|existing| self.can_source_effect_bind_standard_tag(name, *existing))
@@ -936,7 +975,7 @@ impl EffectRegistry {
             self.dependency_actions.insert(
                 id,
                 EffectActionSig {
-                    has_default_handler: false,
+                    has_default_handler: action.has_default_handler,
                     id,
                     owner,
                     name,
@@ -1101,12 +1140,18 @@ impl EffectRegistry {
                     .get(&action_id)
                     .is_some_and(|native| native.high_impact_ack),
             };
+            if hir.standard_action_targets.contains_key(symbol)
+                && let Some(native) = self.standard_actions.get_mut(&action_id)
+            {
+                native.has_default_handler = sig.has_default_handler;
+            }
             if let Some(metadata) = self.dependency_actions.get(&action_id)
                 && (metadata.owner != owner
                     || metadata.effect_args != sig.effect_args
                     || metadata.selector_param_names != sig.selector_param_names
                     || metadata.selector_defaults != sig.selector_defaults
-                    || metadata.returns_never != sig.returns_never)
+                    || metadata.returns_never != sig.returns_never
+                    || metadata.has_default_handler != sig.has_default_handler)
             {
                 return Err(invalid_dependency_metadata(
                     "dependency source action disagrees with its metadata selector signature",
@@ -1369,6 +1414,7 @@ mod tests {
                 runtime_requirement: None,
             }],
             actions: vec![DependencyEffectAction {
+                has_default_handler: false,
                 path: vec!["errors".to_owned(), "Net".to_owned(), "request".to_owned()],
                 effect_args: vec![EffectActionArgKind::StringPattern],
                 selector_param_names: vec!["host".to_owned()],

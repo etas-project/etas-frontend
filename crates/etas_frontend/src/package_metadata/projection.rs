@@ -4,7 +4,7 @@ use etas_effects::{
     ActionEventSource, ActionRef, ActionTraceDomain, Effect, EffectCoverage, EffectRegistry,
     EffectRow, EffectSet, TraceSpecClauseFact,
 };
-use etas_hir::{HirItem, HirItemId, Visibility};
+use etas_hir::{HirItem, HirItemId, SymbolId, Visibility};
 use etas_package_metadata::{
     ActionArgKind as MetadataActionArgKind, ActionSignature as MetadataActionSignature,
     ActionTrace as MetadataActionTrace, ActionTraceEvent as MetadataActionTraceEvent,
@@ -55,6 +55,7 @@ pub(crate) struct ProjectMetadataProjection<'a> {
     canonical_type_paths: std::sync::Arc<BTreeMap<String, Option<Vec<String>>>>,
     effect_registry: &'a EffectRegistry,
     identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
+    invocation_parameters: Option<std::sync::Arc<BTreeMap<SymbolId, u32>>>,
 }
 
 impl<'a> ProjectMetadataProjection<'a> {
@@ -64,6 +65,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             canonical_type_paths: std::sync::Arc::new(build_canonical_type_paths(checked)),
             effect_registry: &checked.effect_registry,
             identities: None,
+            invocation_parameters: None,
         }
     }
 
@@ -76,7 +78,17 @@ impl<'a> ProjectMetadataProjection<'a> {
             canonical_type_paths: self.canonical_type_paths.clone(),
             effect_registry: self.effect_registry,
             identities,
+            invocation_parameters: self.invocation_parameters.clone(),
         }
+    }
+
+    fn with_invocation_parameters(
+        &self,
+        parameters: BTreeMap<SymbolId, u32>,
+    ) -> ProjectMetadataProjection<'_> {
+        let mut projection = self.with_identities(self.identities);
+        projection.invocation_parameters = Some(std::sync::Arc::new(parameters));
+        projection
     }
 
     pub(super) fn build_sections(
@@ -112,7 +124,7 @@ impl<'a> ProjectMetadataProjection<'a> {
         re_exports.sort();
         public_metadata.fingerprint = Some(blake3_hash(
             format!(
-                "{:?}{:?}{:?}{:?}{:?}",
+                "{:?}{:?}{:?}{:?}{:?}{:?}",
                 public_symbols(&public_metadata),
                 effect_metadata,
                 re_exports,
@@ -123,7 +135,14 @@ impl<'a> ProjectMetadataProjection<'a> {
                 public_metadata
                     .definition_descriptors
                     .as_ref()
-                    .map(etas_package_metadata::definition_descriptors_fingerprint)
+                    .map(etas_package_metadata::definition_descriptors_fingerprint),
+                (
+                    &public_metadata.flows,
+                    &public_metadata.agents,
+                    &public_metadata.tools,
+                    &public_metadata.actions,
+                    &public_metadata.spec_signatures
+                ),
             )
             .as_bytes(),
         ));
@@ -242,9 +261,55 @@ impl<'a> ProjectMetadataProjection<'a> {
                                     path: path.clone(),
                                 })?;
                         match signature {
-                            ItemSignature::Flow(signature) => metadata
-                                .flows
-                                .push(self.flow_signature(item, path, visibility, signature)?),
+                            ItemSignature::Flow(_) => {
+                                if let Some(HirItem::Flow(flow)) = self.checked.items.get(item)
+                                    && let Some(contract) =
+                                        self.checked.types.scoped_callbacks.get(&flow.symbol)
+                                {
+                                    metadata.scoped_callbacks.push(
+                                        etas_package_metadata::ScopedCallbackContract {
+                                            target:
+                                                etas_package_metadata::CallableContractTarget::Item(
+                                                    path.clone(),
+                                                ),
+                                            parameters: contract.parameters.clone(),
+                                        },
+                                    );
+                                }
+                                let symbol = self.checked.items[item]
+                                    .symbol()
+                                    .expect("source flow symbol");
+                                let group = self
+                                    .checked
+                                    .hir
+                                    .flow_overload_group(symbol)
+                                    .unwrap_or(std::slice::from_ref(&symbol));
+                                for target in group {
+                                    let Some(etas_hir::SymbolDef::Item { item }) =
+                                        self.checked.symbols.get(*target).map(|symbol| &symbol.def)
+                                    else {
+                                        return Err(invalid(
+                                            "source flow overload has no checked item",
+                                        ));
+                                    };
+                                    let Some(ItemSignature::Flow(signature)) =
+                                        self.checked.types.item_signatures.get(item)
+                                    else {
+                                        return Err(invalid(
+                                            "source flow overload has no checked signature",
+                                        ));
+                                    };
+                                    let mut signature = self.flow_signature(
+                                        *item,
+                                        path.clone(),
+                                        visibility,
+                                        signature,
+                                    )?;
+                                    signature.definition =
+                                        identities.and_then(|index| index.symbol(*target)).cloned();
+                                    metadata.flows.push(signature);
+                                }
+                            }
                             ItemSignature::Agent(signature) => metadata
                                 .agents
                                 .push(self.agent_signature(item, path, visibility, signature)?),
@@ -278,6 +343,28 @@ impl<'a> ProjectMetadataProjection<'a> {
         metadata.actions = self.action_signatures()?;
         metadata.spec_signatures = self.spec_signatures()?;
         metadata.methods = self.methods(identities)?;
+        if let Some(identities) = identities {
+            for (symbol, contract) in &self.checked.types.scoped_callbacks {
+                if let Some(identity) = identities.method(*symbol)
+                    && metadata
+                        .methods
+                        .iter()
+                        .any(|method| &method.identity == identity)
+                {
+                    metadata
+                        .scoped_callbacks
+                        .push(etas_package_metadata::ScopedCallbackContract {
+                            target: etas_package_metadata::CallableContractTarget::Method(
+                                identity.clone(),
+                            ),
+                            parameters: contract.parameters.clone(),
+                        });
+                }
+            }
+        }
+        metadata
+            .scoped_callbacks
+            .sort_by(|left, right| left.target.cmp(&right.target));
         metadata.spec_impls = self.spec_impls(identities, &metadata.methods)?;
         metadata.type_spec_satisfactions = self.type_spec_satisfactions()?;
         metadata.callable_spec_satisfactions = self.callable_spec_satisfactions(identities)?;
@@ -312,15 +399,19 @@ impl<'a> ProjectMetadataProjection<'a> {
                 let mut exported = module.path.segments.clone();
                 exported.push(export.name.clone());
                 if from != exported {
-                    if let Some(summary) = metadata
+                    let summaries = metadata
                         .effect_summaries
                         .iter()
-                        .find(|summary| summary.item == from)
+                        .filter(|summary| summary.item == from)
                         .cloned()
-                    {
-                        let mut summary = summary;
-                        summary.item = exported.clone();
-                        metadata.effect_summaries.push(summary);
+                        .collect::<Vec<_>>();
+                    if !summaries.is_empty() {
+                        metadata.effect_summaries.extend(summaries.into_iter().map(
+                            |mut summary| {
+                                summary.item = exported.clone();
+                                summary
+                            },
+                        ));
                     } else if self.checked.types.item_signatures.get(&item).is_some_and(
                         |signature| match signature {
                             ItemSignature::Flow(_) | ItemSignature::Tool(_) => true,
@@ -414,10 +505,17 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .get(*symbol)
                 .map(|symbol| visibility_name(symbol.visibility))
                 .unwrap_or(MetadataVisibility::Private);
-            actions.push(self.action_signature(path, visibility, signature)?);
+            actions.push((*symbol, self.action_signature(path, visibility, signature)?));
         }
-        actions.sort_by(|left, right| left.path.cmp(&right.path));
-        Ok(actions)
+        actions.sort_by(|(left_symbol, left), (right_symbol, right)| {
+            left.path
+                .cmp(&right.path)
+                .then(left_symbol.cmp(right_symbol))
+        });
+        Ok(actions
+            .into_iter()
+            .map(|(_, signature)| signature)
+            .collect())
     }
 
     fn type_signature(
@@ -630,6 +728,28 @@ impl<'a> ProjectMetadataProjection<'a> {
             .map(|param| param.name.clone())
             .collect::<BTreeSet<_>>();
         Ok(MetadataActionSignature {
+            default_handler_effects: signature
+                .default_handler_effects
+                .as_ref()
+                .map(|row| self.metadata_effect_row_in_generic_scope(row, &generic_names))
+                .transpose()?,
+            param_names: signature
+                .parameter_interface
+                .as_ref()
+                .map(|parameters| {
+                    parameters
+                        .iter()
+                        .map(|parameter| {
+                            parameter.name.clone().ok_or_else(|| {
+                                invalid("action declaration has no value parameter name")
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            parameter_defaults: self
+                .parameter_defaults(signature.parameter_interface.as_deref())?,
             path,
             generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             params: signature
@@ -945,6 +1065,10 @@ impl<'a> ProjectMetadataProjection<'a> {
                         reason: "spec impl target has no canonical metadata path".to_owned(),
                     })?;
                 Ok(MetadataSpecImpl {
+                    owner: implementation.implementation
+                        .and_then(|item| identities.and_then(|index| index.implementation(item)))
+                        .cloned(),
+                    generic_params: self.callable_generic_params_metadata(&implementation.generic_params)?,
                     self_type: self.metadata_type(implementation.self_type)?,
                     spec,
                     args: implementation
@@ -1149,6 +1273,7 @@ impl<'a> ProjectMetadataProjection<'a> {
             })?;
         Ok(MetadataSpecMethod {
             name: method.name.clone(),
+            updating_receiver: method.updating_receiver,
             receiver_param: method.receiver_param,
             path: path.clone(),
             signature: Some(self.metadata_callable_signature_from_callable(
@@ -1191,6 +1316,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .map(|param| param.name.clone()),
         );
         Ok(MetadataCallableSignature {
+            definition: None,
+            parameter_defaults: self
+                .parameter_defaults(signature.parameter_interface.as_deref())?,
             path,
             generic_params: self
                 .callable_generic_params_in_scope(&signature.generic_params, outer_names)?,
@@ -1517,6 +1645,17 @@ impl<'a> ProjectMetadataProjection<'a> {
                 behavior.direct.escaping_effects = direct_effects.clone();
             }
             summaries.push(MetadataEffectSummary {
+                definition: identities.and_then(|identities| {
+                    self.checked
+                        .hir
+                        .items
+                        .get(*item)
+                        .and_then(|item| match item {
+                            HirItem::Flow(flow) => identities.symbol(flow.symbol),
+                            _ => None,
+                        })
+                        .cloned()
+                }),
                 residual_checks: summary.residual_checks.iter().cloned().collect(),
                 behavior: callable_returns::behavior(summary),
                 handler_requests: self.request_template_metadata(
@@ -1577,7 +1716,9 @@ impl<'a> ProjectMetadataProjection<'a> {
                 )?,
             });
         }
-        summaries.sort_by(|left, right| left.item.cmp(&right.item));
+        summaries.sort_by(|left, right| {
+            (&left.item, &left.definition).cmp(&(&right.item, &right.definition))
+        });
         Ok(summaries)
     }
 
@@ -2241,6 +2382,9 @@ impl<'a> ProjectMetadataProjection<'a> {
             .map(|param| param.name.clone())
             .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
+            definition: None,
+            parameter_defaults: self
+                .parameter_defaults(signature.parameter_interface.as_deref())?,
             path,
             generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: self.callable_param_names(item)?,
@@ -2283,6 +2427,8 @@ impl<'a> ProjectMetadataProjection<'a> {
         };
         let Some(signature) = signature.callable() else {
             return Ok(MetadataCallableSignature {
+                definition: None,
+                parameter_defaults: Vec::new(),
                 path,
                 generic_params: Vec::new(),
                 param_names: Vec::new(),
@@ -2298,6 +2444,9 @@ impl<'a> ProjectMetadataProjection<'a> {
             .map(|param| param.name.clone())
             .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
+            definition: None,
+            parameter_defaults: self
+                .parameter_defaults(signature.parameter_interface.as_deref())?,
             path,
             generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: self.callable_param_names(header_item)?,
@@ -2329,6 +2478,9 @@ impl<'a> ProjectMetadataProjection<'a> {
             .map(|param| param.name.clone())
             .collect::<BTreeSet<_>>();
         Ok(MetadataCallableSignature {
+            definition: None,
+            parameter_defaults: self
+                .parameter_defaults(signature.parameter_interface.as_deref())?,
             path,
             generic_params: self.callable_generic_params_metadata(&signature.generic_params)?,
             param_names: self.callable_param_names(item)?,
@@ -2345,6 +2497,43 @@ impl<'a> ProjectMetadataProjection<'a> {
                 .transpose()?,
             visibility,
         })
+    }
+
+    fn parameter_defaults(
+        &self,
+        parameters: Option<&[etas_types::ParameterInterface]>,
+    ) -> Result<Vec<etas_package_metadata::ParameterDefault>, PackageMetadataError> {
+        parameters
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(slot, parameter)| {
+                parameter
+                    .default
+                    .as_ref()
+                    .map(|reference| (slot, reference))
+            })
+            .map(|(slot, reference)| {
+                let reference = match reference {
+                    etas_types::ParameterDefaultRef::External { reference } => reference.clone(),
+                    etas_types::ParameterDefaultRef::Source { .. } => {
+                        let identities = self.identities.ok_or_else(|| {
+                            invalid("default publication requires canonical declaration origins")
+                        })?;
+                        crate::code::parameter_defaults::project(
+                            self.checked.as_ref().into(),
+                            identities,
+                            reference,
+                        )
+                        .map_err(|error| invalid(&error.to_string()))?
+                    }
+                };
+                Ok(etas_package_metadata::ParameterDefault {
+                    slot: slot as u32,
+                    reference,
+                })
+            })
+            .collect()
     }
 
     fn callable_param_names(&self, item: HirItemId) -> Result<Vec<String>, PackageMetadataError> {
@@ -2440,19 +2629,34 @@ impl<'a> ProjectMetadataProjection<'a> {
     }
 
     fn item_path(&self, item: HirItemId) -> Option<Vec<String>> {
-        let binding = self.checked.hir_item_bindings.hir_to_ast.get(&item)?;
+        let symbol = self.checked.items.get(item)?.symbol()?;
+        let group = self
+            .checked
+            .hir
+            .flow_overload_group(symbol)
+            .unwrap_or(std::slice::from_ref(&symbol));
+        let bindings = group
+            .iter()
+            .filter_map(|symbol| {
+                let etas_hir::SymbolDef::Item { item } = self.checked.symbols.get(*symbol)?.def
+                else {
+                    return None;
+                };
+                self.checked.hir_item_bindings.hir_to_ast.get(&item)
+            })
+            .collect::<Vec<_>>();
         let exported = self.checked.module_index.modules.iter().any(|(_, module)| {
             matches!(module.origin, ModuleOrigin::Source)
                 && module
                     .visibility_exports
                     .items
                     .values()
-                    .any(|export| &export.item == binding)
+                    .any(|export| bindings.iter().any(|binding| *binding == &export.item))
         });
         if !exported {
             return None;
         }
-        self.symbol_canonical_path(self.checked.items.get(item)?.symbol()?)
+        self.symbol_canonical_path(symbol)
     }
 
     fn action_path(&self, symbol: etas_hir::SymbolId) -> Option<Vec<String>> {

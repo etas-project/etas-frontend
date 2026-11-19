@@ -60,6 +60,15 @@ fn lower_effect_ref(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) ->
 fn lower_effect_name(ctx: &mut TypePipelineContext<'_>, effect: &HirEffectRef) -> Option<String> {
     let imported = match &effect.path.resolution {
         ResolveResult::Resolved(symbol) => Some((*symbol, None)),
+        ResolveResult::PartiallyResolved(partial)
+            if partial.resolved_prefix.is_none()
+                && partial.reason == PartialResolutionReason::PackageResolverRequired =>
+        {
+            ctx.symbols
+                .canonical_path(ctx.hir, &partial.remaining)
+                .map(|symbol| (symbol, None))
+        }
+
         ResolveResult::PartiallyResolved(partial) if partial.remaining.len() == 1 => partial
             .resolved_prefix
             .map(|symbol| (symbol, Some(partial.remaining[0].as_str()))),
@@ -376,7 +385,8 @@ fn type_arg_from_path(
     if let Some(context) = super::type_ref::agent_context_ref(ctx, path) {
         return Some(ctx.interner.intern(Type::AgentContext(context)));
     }
-    let symbol = resolved_static_type_selector_symbol(path, Some)?;
+    let symbol = super::type_ref::resolved_source_type_symbol(ctx, path)
+        .or_else(|| resolved_static_type_selector_symbol(path, Some))?;
     if let Some(bound) = ctx.bound_type_parameter(symbol) {
         return Some(bound);
     }

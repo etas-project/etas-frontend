@@ -62,6 +62,9 @@ pub fn collect_expr<E>(
             ctx.ctx.interner.intern(Type::Tuple(elems))
         }
         HirExpr::Record(record) => collect_record(ctx, &record, expected)?,
+        HirExpr::EmptyRecordOrMap { span } if ctx.ctx.hir.source_standard_types => {
+            super::collection_literals::empty_record_or_map(ctx, expr, expected, span)?
+        }
         HirExpr::EmptyRecordOrMap { span } => expected
             .filter(|ty| !matches!(ctx.ctx.interner.store().get(*ty), Some(Type::Var(_))))
             .map(|ty| {
@@ -84,18 +87,21 @@ pub fn collect_expr<E>(
         HirExpr::List { elems, span } => {
             collect_sequence(ctx, elems, span, SequenceKind::List, expected)?
         }
-        HirExpr::EmptySequence { span } => expected
-            .filter(|ty| {
-                matches!(
-                    ctx.ctx.interner.store().get(*ty),
-                    Some(Type::Array(_) | Type::List(_))
-                )
-            })
-            .unwrap_or_else(|| {
-                let ty = ctx.fresh_type_var();
-                ctx.validate(crate::ValidationRequest::EmptySequence { ty, span });
-                ty
-            }),
+        HirExpr::EmptySequence { span } => {
+            if ctx.ctx.hir.source_standard_types {
+                super::collection_literals::empty_sequence(ctx, expr, expected, span)?
+            } else {
+                let contextual = expected.filter(|ty| {
+                    matches!(ctx.ctx.interner.store().get(*ty), Some(Type::Array(_)))
+                        || sequence_element(ctx, *ty, span).is_some()
+                });
+                contextual.unwrap_or_else(|| {
+                    let ty = ctx.fresh_type_var();
+                    ctx.validate(crate::ValidationRequest::EmptySequence { ty, span });
+                    ty
+                })
+            }
+        }
         HirExpr::Map { entries, span: _ } => {
             let expected_entries = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
                 Some(Type::Map { key, value }) => Some((*key, *value)),
@@ -188,7 +194,7 @@ pub fn collect_expr<E>(
             });
             let start_ty = collect_expr(ctx, start, expected_index)?;
             let end_ty = collect_expr(ctx, end, Some(start_ty))?;
-            let index_spec = ctx.ctx.std_registry.lookup_prelude("Index")
+            let index_spec = ctx.ctx.std_registry.lookup_type_dependency(&["std", "core", "Index"])
                 .filter(|symbol| matches!(&symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec))
                 .map(|symbol| crate::CheckedSpecRef::Std(symbol.qualified_path.clone()));
             if let Some(spec) = index_spec {
@@ -300,9 +306,12 @@ pub fn collect_expr<E>(
             span,
         } => {
             let (output, error) = expected
-                .and_then(|ty| match ctx.ctx.interner.store().get(ty) {
-                    Some(Type::Result { ok, err }) => Some((*ok, *err)),
-                    _ => None,
+                .and_then(|ty| {
+                    crate::value_representation::result_parameters(
+                        ctx.ctx.interner.store(),
+                        ctx.ctx.known_std_types(),
+                        ty,
+                    )
                 })
                 .unwrap_or_else(|| (ctx.fresh_type_var(), ctx.fresh_type_var()));
             let operand_ty = collect_expr(ctx, operand, Some(output))?;
@@ -313,10 +322,29 @@ pub fn collect_expr<E>(
                 error,
                 origin: ConstraintOrigin { span },
             });
-            let result = ctx.ctx.interner.intern(Type::Result {
-                ok: output,
-                err: error,
-            });
+            let result = if ctx.ctx.hir.source_standard_types {
+                match ctx.ctx.known_std_types().result_enum {
+                    Some(constructor) => ctx.ctx.interner.intern(Type::Applied {
+                        constructor: crate::TypeConstructorId(constructor.0),
+                        args: vec![output, error],
+                    }),
+                    None => {
+                        ctx.validate(crate::ValidationRequest::Diagnostic {
+                            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                            span,
+                            message:
+                                "try expression requires the selected std.result.Result declaration"
+                                    .into(),
+                        });
+                        ctx.primitive(PrimitiveType::Never)
+                    }
+                }
+            } else {
+                ctx.ctx.interner.intern(Type::Result {
+                    ok: output,
+                    err: error,
+                })
+            };
             ctx.state.provisional.record_try_expr(
                 expr,
                 crate::TryExprTypeFact {
@@ -585,15 +613,25 @@ fn collect_list_cons<E>(
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
-    let inner = expected
-        .and_then(|ty| match ctx.ctx.interner.store().get(ty) {
-            Some(Type::List(inner)) => Some(*inner),
-            _ => None,
-        })
+    let expected_inner = expected.and_then(|ty| sequence_element(ctx, ty, span));
+    let contextual = if expected_inner.is_some() {
+        expected
+    } else if matches!(ctx.ctx.hir.exprs[tail], HirExpr::EmptySequence { .. }) {
+        let element = ctx.fresh_type_var();
+        Some(default_sequence_type(ctx, element, span))
+    } else {
+        None
+    };
+    let head_ty = collect_expr(ctx, head, expected_inner)?;
+    let tail_ty = collect_expr(ctx, tail, contextual)?;
+    let tail_inner = sequence_element(ctx, tail_ty, span);
+    let inner = expected_inner
+        .or(tail_inner)
         .unwrap_or_else(|| ctx.fresh_type_var());
-    let list = ctx.ctx.interner.intern(Type::List(inner));
-    let head_ty = collect_expr(ctx, head, Some(inner))?;
-    let tail_ty = collect_expr(ctx, tail, Some(list))?;
+    let list = expected
+        .filter(|_| expected_inner.is_some())
+        .or_else(|| tail_inner.map(|_| tail_ty))
+        .unwrap_or_else(|| default_sequence_type(ctx, inner, span));
     ctx.emit(TypeConstraint::Assignable {
         from: head_ty,
         to: inner,
@@ -607,6 +645,73 @@ fn collect_list_cons<E>(
         reason: AssignabilityReason::Other,
     });
     Ok(list)
+}
+
+pub(super) fn sequence_element<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    ty: TypeId,
+    span: etas_core::Span,
+) -> Option<TypeId> {
+    match crate::value_representation::sequence_element(&mut ctx.ctx.interner, ty) {
+        Ok(element) => element,
+        Err(error) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("sequence constructor layout could not be instantiated: {error}"),
+            });
+            None
+        }
+    }
+}
+
+fn default_sequence_type<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    element: TypeId,
+    span: etas_core::Span,
+) -> TypeId {
+    if !ctx.ctx.hir.source_standard_types {
+        return ctx.ctx.interner.intern(Type::List(element));
+    }
+    // List syntax defaults to the declaration exported by the selected std
+    // provider. A contextual user-defined sequence keeps its own owner instead.
+    let path = ["std", "collections", "List"].map(str::to_owned).to_vec();
+    let symbol = ctx.ctx.symbols.canonical_path(ctx.ctx.hir, &path);
+    let constructor = symbol
+        .and_then(|symbol| ctx.ctx.type_fact_as_type_id(symbol))
+        .or_else(|| ctx.ctx.external_type_paths.get(&path).copied())
+        .or_else(|| {
+            let registry = ctx.ctx.std_registry.clone();
+            let declaration = registry.lookup_qualified(&path)?;
+            crate::lower::std::lower_std_type_symbol(ctx.ctx, &registry, declaration)
+        });
+    if let Some(constructor) = constructor
+        && matches!(ctx.ctx.interner.store().get(constructor),
+            Some(Type::Nominal(declaration)) if declaration.params.len() == 1)
+    {
+        if let Some(symbol) = symbol {
+            ctx.ctx
+                .type_applications
+                .push(crate::lower::type_application::TypeApplication {
+                    symbol,
+                    arguments: vec![element],
+                    span,
+                });
+        }
+        let ty = ctx.ctx.interner.intern(Type::Applied {
+            constructor: crate::TypeConstructorId(constructor.0),
+            args: vec![element],
+        });
+        if sequence_element(ctx, ty, span).is_some() {
+            return ty;
+        }
+    }
+    ctx.validate(crate::ValidationRequest::Diagnostic {
+        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+        span,
+        message: "source list syntax requires the selected std.collections.List constructor-sum declaration".into(),
+    });
+    ctx.primitive(crate::PrimitiveType::Never)
 }
 
 fn collect_match<E>(
@@ -708,6 +813,7 @@ fn collect_stage_composition<E>(
         let stage_ty = collect_expr(ctx, stage.expr, None)?;
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
+            argument_slots: None,
             call: None,
             callee: stage_ty,
             generic_params: Vec::new(),
@@ -753,6 +859,7 @@ fn collect_pipeline<E>(
         let stage_ty = collect_expr(ctx, stage.expr, None)?;
         let output = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::Callable {
+            argument_slots: None,
             call: None,
             callee: stage_ty,
             generic_params: Vec::new(),
@@ -1121,8 +1228,8 @@ fn collect_sequence<E>(
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
     let expected_inner = expected.and_then(|ty| match ctx.ctx.interner.store().get(ty) {
-        Some(Type::Array(inner)) | Some(Type::List(inner)) => Some(*inner),
-        _ => None,
+        Some(Type::Array(inner)) => Some(*inner),
+        _ => sequence_element(ctx, ty, span),
     });
     let mut elems = elems.into_iter();
     let inner = match (expected_inner, elems.next()) {
@@ -1140,12 +1247,9 @@ fn collect_sequence<E>(
         }
         (None, Some(first)) => collect_expr(ctx, first, None)?,
         (None, None) => {
-            ctx.validate(crate::ValidationRequest::Diagnostic {
-                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                span,
-                message: "sequence literal is missing its element type".to_owned(),
-            });
-            ctx.fresh_type_var()
+            let ty = ctx.fresh_type_var();
+            ctx.validate(crate::ValidationRequest::SequenceElement { ty, span });
+            ty
         }
     };
     for elem in elems {
@@ -1159,7 +1263,9 @@ fn collect_sequence<E>(
     }
     Ok(match kind {
         SequenceKind::Array => ctx.ctx.interner.intern(Type::Array(inner)),
-        SequenceKind::List => ctx.ctx.interner.intern(Type::List(inner)),
+        SequenceKind::List => expected
+            .filter(|ty| sequence_element(ctx, *ty, span).is_some())
+            .unwrap_or_else(|| default_sequence_type(ctx, inner, span)),
     })
 }
 
@@ -1197,6 +1303,30 @@ fn collect_binary<E>(
     ctx.checkpoint()?;
     let lhs_ty = collect_expr(ctx, lhs, None)?;
     let rhs_ty = collect_expr(ctx, rhs, Some(lhs_ty))?;
+    if matches!(op, HirBinaryOp::EqEq | HirBinaryOp::BangEq) {
+        ctx.validate(crate::ValidationRequest::EqualityOperands {
+            left: lhs_ty,
+            right: rhs_ty,
+            span,
+        });
+    }
+    if matches!(
+        op,
+        HirBinaryOp::Add
+            | HirBinaryOp::Sub
+            | HirBinaryOp::Mul
+            | HirBinaryOp::Div
+            | HirBinaryOp::Rem
+            | HirBinaryOp::Lt
+            | HirBinaryOp::LtEq
+            | HirBinaryOp::Gt
+            | HirBinaryOp::GtEq
+    ) {
+        ctx.emit(TypeConstraint::NumericFamilyOperation {
+            operand: lhs_ty,
+            origin: ConstraintOrigin { span },
+        });
+    }
     ctx.emit(TypeConstraint::Assignable {
         from: rhs_ty,
         to: lhs_ty,

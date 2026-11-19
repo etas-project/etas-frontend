@@ -308,8 +308,13 @@ pub(crate) fn prepare_from_targets(
                     );
                 }
             }
-            for (_, ty) in roots.get(&instance.owner).into_iter().flatten() {
-                materialized.push(substitution.substitute(*ty)?);
+            let mut request_outputs = Vec::new();
+            for (site, ty) in roots.get(&instance.owner).into_iter().flatten() {
+                let output = substitution.substitute(*ty)?;
+                materialized.push(output);
+                if matches!(hir.exprs.get(*site), Some(etas_hir::HirExpr::Perform { .. })) {
+                    request_outputs.push(output);
+                }
             }
             drop(substitution);
             for (site, ty) in roots.get(&instance.owner).into_iter().flatten() {
@@ -323,7 +328,11 @@ pub(crate) fn prepare_from_targets(
                         .with_effect_arguments(&rows)
                         .with_expansion_depth(limits.max_expansion_depth)
                         .with_execution_control(control);
-                    materialized.push(substitution.substitute(*ty)?);
+                    let output = substitution.substitute(*ty)?;
+                    materialized.push(output);
+                    if matches!(hir.exprs.get(*site), Some(etas_hir::HirExpr::Perform { .. })) {
+                        request_outputs.push(output);
+                    }
                 }
             }
             for call in calls.get(&instance.owner).into_iter().flatten() {
@@ -492,6 +501,22 @@ pub(crate) fn prepare_from_targets(
             }
             if let Some(callable) = callable_type {
                 materialized.push(interner.intern(etas_types::Type::Function(callable)));
+            }
+            // A source request can bind a continuation even when its enclosing
+            // Handler has no available request summary. Prepare the selected
+            // source carrier from each instantiated action result, alongside
+            // the payload ABI, before execution needs a read-only lookup.
+            if hir.source_standard_types
+                && let Some(owner) = types.facts.known_std_types.execution.continuation
+            {
+                request_outputs.sort_unstable();
+                request_outputs.dedup();
+                for output in request_outputs {
+                    materialized.push(interner.intern(etas_types::Type::Applied {
+                        constructor: etas_types::TypeConstructorId(owner.0),
+                        args: vec![output],
+                    }));
+                }
             }
             let names = HashMap::new();
             let mut validation = TypeSubstitutionEngine::existing(interner.store(), &names)

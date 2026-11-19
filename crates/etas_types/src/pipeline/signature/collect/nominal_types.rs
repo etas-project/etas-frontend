@@ -97,6 +97,14 @@ fn collect_type_decl(
         .collect::<Vec<_>>();
     // Source overlays complete the already imported declaration in place.
     let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let read_only_erased_view = ctx
+        .std_registry
+        .lookup_qualified(&path)
+        .and_then(|symbol| match &symbol.decl {
+            etas_std::StdDecl::Type(declaration) => declaration.code_role,
+            _ => None,
+        })
+        .is_some_and(etas_std::CodeTypeRole::has_read_only_erased_view);
     let imported = ctx
         .external_type_paths
         .get(&path)
@@ -104,7 +112,7 @@ fn collect_type_decl(
         .filter(|ty| matches!(ctx.interner.store().get(*ty), Some(Type::Nominal(_))));
     let ty = imported.unwrap_or_else(|| {
         ctx.interner.intern(Type::Nominal(NominalTypeRef {
-            read_only_erased_view: false,
+            read_only_erased_view,
             name,
             params: params.clone(),
             representation,
@@ -164,6 +172,18 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 let representation = match decl.body {
                     HirTypeDeclBody::Bodyless => None,
                     HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
+                    HirTypeDeclBody::Sequence {
+                        element,
+                        tail,
+                        span,
+                    } => crate::lower::type_ref::lower_sequence_representation(
+                        ctx,
+                        decl.symbol,
+                        &decl.type_params,
+                        element,
+                        tail,
+                        span,
+                    ),
                 };
                 if ctx
                     .signature_facts
@@ -270,6 +290,7 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                         variant.symbol,
                         SymbolTypeFact::Flow {
                             signature: CallableSignature {
+                                parameter_interface: None,
                                 generic_params: generic_params.clone(),
                                 params: fields.clone(),
                                 output,

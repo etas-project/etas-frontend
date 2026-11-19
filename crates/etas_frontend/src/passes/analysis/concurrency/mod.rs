@@ -281,7 +281,10 @@ impl Pass<ProjectContext> for AnalyzeConcurrencyPass {
                 PREPARED_EFFECT_REGISTRY,
                 crate::passes::artifacts::TYPE_OUTPUT,
             ]))
-            .produces(ArtifactSet::one(CONCURRENCY_FACTS))
+            .produces(ArtifactSet::from([
+                CONCURRENCY_FACTS,
+                crate::passes::artifacts::DIAGNOSTICS,
+            ]))
     }
 
     fn run(
@@ -299,13 +302,18 @@ impl Pass<ProjectContext> for AnalyzeConcurrencyPass {
         let Some(hir) = context.hir.as_ref() else {
             return PassResult::failed("concurrency analysis requires checked HIR");
         };
-        context.concurrency = Some(Arc::new(plan::analyze(
+        let (facts, diagnostics) = plan::analyze(
             &hir.view(),
             &effects.facts,
             &artifacts.registry,
             &context.types.as_ref().expect("checked types").facts,
             &context.std_registry,
-        )));
-        PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(CONCURRENCY_FACTS))
+        );
+        context.concurrency = Some(Arc::new(facts));
+        context.diagnostics.extend(diagnostics);
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::from([CONCURRENCY_FACTS, crate::passes::artifacts::DIAGNOSTICS]),
+        )
     }
 }

@@ -18,6 +18,14 @@ use super::state::EffectState;
 use crate::infer::unit::EffectUnit;
 
 pub(crate) struct EffectSemantics<'a> {
+    pub(crate) external_parameter_projections: std::cell::RefCell<
+        std::sync::Arc<
+            std::collections::BTreeMap<
+                etas_code::CodeFingerprint,
+                crate::facts::ExternalParameterProjection,
+            >,
+        >,
+    >,
     pub(super) spec_facts: etas_types::SpecFacts,
     pub(crate) spec_method_targets: std::sync::Arc<
         std::collections::HashMap<HirExprId, std::collections::BTreeSet<EffectUnit>>,
@@ -75,6 +83,15 @@ pub(crate) struct EffectSemantics<'a> {
         >,
     >,
     pub(crate) callable_environment_nodes: std::cell::Cell<usize>,
+    pub(crate) parameter_projections: std::cell::RefCell<
+        std::sync::Arc<
+            std::collections::BTreeMap<
+                etas_code::CodeFingerprint,
+                crate::facts::NativeParameterProjection,
+            >,
+        >,
+    >,
+    pub(crate) projection_type_lookup: std::cell::OnceCell<etas_types::ty::TypeLookupIndex>,
     pub(crate) metadata_callables:
         std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
     pub(crate) callable_references:
@@ -85,8 +102,8 @@ pub(crate) struct EffectSemantics<'a> {
     pub(crate) discovered_global_values: super::state::LatentEnv,
     pub(crate) latent_type_shapes:
         std::sync::Arc<std::sync::OnceLock<super::latent_shape::LatentTypeShapes>>,
-    pub(crate) lambda_capture_symbols: std::cell::RefCell<
-        std::collections::HashMap<HirExprId, std::collections::BTreeSet<etas_hir::SymbolId>>,
+    pub(crate) lambda_capture_references: std::cell::RefCell<
+        std::collections::HashMap<HirExprId, super::lambda_capture::LambdaReferences>,
     >,
     pub(crate) captured_values:
         std::sync::Arc<std::collections::HashMap<EffectUnit, super::state::LatentEnv>>,
@@ -149,6 +166,8 @@ impl<'a> EffectSemantics<'a> {
                 method_evidence: Default::default(),
                 frozen_graphs: Default::default(),
                 callable_environments: Default::default(),
+                parameter_projections: Default::default(),
+                external_parameter_projections: Default::default(),
                 global_values: Default::default(),
                 call_results: Default::default(),
                 captured_values: Default::default(),
@@ -182,6 +201,8 @@ impl<'a> EffectSemantics<'a> {
             method_evidence,
             frozen_graphs,
             callable_environments,
+            parameter_projections,
+            external_parameter_projections,
             global_values,
             call_results,
             captured_values,
@@ -246,6 +267,9 @@ impl<'a> EffectSemantics<'a> {
                     .sum(),
             ),
             callable_environments: std::cell::RefCell::new(callable_environments),
+            parameter_projections: std::cell::RefCell::new(parameter_projections),
+            projection_type_lookup: Default::default(),
+            external_parameter_projections: std::cell::RefCell::new(external_parameter_projections),
             metadata_callables: Default::default(),
             callable_references: Default::default(),
             global_values,
@@ -253,7 +277,7 @@ impl<'a> EffectSemantics<'a> {
             discovered_call_results: Default::default(),
             discovered_global_values: Default::default(),
             latent_type_shapes: Default::default(),
-            lambda_capture_symbols: Default::default(),
+            lambda_capture_references: Default::default(),
             captured_values,
             discovered_value_captures: Default::default(),
             frozen_calls,
@@ -303,6 +327,11 @@ impl<'a> EffectSemantics<'a> {
         semantics
     }
 
+    pub(crate) fn type_lookup(&self) -> &etas_types::ty::TypeLookupIndex {
+        self.projection_type_lookup
+            .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&self.types.store))
+    }
+
     pub(crate) fn into_parts(
         mut self,
     ) -> (
@@ -327,6 +356,10 @@ impl<'a> EffectSemantics<'a> {
             .collect();
         self.inputs.callable_environments =
             std::sync::Arc::unwrap_or_clone(self.callable_environments.into_inner());
+        self.inputs.external_parameter_projections =
+            std::sync::Arc::unwrap_or_clone(self.external_parameter_projections.into_inner());
+        self.inputs.parameter_projections =
+            std::sync::Arc::unwrap_or_clone(self.parameter_projections.into_inner());
         self.diagnostic_materialization_errors.extend(
             self.requested_types
                 .into_inner()

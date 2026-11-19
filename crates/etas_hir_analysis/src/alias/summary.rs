@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, btree_map::Entry};
 
 use etas_hir::{HirExprId, HirItemId, SymbolId};
 use etas_utils::{JoinSemiLattice, PartialOrder};
@@ -106,32 +106,57 @@ impl JoinSemiLattice for AliasSummary {
     }
 
     fn join_assign(&mut self, other: &Self) -> bool {
-        let old = self.clone();
-        self.unit = self.unit.or(other.unit);
+        let mut changed = false;
+        if self.unit.is_none() && other.unit.is_some() {
+            self.unit = other.unit;
+            changed = true;
+        }
         if other.params.len() > self.params.len() {
             self.params
                 .resize(other.params.len(), AliasParamSummary::default());
+            changed = true;
         }
         for (index, param) in other.params.iter().enumerate() {
+            changed |= param.escaped && !self.params[index].escaped;
             self.params[index].escaped |= param.escaped;
         }
-        self.return_alias = self
+        let returned = self
             .return_alias
             .join(&other.return_alias, self.max_alias_set_size);
+        changed |= returned != self.return_alias;
+        self.return_alias = returned;
+        let escaped = self.escaped.len();
         self.escaped.extend(other.escaped.iter().cloned());
-        for write in &other.writes {
-            if !self.writes.contains(write) {
-                self.writes.push(write.clone());
+        changed |= self.escaped.len() != escaped;
+        let added = {
+            let mut known = self.writes.iter().collect::<HashSet<_>>();
+            other
+                .writes
+                .iter()
+                .filter(|write| known.insert(*write))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        changed |= !added.is_empty();
+        self.writes.extend(added);
+        for (symbol, value) in &other.captures {
+            match self.captures.entry(*symbol) {
+                Entry::Vacant(entry) => {
+                    entry.insert(value.clone());
+                    changed = true;
+                }
+                Entry::Occupied(mut entry) => {
+                    let joined = entry.get().join(value, self.max_alias_set_size);
+                    if &joined != entry.get() {
+                        entry.insert(joined);
+                        changed = true;
+                    }
+                }
             }
         }
-        for (symbol, value) in &other.captures {
-            self.captures
-                .entry(*symbol)
-                .and_modify(|current| *current = current.join(value, self.max_alias_set_size))
-                .or_insert_with(|| value.clone());
-        }
+        changed |= other.incomplete && !self.incomplete;
         self.incomplete |= other.incomplete;
-        *self != old
+        changed
     }
 }
 
@@ -194,7 +219,7 @@ impl AliasValueExpr {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AliasWriteEffect {
     pub target: AliasValueExpr,
     pub value: AliasValueExpr,

@@ -43,6 +43,7 @@ impl EffectSemantics<'_> {
             state
                 .local_latent_values
                 .set_symbol_sources(symbol, sources);
+            self.record_symbol_projections(state, symbol, value, &[]);
         } else {
             state
                 .local_latent_values
@@ -95,7 +96,11 @@ impl EffectSemantics<'_> {
             }
             return match definition.def {
                 SymbolDef::Param { owner, .. }
-                    if self.checked_callable_contract_parameter(symbol).is_some()
+                    if self.symbol_type_contains_flow(symbol)
+                        || self
+                            .symbol_value_type(symbol)
+                            .is_some_and(|ty| self.type_has_parameters(ty))
+                        || self.checked_callable_contract_parameter(symbol).is_some()
                         || self.symbolic_callable_parameter(symbol)
                         || !self.generic_parameter_payloads(symbol).is_empty()
                         || self
@@ -136,13 +141,65 @@ impl EffectSemantics<'_> {
         let contract = self
             .descriptor_contract_type(parameter)
             .unwrap_or(parameter);
-        let Type::Function(flow) = self.types.store.get(contract)? else {
-            return None;
-        };
+        let flow = self.checked_payload_callable_contract(contract)?;
         if flow.effects.is_none() && !self.parameter_effects.contains_key(&symbol) {
             return None;
         }
         Some(flow)
+    }
+
+    fn checked_payload_callable_contract(&self, ty: TypeId) -> Option<&etas_types::FlowType> {
+        let mut pending = vec![ty];
+        let mut visited = std::collections::BTreeSet::new();
+        let mut contract = None;
+        while let Some(ty) = pending.pop() {
+            if !visited.insert(ty) {
+                continue;
+            }
+            // Generic data fields do not grant the generic body an invocation
+            // contract. Their origins still travel with the actual argument.
+            // Only checked callable payloads constrain this shared contract;
+            // an unrelated data subtree must not hide a record's callback.
+            if !self.type_contains_flow(ty) {
+                continue;
+            }
+            match self.types.store.get(ty)? {
+                Type::Function(flow) => match contract {
+                    None => contract = Some(flow),
+                    Some(existing) if existing == flow => {}
+                    Some(_) => return None,
+                },
+                Type::Nominal(_) | Type::Applied { .. } => {
+                    pending.push(
+                        etas_types::ty::applied_representation_in_store_indexed(
+                            &self.types.store,
+                            self.type_lookup(),
+                            ty,
+                        )
+                        .ok()??,
+                    );
+                }
+                Type::Record(record) => pending.extend(record.fields.iter().map(|field| field.ty)),
+                Type::Tuple(elements) => pending.extend(elements),
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Set(inner)
+                | Type::Slice(inner)
+                | Type::Option(inner) => pending.push(*inner),
+                Type::Map { key, value }
+                | Type::Result {
+                    ok: key,
+                    err: value,
+                } => pending.extend([*key, *value]),
+                _ if self.type_contains_flow(ty) || self.type_has_parameters(ty) => return None,
+                _ => {}
+            }
+        }
+        // Aggregate origins already contain the union of their callbacks. They
+        // may share a symbolic invocation contract only when every callable
+        // payload has the same checked arrow type. The concrete argument still
+        // supplies requested actions, handled actions, trace and completion.
+        contract
     }
 
     pub(crate) fn latent_source_summary(
@@ -175,6 +232,27 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         match source {
+            LatentSource::Projection(id) => {
+                let projection = self.parameter_projection(id)?;
+                let flow = self.checked_payload_callable_contract(projection.ty)?;
+                let row = flow.effects.as_ref()?;
+                let name = self.hir.symbols.get(projection.parameter)?.name.clone();
+                let mut summary =
+                    self.summary_for_invoked_flow_row(self.row_from_type_ref(row), span);
+                summary.independent_determinism = Some(crate::Determinism::Deterministic);
+                summary.requested_actions = crate::EffectRow::empty();
+                summary.action_trace = ActionTraceDomain::ParameterCall {
+                    target: crate::ParameterCallTarget::Projection(id),
+                    parameter: name.clone(),
+                    span,
+                };
+                summary.handler_requests = crate::RequestInstantiationSummary::parameter(
+                    crate::ParameterCallTarget::Projection(id),
+                    name,
+                    span,
+                );
+                Some(summary)
+            }
             LatentSource::FrozenContract { .. }
             | LatentSource::ExternalFrozen { .. }
             | LatentSource::ExternalReference { .. } => None,

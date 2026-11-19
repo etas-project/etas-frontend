@@ -112,9 +112,13 @@ impl EffectSemantics<'_> {
                 .flat_map(|fact| fact.effect_row_bindings.iter().cloned())
                 .collect();
             let names = std::collections::HashMap::new();
-            let row = match etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
-                .with_effect_arguments(&rows)
-                .substitute_effect_row(row.clone())
+            let row = match etas_types::TypeSubstitutionEngine::existing_indexed(
+                &self.types.store,
+                self.type_lookup(),
+                &names,
+            )
+            .with_effect_arguments(&rows)
+            .substitute_effect_row(row.clone())
             {
                 Ok(row) => row,
                 Err(error) => return self.incomplete_at(span, error.to_string(), state),
@@ -243,6 +247,7 @@ impl EffectSemantics<'_> {
             return None;
         };
         Some(etas_types::CallableSignature {
+            parameter_interface: None,
             generic_params: signature.generic_params.clone(),
             params: signature.params.clone(),
             output: signature.output,
@@ -252,22 +257,17 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn effect_from_action_ref(&self, action: &ResolvedActionRef) -> Option<Effect> {
-        let owner = action
-            .effect
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.name.as_str())?;
-        if owner == "Error" && action.action == "raise" {
-            let error = self.error_type_from_hir_arg(action.effect.args.first()?)?;
-            return Some(Effect::Error(error));
+        let ResolveResult::Resolved(symbol) = action.action_symbol else {
+            return None;
+        };
+        let target = self.action_ref_for_resolved_action(action, symbol)?;
+        if target.tag == crate::ERROR_TAG
+            && self.registry.action_signature(&target)?.name == "raise"
+            && let Some(argument) = action.effect.args.first()
+        {
+            return self.error_type_from_hir_arg(argument).map(Effect::Error);
         }
-        match action.action_symbol {
-            ResolveResult::Resolved(symbol) => self
-                .action_ref_for_resolved_action(action, symbol)
-                .map(Effect::Action),
-            _ => None,
-        }
+        Some(Effect::Action(target))
     }
 
     pub(crate) fn signature_for_action_ref(
@@ -405,6 +405,12 @@ impl EffectSemantics<'_> {
                 return None;
             };
             effect_args.push(arg);
+        }
+        if action_ref.tag == crate::ERROR_TAG && signature.name == "raise" {
+            let [etas_types::EffectArgRef::Type(error)] = effect_args.as_slice() else {
+                return None;
+            };
+            return Some(Effect::Error(*error));
         }
         Some(Effect::AppliedAction(ActionInstanceRef {
             action: action_ref.clone(),

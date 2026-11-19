@@ -67,7 +67,12 @@ pub(crate) fn map_summary<M: SummaryMapper>(
         result.refresh_escaping_effects();
     }
     if let Some(exits) = &source.exits {
-        let mut mapped = crate::CallableExitSummary::default();
+        let mut mapped = crate::CallableExitSummary {
+            // These are checked source/capture identities, not type arena
+            // references. Type and row substitution preserves their scope.
+            value_projections: exits.value_projections.clone(),
+            ..Default::default()
+        };
         for exit in &exits.exits {
             mapper.checkpoint()?;
             let mut outcome = exit.outcome.clone();

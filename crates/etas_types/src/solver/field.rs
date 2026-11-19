@@ -10,6 +10,7 @@ use crate::{
 pub fn solve_field_access(
     store: &TypeStore,
     known: &crate::KnownStdTypes,
+    specs: &crate::SpecFacts,
     base: TypeId,
     field: &str,
     output: TypeId,
@@ -17,6 +18,30 @@ pub fn solve_field_access(
     substitutions: &crate::solver::Substitution,
 ) -> SolverReport {
     let mut report = SolverReport::default();
+    if let Some(projection) =
+        crate::value_representation::checked_value_projection(store, specs, base, field)
+    {
+        let found = projection.output_type(store, base);
+        let Some(found) = found else {
+            report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                span: origin.span,
+                message: "value projection output type is missing".into(),
+            });
+            return report;
+        };
+        let mut unifier = TypeUnifier::with_substitution(store, substitutions.clone());
+        if unifier.unify(found, output).is_ok() {
+            report.substitutions.extend(unifier.substitution());
+        } else if !is_assignable(store, found, output) {
+            report.push(SolverFailure {
+                code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                span: origin.span,
+                message: format!("field `{field}` type does not match expected output"),
+            });
+        }
+        return report;
+    }
     let projected = projected_fields(store, known, base);
     let record = match projected.and_then(|projected| {
         projected.map_or_else(|| record_fields(store, base), |record| Ok(Some(record)))

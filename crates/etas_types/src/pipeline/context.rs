@@ -357,6 +357,12 @@ impl<'a> TypePipelineContext<'a> {
         self.lookup(|facts| &facts.expr_memory_places, &expr)
     }
 
+    pub(crate) fn spec_facts(&self) -> Arc<crate::SpecFacts> {
+        self.signature_base
+            .map(|base| base.specs.clone())
+            .unwrap_or_else(|| Arc::new(crate::SpecFacts::from(&self.signature_facts)))
+    }
+
     pub(crate) fn known_std_types(&self) -> &crate::KnownStdTypes {
         &self
             .signature_base

@@ -476,7 +476,8 @@ impl DefinitionDescriptorProjector<'_> {
             GenericOwner::Method(id) => self.identities.method(symbol) == Some(id),
             GenericOwner::Implementation(_)
             | GenericOwner::ImplementationPattern(_)
-            | GenericOwner::Action { .. } => false,
+            | GenericOwner::Action { .. }
+            | GenericOwner::ActionOverload { .. } => false,
         };
         if !matches_owner {
             return Err(TraceTemplateProjectionError::CallableOwnerMismatch);

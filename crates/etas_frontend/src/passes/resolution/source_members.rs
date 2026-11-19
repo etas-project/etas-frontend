@@ -212,6 +212,33 @@ pub(super) fn bind_members(hir: &mut HirProgram, alias: SymbolId, item: HirItemI
     }
 }
 
+fn resolve_value_path(
+    path: &mut ResolvedPath,
+    symbols: &etas_hir::SymbolTable,
+    scopes: &etas_hir::ScopeTree,
+    source_map: &etas_hir::SourceMap,
+) -> bool {
+    // A child module and a value re-export may have the same public path.
+    // Select the export from that checked module's canonical parent namespace.
+    if let ResolveResult::Resolved(symbol) = path.resolution
+        && let Some(module) = symbols.get(symbol)
+        && matches!(module.def, etas_hir::SymbolDef::Module { .. })
+        && let Some((parent, name)) = module.name.rsplit_once('.')
+        && let Some(parent) = symbols.iter().find(|symbol| {
+            symbol.name == parent && matches!(symbol.def, etas_hir::SymbolDef::Module { .. })
+        })
+        && let ResolveResult::Resolved(member) = symbols.resolve_member(parent.id, name)
+        && !matches!(
+            symbols.get(member).map(|symbol| &symbol.def),
+            Some(etas_hir::SymbolDef::Module { .. })
+        )
+    {
+        path.resolution = ResolveResult::Resolved(member);
+        return true;
+    }
+    resolve_path(path, symbols, scopes, source_map)
+}
+
 fn resolve_path(
     path: &mut ResolvedPath,
     symbols: &etas_hir::SymbolTable,
@@ -292,14 +319,14 @@ pub(super) fn resolve_members(hir: &mut HirProgram) -> ResolvedMembers {
             HirExpr::Reflect(reflection) => {
                 for index in 0..2 {
                     if let Some(path) = reflection.target.path_mut(index)
-                        && resolve_path(path, &hir.symbols, &hir.scopes, &hir.source_map)
+                        && resolve_value_path(path, &hir.symbols, &hir.scopes, &hir.source_map)
                     {
                         resolved.push(path.span);
                     }
                 }
             }
             HirExpr::Path(path) => {
-                if resolve_path(path, &hir.symbols, &hir.scopes, &hir.source_map) {
+                if resolve_value_path(path, &hir.symbols, &hir.scopes, &hir.source_map) {
                     resolved.push(path.span);
                 }
             }

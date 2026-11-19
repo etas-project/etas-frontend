@@ -228,6 +228,7 @@ impl BodyParameters {
             }
         }
         let signature = CallableSignature {
+            parameter_interface: template.parameter_interface.clone(),
             generic_params: Vec::new(),
             params: template
                 .params

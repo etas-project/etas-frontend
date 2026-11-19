@@ -610,6 +610,7 @@ pub struct DefinitionIdentityIndex {
     methods: HashMap<SymbolId, MethodId>,
     method_owner_parameters: HashMap<MethodId, Vec<GenericDeclaration>>,
     implementation_parameters: HashMap<TypeId, etas_package_metadata::GenericTypeParameter>,
+    implementations: HashMap<etas_hir::HirItemId, etas_code::ImplementationKey>,
     method_paths: BTreeMap<Vec<String>, MethodPath>,
     pub(crate) types: HashMap<TypeId, TypeDeclaration>,
     pub(crate) type_names: HashMap<String, TypeDeclaration>,
@@ -680,6 +681,7 @@ impl DefinitionIdentityIndex {
             methods: HashMap::new(),
             method_owner_parameters: HashMap::new(),
             implementation_parameters: HashMap::new(),
+            implementations: HashMap::new(),
             method_paths: BTreeMap::new(),
             types: HashMap::new(),
             type_names: HashMap::new(),
@@ -784,6 +786,20 @@ impl DefinitionIdentityIndex {
                 ))
             })
             .collect::<Result<HashMap<_, _>, ProjectionError>>()?;
+        let execution_owners = checked
+            .items
+            .iter()
+            .filter_map(|(_, item)| match item {
+                HirItem::Flow(etas_hir::HirFlowDecl {
+                    symbol,
+                    body: etas_hir::HirFlowBody::Runtime { role, .. },
+                    ..
+                }) => role
+                    .native_contract_path()
+                    .map(|path| (path, index.symbols[symbol].clone())),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
         for symbol in checked.std_registry.symbols() {
             let Some(mut key) =
                 standard_definition_key(checked.std_registry, origins.standard_package, symbol)?
@@ -791,6 +807,19 @@ impl DefinitionIdentityIndex {
                 continue;
             };
             if let Some(source) = role_owners.get(&symbol.id) {
+                key = source.clone();
+            } else if let Some(source) =
+                execution_owners.get(symbol.qualified_path.join(".").as_str())
+            {
+                key = source.clone();
+            } else if checked.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap
+                && matches!(symbol.decl, StdDecl::Type(_))
+                && let Some(source) = index.paths.get(&symbol.qualified_path)
+                && source.kind() == key.kind()
+            {
+                // A source-owned ordinary type can share a transitional query
+                // name without acquiring a compiler execution role. Its source
+                // package owns the descriptive identity as well as the body.
                 key = source.clone();
             }
             let kind = key.kind();
@@ -801,8 +830,15 @@ impl DefinitionIdentityIndex {
             }
             // Source std declarations own their public paths. Primitive ABI
             // references are addressed separately by NativeBinding symbols.
-            if !native_bindings.contains(&symbol.qualified_path)
-                || !index.paths.contains_key(&symbol.qualified_path)
+            let source_limit = checked.standard_library_mode
+                == crate::StandardLibraryMode::SourceBootstrap
+                && matches!(&symbol.decl, StdDecl::Requirement(requirement)
+                    if matches!(requirement.semantics, etas_std::RequirementSemantics::Limit(_)));
+            // A limit requirement is the compiler's checked budget contract.
+            // Source owns the enum constructor and its public re-export path.
+            if !source_limit
+                && (!native_bindings.contains(&symbol.qualified_path)
+                    || !index.paths.contains_key(&symbol.qualified_path))
             {
                 index.insert_path(symbol.qualified_path.clone(), key.clone())?;
             }
@@ -1095,15 +1131,25 @@ impl DefinitionIdentityIndex {
                 ) => TypeId(constructor.0),
                 Some(SymbolTypeFact::Agent { signature }) => signature.component,
                 Some(SymbolTypeFact::TypeAlias { target, .. }) => {
-                    // Alias declarations are projected explicitly, not installed as
-                    // the identity of their transparent target (e.g. string).
-                    if declaration.alias != Some(*target) {
-                        return Err(ProjectionError::Invalid(
-                            "alias target differs from checked declaration facts".into(),
-                        ));
+                    let compiler_constructor = matches!(item, HirItem::Type(_))
+                        && checked.types.source_type_roles.get(&symbol)
+                            .and_then(|native| checked.std_registry.symbol(*native))
+                            .is_some_and(|native| matches!(&native.decl, StdDecl::Type(decl) if decl.canonical_type.is_some()));
+                    if compiler_constructor {
+                        // The source declares a compiler value layout, rather
+                        // than a transparent source alias of that value family.
+                        *target
+                    } else {
+                        // Alias declarations are projected explicitly, not installed as
+                        // the identity of their transparent target (e.g. string).
+                        if declaration.alias != Some(*target) {
+                            return Err(ProjectionError::Invalid(
+                                "alias target differs from checked declaration facts".into(),
+                            ));
+                        }
+                        index.type_declarations.insert(symbol, declaration);
+                        continue;
                     }
-                    index.type_declarations.insert(symbol, declaration);
-                    continue;
                 }
                 _ => return Err(ProjectionError::MissingDeclaration(symbol)),
             };
@@ -1149,8 +1195,17 @@ impl DefinitionIdentityIndex {
             .type_names
             .values()
             .chain(index.type_declarations.values())
+            .chain(index.types.values())
             .map(|declaration| (declaration.identity.clone(), declaration.clone()))
             .collect::<HashMap<_, _>>();
+        // Checked imports/re-exports can expose another spelling of a type.
+        // Native ABI references use those public paths too; retain the same
+        // canonical declaration instead of treating the spelling as a binder.
+        for (path, identity) in &index.paths {
+            if let Some(declaration) = declarations.get(identity) {
+                index.type_names.insert(path.join("."), declaration.clone());
+            }
+        }
         for (ty, identity) in &checked.types.reflection_type_identities {
             if identity.package() != checked_standard_package {
                 continue;
@@ -1251,6 +1306,98 @@ impl DefinitionIdentityIndex {
                     .collect(),
             );
         }
+        for implementation in &checked.types.spec_impls {
+            let Some(item) = implementation.implementation else {
+                continue;
+            };
+            let owner = implementation
+                .methods
+                .first()
+                .and_then(|method| index.method(method.symbol))
+                .map(|method| method.implementation().clone());
+            let owner = match owner {
+                Some(owner) => owner,
+                None if matches!(checked.items.get(item), Some(etas_hir::HirItem::Impl(decl))
+                    if matches!(decl.target, etas_hir::HirImplTarget::SpecSatisfaction { .. })) =>
+                {
+                    super::definition::implementation_identity(
+                        checked,
+                        &index,
+                        origins,
+                        limits,
+                        item,
+                        implementation.self_type,
+                        &implementation.generic_params,
+                    )?
+                }
+                None => continue,
+            };
+            for (position, parameter) in implementation.generic_params.iter().enumerate() {
+                let identity = etas_package_metadata::GenericTypeParameter {
+                    owner: etas_code::descriptor::GenericOwner::Implementation(owner.clone()),
+                    position: position as u32,
+                };
+                if index
+                    .implementation_parameters
+                    .insert(parameter.subject, identity.clone())
+                    .is_some_and(|previous| previous != identity)
+                {
+                    return Err(ProjectionError::Invalid(
+                        "implementation parameter has conflicting canonical owners".into(),
+                    ));
+                }
+            }
+            index.implementations.insert(item, owner);
+        }
+        let mut overloads = Vec::new();
+        for group in checked.flow_overloads.values() {
+            let owner = index.symbols[&group[0]].clone();
+            let mut identities = std::collections::BTreeSet::new();
+            for symbol in group {
+                let Some(SymbolTypeFact::Flow { signature }) =
+                    checked.types.symbol_types.get(symbol)
+                else {
+                    return Err(ProjectionError::MissingCallable(*symbol));
+                };
+                let mut projector = super::descriptor::DefinitionDescriptorProjector::from_input(
+                    checked, &index, limits,
+                );
+                let input = projector.project_overload_inputs(&owner, signature)?;
+                let fingerprint = projector.finish()?.type_fingerprint(input)?;
+                if !identities.insert(fingerprint) {
+                    return Err(ProjectionError::Invalid(format!(
+                        "duplicate overload input signature for {}",
+                        owner.declaration().join(".")
+                    )));
+                }
+                let mut declaration = owner.declaration().to_vec();
+                declaration.push(format!("$overload:{fingerprint}"));
+                overloads.push((
+                    *symbol,
+                    DefinitionKey::new(
+                        owner.package(),
+                        owner.module().to_vec(),
+                        declaration,
+                        DefinitionKind::Flow,
+                    )?,
+                ));
+            }
+            // The public spelling denotes the group; it is not a single body.
+            let mut path = owner.module().to_vec();
+            path.extend_from_slice(owner.declaration());
+            index.paths.remove(&path);
+        }
+        for (symbol, identity) in overloads {
+            let mut path = identity.module().to_vec();
+            path.extend_from_slice(identity.declaration());
+            index.insert_path(path, identity.clone())?;
+            index.symbols.insert(symbol, identity);
+        }
+        for (alias, target) in &checked.source_import_targets {
+            if let Some(identity) = index.symbols.get(target).cloned() {
+                index.symbols.insert(*alias, identity);
+            }
+        }
         Ok(index)
     }
 
@@ -1318,11 +1465,8 @@ impl DefinitionIdentityIndex {
                 };
             }
             Some(previous) if previous.callable.as_ref() != Some(&callable) => {
-                if previous.inherent {
-                    return Err(ProjectionError::Invalid(
-                        "multiple inherent methods claim one canonical path".into(),
-                    ));
-                }
+                // Each selected source method retains its own MethodId. The
+                // shared spelling requires overload/spec selection at use.
                 previous.callable = None;
             }
             Some(_) => {}
@@ -1349,6 +1493,13 @@ impl DefinitionIdentityIndex {
         ty: TypeId,
     ) -> Result<(&TypeDeclaration, Vec<TypeId>), ProjectionError> {
         use etas_std::StdSourceRole as R;
+        if let Some(Type::Primitive(primitive)) = store.get(ty) {
+            return self
+                .type_names
+                .get(&format!("std.core.{}", primitive.source_name()))
+                .map(|declaration| (declaration, Vec::new()))
+                .ok_or(ProjectionError::MissingType(ty));
+        }
         let role = match store.get(ty) {
             Some(Type::Array(item)) => Some((R::Array, vec![*item])),
             Some(Type::List(item)) => Some((R::List, vec![*item])),
@@ -1385,6 +1536,13 @@ impl DefinitionIdentityIndex {
         self.implementation_parameters.get(&ty)
     }
 
+    pub(crate) fn implementation(
+        &self,
+        item: etas_hir::HirItemId,
+    ) -> Option<&etas_code::ImplementationKey> {
+        self.implementations.get(&item)
+    }
+
     pub(crate) fn method_owner_parameters(
         &self,
         method: &MethodId,
@@ -1401,7 +1559,7 @@ impl DefinitionIdentityIndex {
             .map(|path| {
                 path.callable.as_ref().ok_or_else(|| {
                     ProjectionError::Invalid(
-                        "static callable path has multiple spec-selected implementations".into(),
+                        "static callable path requires a selected method implementation".into(),
                     )
                 })
             })

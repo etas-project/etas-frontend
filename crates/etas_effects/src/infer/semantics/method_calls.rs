@@ -1,5 +1,5 @@
 use etas_hir::{HirExpr, HirExprId};
-use etas_types::method::{MethodReceiver, MethodTarget};
+use etas_types::method::MethodTarget;
 
 use super::{engine::EffectSemantics, specialize::EffectSpecializationError};
 use crate::infer::unit::EffectUnit;
@@ -36,7 +36,7 @@ impl EffectSemantics<'_> {
             return Err(invalid());
         }
         let mut ordered = vec![None; fact.signature.params.len()];
-        if let MethodReceiver::Value { slot } = fact.receiver {
+        if let Some(slot) = fact.receiver.value_slot() {
             *ordered.get_mut(slot as usize).ok_or_else(invalid)? = Some(receiver);
         }
         for (arg, slot) in args.iter().zip(&fact.argument_slots) {
@@ -48,6 +48,18 @@ impl EffectSemantics<'_> {
                 etas_hir::HirArg::Positional(expr)
                 | etas_hir::HirArg::Named { value: expr, .. } => *expr,
             });
+        }
+        for default in &fact.defaults {
+            let etas_types::ParameterDefaultRef::Source { parameter } = default.source else {
+                return Err(invalid());
+            };
+            *ordered.get_mut(default.slot as usize).ok_or_else(invalid)? = Some(
+                *self
+                    .hir
+                    .parameter_defaults
+                    .get(&parameter)
+                    .ok_or_else(invalid)?,
+            );
         }
         ordered
             .into_iter()

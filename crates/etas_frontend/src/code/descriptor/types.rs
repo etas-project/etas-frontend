@@ -144,6 +144,7 @@ impl DefinitionDescriptorProjector<'_> {
                     .into_iter()
                     .map(|ty| {
                         Ok(ParameterInfo {
+                            default: None,
                             name: None,
                             ty: self.type_ref(ty, scope)?,
                         })

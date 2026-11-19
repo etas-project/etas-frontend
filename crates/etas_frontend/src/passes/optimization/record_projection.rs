@@ -37,6 +37,7 @@ pub(super) fn project_marked_records(
     if !replacements.is_empty() {
         super::facts::invalidate_replaced_expressions(
             context,
+            &output.hir,
             replacements.iter().flat_map(|(root, replacement)| {
                 std::iter::once(*root).chain(replacement.optimized_out.iter().copied())
             }),
@@ -151,6 +152,7 @@ fn projected_parameter(
         return None;
     };
     let returned = match flow.body {
+        HirFlowBody::Decl { .. } | HirFlowBody::Runtime { .. } => return None,
         HirFlowBody::Block(block) => {
             let block = &revision.blocks[block];
             let [statement] = block.stmts.as_slice() else {

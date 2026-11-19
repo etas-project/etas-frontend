@@ -2,6 +2,20 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{CheckedSpecBound, CheckedSpecRef, SpecFacts, Type, TypeId, TypeStore};
 
+/// Keep canonical Std equality while finding the source declaration that owns
+/// its method bodies and inherited bounds.
+pub(crate) fn declaration(facts: &SpecFacts, spec: &CheckedSpecRef) -> CheckedSpecRef {
+    if let CheckedSpecRef::Std(path) = spec
+        && let Some(signature) = facts.signatures.values().find(|signature| {
+            facts.std_spec_aliases.get(&signature.symbol) == Some(path)
+                && (!signature.methods.is_empty() || !signature.super_specs.is_empty())
+        })
+    {
+        return CheckedSpecRef::Source(signature.symbol);
+    }
+    spec.clone()
+}
+
 /// The caller's declared evidence, not implementations loaded elsewhere in the project.
 pub(crate) fn arguments(
     store: &TypeStore,
@@ -47,7 +61,8 @@ pub(crate) fn closure(
             spec: spec.clone(),
             args: bound.args.clone(),
         });
-        let (names, parameters, supers) = match &spec {
+        let declared = declaration(facts, &spec);
+        let (names, parameters, supers) = match &declared {
             CheckedSpecRef::Source(symbol) => {
                 let signature = facts
                     .signatures

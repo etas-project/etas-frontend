@@ -42,6 +42,10 @@ pub enum EffectConvergenceStatus {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectMaterializationInputs {
+    pub external_parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::ExternalParameterProjection>,
+    pub parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::NativeParameterProjection>,
     #[serde(default)]
     pub external_descriptor_graphs: BTreeMap<
         etas_code::CodeFingerprint,
@@ -62,6 +66,17 @@ pub struct EffectMaterializationInputs {
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_call_arguments: HashMap<
+        HirExprId,
+        BTreeMap<crate::ParameterCallTarget, BTreeSet<super::CallableValueOrigin>>,
+    >,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub dynamic_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
+    /// The cursor's stored next callable, distinct from the expression which
+    /// constructs the cursor. Its captured environment belongs to that value.
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub iteration_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub metadata_call_targets: HashMap<HirExprId, BTreeSet<crate::MetadataCallableSource>>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
@@ -100,6 +115,11 @@ pub struct EffectMaterializationInputs {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectFacts {
+    pub external_parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::ExternalParameterProjection>,
+    pub parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::NativeParameterProjection>,
+    pub suspension: BTreeMap<EffectUnit, crate::suspension::SuspensionSummary>,
     #[serde(default)]
     pub external_descriptor_graphs: BTreeMap<
         etas_code::CodeFingerprint,
@@ -120,6 +140,15 @@ pub struct EffectFacts {
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_call_arguments: HashMap<
+        HirExprId,
+        BTreeMap<crate::ParameterCallTarget, BTreeSet<super::CallableValueOrigin>>,
+    >,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub dynamic_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub iteration_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub metadata_call_targets: HashMap<HirExprId, BTreeSet<crate::MetadataCallableSource>>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
@@ -227,6 +256,7 @@ mod external_scope_tests {
         )
         .unwrap();
         let call = |handlers| ParameterCallInfo {
+            projection: Vec::new(),
             callable: callable.clone(),
             signature: TypeInfoRef(1),
             position: 0,
@@ -241,6 +271,7 @@ mod external_scope_tests {
                     parameters: vec![ParameterInfo {
                         name: Some("callback".into()),
                         ty: TypeInfoRef(2),
+                        default: None,
                     }],
                     output: TypeInfoRef(0),
                     declared_output: None,

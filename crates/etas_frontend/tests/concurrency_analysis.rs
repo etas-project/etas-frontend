@@ -5,6 +5,40 @@ fn check(body: &str) -> etas_frontend::ProjectOutput {
 }
 
 #[test]
+fn constant_concurrency_budget_rejects_values_outside_the_shared_ceiling() {
+    let valid = format!(
+        "flow main() -> unit {{ let budget = Concurrency({}); }}",
+        etas_std::intrinsic::task::MAX_CONCURRENCY
+    );
+    let output = check(&valid);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+
+    // This valid usize used to disappear from planning when conversion to
+    // u32 failed. Diagnose its literal instead of accepting an unbounded plan.
+    let invalid = valid.replace(
+        &etas_std::intrinsic::task::MAX_CONCURRENCY.to_string(),
+        "4294967296",
+    );
+    let output = check(&invalid);
+    let diagnostic = output
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::MissingOrInvalidLimit,
+                )
+        })
+        .expect("invalid Concurrency literal must have a compile-time diagnostic");
+    assert!(output.checked.is_none());
+    assert_eq!(
+        &invalid[diagnostic.primary.span.range.start.0 as usize
+            ..diagnostic.primary.span.range.end.0 as usize],
+        "4294967296"
+    );
+}
+
+#[test]
 fn independent_task_branches_are_planned_concurrently() {
     let output = check(
         r#"

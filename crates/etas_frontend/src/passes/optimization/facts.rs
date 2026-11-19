@@ -6,9 +6,15 @@ use crate::ProjectContext;
 
 pub(super) fn invalidate_replaced_expressions(
     context: &mut ProjectContext,
+    hir: &etas_hir::HirRevision,
     expressions: impl IntoIterator<Item = HirExprId>,
 ) {
     let expressions = expressions.into_iter().collect::<HashSet<_>>();
+    let index = hir.index();
+    let owners = expressions
+        .iter()
+        .filter_map(|expr| index.expr_item.get(expr).copied())
+        .collect::<HashSet<_>>();
     let types = context
         .types
         .as_mut()
@@ -25,6 +31,12 @@ pub(super) fn invalidate_replaced_expressions(
         .retain(|expr, _| !expressions.contains(expr));
     facts
         .agent_method_calls
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
+        .source_flow_calls
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
+        .library_flow_calls
         .retain(|expr, _| !expressions.contains(expr));
     facts
         .std_intrinsic_calls
@@ -68,11 +80,27 @@ pub(super) fn invalidate_replaced_expressions(
         .as_mut()
         .expect("effect facts must precede typed-HIR optimization");
     let facts = std::sync::Arc::make_mut(&mut effects.facts);
+    for (unit, summary) in &mut facts.unit_effects {
+        if unit.owner().is_some_and(|owner| owners.contains(&owner))
+            && let Some(exits) = &mut summary.exits
+        {
+            exits.value_projections.clear();
+        }
+    }
     facts
         .handled_body_requests
         .retain(|expr, _| !expressions.contains(expr));
     facts
         .native_call_targets
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
+        .source_call_arguments
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
+        .dynamic_call_sources
+        .retain(|expr, _| !expressions.contains(expr));
+    facts
+        .iteration_call_sources
         .retain(|expr, _| !expressions.contains(expr));
     facts
         .metadata_call_targets

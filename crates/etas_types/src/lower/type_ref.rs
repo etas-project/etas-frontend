@@ -37,6 +37,10 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
             ty
         }
         HirType::Primitive { kind, .. } => ctx.interner.primitive(PrimitiveType::from_hir(kind)),
+        HirType::Array { element, .. } => {
+            let element = lower_type_ref(ctx, element)?;
+            ctx.interner.intern(Type::Array(element))
+        }
         HirType::Tuple { elems, .. } => {
             let elems = elems
                 .into_iter()
@@ -116,6 +120,70 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
     };
     ctx.signature_facts.type_refs.insert(ty, lowered);
     Some(lowered)
+}
+
+/// Resolve a language dependency in the selected source std namespace. The
+/// declaration and its signature come from source/compiled metadata, never a
+/// handwritten replacement declaration or a legacy factory.
+pub(crate) fn selected_source_type(
+    ctx: &mut TypePipelineContext<'_>,
+    path: &[&str],
+) -> Option<TypeId> {
+    let path = path
+        .iter()
+        .map(|part| (*part).to_owned())
+        .collect::<Vec<_>>();
+    ctx.symbols
+        .canonical_path(ctx.hir, &path)
+        .and_then(|symbol| ctx.type_fact_as_type_id(symbol))
+        .or_else(|| ctx.external_type_paths.get(&path).copied())
+        .or_else(|| {
+            let registry = ctx.std_registry.clone();
+            let declaration = registry.lookup_qualified(&path)?;
+            crate::lower::std::lower_std_type_symbol(ctx, &registry, declaration)
+        })
+}
+
+/// A constructor sum owns a nominal identity. Its empty/cell storage is a
+/// language value layout, derived from the declaration rather than a std role.
+pub(crate) fn lower_sequence_representation(
+    ctx: &mut TypePipelineContext<'_>,
+    owner: etas_hir::SymbolId,
+    parameters: &[etas_hir::SymbolId],
+    element: HirTypeId,
+    tail: HirTypeId,
+    span: etas_core::Span,
+) -> Option<TypeId> {
+    let canonical = |symbol| {
+        ctx.symbols
+            .canonical_symbol(ctx.hir, symbol)
+            .unwrap_or(symbol)
+    };
+    let recursive_tail = match &ctx.hir.types[tail] {
+        HirType::Path { path, args, .. } => {
+            matches!(path.resolution, ResolveResult::Resolved(symbol)
+                if canonical(symbol) == canonical(owner))
+                && args.len() == parameters.len()
+                && args.iter().zip(parameters).all(|(argument, parameter)| {
+                    matches!(&ctx.hir.types[*argument],
+                        HirType::Path { path, args, .. }
+                        if args.is_empty() && matches!(path.resolution,
+                            ResolveResult::Resolved(symbol)
+                            if canonical(symbol) == canonical(*parameter)))
+                })
+        }
+        _ => false,
+    };
+    if !recursive_tail {
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            span,
+            "a cell constructor must end in its owning type with the same type parameters",
+        ));
+        return None;
+    }
+    let element = lower_type_ref(ctx, element)?;
+    Some(ctx.interner.intern(Type::List(element)))
 }
 
 pub fn lower_path_type(
@@ -226,6 +294,17 @@ fn lower_named_path(
             }),
         _ => None,
     };
+    let legacy_standard_type = source_symbol
+        .and_then(|symbol| ctx.symbols.canonical_symbol(ctx.hir, symbol))
+        .and_then(|symbol| ctx.hir.symbols.get(symbol))
+        .and_then(|symbol| match &symbol.def {
+            SymbolDef::ImportAlias { path, .. } => ctx.std_registry.lookup_qualified(path),
+            _ => None,
+        })
+        .is_some_and(|symbol| {
+            matches!(symbol.decl, etas_std::StdDecl::Type(_))
+                && ctx.std_registry.declaration_key(symbol.id).is_none()
+        });
     let resolved_declaration = match source_symbol {
         Some(symbol) => {
             matches!(
@@ -236,6 +315,12 @@ fn lower_named_path(
                         | crate::SymbolTypeFact::Agent { .. }
                         | crate::SymbolTypeFact::Spec { .. }
                 )
+            ) || matches!(
+                ctx.symbol_fact(symbol),
+                Some(crate::SymbolTypeFact::Type { constructor })
+                    if ctx.interner.store().nominal_identity(TypeId(constructor.0)).is_some()
+                        || (ctx.hir.source_standard_types
+                            && matches!(ctx.interner.store().get(TypeId(constructor.0)), Some(Type::Enum(_))))
             ) || ctx
                 .symbols
                 .canonical_symbol(ctx.hir, symbol)
@@ -256,7 +341,9 @@ fn lower_named_path(
         _ => false,
     };
     match (standard_name.as_deref().unwrap_or(name), args.as_slice()) {
-        _ if resolved_declaration && standard_name.is_none() => {
+        // A resolved declaration owns its type identity, including source std
+        // declarations whose names also occur in the legacy builtin table.
+        _ if resolved_declaration && !legacy_standard_type => {
             lower_declared_path(ctx, path, name, args, span)
         }
         ("Array", [inner]) => ctx.interner.intern(Type::Array(*inner)),
@@ -292,7 +379,10 @@ fn lower_named_path(
         }),
         ("Prompt", []) => ctx.interner.intern(Type::Prompt),
         ("PromptPart", []) => ctx.interner.intern(Type::PromptPart),
-        ("Message", [inner]) => ctx.interner.intern(Type::Message(*inner)),
+        ("Message", [inner]) => {
+            let registry = ctx.std_registry.clone();
+            super::std::lower_message_type(ctx, &registry, *inner)
+        }
         ("MemorySelection", [inner]) => ctx.interner.intern(Type::MemorySelection(*inner)),
         ("MemoryRegion", [schema]) => ctx.interner.intern(Type::MemoryRegion(*schema)),
         ("Store", [key, value]) => ctx.interner.intern(Type::Store {
@@ -432,12 +522,18 @@ pub(crate) fn agent_context_ref(
     )))
 }
 
-fn resolved_source_type_symbol(
+pub(crate) fn resolved_source_type_symbol(
     ctx: &TypePipelineContext<'_>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<etas_hir::SymbolId> {
     match &path.resolution {
         ResolveResult::Resolved(symbol) => Some(*symbol),
+        ResolveResult::PartiallyResolved(partial)
+            if partial.resolved_prefix.is_none()
+                && partial.reason == etas_hir::PartialResolutionReason::PackageResolverRequired =>
+        {
+            ctx.symbols.canonical_path(ctx.hir, &partial.remaining)
+        }
         ResolveResult::PartiallyResolved(partial) => {
             let prefix = partial.resolved_prefix?;
             let symbol = ctx.hir.symbols.get(prefix)?;
@@ -620,6 +716,18 @@ fn lower_source_declared_type(
             let representation = match decl.body {
                 HirTypeDeclBody::Bodyless => None,
                 HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
+                HirTypeDeclBody::Sequence {
+                    element,
+                    tail,
+                    span,
+                } => lower_sequence_representation(
+                    ctx,
+                    decl.symbol,
+                    &decl.type_params,
+                    element,
+                    tail,
+                    span,
+                ),
             };
             let lowered = Some(ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 read_only_erased_view: false,

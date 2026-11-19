@@ -101,6 +101,11 @@ pub struct HirTypeDecl {
 pub enum HirTypeDeclBody {
     Bodyless,
     Representation(HirTypeId),
+    Sequence {
+        element: HirTypeId,
+        tail: HirTypeId,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
@@ -204,6 +209,7 @@ pub enum HirSpecItem {
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirFlowSignature {
     pub symbol: SymbolId,
+    pub receiver_mode: HirReceiverMode,
     pub type_params: Vec<SymbolId>,
     pub receiver_type_param: Option<SymbolId>,
     pub params: Vec<SymbolId>,
@@ -293,6 +299,7 @@ pub struct HirEffectActionDecl {
     pub type_params: Vec<SymbolId>,
     pub params: Vec<SymbolId>,
     pub return_type: HirTypeId,
+    pub default_handler_effects: Option<HirEffectRow>,
     pub scope: ScopeId,
     pub span: Span,
 }
@@ -312,6 +319,7 @@ pub enum HirActionSelectorParam {
 #[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirFlowDecl {
     pub symbol: SymbolId,
+    pub receiver_mode: HirReceiverMode,
     pub type_params: Vec<SymbolId>,
     pub params: Vec<SymbolId>,
     pub return_type: Option<HirTypeId>,
@@ -322,8 +330,25 @@ pub struct HirFlowDecl {
     pub span: Span,
 }
 
+/// Receiver passing is part of the callable contract, never an overload key.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
+pub enum HirReceiverMode {
+    None,
+    Value,
+    Updating,
+}
+
 #[derive(Clone, Copy, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirFlowBody {
+    Decl {
+        span: Span,
+    },
+    Runtime {
+        role: etas_std::StdExecutionRole,
+        span: Span,
+    },
     Block(HirBlockId),
     Expr {
         expr: HirExprId,
@@ -334,12 +359,18 @@ pub enum HirFlowBody {
 
 impl HirFlowBody {
     pub fn block(self) -> HirBlockId {
+        self.as_block()
+            .expect("flow declaration has no executable body")
+    }
+
+    pub fn as_block(self) -> Option<HirBlockId> {
         match self {
+            Self::Decl { .. } | Self::Runtime { .. } => None,
             Self::Block(block)
             | Self::Expr {
                 lowered_block: block,
                 ..
-            } => block,
+            } => Some(block),
         }
     }
 }

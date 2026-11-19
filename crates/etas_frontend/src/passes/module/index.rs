@@ -42,7 +42,7 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
             dependency_namespaces: std::sync::Arc::new(namespaces),
             ..ModuleIndex::default()
         };
-        let mut declared_names: HashMap<(crate::ModuleId, String), Span> = HashMap::new();
+        let mut declared_names = HashMap::new();
         let source_files = context
             .sources
             .as_ref()
@@ -222,7 +222,12 @@ impl Pass<ProjectContext> for BuildModuleIndexPass {
                 let Some((name, span)) = item_decl_name(&item.item) else {
                     continue;
                 };
-                if let Some(previous) = declared_names.insert((module_id, name.clone()), span) {
+                let flow = matches!(&item.item, etas_syntax::ast::Item::Flow(_));
+                let visibility = hir_visibility(item_visibility(&item.item));
+                if let Some((previous, previous_flow, previous_visibility)) =
+                    declared_names.insert((module_id, name.clone()), (span, flow, visibility))
+                    && !(flow && previous_flow && visibility == previous_visibility)
+                {
                     diagnostics.push(project_diagnostic(
                         parsed.source,
                         span,

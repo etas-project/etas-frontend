@@ -119,11 +119,23 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .expr_types
         .extend(state.provisional.expr_types);
     ctx.signature_facts
+        .declared_call_arguments
+        .extend(state.provisional.declared_call_arguments);
+    ctx.signature_facts
         .agent_method_calls
         .extend(state.provisional.agent_method_calls);
     ctx.signature_facts
         .agent_method_calls
         .extend(state.solver_report.agent_method_calls);
+    ctx.signature_facts
+        .source_flow_calls
+        .extend(state.solver_report.source_flow_calls);
+    ctx.signature_facts
+        .library_flow_calls
+        .extend(state.solver_report.library_flow_calls);
+    ctx.signature_facts
+        .declared_call_arguments
+        .extend(state.solver_report.declared_call_arguments);
     ctx.signature_facts
         .checked_method_calls
         .extend(state.solver_report.checked_method_calls);
@@ -369,6 +381,17 @@ fn materialize_generic_type_instances(
             *ty = remap(ctx, *ty)?;
         }
     }
+    for fact in ordered_values_mut(&mut state.solver_report.library_flow_calls) {
+        fact.callable_type = remap(ctx, fact.callable_type)?;
+        for ty in fact
+            .signature
+            .params
+            .iter_mut()
+            .chain(std::iter::once(&mut fact.signature.output))
+        {
+            *ty = remap(ctx, *ty)?;
+        }
+    }
     for fact in ordered_values_mut(&mut state.provisional.handler_actions) {
         fact.output = remap(ctx, fact.output)?;
         for ty in &mut fact.params {
@@ -443,6 +466,20 @@ fn apply_solver_substitutions(
     }
 
     for fact in ordered_values_mut(&mut state.solver_report.std_intrinsic_calls) {
+        fact.callable_type = substitute_type(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            fact.callable_type,
+        )?;
+        substitute_callable_signature(
+            ctx,
+            &substitutions,
+            &named_substitutions,
+            &mut fact.signature,
+        )?;
+    }
+    for fact in ordered_values_mut(&mut state.solver_report.library_flow_calls) {
         fact.callable_type = substitute_type(
             ctx,
             &substitutions,

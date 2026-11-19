@@ -113,6 +113,7 @@ impl ForeignTypeBindings {
         catalog: &Arc<DefinitionCatalog>,
         identities: &HashMap<TypeId, DefinitionKey>,
         declarations: &HashMap<TypeId, TypeId>,
+        target_definitions: &DefinitionCatalog,
         target: &TypeStore,
         control: &dyn PipelineExecutionControl,
     ) -> Result<Self, ProjectionError> {
@@ -140,27 +141,39 @@ impl ForeignTypeBindings {
             let Some(target_id) = declarations.get(source).copied() else {
                 continue;
             };
-            // Declarations already present in the destination are represented
-            // by its own checked index, not by a foreign binding.
-            match target.nominal_identity(target_id) {
-                None => continue,
-                Some(actual) if actual == identity => {}
-                Some(_) => {
-                    return Err(ProjectionError::Invalid(
-                        "conflicting foreign type identities".into(),
-                    ));
-                }
-            }
             if catalog.native_type_declaration(*source) != Some(identity) {
                 return Err(ProjectionError::MissingIdentity(format!(
                     "foreign checked declaration {source:?}"
                 )));
             }
+            // Declarations already present in the destination are represented
+            // by its own checked index, not by a foreign binding.
+            // Source std owns the canonical declaration even when its interner
+            // retains the original bootstrap ABI reservation identity.
+            if let Some(actual) = target_definitions.native_type_declaration(target_id) {
+                if actual != identity {
+                    return Err(ProjectionError::Invalid(format!(
+                        "foreign type conflicts with checked target declaration: {identity:?} -> {actual:?}"
+                    )));
+                }
+                continue;
+            }
+            match target.nominal_identity(target_id) {
+                None => continue,
+                Some(actual) if actual == identity => {}
+                Some(actual) => {
+                    return Err(ProjectionError::Invalid(format!(
+                        "conflicting foreign type identities: source {source:?} {identity:?} -> target {target_id:?} {actual:?} {:?}",
+                        target.get(target_id),
+                    )));
+                }
+            }
             if let Some(existing) = result.bindings.get(&target_id) {
                 if existing.identity != *identity {
-                    return Err(ProjectionError::Invalid(
-                        "conflicting foreign type identities".into(),
-                    ));
+                    return Err(ProjectionError::Invalid(format!(
+                        "conflicting foreign type identities: source {source:?} {identity:?} -> target {target_id:?}, existing {:?}",
+                        existing.identity,
+                    )));
                 }
                 continue;
             }

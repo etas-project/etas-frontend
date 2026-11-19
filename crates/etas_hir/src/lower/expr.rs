@@ -10,6 +10,98 @@ impl LowerCtx {
         item_id: HirItemId,
     ) -> HirExprId {
         let span = expr.span();
+        if self.hir.source_standard_types {
+            match expr {
+                Expr::Range(range) => {
+                    let path = ast::Path {
+                        segments: ["std", "collections", "Range"]
+                            .into_iter()
+                            .map(|text| ast::Name {
+                                text: text.to_owned(),
+                                span,
+                            })
+                            .collect(),
+                        span,
+                    };
+                    let path =
+                        self.resolve_path_in_context(&path, scope, true, PreludeContext::Type);
+                    let start = self.lower_expr(&range.start, scope, item_id);
+                    let end = self.lower_expr(&range.end, scope, item_id);
+                    let include_start = matches!(range.bounds, RangeBounds::ClosedOpen);
+                    let include_end = matches!(range.bounds, RangeBounds::OpenClosed);
+                    let include_start = self.alloc_expr(
+                        HirExpr::Literal(HirLiteral::Bool {
+                            value: include_start,
+                            span,
+                        }),
+                        span,
+                    );
+                    let include_end = self.alloc_expr(
+                        HirExpr::Literal(HirLiteral::Bool {
+                            value: include_end,
+                            span,
+                        }),
+                        span,
+                    );
+                    return self.alloc_expr(
+                        HirExpr::Record(HirRecordExpr {
+                            path: Some(path),
+                            generic_args: Vec::new(),
+                            span,
+                            fields: [
+                                ("start", start),
+                                ("end", end),
+                                ("include_start", include_start),
+                                ("include_end", include_end),
+                            ]
+                            .into_iter()
+                            .map(|(name, value)| HirFieldInit::Named {
+                                name: name.into(),
+                                value,
+                                span,
+                            })
+                            .collect(),
+                        }),
+                        span,
+                    );
+                }
+                Expr::Set { elems, .. } => {
+                    let elems = elems
+                        .iter()
+                        .map(|elem| self.lower_expr(elem, scope, item_id))
+                        .collect();
+                    return self.lower_source_collection_literal(
+                        "Set",
+                        "from_list",
+                        elems,
+                        scope,
+                        span,
+                    );
+                }
+                Expr::Map(map) => {
+                    let mut entries = Vec::with_capacity(map.entries.len());
+                    for entry in &map.entries {
+                        let key = self.lower_expr(&entry.key, scope, item_id);
+                        let value = self.lower_expr(&entry.value, scope, item_id);
+                        entries.push(self.alloc_expr(
+                            HirExpr::Tuple {
+                                elems: vec![key, value],
+                                span: entry.span,
+                            },
+                            entry.span,
+                        ));
+                    }
+                    return self.lower_source_collection_literal(
+                        "Map",
+                        "from_entries",
+                        entries,
+                        scope,
+                        span,
+                    );
+                }
+                _ => {}
+            }
+        }
         match expr {
             Expr::Handle(handle) => return self.lower_handle_expr(handle, scope, item_id),
             Expr::Match(match_expr) => return self.lower_match_expr(match_expr, scope, item_id),
@@ -406,6 +498,47 @@ impl LowerCtx {
         let id = self.hir.exprs.alloc(hir_expr);
         self.source_map.map_expr(id, span);
         id
+    }
+
+    fn lower_source_collection_literal(
+        &mut self,
+        owner: &str,
+        method: &str,
+        elements: Vec<HirExprId>,
+        scope: ScopeId,
+        span: etas_core::Span,
+    ) -> HirExprId {
+        let path = ast::Path {
+            segments: ["std", "collections", owner]
+                .into_iter()
+                .map(|text| ast::Name {
+                    text: text.to_owned(),
+                    span,
+                })
+                .collect(),
+            span,
+        };
+        let path = self.resolve_path_in_context(&path, scope, true, PreludeContext::Type);
+        let receiver = self.alloc_expr(HirExpr::Path(path), span);
+        let items = self.alloc_expr(
+            HirExpr::List {
+                elems: elements,
+                span,
+            },
+            span,
+        );
+        let call = self.alloc_expr(
+            HirExpr::MethodCall {
+                receiver,
+                method: method.to_owned(),
+                generic_args: Vec::new(),
+                args: vec![HirArg::Positional(items)],
+                span,
+            },
+            span,
+        );
+        self.source_map.mark_collection_literal(call, span);
+        call
     }
 
     fn lower_handle_expr(

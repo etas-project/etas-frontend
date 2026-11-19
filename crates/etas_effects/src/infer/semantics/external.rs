@@ -6,6 +6,7 @@ fn request_label(target: &crate::ExternalCallableRequestTarget) -> &str {
     match target {
         crate::ExternalCallableRequestTarget::AgentTools(_) => "agent tools",
         crate::ExternalCallableRequestTarget::Parameter(parameter) => parameter,
+        crate::ExternalCallableRequestTarget::ParameterProjection { parameter, .. } => parameter,
         crate::ExternalCallableRequestTarget::SpecMethod(method) => &method.method,
     }
 }
@@ -19,6 +20,11 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<crate::ParameterCallTarget> {
         match target {
+            crate::ExternalCallableRequestTarget::ParameterProjection { parameter, path } => self
+                .intern_external_parameter_projection(
+                    parameter_target(parameters, parameter)?,
+                    path.clone(),
+                ),
             crate::ExternalCallableRequestTarget::AgentTools(context) => {
                 Some(crate::ParameterCallTarget::AgentTools(*context))
             }
@@ -44,7 +50,14 @@ impl EffectSemantics<'_> {
                 .is_some_and(|contract| &contract.header.id == callable)
         });
         let matched = matches.next()?;
-        matches.next().is_none().then_some(matched)
+        for alias in matches {
+            let mut metadata = alias.metadata.clone();
+            metadata.item = matched.item.clone();
+            if metadata != matched.metadata {
+                return None;
+            }
+        }
+        Some(matched)
     }
 
     pub(super) fn external_reference_metadata(
@@ -392,6 +405,7 @@ impl EffectSemantics<'_> {
                 &type_bindings,
                 &effect_row_bindings,
             ),
+            &mut BTreeSet::new(),
         )?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
@@ -433,6 +447,20 @@ impl EffectSemantics<'_> {
         self.forward_callback_outcomes(&mut summary, &trace_bindings, &parameter_targets, state)?;
         if let Some(graph) = &metadata.returned_callables {
             let arguments = self.call_arguments(site, metadata.param_names.len())?;
+            self.record_metadata_projections(
+                super::metadata_callable::MetadataCallBindings {
+                    key: metadata.callable_graph_key,
+                    scope: etas_package_metadata::CallableValueScope::Root,
+                    environment: None,
+                    arguments: &arguments,
+                    generics: &metadata.generic_params,
+                    type_bindings: &type_bindings,
+                    effect_row_bindings: &effect_row_bindings,
+                },
+                &graph.source_projections,
+                state,
+                site.call,
+            )?;
             self.record_metadata_sources(
                 super::metadata_callable::MetadataCallBindings {
                     key: metadata.callable_graph_key,

@@ -177,6 +177,19 @@ impl DefinitionCatalog {
                             contract.fingerprint().as_bytes().as_slice(),
                         ],
                     )
+                } else if let Some(role) = self.declared_execution_role(item) {
+                    // Execution mechanisms have a source ABI declaration and
+                    // a toolchain implementation, without an editable Etas body.
+                    let abi = etas_std::compiler_contract_identity();
+                    CodeFingerprint::of_parts(
+                        "etas.code.declared-execution-flow.v1",
+                        [
+                            callable.fingerprint().as_bytes().as_slice(),
+                            contract.fingerprint().as_bytes().as_slice(),
+                            role.role().as_bytes(),
+                            abi.as_bytes(),
+                        ],
+                    )
                 } else {
                     self.body_content(callable, syntax)?
                 };

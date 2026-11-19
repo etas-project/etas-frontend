@@ -23,6 +23,8 @@ pub enum ResourceHandleFact {
 pub struct KnownStdTypes {
     pub result_enum: Option<TypeId>,
     pub option_enum: Option<TypeId>,
+    pub source_iterator: Option<TypeId>,
+    pub execution: KnownExecutionTypes,
     pub directory_list_limit_error: Option<TypeId>,
     pub file_read_limit_error: Option<TypeId>,
     pub filesystem_io_error: Option<TypeId>,
@@ -41,6 +43,51 @@ pub struct KnownStdTypes {
     pub code: KnownCodeTypes,
     pub intrinsic_only_constructors: std::collections::BTreeSet<TypeId>,
     pub projected_fields: std::collections::BTreeMap<TypeId, Vec<crate::FieldType>>,
+}
+
+/// Identities for the six source declarations used at the task execution ABI.
+/// Public records and their fields are still defined exclusively by Etas.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
+pub struct KnownExecutionTypes {
+    pub task: Option<TypeId>,
+    pub scheduler: Option<TypeId>,
+    pub continuation: Option<TypeId>,
+    pub task_handle: Option<TypeId>,
+    pub scheduler_state: Option<TypeId>,
+    pub continuation_state: Option<TypeId>,
+}
+
+impl KnownExecutionTypes {
+    pub(crate) fn remap(&mut self, mut map: impl FnMut(TypeId) -> TypeId) {
+        for ty in [
+            &mut self.task,
+            &mut self.scheduler,
+            &mut self.continuation,
+            &mut self.task_handle,
+            &mut self.scheduler_state,
+            &mut self.continuation_state,
+        ] {
+            *ty = ty.map(&mut map);
+        }
+    }
+
+    pub(crate) fn merge_missing(&mut self, other: Self) {
+        self.task = self.task.or(other.task);
+        self.scheduler = self.scheduler.or(other.scheduler);
+        self.continuation = self.continuation.or(other.continuation);
+        self.task_handle = self.task_handle.or(other.task_handle);
+        self.scheduler_state = self.scheduler_state.or(other.scheduler_state);
+        self.continuation_state = self.continuation_state.or(other.continuation_state);
+    }
 }
 
 impl KnownStdTypes {

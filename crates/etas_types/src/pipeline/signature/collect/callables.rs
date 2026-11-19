@@ -21,16 +21,21 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
     for (id, item) in items {
         match item {
             HirItem::Flow(flow) => {
+                let output = flow
+                    .return_type
+                    .and_then(|ty| lower_type_ref(ctx, ty))
+                    .unwrap_or_else(|| {
+                        let variable = crate::TypeVarId(ctx.interner.store().len() as u32);
+                        ctx.interner.intern(Type::Var(variable))
+                    });
                 let signature = CallableSignature {
+                    parameter_interface: Some(crate::call_interface::source_parameters(
+                        ctx.hir,
+                        &flow.params,
+                    )),
                     generic_params: callable_generic_params(ctx, state, &flow.type_params),
                     params: lower_params(ctx, &flow.params),
-                    output: flow
-                        .return_type
-                        .and_then(|ty| lower_type_ref(ctx, ty))
-                        .unwrap_or_else(|| {
-                            let variable = crate::TypeVarId(ctx.interner.store().len() as u32);
-                            ctx.interner.intern(Type::Var(variable))
-                        }),
+                    output,
                     effects: flow.effects.as_ref().map(|row| lower_effect_row(ctx, row)),
                     requested_actions: None,
                 };
@@ -57,6 +62,10 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
                 let component = component.component;
                 let default_entry = if let Some(output_type) = agent.output_type {
                     let callable = CallableSignature {
+                        parameter_interface: Some(crate::call_interface::source_parameters(
+                            ctx.hir,
+                            &agent.params,
+                        )),
                         generic_params: Vec::new(),
                         params: lower_params(ctx, &agent.params),
                         output: lower_type_ref(ctx, output_type)
@@ -91,6 +100,10 @@ pub fn collect_callables(ctx: &mut TypePipelineContext<'_>, state: &mut Signatur
             }
             HirItem::Tool(tool) => {
                 let signature = ToolSignature {
+                    parameter_interface: Some(crate::call_interface::source_parameters(
+                        ctx.hir,
+                        &tool.params,
+                    )),
                     generic_params: callable_generic_params(ctx, state, &tool.type_params),
                     params: lower_params(ctx, &tool.params),
                     output: lower_type_ref(ctx, tool.return_type)

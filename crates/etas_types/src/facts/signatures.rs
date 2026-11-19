@@ -61,6 +61,8 @@ pub enum ItemSignature {
 )]
 pub struct CallableSignature {
     #[serde(default)]
+    pub parameter_interface: Option<Vec<crate::ParameterInterface>>,
+    #[serde(default)]
     pub generic_params: Vec<CallableGenericParam>,
     pub params: Vec<TypeId>,
     pub output: TypeId,

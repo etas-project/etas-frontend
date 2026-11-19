@@ -659,6 +659,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         method.callable_type = remapper.ty(method.callable_type);
         remapper.callable(&mut method.signature);
     }
+    for fact in facts.library_flow_calls.values_mut() {
+        fact.callable_type = remapper.ty(fact.callable_type);
+        remapper.callable(&mut fact.signature);
+    }
     for fact in facts.definition_operations.values_mut() {
         fact.contract_type = remapper.ty(fact.contract_type);
     }
@@ -790,6 +794,10 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
     }
     facts.known_std_types.result_enum = facts.known_std_types.result_enum.map(|ty| remapper.ty(ty));
     facts.known_std_types.option_enum = facts.known_std_types.option_enum.map(|ty| remapper.ty(ty));
+    facts.known_std_types.source_iterator = facts
+        .known_std_types
+        .source_iterator
+        .map(|ty| remapper.ty(ty));
     facts.known_std_types.directory_list_limit_error = facts
         .known_std_types
         .directory_list_limit_error
@@ -803,6 +811,7 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         .filesystem_io_error
         .map(|ty| remapper.ty(ty));
     facts.known_std_types.index_error = facts.known_std_types.index_error.map(|ty| remapper.ty(ty));
+    facts.known_std_types.execution.remap(|ty| remapper.ty(ty));
     facts.known_std_types.text_error = facts.known_std_types.text_error.map(|ty| remapper.ty(ty));
     facts.known_std_types.message = facts.known_std_types.message.map(|ty| remapper.ty(ty));
     for ty in facts.known_std_types.runtime_types.values_mut() {
@@ -895,6 +904,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
         remapper.item_signature(signature);
     }
     for signature in facts.std_callable_signatures.values_mut() {
+        remapper.callable(signature);
+    }
+    for signature in facts.library_callable_signatures.values_mut() {
         remapper.callable(signature);
     }
     for signature in facts.spec_signatures.values_mut() {
@@ -1074,6 +1086,7 @@ mod tests {
                 param_names: vec![],
                 generic_params: vec![],
                 methods: vec![SpecMethodFact {
+                    updating_receiver: false,
                     receiver_param: None,
                     identity: SpecMethodIdentity::External {
                         package: 1,
@@ -1082,6 +1095,7 @@ mod tests {
                     name: "show".into(),
                     parameter_names: vec!["self".into()],
                     signature: Some(CallableSignature {
+                        parameter_interface: None,
                         generic_params: vec![],
                         params: vec![input],
                         output,

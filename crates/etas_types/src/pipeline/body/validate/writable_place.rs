@@ -28,10 +28,19 @@ pub(super) fn validate(
                         return;
                     }
                 };
-                if ctx
-                    .known_std_types()
-                    .projected_field_templates(ctx.interner.store(), receiver)
-                    .is_some_and(|fields| fields.iter().any(|field| field.name == projection.field))
+                if crate::value_representation::checked_value_projection(
+                    ctx.interner.store(),
+                    &ctx.spec_facts(),
+                    receiver,
+                    &projection.field,
+                )
+                .is_some()
+                    || ctx
+                        .known_std_types()
+                        .projected_field_templates(ctx.interner.store(), receiver)
+                        .is_some_and(|fields| {
+                            fields.iter().any(|field| field.name == projection.field)
+                        })
                 {
                     ctx.diagnostics.push(Diagnostic::type_check(
                         TypeDiagnosticCode::TypeMismatch,

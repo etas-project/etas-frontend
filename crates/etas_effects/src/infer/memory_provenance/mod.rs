@@ -122,6 +122,15 @@ impl MemoryProvenance {
 fn semantic_unit(hir: &HirProgram, unit: crate::EffectUnit) -> HirSemanticUnit {
     use crate::infer::unit::{EffectAnonymousFlowBody, EffectUnit};
     match unit {
+        EffectUnit::ParameterDefault {
+            owner,
+            parameter,
+            expr,
+        } => HirSemanticUnit::ParameterDefault {
+            owner,
+            parameter,
+            expr,
+        },
         EffectUnit::Item(item) => match hir.items.get(item) {
             Some(HirItem::TopLevelLet(_)) => HirSemanticUnit::TopLevelLet(item),
             _ => HirSemanticUnit::Item(item),

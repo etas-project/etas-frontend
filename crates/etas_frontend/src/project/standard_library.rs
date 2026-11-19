@@ -3,6 +3,7 @@ use std::sync::Arc;
 mod effects;
 mod methods;
 mod owner;
+mod requests;
 
 use etas_hir::SymbolDef;
 use etas_types::{
@@ -48,6 +49,13 @@ impl StandardLibrary {
                 }
             }
         }
+        callables.extend(
+            consumer
+                .types
+                .library_flow_calls
+                .values()
+                .map(|call| call.callable.clone()),
+        );
         let mut interner = TypeInterner::from_store(consumer.type_store.as_ref().clone());
         for callable in callables {
             let scope = callable
@@ -240,6 +248,14 @@ impl StandardLibrary {
         consumer.native_instantiations = prepared_owner.plan;
         let mut calls = Vec::new();
         for application in prepared_owner.foreign_flows {
+            if let Some(selected) = consumer.types.library_flow_calls.get(&application.site) {
+                calls.push((
+                    application.site,
+                    selected.callable.clone(),
+                    application.arguments,
+                ));
+                continue;
+            }
             let Some(SymbolDef::ImportAlias { path, .. }) = consumer
                 .symbols
                 .get(application.symbol)
@@ -270,7 +286,9 @@ impl StandardLibrary {
                     .any(|method| method.identity == application.identity)
             })
             .collect::<Vec<_>>();
-        if calls.is_empty() && method_calls.is_empty() {
+        let control_types = requests::collect(consumer)?;
+        let mut request_outputs = control_types.requests;
+        if calls.is_empty() && method_calls.is_empty() && control_types.values.is_empty() {
             return Ok(self.clone());
         }
         calls.sort_by_key(|(site, _, _)| *site);
@@ -291,7 +309,13 @@ impl StandardLibrary {
         );
         let mut roots = Vec::new();
         let mut rows = Vec::new();
-        let mut request_types = Vec::new();
+        let mut request_types = control_types.values;
+        // Existential arguments carry a checked implementation even when the
+        // public callable has no generic parameter for its concrete receiver.
+        for pack in consumer.types.existential_packs.values() {
+            roots.push(pack.source_type);
+            roots.push(pack.object_type);
+        }
         for application in &method_calls {
             for argument in &application.arguments {
                 match argument {
@@ -316,6 +340,7 @@ impl StandardLibrary {
                     if let Some(signature) = &action.signature {
                         request_types.extend(signature.params.iter().copied());
                         request_types.push(signature.output);
+                        request_outputs.push(signature.output);
                     }
                     if let Some(bindings) = &action.type_bindings {
                         request_types.extend(bindings.iter().map(|(_, ty)| *ty));
@@ -325,7 +350,10 @@ impl StandardLibrary {
         }
         request_types.sort_unstable();
         request_types.dedup();
+        request_outputs.sort_unstable();
+        request_outputs.dedup();
         roots.extend(&request_types);
+        roots.extend(&request_outputs);
         let imported_methods = methods::select(source.checked_program(), &source, &target, &roots)?;
         let mut additional_specs = Vec::new();
         for method in &imported_methods {
@@ -417,6 +445,7 @@ impl StandardLibrary {
                 &source,
                 &identities,
                 &declarations,
+                &target,
                 interner.store(),
                 &control,
             )
@@ -437,6 +466,7 @@ impl StandardLibrary {
             .extend_methods_checked(&source, &method_declarations, &control)
             .map_err(|e| e.to_string())?;
         let mut seeds = base_program.native_instantiations.instances().to_vec();
+        let mut control_roots = Vec::new();
         {
             let mut relocation = TypeSubstitutionEngine::relocating_materialized(
                 TypeRelocationMaterializationInput {
@@ -449,7 +479,10 @@ impl StandardLibrary {
             .with_spec_identities(&spec_plan.mapping);
 
             for ty in request_types {
-                relocation.substitute(ty).map_err(|e| e.to_string())?;
+                control_roots.push(relocation.substitute(ty).map_err(|e| e.to_string())?);
+            }
+            for output in &mut request_outputs {
+                *output = relocation.substitute(*output).map_err(|e| e.to_string())?;
             }
             for (_, callable, application) in calls {
                 let owner = target
@@ -534,6 +567,22 @@ impl StandardLibrary {
                 });
             }
         }
+        // A source Handler can consume requests performed only by its caller.
+        // Prepare its continuation carrier in the SDK's checked type arena;
+        // its own HIR has no Perform expression for those caller result types.
+        if let Some(owner) = base_program.types.known_std_types.execution.continuation {
+            control_roots.extend(
+                request_outputs
+                    .into_iter()
+                    .map(|output| {
+                        interner.intern(etas_types::Type::Applied {
+                            constructor: etas_types::TypeConstructorId(owner.0),
+                            args: vec![output],
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
         let spec_facts = spec_plan
             .materialize(crate::code::definition::SpecMaterializationInput {
                 source: &consumer.type_store,
@@ -565,6 +614,12 @@ impl StandardLibrary {
             .methods
             .with_additional_declarations(interner.store(), method_declarations);
         let (facts, reflection_targets) = reflection_targets.with_method_index(Arc::new(methods));
+        etas_types::ty::TypeRepresentationMaterializer::with_acyclic_enum_payloads(
+            interner.store(),
+            &facts.enum_layouts,
+        )
+        .and_then(|mut representations| representations.materialize(&mut interner, control_roots))
+        .map_err(|error| error.to_string())?;
         let types = TypeOutput {
             store: base_program.type_store.clone(),
             facts: facts.clone(),

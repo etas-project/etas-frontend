@@ -81,6 +81,12 @@ fn request_target(
         ExternalCallableRequestTarget as Target, ExternalSpecMethodGenericArgument as Argument,
     };
     Ok(match target {
+        metadata::CallableRequestTarget::ParameterProjection { parameter, path } => {
+            Target::ParameterProjection {
+                parameter: parameter.clone(),
+                path: path.clone(),
+            }
+        }
         metadata::CallableRequestTarget::AgentTools(context) => {
             Target::AgentTools(type_id(context, resolver)?)
         }

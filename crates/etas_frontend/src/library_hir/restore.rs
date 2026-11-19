@@ -18,6 +18,7 @@ pub(super) fn restore(
     image: LibraryHirImage,
     root: &Path,
     registry: Arc<etas_std::StdRegistry>,
+    profile: &etas_utils::ProfileHandle,
 ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
     if image.schema != super::SCHEMA || image.compiler_version != crate::FRONTEND_COMPILER_VERSION {
         return Err(error("incompatible checked library image"));
@@ -29,6 +30,7 @@ pub(super) fn restore(
     }
     let declarations = image.declarations.clone();
     let methods = image.methods.clone();
+    let parameter_defaults = image.parameter_defaults.clone();
     let package = image.package;
     let input = ProjectInput {
         project_root: root.to_owned(),
@@ -73,8 +75,29 @@ pub(super) fn restore(
         .pass(passes::PrepareInvocationTypesPass)
         .pass(crate::code::pipeline::passes::ResolveReflectionTargetsPass)
         .pass(passes::BuildCheckedProjectPass);
-    let run =
-        crate::pipeline::run_controlled_context_pipeline(context, pipeline, false, None, None);
+    let run = crate::pipeline::run_controlled_context_pipeline(
+        context,
+        pipeline,
+        profile.is_enabled(),
+        None,
+        None,
+    );
+    for record in &run.records {
+        if let Some(timing) = &record.timing {
+            profile.counter(
+                format!("std.restore.pass.{}.duration_ns", record.pass),
+                timing.duration.as_nanos().min(u128::from(u64::MAX)) as u64,
+            );
+        }
+    }
+    if let Some(artifacts) = &run.output.effect_pipeline_artifacts {
+        for timing in &artifacts.pass_timings {
+            profile.counter(
+                format!("std.restore.{}.duration_ns", timing.pass),
+                timing.duration_ns,
+            );
+        }
+    }
     if let PassControl::Failed(failure) = run.control {
         return Err(error(failure.message));
     }
@@ -88,6 +111,11 @@ pub(super) fn restore(
     if linked.declarations != declarations || linked.methods != methods {
         return Err(error(
             "library declarations changed while restoring native provenance",
+        ));
+    }
+    if linked.parameter_defaults != parameter_defaults {
+        return Err(error(
+            "library default expression units changed while restoring checked provenance",
         ));
     }
     Ok(checked)
@@ -132,9 +160,9 @@ impl Pass<ProjectContext> for LoadLibraryFactsPass {
         let mut bodies = HirBodyBindings::default();
         for (item, slot) in image.body_slots {
             let block = match hir.items.get(item) {
-                Some(HirItem::Flow(flow)) => Some(flow.body.block()),
+                Some(HirItem::Flow(flow)) => flow.body.as_block(),
                 Some(HirItem::Tool(tool)) => match &tool.body {
-                    etas_hir::HirToolBody::Source(body) => Some(body.block()),
+                    etas_hir::HirToolBody::Source(body) => body.as_block(),
                     _ => None,
                 },
                 Some(HirItem::Agent(agent)) => agent.body.block(),

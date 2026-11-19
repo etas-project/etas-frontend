@@ -17,6 +17,25 @@ pub(super) fn overload_signatures<E>(
     else {
         return None;
     };
+    let source = ctx
+        .ctx
+        .hir
+        .items
+        .iter()
+        .filter_map(|(_, item)| match item {
+            etas_hir::HirItem::Effect(effect) => Some(effect.body.actions()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|action| ctx.ctx.hir.standard_action_targets.get(&action.symbol) == Some(&target))
+        .map(|action| match ctx.ctx.symbol_fact(action.symbol) {
+            Some(SymbolTypeFact::EffectAction { signature }) => Some(signature.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !source.is_empty() {
+        return (source.len() > 1).then(|| (target, source.into_iter().enumerate().collect()));
+    }
     let registry = ctx.ctx.std_registry.clone();
     if registry.action_declarations(target).count() < 2 {
         return None;

@@ -100,6 +100,9 @@ impl Relocation<'_> {
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
                     let origin = match *origin {
+                        CallableValueOrigin::Projection(id) => {
+                            CallableValueOrigin::Projection(self.parameter_projection(id)?)
+                        }
                         CallableValueOrigin::Existential { pack, environment } => {
                             pending.push(environment);
                             CallableValueOrigin::Existential {
@@ -295,7 +298,7 @@ impl Relocation<'_> {
                 .copied()
                 .map(EffectUnit::Item),
             EffectUnit::AnonymousFlow { .. } => self.returned_anonymous.get(&unit).copied(),
-            EffectUnit::HandlerArm { .. } => None,
+            EffectUnit::HandlerArm { .. } | EffectUnit::ParameterDefault { .. } => None,
         }
         .ok_or_else(|| invalid("captured callable has no unchanged canonical target unit"))
     }

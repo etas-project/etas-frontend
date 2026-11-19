@@ -36,6 +36,9 @@ impl ProjectMetadataProjection<'_> {
                 .ok_or_else(|| invalid("method capture has no checked parameter environment"))?;
             for origin in snapshot.parameters.values().flatten() {
                 match origin {
+                    Origin::Projection(id) => {
+                        parameters.insert(Target::Projection(*id));
+                    }
                     Origin::Parameter { symbol, .. } => {
                         parameters.insert(Target::Native(*symbol));
                     }
@@ -63,6 +66,11 @@ impl ProjectMetadataProjection<'_> {
         let scoped = self.with_identities(identities);
         let mut builder = Builder::new(&scoped, item);
         builder.method_root = true;
+        // Root carries the impl's type binders, with no runtime parameters.
+        // Method parameters belong to the callable value reserved below.
+        builder
+            .parameters
+            .insert(CallableValueScope::Root, BTreeMap::new());
         let roots = builder
             .sources(
                 &[CallableReturnSource::SourceItem(item)].into(),
@@ -101,16 +109,70 @@ impl ProjectMetadataProjection<'_> {
         let Some(roots) = builder.sources(&sources, CallableValueScope::Root, None)? else {
             return Ok(None);
         };
+        builder.root_projections =
+            builder.return_projections(summary, CallableValueScope::Root, None)?;
         builder.finish(roots)
     }
 }
 
 impl<'a, 'b> Builder<'a, 'b> {
+    fn invocation_parameters(
+        &self,
+        scope: CallableValueScope,
+        bindings: &mut Vec<etas_package_metadata::CallableValueParameterBinding>,
+    ) -> BTreeMap<etas_hir::SymbolId, u32> {
+        let roots = bindings
+            .iter()
+            .map(|binding| (binding.parameter.scope, binding.parameter.position))
+            .collect::<BTreeSet<_>>();
+        let mut symbols = BTreeMap::new();
+        for (owner, parameters) in &self.parameters {
+            if !self.scope_contains(scope, *owner) {
+                continue;
+            }
+            for (symbol, position) in parameters {
+                if !roots.contains(&(*owner, *position)) {
+                    continue;
+                }
+                let parameter = CallableValueParameter {
+                    scope: *owner,
+                    position: *position,
+                    projection: None,
+                };
+                if !bindings
+                    .iter()
+                    .any(|binding| binding.parameter == parameter)
+                {
+                    bindings.push(etas_package_metadata::CallableValueParameterBinding {
+                        label: self.parameter_label(parameter),
+                        parameter,
+                    });
+                }
+                symbols.insert(*symbol, parameter);
+            }
+        }
+        bindings.sort_by(|left, right| {
+            left.parameter
+                .cmp(&right.parameter)
+                .then(left.label.cmp(&right.label))
+        });
+        let positions = bindings
+            .iter()
+            .enumerate()
+            .map(|(position, binding)| (binding.parameter, position as u32))
+            .collect::<BTreeMap<_, _>>();
+        symbols
+            .into_iter()
+            .map(|(symbol, parameter)| (symbol, positions[&parameter]))
+            .collect()
+    }
+
     fn new(projection: &'a ProjectMetadataProjection<'b>, root: HirItemId) -> Self {
         Self {
             projection,
             root,
             identities: projection.identities,
+            parameter_projections: Default::default(),
             values: vec![],
             objects: vec![],
             native_objects: BTreeMap::new(),
@@ -132,6 +194,7 @@ impl<'a, 'b> Builder<'a, 'b> {
             .into(),
             parents: BTreeMap::new(),
             method_root: false,
+            root_projections: Vec::new(),
         }
     }
 
@@ -168,7 +231,9 @@ impl<'a, 'b> Builder<'a, 'b> {
             // recursive references never recursively embed a callable body.
             self.values[index as usize] = Some(node);
         }
-        let graph = CallableValueGraph {
+        let mut graph = CallableValueGraph {
+            source_projections: self.root_projections,
+            parameter_projections: self.parameter_projections.into_inner(),
             objects: self
                 .objects
                 .into_iter()
@@ -181,6 +246,7 @@ impl<'a, 'b> Builder<'a, 'b> {
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(|| invalid("callable graph contains an unmaterialized node"))?,
         };
+        graph.canonicalize_parameter_projections()?;
         etas_package_metadata::validate_callable_value_graph(&graph)?;
         Ok(Some(crate::package_metadata::CheckedCallableGraph {
             graph: std::sync::Arc::new(graph),
@@ -223,6 +289,7 @@ enum Pending {
 }
 
 struct Builder<'a, 'b> {
+    parameter_projections: std::cell::RefCell<Vec<Vec<etas_code::descriptor::ValueProjectionStep>>>,
     projection: &'a ProjectMetadataProjection<'b>,
     root: HirItemId,
     identities: Option<&'a crate::code::identity::DefinitionIdentityIndex>,
@@ -238,9 +305,106 @@ struct Builder<'a, 'b> {
     parameters: BTreeMap<CallableValueScope, BTreeMap<etas_hir::SymbolId, u32>>,
     parents: BTreeMap<u32, CallableValueScope>,
     method_root: bool,
+    root_projections: Vec<etas_package_metadata::CallableReturnedProjection>,
 }
 
 impl Builder<'_, '_> {
+    fn with_projection(
+        &self,
+        mut parameter: CallableValueParameter,
+        suffix: &[etas_code::descriptor::ValueProjectionStep],
+    ) -> Result<CallableValueParameter, PackageMetadataError> {
+        if suffix.is_empty() {
+            return Ok(parameter);
+        }
+        let mut paths = self.parameter_projections.borrow_mut();
+        let mut path = match parameter.projection {
+            Some(index) => paths
+                .get(index as usize)
+                .ok_or_else(|| invalid("composed parameter projection is missing"))?
+                .clone(),
+            None => Vec::new(),
+        };
+        path.extend_from_slice(suffix);
+        let position = match paths.iter().position(|existing| *existing == path) {
+            Some(position) => position,
+            None => {
+                let position = paths.len();
+                paths.push(path);
+                position
+            }
+        };
+        parameter.projection = Some(
+            u32::try_from(position)
+                .map_err(|_| invalid("composed projection index exceeds u32"))?,
+        );
+        Ok(parameter)
+    }
+
+    fn target_parameter(
+        &self,
+        target: etas_effects::ParameterCallTarget,
+        scope: CallableValueScope,
+    ) -> Result<Option<CallableValueParameter>, PackageMetadataError> {
+        match target {
+            etas_effects::ParameterCallTarget::ExternalProjection(id) => {
+                let projection = self
+                    .projection
+                    .checked
+                    .effects
+                    .external_parameter_projections
+                    .get(&id)
+                    .ok_or_else(|| invalid("exported external parameter selector is missing"))?;
+                let Some(root) = self.target_parameter(projection.root, scope)? else {
+                    return Ok(None);
+                };
+                self.with_projection(root, &projection.path).map(Some)
+            }
+            etas_effects::ParameterCallTarget::Interface(position) => {
+                Ok(Some(CallableValueParameter {
+                    scope,
+                    position,
+                    projection: None,
+                }))
+            }
+            etas_effects::ParameterCallTarget::Native(symbol) => self.parameter(symbol, scope),
+            etas_effects::ParameterCallTarget::Projection(id) => {
+                let projection = self
+                    .projection
+                    .checked
+                    .effects
+                    .parameter_projections
+                    .get(&id)
+                    .ok_or_else(|| {
+                        invalid("native parameter projection has no checked source fact")
+                    })?;
+                let Some(parameter) = self.parameter(projection.parameter, scope)? else {
+                    return Ok(None);
+                };
+                self.with_projection(parameter, &projection.path).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn parameter_label(&self, parameter: CallableValueParameter) -> String {
+        let mut label = match parameter.scope {
+            CallableValueScope::Root => format!("rp{}", parameter.position),
+            CallableValueScope::Value(value) => format!("v{value}p{}", parameter.position),
+        };
+        if let Some(projection) = parameter.projection {
+            let paths = self.parameter_projections.borrow();
+            let path = &paths[projection as usize];
+            let bytes = serde_json::to_vec(path).expect("checked projection path encoding");
+            let identity = etas_code::CodeFingerprint::of_bytes(
+                "etas.metadata.parameter-label-path.v1",
+                &bytes,
+            );
+            label.push_str(&format!("q{identity}"));
+        }
+        label
+    }
+
     fn parameter(
         &self,
         symbol: etas_hir::SymbolId,
@@ -254,6 +418,7 @@ impl Builder<'_, '_> {
                 .and_then(|params| params.get(&symbol))
             {
                 return Ok(Some(CallableValueParameter {
+                    projection: None,
                     scope,
                     position: *position,
                 }));
@@ -283,6 +448,20 @@ impl Builder<'_, '_> {
             };
         }
         false
+    }
+
+    fn unavailable_node(
+        &self,
+        index: u32,
+        reason: &str,
+    ) -> Result<Option<CallableValueNode>, PackageMetadataError> {
+        if self.method_root {
+            Err(invalid(&format!(
+                "callable node {index} has unavailable analysis: {reason}"
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
     fn node(
@@ -355,8 +534,11 @@ impl Builder<'_, '_> {
                 .ok_or_else(|| invalid("exported closure has no materialized capture analysis"))?
             {
                 etas_effects::facts::CapturedCallableAnalysis::Solved(summary) => summary.as_ref(),
-                etas_effects::facts::CapturedCallableAnalysis::Unavailable { .. } => {
-                    return Ok(None);
+                etas_effects::facts::CapturedCallableAnalysis::Unavailable { reason } => {
+                    return self.unavailable_node(
+                        index,
+                        &format!("captured callable analysis is unavailable: {reason}"),
+                    );
                 }
             }
         } else {
@@ -375,7 +557,12 @@ impl Builder<'_, '_> {
                             invalid("published agent method has no checked callable signature")
                         })?
                     }
-                    _ => return Ok(None),
+                    _ => {
+                        return self.unavailable_node(
+                            index,
+                            "source item is not a flow, tool or agent callable",
+                        );
+                    }
                 };
                 (
                     signature.params.clone(),
@@ -398,7 +585,8 @@ impl Builder<'_, '_> {
                 };
                 let Some(etas_hir::HirExpr::Lambda { params, .. }) = checked.hir.exprs.get(value)
                 else {
-                    return Ok(None);
+                    return self
+                        .unavailable_node(index, "anonymous flow does not refer to a lambda");
                 };
                 let names = params
                     .iter()
@@ -415,7 +603,10 @@ impl Builder<'_, '_> {
                     .collect::<Result<Vec<_>, _>>()?;
                 (flow.input.clone(), flow.output, names, params.clone())
             }
-            _ => return Ok(None),
+            _ => {
+                return self
+                    .unavailable_node(index, "effect unit has no callable value representation");
+            }
         };
         self.parameters.insert(
             CallableValueScope::Value(index),
@@ -425,20 +616,21 @@ impl Builder<'_, '_> {
                 .map(|(position, symbol)| (*symbol, position as u32))
                 .collect(),
         );
+        // Unknown returned payload origins do not erase the callable's checked
+        // behavior. Keep them unknown and retain independently known positions.
         let returned_sources = match sources(summary) {
-            Some(returned) => {
-                let Some(returned) = self.sources(
-                    &returned,
-                    CallableValueScope::Value(index),
-                    instance.environment,
-                )?
-                else {
-                    return Ok(None);
-                };
-                Some(returned)
-            }
+            Some(returned) => self.sources(
+                &returned,
+                CallableValueScope::Value(index),
+                instance.environment,
+            )?,
             None => None,
         };
+        let returned_projections = self.return_projections(
+            summary,
+            CallableValueScope::Value(index),
+            instance.environment,
+        )?;
         let trace_parameters = self.projection.callable_trace_parameters(summary)?;
         let mut parameter_bindings = vec![];
         let mut bound_parameters = BTreeSet::new();
@@ -454,23 +646,18 @@ impl Builder<'_, '_> {
                 // directly in the trace; they are not callable parameter labels.
                 continue;
             }
-            let etas_effects::ParameterCallTarget::Native(symbol) = target else {
-                return Ok(None);
-            };
-            let Some(parameter) = self.parameter(symbol, CallableValueScope::Value(index))? else {
-                return Ok(None);
+            let Some(parameter) =
+                self.target_parameter(target, CallableValueScope::Value(index))?
+            else {
+                return self
+                    .unavailable_node(index, "trace parameter has no exported lexical binding");
             };
             if !self.scope_contains(CallableValueScope::Value(index), parameter.scope) {
-                return Ok(None);
+                return self
+                    .unavailable_node(index, "trace parameter escapes its exported lexical scope");
             }
-            let label = match parameter.scope {
-                CallableValueScope::Root => format!("rp{}", parameter.position),
-                CallableValueScope::Value(value) => format!("v{value}p{}", parameter.position),
-            };
-            trace_labels.insert(
-                etas_effects::ParameterCallTarget::Native(symbol),
-                label.clone(),
-            );
+            let label = self.parameter_label(parameter);
+            trace_labels.insert(target, label.clone());
             if bound_parameters.insert(parameter) {
                 parameter_bindings.push(etas_package_metadata::CallableValueParameterBinding {
                     label,
@@ -478,16 +665,27 @@ impl Builder<'_, '_> {
                 });
             }
         }
+        let invocation_parameters =
+            self.invocation_parameters(CallableValueScope::Value(index), &mut parameter_bindings);
+        let invocation_projection = self
+            .projection
+            .with_invocation_parameters(invocation_parameters);
         let Some(projected) = summary::project(
-            self.projection,
+            &invocation_projection,
             summary,
             &type_names,
             &effect_names,
             &trace_labels,
-            self.method_root && index == 0,
         )?
         else {
-            return Ok(None);
+            let reason = if !summary.residual_checks.is_empty() {
+                "residual obligations need a checked callable representation"
+            } else if summary.independent_determinism.is_none() {
+                "independent determinism is unavailable"
+            } else {
+                "interpreter support is rejected"
+            };
+            return self.unavailable_node(index, reason);
         };
         Ok(Some(CallableValueNode {
             residual_checks: summary.residual_checks.iter().cloned().collect(),
@@ -528,6 +726,7 @@ impl Builder<'_, '_> {
             parameter_bindings,
             action_trace: projected.action_trace,
             returned_sources,
+            returned_projections,
         }))
     }
 }

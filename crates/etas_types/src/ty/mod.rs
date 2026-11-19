@@ -28,7 +28,8 @@ pub use graph::checked_type_graph;
 pub use nominal::{EnumTypeRef, NamedTypeRef, NominalTypeRef};
 pub(crate) use normalize::type_contains_id;
 pub use normalize::{
-    applied_representation, applied_representation_in_store, nominal_representation_parts,
+    applied_representation, applied_representation_in_store,
+    applied_representation_in_store_indexed, nominal_representation_parts,
     record_fields_with_applied_params, type_contains_named_param, type_contains_source_parameter,
 };
 pub use primitive::PrimitiveType;

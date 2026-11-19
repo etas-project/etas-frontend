@@ -28,6 +28,8 @@ impl EffectFactProjector {
             .chain(analysis.inputs.unit_effects)
             .collect();
         let mut facts = EffectFacts {
+            external_parameter_projections: analysis.inputs.external_parameter_projections,
+            parameter_projections: analysis.inputs.parameter_projections,
             external_descriptor_graphs: analysis.inputs.external_descriptor_graphs,
             handled_body_requests: analysis.inputs.handled_body_requests,
             frozen_callable_graphs: analysis.inputs.frozen_callable_graphs,
@@ -36,6 +38,9 @@ impl EffectFactProjector {
             metadata_callable_graphs: analysis.inputs.metadata_callable_graphs,
             captured_callables: analysis.inputs.captured_callables,
             native_call_targets: analysis.inputs.native_call_targets,
+            source_call_arguments: analysis.inputs.source_call_arguments,
+            dynamic_call_sources: analysis.inputs.dynamic_call_sources,
+            iteration_call_sources: analysis.inputs.iteration_call_sources,
             metadata_call_targets: analysis.inputs.metadata_call_targets,
             generic_effect_rows: analysis.inputs.generic_effect_rows,
             callable_environments: analysis.inputs.callable_environments,
@@ -64,7 +69,14 @@ impl EffectFactProjector {
             &mut diagnostics,
             &mut latent_realizations,
         )?;
-        materialize_task_calls(hir, types, registry, &mut facts, &mut diagnostics)?;
+        materialize_task_calls(
+            hir,
+            types,
+            registry,
+            &mut facts,
+            &mut diagnostics,
+            reachable_items,
+        )?;
 
         for (item, hir_item) in hir.items.iter() {
             if reachable_items.is_some_and(|reachable| !reachable.contains(&item)) {
@@ -147,22 +159,102 @@ fn materialize_task_calls(
     registry: &EffectRegistry,
     facts: &mut EffectFacts,
     diagnostics: &mut Vec<Diagnostic>,
+    reachable_items: Option<&std::collections::BTreeSet<HirItemId>>,
 ) -> Result<(), EffectPipelineError> {
     use etas_hir::{HirExpr, HirNodeRef, ResolveResult};
 
     let view = hir.view();
+    let scoped_callbacks = hir
+        .exprs
+        .iter()
+        .filter_map(|(call, _)| {
+            let args = etas_types::task_scope::arguments(
+                hir,
+                &types.facts,
+                call,
+                types.facts.checked_method_calls.get(&call),
+            );
+            (!args.is_empty()).then_some((call, args))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     let run_callbacks = types
         .facts
         .std_intrinsic_calls
         .iter()
         .filter(|(_, fact)| fact.intrinsic == etas_std::intrinsic::task::RUN)
         .filter_map(|(call, _)| argument(hir, *call, 0))
+        .chain(
+            types
+                .facts
+                .checked_method_calls
+                .iter()
+                .filter_map(|(call, fact)| {
+                    (etas_types::method::execution_role(hir, &types.facts, &fact.target)
+                        == Some(etas_std::StdExecutionRole::ScopeEnter))
+                    .then(|| etas_types::method::argument_expression(hir, *call, fact, 1))
+                    .flatten()
+                }),
+        )
+        .chain(scoped_callbacks.values().flatten().copied())
         .collect::<std::collections::HashSet<_>>();
 
-    for (call, intrinsic) in &types.facts.std_intrinsic_calls {
-        let Some(kind) = task_call_kind(intrinsic.intrinsic) else {
+    let source_starts = hir
+        .exprs
+        .iter()
+        .filter_map(|(call, _)| {
+            (etas_types::source_execution::call_target(hir, &types.facts, call)
+                == Some(etas_std::StdExecutionRole::TaskStart))
+            .then_some(call)
+        })
+        .collect::<Vec<_>>();
+    let source_transfers = types
+        .facts
+        .checked_method_calls
+        .iter()
+        .filter_map(|(call, fact)| {
+            let kind = match etas_types::method::execution_role(hir, &types.facts, &fact.target)? {
+                etas_std::StdExecutionRole::Requeue => crate::TaskCallKind::Requeue,
+                etas_std::StdExecutionRole::Park => crate::TaskCallKind::Park,
+                etas_std::StdExecutionRole::ScopeEnter => crate::TaskCallKind::Run,
+                _ => return None,
+            };
+            Some((call, kind, Some(fact)))
+        });
+    let calls = types
+        .facts
+        .std_intrinsic_calls
+        .iter()
+        .filter_map(|(call, intrinsic)| Some((call, task_call_kind(intrinsic.intrinsic)?, None)))
+        .chain(source_transfers)
+        .chain(
+            source_starts
+                .iter()
+                .map(|call| (call, crate::TaskCallKind::Start, None)),
+        )
+        .chain(
+            scoped_callbacks
+                .keys()
+                .filter(|call| {
+                    !types
+                        .facts
+                        .checked_method_calls
+                        .get(call)
+                        .is_some_and(|fact| {
+                            etas_types::method::execution_role(hir, &types.facts, &fact.target)
+                                == Some(etas_std::StdExecutionRole::ScopeEnter)
+                        })
+                })
+                .map(|call| (call, crate::TaskCallKind::Run, None)),
+        );
+    for (call, kind, source_transfer) in calls {
+        if reachable_items.is_some_and(|reachable| {
+            hir.index()
+                .expr_item
+                .get(call)
+                .is_some_and(|owner| !reachable.contains(owner))
+        }) {
             continue;
-        };
+        }
         let span = hir
             .exprs
             .get(*call)
@@ -184,8 +276,16 @@ fn materialize_task_calls(
             ));
             continue;
         };
+        let argument_at = |index| match source_transfer {
+            Some(fact) => etas_types::method::argument_expression(hir, *call, fact, index as u32),
+            None => argument(hir, *call, index),
+        };
         let job = match kind {
-            crate::TaskCallKind::Run | crate::TaskCallKind::Start => argument(hir, *call, 0),
+            crate::TaskCallKind::Run if scoped_callbacks.contains_key(call) => {
+                scoped_callbacks[call].first().copied()
+            }
+            crate::TaskCallKind::Run if source_transfer.is_some() => argument_at(1),
+            crate::TaskCallKind::Run | crate::TaskCallKind::Start => argument_at(0),
             crate::TaskCallKind::MapConcurrent => call_arguments(hir, *call).last().copied(),
             _ => None,
         };
@@ -204,8 +304,9 @@ fn materialize_task_calls(
                 .or_else(|| task_owner_scope(view.index(), hir, *call, &run_callbacks)),
             _ => task_owner_scope(view.index(), hir, *call, &run_callbacks),
         };
-        let Some(owner_scope) =
-            owner_scope.or_else(|| hir.native_binding_owner(*call).map(|flow| flow.scope))
+        let Some(owner_scope) = owner_scope
+            .or_else(|| source_transfer.and_then(|_| view.enclosing_scope(HirNodeRef::Expr(*call))))
+            .or_else(|| hir.native_binding_owner(*call).map(|flow| flow.scope))
         else {
             diagnostics.push(Diagnostic::effect_check(
                 EffectDiagnosticCode::IncompleteEffectFacts,
@@ -233,8 +334,8 @@ fn materialize_task_calls(
             crate::TaskCallKind::Park => Some(2),
             _ => None,
         };
-        let Some(continuation) = continuation_index.and_then(|index| argument(hir, *call, index))
-        else {
+
+        let Some(continuation) = continuation_index.and_then(argument_at) else {
             continue;
         };
         let Some(HirExpr::Path(path)) = hir.exprs.get(continuation) else {
@@ -249,7 +350,7 @@ fn materialize_task_calls(
         let target = match kind {
             crate::TaskCallKind::Requeue => crate::TransferTarget::Requeue,
             crate::TaskCallKind::Park => {
-                let Some(task) = argument(hir, *call, 1) else {
+                let Some(task) = argument_at(1) else {
                     continue;
                 };
                 crate::TransferTarget::Park { task }
@@ -334,9 +435,17 @@ fn collect_task_effects(
     if !visited.insert(ty) {
         return;
     }
+    if let Some(task) =
+        etas_types::source_execution::task(&types.store, &types.facts.known_std_types, ty)
+    {
+        effects.union_assign(&row_from_type_ref(registry, task.effects));
+        return;
+    }
     match types.store.get(ty) {
-        Some(etas_types::Type::Task(task)) => {
-            effects.union_assign(&row_from_type_ref(registry, &task.effects));
+        Some(etas_types::Type::Applied { args, .. }) => {
+            for item in args {
+                collect_task_effects(types, registry, *item, effects, visited);
+            }
         }
         Some(etas_types::Type::Function(flow)) => {
             if let Some(row) = &flow.effects {
@@ -435,6 +544,7 @@ fn task_owner_scope(
             | HirBodyKind::Agent
             | HirBodyKind::TopLevelLet
             | HirBodyKind::ImplFlow(_)
+            | HirBodyKind::ParameterDefault { .. }
             | HirBodyKind::AnnotationArg { .. } => return None,
         };
     }

@@ -21,10 +21,11 @@ impl NativeInstantiationPlan {
         self.instances.push(instance);
     }
 
-    pub(crate) fn checked_instance(
+    pub(crate) fn checked_instance_with_owner_bindings(
         &self,
         owner: etas_hir::HirItemId,
         arguments: &[CallableGenericArg],
+        owner_bindings: Option<&[(TypeId, TypeId)]>,
     ) -> Result<Option<&NativeInstantiation>, String> {
         if !self.instances.is_empty() && self.by_hash.is_empty() {
             return Err("native application index is missing".into());
@@ -44,6 +45,15 @@ impl NativeInstantiationPlan {
                 .get(*position)
                 .ok_or("native application index references a missing instance")?;
             if instance.owner != owner || instance.arguments.len() != arguments.len() {
+                continue;
+            }
+            if let Some(bindings) = owner_bindings
+                && (bindings.len() != instance.owner_bindings.len()
+                    || instance
+                        .owner_bindings
+                        .iter()
+                        .any(|binding| !bindings.contains(binding)))
+            {
                 continue;
             }
             let equal = instance
@@ -152,8 +162,11 @@ mod tests {
             bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
         assert_eq!(consumed, bytes.len());
         assert_eq!(
-            restored.checked_instance(owner, &arguments).unwrap(),
-            plan.checked_instance(owner, &arguments).unwrap()
+            restored
+                .checked_instance_with_owner_bindings(owner, &arguments, None)
+                .unwrap(),
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .unwrap()
         );
     }
 
@@ -169,10 +182,20 @@ mod tests {
         });
         let hash = application_hash(owner, 1, [Argument::Type(TypeId(3))].into_iter());
         plan.by_hash.insert(hash, vec![0]);
-        assert!(plan.checked_instance(owner, &arguments).unwrap().is_none());
+        assert!(
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .unwrap()
+                .is_none()
+        );
         plan.by_hash.insert(hash, vec![1]);
-        assert!(plan.checked_instance(owner, &arguments).is_err());
+        assert!(
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .is_err()
+        );
         plan.by_hash.clear();
-        assert!(plan.checked_instance(owner, &arguments).is_err());
+        assert!(
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .is_err()
+        );
     }
 }

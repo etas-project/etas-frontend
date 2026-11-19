@@ -8,6 +8,7 @@ use etas_package_metadata::{CallableValueScope, CallableValueSource};
 use etas_types::{Assignable, TypeRelation};
 use std::collections::BTreeMap;
 
+#[derive(Clone, Copy)]
 pub(super) struct MetadataCallBindings<'a> {
     pub key: Option<etas_code::CodeFingerprint>,
     pub scope: CallableValueScope,
@@ -43,6 +44,7 @@ impl EffectSemantics<'_> {
                     crate::ParameterCallTarget::Graph {
                         graph,
                         parameter: etas_package_metadata::CallableValueParameter {
+                            projection: None,
                             scope: CallableValueScope::Root,
                             position: position as u32,
                         },
@@ -194,6 +196,7 @@ impl EffectSemantics<'_> {
             })
             .filter_map(|binding| {
                 let ty = *checked.params.get(binding.parameter.position as usize)?;
+                let ty = etas_types::value_projection::project_indexed(&self.types.store, &self.types.facts, self.type_lookup(), ty, graph.projection_path(binding.parameter).ok()?).ok()??;
                 let Some(etas_types::Type::Function(function)) = self.types.store.get(ty) else {
                     return None;
                 };
@@ -295,7 +298,7 @@ impl EffectSemantics<'_> {
         let applied_implementation = mode != CallableSummaryMode::Descriptor
             && self.implementation_graphs.contains_key(&source.graph)
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)];
-        let own_parameters = node
+        let mut own_parameters = node
             .parameter_bindings
             .iter()
             .filter(|binding| {
@@ -343,6 +346,7 @@ impl EffectSemantics<'_> {
                 parameters: Some(&type_parameters),
                 rows: &rows,
             },
+            &mut own_parameters,
         )?;
         let bindings = bindings
             .into_iter()
@@ -391,15 +395,15 @@ impl EffectSemantics<'_> {
         }
     }
 
-    pub(super) fn record_metadata_sources(
+    pub(super) fn metadata_value_sources(
         &self,
         context: MetadataCallBindings<'_>,
         sources: &[CallableValueSource],
-        state: &mut EffectState,
+        state: &EffectState,
         output: HirExprId,
-    ) -> Result<(), EffectSpecializationError> {
+    ) -> Result<BTreeSet<LatentSource>, EffectSpecializationError> {
         if sources.is_empty() {
-            return Err(EffectSpecializationError::InvalidCallableReturnSources);
+            return Ok(BTreeSet::new());
         }
         let (key, environment, environment_id) =
             self.bind_metadata_environment(context, state, output)?;
@@ -445,10 +449,95 @@ impl EffectSemantics<'_> {
                 }
             }
         }
+        Ok(found)
+    }
+
+    pub(super) fn record_metadata_sources(
+        &self,
+        context: MetadataCallBindings<'_>,
+        sources: &[CallableValueSource],
+        state: &mut EffectState,
+        output: HirExprId,
+    ) -> Result<(), EffectSpecializationError> {
+        if sources.is_empty() {
+            return Err(EffectSpecializationError::InvalidCallableReturnSources);
+        }
+        let found = self.metadata_value_sources(context, sources, state, output)?;
         state
             .local_latent_values
             .record_value_sources(output, found);
         Ok(())
+    }
+
+    pub(super) fn record_metadata_projections(
+        &self,
+        context: MetadataCallBindings<'_>,
+        projections: &[etas_package_metadata::CallableReturnedProjection],
+        state: &mut EffectState,
+        output: HirExprId,
+    ) -> Result<(), EffectSpecializationError> {
+        for projection in projections {
+            let found = match &projection.sources {
+                Some(sources) => self.metadata_value_sources(context, sources, state, output)?,
+                None => BTreeSet::from([LatentSource::Unavailable { expr: output }]),
+            };
+            let key = (output, projection.path.clone());
+            state
+                .local_latent_values
+                .value_projections
+                .entry(key.clone())
+                .or_default()
+                .extend(found.iter().copied());
+            if projection.sources.is_some() {
+                self.discovered_call_results
+                    .borrow_mut()
+                    .value_projections
+                    .entry(key)
+                    .or_default()
+                    .extend(found);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn metadata_return_projection(
+        &self,
+        source: crate::MetadataCallableSource,
+        path: &[etas_code::descriptor::ValueProjectionStep],
+        state: &EffectState,
+        application: HirExprId,
+    ) -> Option<BTreeSet<LatentSource>> {
+        let (_, node, _) = self.metadata_callable(source)?;
+        if !node.params.is_empty() {
+            return None;
+        }
+        let (sources, suffix) = if path.is_empty() {
+            (node.returned_sources.as_ref()?, &[][..])
+        } else {
+            let projection = node
+                .returned_projections
+                .iter()
+                .filter(|projection| path.starts_with(&projection.path))
+                .max_by_key(|projection| projection.path.len())?;
+            (projection.sources.as_ref()?, &path[projection.path.len()..])
+        };
+        let found = self
+            .metadata_value_sources(
+                MetadataCallBindings {
+                    key: Some(source.graph),
+                    scope: CallableValueScope::Value(source.value),
+                    environment: source.environment,
+                    arguments: &[],
+                    generics: &[],
+                    type_bindings: &[],
+                    effect_row_bindings: &[],
+                },
+                sources,
+                state,
+                application,
+            )
+            .ok()?;
+        self.project_value_origins(&found, suffix, state, application)
     }
 
     pub(super) fn record_applied_metadata_method_returns(
@@ -465,6 +554,20 @@ impl EffectSemantics<'_> {
         if !self.expr_type_contains_flow(call) && !self.expr_type_has_parameters(call) {
             return Ok(());
         }
+        self.record_metadata_projections(
+            MetadataCallBindings {
+                key: Some(source.graph),
+                scope: CallableValueScope::Value(source.value),
+                environment: source.environment,
+                arguments: &[],
+                generics: &[],
+                type_bindings: &[],
+                effect_row_bindings: &[],
+            },
+            &node.returned_projections,
+            state,
+            call,
+        )?;
         if let Some(returned) = &node.returned_sources {
             // Receiver, callback and generic arguments are already captured by
             // the checked method application, not a second invocation here.
@@ -482,15 +585,42 @@ impl EffectSemantics<'_> {
                 state,
                 call,
             )?;
-        } else if self.expr_type_contains_flow(call) {
+        } else if self.is_typed_flow_expr(call) {
             return Err(EffectSpecializationError::InvalidCallableEnvironment {
                 reason: format!(
                     "metadata method {} has no checked callable return origins",
                     source.value
                 ),
             });
+        } else {
+            self.record_metadata_aggregate_sources(call, state);
         }
         Ok(())
+    }
+
+    fn record_metadata_aggregate_sources(&self, call: HirExprId, state: &mut EffectState) {
+        let Some(paths) = self
+            .types
+            .facts
+            .expr_types
+            .get(&call)
+            .and_then(|ty| self.value_payload_paths(*ty))
+        else {
+            return;
+        };
+        if paths.is_empty() {
+            return;
+        }
+        let mut sources = BTreeSet::new();
+        for path in paths {
+            sources.extend(
+                self.projected_sources(call, &path, state)
+                    .unwrap_or_else(|| BTreeSet::from([LatentSource::Unavailable { expr: call }])),
+            );
+        }
+        state
+            .local_latent_values
+            .record_value_sources(call, sources);
     }
 
     fn bind_metadata_environment(
@@ -564,12 +694,48 @@ impl EffectSemantics<'_> {
                 crate::ParameterCallTarget::Graph {
                     graph: key,
                     parameter: etas_package_metadata::CallableValueParameter {
+                        projection: None,
                         scope: context.scope,
                         position: position as u32,
                     },
                 },
                 origins,
             );
+        }
+        let (graph, _, _, _) = self
+            .callable_graph(key)
+            .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
+        // An already applied method supplies its captured environment and no
+        // second argument list. Keep those checked projection bindings intact.
+        if !graph.parameter_projections.is_empty() && !context.arguments.is_empty() {
+            for parameter in graph.parameter_references() {
+                if parameter.scope != context.scope || parameter.projection.is_none() {
+                    continue;
+                }
+                let expr = *context
+                    .arguments
+                    .get(parameter.position as usize)
+                    .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
+                let path = graph
+                    .projection_path(parameter)
+                    .map_err(
+                        |error| EffectSpecializationError::InvalidCallableEnvironment {
+                            reason: error.to_string(),
+                        },
+                    )?
+                    .to_vec();
+                let origins = self.trace_argument_origins(
+                    &super::specialize::TraceArgumentBinding::ProjectedExpression { expr, path },
+                    state,
+                )?;
+                environment.parameters.insert(
+                    crate::ParameterCallTarget::Graph {
+                        graph: key,
+                        parameter,
+                    },
+                    origins,
+                );
+            }
         }
         let environment_id = if environment.parameters.is_empty() && environment.generics.is_empty()
         {
@@ -647,10 +813,13 @@ impl EffectSemantics<'_> {
         let type_parameters = self.metadata_environment_type_parameters(source)?;
         let substitutions = types.iter().cloned().collect();
         let type_rows = self.type_row_arguments(&rows, state.owner)?;
-        let mut substitution =
-            etas_types::TypeSubstitutionEngine::existing(&self.types.store, &substitutions)
-                .with_type_parameters(&type_parameters)
-                .with_effect_arguments(&type_rows);
+        let mut substitution = etas_types::TypeSubstitutionEngine::existing_indexed(
+            &self.types.store,
+            self.type_lookup(),
+            &substitutions,
+        )
+        .with_type_parameters(&type_parameters)
+        .with_effect_arguments(&type_rows);
         let params = checked
             .params
             .iter()
@@ -685,6 +854,7 @@ impl EffectSemantics<'_> {
             .map(|position| crate::ParameterCallTarget::Graph {
                 graph: source.graph,
                 parameter: etas_package_metadata::CallableValueParameter {
+                    projection: None,
                     scope: CallableValueScope::Value(source.value),
                     position: position as u32,
                 },
@@ -726,6 +896,20 @@ impl EffectSemantics<'_> {
                 });
             }
         }
+        self.record_metadata_projections(
+            MetadataCallBindings {
+                key: Some(source.graph),
+                scope: CallableValueScope::Value(source.value),
+                environment: source.environment,
+                arguments: &arguments,
+                generics: &generics,
+                type_bindings: &call_types,
+                effect_row_bindings: &call_rows,
+            },
+            &node.returned_projections,
+            state,
+            site.call,
+        )?;
         if let Some(returned) = &node.returned_sources
             && (self.expr_type_contains_flow(site.call) || self.expr_type_has_parameters(site.call))
         {
@@ -747,6 +931,8 @@ impl EffectSemantics<'_> {
             state
                 .local_latent_values
                 .record_value_sources(site.call, [LatentSource::Unavailable { expr: site.call }]);
+        } else {
+            self.record_metadata_aggregate_sources(site.call, state);
         }
         Ok(summary)
     }
@@ -826,7 +1012,11 @@ mod tests {
         .into();
         let target = |graph, scope| crate::ParameterCallTarget::Graph {
             graph,
-            parameter: etas_package_metadata::CallableValueParameter { scope, position: 0 },
+            parameter: etas_package_metadata::CallableValueParameter {
+                projection: None,
+                scope,
+                position: 0,
+            },
         };
         assert!(is_captured_parameter(
             target(graph, CallableValueScope::Root),

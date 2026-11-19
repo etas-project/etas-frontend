@@ -101,6 +101,9 @@ impl EffectSemantics<'_> {
                     ResolveResult::PartiallyResolved(partial) => partial.resolved_prefix?,
                     ResolveResult::Unresolved | ResolveResult::Ambiguous(_) => return None,
                 };
+                if let Some(sources) = self.known_projection_sources(state, expr, &[]) {
+                    return Some(sources.into_iter().collect());
+                }
                 if self.checked_empty_constructor_value(expr, symbol) {
                     return Some(Vec::new());
                 }
@@ -114,6 +117,20 @@ impl EffectSemantics<'_> {
                     }
                     None => return None,
                 };
+                if let ResolveResult::PartiallyResolved(partial) = &path.resolution {
+                    let fields = partial
+                        .remaining
+                        .iter()
+                        .cloned()
+                        .map(etas_code::descriptor::ValueProjectionStep::Field)
+                        .collect::<Vec<_>>();
+                    if !fields.is_empty()
+                        && let Some(selected) =
+                            self.project_parameter_origins(sources.iter().copied(), &fields)
+                    {
+                        sources = selected.into_iter().collect();
+                    }
+                }
                 if self.types.facts.generic_instantiations.contains_key(&expr) {
                     for source in &mut sources {
                         if let LatentSource::Unit(unit) = *source {
@@ -175,9 +192,31 @@ impl EffectSemantics<'_> {
                     }
                 }))
             }
-            HirExpr::Try { expr: base, .. }
-            | HirExpr::Index { base, .. }
-            | HirExpr::Field { base, .. } => self.latent_sources_for_expr(state, *base),
+            HirExpr::Field { base, field, .. } => self
+                .projected_sources(
+                    *base,
+                    &[etas_code::descriptor::ValueProjectionStep::Field(
+                        field.clone(),
+                    )],
+                    state,
+                )
+                .map(|sources| sources.into_iter().collect())
+                .or_else(|| self.latent_sources_for_expr(state, *base)),
+            HirExpr::Index { base, .. } => {
+                let step = match self
+                    .types
+                    .facts
+                    .expr_types
+                    .get(base)
+                    .and_then(|ty| self.types.store.get(*ty))
+                {
+                    Some(Type::Map { .. }) => etas_code::descriptor::ValueProjectionStep::MapValue,
+                    _ => etas_code::descriptor::ValueProjectionStep::SequenceElement,
+                };
+                self.projected_sources(*base, &[step], state)
+                    .map(|sources| sources.into_iter().collect())
+            }
+            HirExpr::Try { expr: base, .. } => self.latent_sources_for_expr(state, *base),
             HirExpr::Call { callee, args, .. }
                 if !self.latent_payload_arguments(*callee).is_empty() =>
             {
@@ -221,7 +260,7 @@ impl EffectSemantics<'_> {
         expr: HirExprId,
     ) -> Option<Vec<LatentSource>> {
         self.latent_sources_for_expr(state, expr).or_else(|| {
-            self.expr_type_contains_flow(expr)
+            (self.expr_type_contains_flow(expr) || self.expr_type_has_parameters(expr))
                 .then(|| vec![LatentSource::Unavailable { expr }])
         })
     }
@@ -260,6 +299,9 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return false;
         };
+        let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+            return false;
+        };
         self.checked_enum_constructor(symbol)
             || self.hir.symbols.get(symbol).is_some_and(|symbol| {
                 matches!(
@@ -276,40 +318,112 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         pat: HirPatId,
         sources: Vec<LatentSource>,
+        value: Option<HirExprId>,
     ) -> Result<(), &'static str> {
-        let mut pending = vec![pat];
-        while let Some(pat) = pending.pop() {
+        use etas_code::descriptor::ValueProjectionStep as Step;
+        for (symbol, path) in self.pattern_projection_bindings(pat)? {
+            let selected = if path
+                .iter()
+                .any(|step| matches!(step, Step::TupleElement(_)))
+            {
+                value
+                    .and_then(|value| self.projected_sources(value, &path, state))
+                    .or_else(|| self.project_parameter_origins(sources.iter().copied(), &path))
+                    .map(|sources| sources.into_iter().collect::<Vec<_>>())
+                    .unwrap_or_else(|| sources.clone())
+            } else {
+                sources.clone()
+            };
+            if self.symbol_type_contains_flow(symbol)
+                || self
+                    .symbol_value_type(symbol)
+                    .is_some_and(|ty| self.type_has_parameters(ty))
+                || self
+                    .symbol_value_type(symbol)
+                    .is_some_and(|ty| self.symbolic_contract_value(ty, &selected))
+            {
+                state
+                    .local_latent_values
+                    .record_symbol_sources(symbol, selected);
+                if let Some(value) = value {
+                    self.record_symbol_projections(state, symbol, value, &path);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn pattern_projection_bindings(
+        &self,
+        pat: HirPatId,
+    ) -> Result<
+        Vec<(
+            etas_hir::SymbolId,
+            Vec<etas_code::descriptor::ValueProjectionStep>,
+        )>,
+        &'static str,
+    > {
+        use etas_code::descriptor::ValueProjectionStep as Step;
+        let mut bindings = Vec::new();
+        let mut pending = vec![(pat, Vec::<Step>::new())];
+        while let Some((pat, path)) = pending.pop() {
             let pat_data = self
                 .hir
                 .pats
                 .get(pat)
                 .ok_or("callable pattern has no checked HIR node")?;
             match pat_data {
-                HirPat::Binding { symbol, .. } => {
-                    if self.symbol_type_contains_flow(*symbol)
-                        || self
-                            .symbol_value_type(*symbol)
-                            .is_some_and(|ty| self.symbolic_contract_value(ty, &sources))
-                    {
-                        state
-                            .local_latent_values
-                            .record_symbol_sources(*symbol, sources.clone());
+                HirPat::Binding { symbol, .. } => bindings.push((*symbol, path)),
+                HirPat::Tuple { elems, .. } => {
+                    for (position, pat) in elems.iter().enumerate() {
+                        let mut field = path.clone();
+                        field.push(Step::TupleElement(position as u32));
+                        pending.push((*pat, field));
                     }
                 }
-                HirPat::Tuple { elems, .. } | HirPat::Variant { args: elems, .. } => {
-                    pending.extend(elems)
+                HirPat::ListCons { head, tail, .. } => {
+                    let mut head_path = path.clone();
+                    head_path.push(Step::ListHead);
+                    let mut tail_path = path;
+                    tail_path.push(Step::ListTail);
+                    pending.extend([(*head, head_path), (*tail, tail_path)]);
+                }
+                HirPat::Variant {
+                    path: variant,
+                    args,
+                    ..
+                } => {
+                    let name = variant
+                        .segments
+                        .last()
+                        .ok_or("variant pattern has no checked name")?
+                        .name
+                        .clone();
+                    for (position, pat) in args.iter().enumerate() {
+                        let mut field = path.clone();
+                        field.push(Step::VariantPayload {
+                            variant: name.clone(),
+                            position: position as u32,
+                        });
+                        pending.push((*pat, field));
+                    }
                 }
                 HirPat::Record { fields, .. } => {
                     for field in fields {
                         if let Some(pat) = field.pat {
-                            pending.push(pat);
+                            let mut field_path = path.clone();
+                            field_path.push(Step::Field(field.name.clone()));
+                            pending.push((pat, field_path));
                         }
                     }
                 }
-                HirPat::Wildcard { .. } | HirPat::Literal(_) | HirPat::Error { .. } => {}
+                HirPat::EmptyList { .. }
+                | HirPat::Wildcard { .. }
+                | HirPat::Literal(_)
+                | HirPat::Error { .. } => {}
             }
         }
-        Ok(())
+        Ok(bindings)
     }
 
     pub(crate) fn top_level_anonymous_flow_unit(&self, item: HirItemId) -> Option<EffectUnit> {
@@ -370,6 +484,9 @@ impl EffectSemantics<'_> {
         };
         match pat {
             HirPat::Binding { symbol: bound, .. } => *bound == symbol,
+            HirPat::ListCons { head, tail, .. } => {
+                self.pat_binds_symbol(*head, symbol) || self.pat_binds_symbol(*tail, symbol)
+            }
             HirPat::Tuple { elems, .. } | HirPat::Variant { args: elems, .. } => {
                 elems.iter().any(|pat| self.pat_binds_symbol(*pat, symbol))
             }
@@ -377,7 +494,10 @@ impl EffectSemantics<'_> {
                 .iter()
                 .filter_map(|field| field.pat)
                 .any(|pat| self.pat_binds_symbol(pat, symbol)),
-            HirPat::Wildcard { .. } | HirPat::Literal(_) | HirPat::Error { .. } => false,
+            HirPat::EmptyList { .. }
+            | HirPat::Wildcard { .. }
+            | HirPat::Literal(_)
+            | HirPat::Error { .. } => false,
         }
     }
 
@@ -560,11 +680,7 @@ impl EffectSemantics<'_> {
 
     pub(crate) fn type_contains_flow(&self, ty: etas_types::TypeId) -> bool {
         self.latent_type_shapes
-            .get_or_init(|| {
-                super::latent_shape::LatentTypeShapes::build(self.types, |ty| {
-                    self.descriptor_contract_type(ty).is_some()
-                })
-            })
+            .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))
             .contains(ty)
     }
 
@@ -578,11 +694,7 @@ impl EffectSemantics<'_> {
 
     pub(super) fn type_has_parameters(&self, ty: TypeId) -> bool {
         self.latent_type_shapes
-            .get_or_init(|| {
-                super::latent_shape::LatentTypeShapes::build(self.types, |ty| {
-                    self.descriptor_contract_type(ty).is_some()
-                })
-            })
+            .get_or_init(|| super::latent_shape::LatentTypeShapes::build(self.types))
             .has_parameters(ty)
     }
 

@@ -139,3 +139,59 @@ flow main() -> unit {
     assert!(summary.escaping_effects.effects.is_empty());
     assert!(summary.escaping_effects.open.is_none());
 }
+
+#[test]
+fn source_default_handler_rows_are_owned_by_actions_and_removed_by_explicit_handlers() {
+    let output = Frontend.check_project(ProjectInput::single_source(SourceInput::anonymous(
+        r#"
+module app;
+public effect Device {
+    @default_handler
+    action write(text: string) -> unit ![Error<IOError>];
+    @default_handler
+    action count() -> i32 ![];
+}
+public flow write() -> unit ![Error<IOError>] {
+    perform Device.write("hello");
+}
+flow main() -> unit ![] {
+    handle { write(); perform Device.count(); } with {
+        Device.write(_) => { resume; }
+        Device.count() => { resume 7; }
+    };
+}
+"#,
+    )));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let row_sizes = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(_, item)| {
+            let HirItem::Effect(effect) = item else {
+                return None;
+            };
+            Some(
+                effect
+                    .body
+                    .actions()
+                    .iter()
+                    .map(|action| {
+                        checked.types.action_signatures[&action.symbol]
+                            .default_handler_effects
+                            .as_ref()
+                            .unwrap()
+                            .effects
+                            .len()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap();
+    assert_eq!(row_sizes, [1, 0]);
+    let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
+    assert!(summary.escaping_effects.is_empty());
+    assert!(summary.default_actions.is_empty());
+    assert_eq!(summary.requested_actions.effects.len(), 2);
+}

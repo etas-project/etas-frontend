@@ -48,6 +48,7 @@ pub fn collect_perform<E>(
                 continue;
             };
             let callable = crate::CallableSignature {
+                parameter_interface: signature.parameter_interface.clone(),
                 generic_params: signature.generic_params,
                 params: signature.params,
                 output: signature.output,
@@ -129,7 +130,14 @@ pub fn collect_perform<E>(
         return Ok(ctx.primitive(PrimitiveType::Never));
     };
 
-    if signature.params.len() != args.len() {
+    let argument_binding = super::call::bind_declared_arguments(
+        ctx,
+        expr,
+        signature.parameter_interface.as_deref(),
+        args,
+        span,
+    );
+    if argument_binding.is_none() && signature.params.len() != args.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::WrongArgumentCount,
             span,
@@ -143,7 +151,10 @@ pub fn collect_perform<E>(
 
     let mut arg_types = Vec::with_capacity(args.len());
     for (index, arg) in args.iter().enumerate() {
-        let expected_arg = signature.params.get(index).copied();
+        let slot = argument_binding
+            .as_ref()
+            .map_or(index, |binding| binding.argument_slots[index] as usize);
+        let expected_arg = signature.params.get(slot).copied();
         let actual = collect_arg(ctx, arg, expected_arg)?;
         arg_types.push(actual);
     }
@@ -177,6 +188,7 @@ pub fn collect_perform<E>(
         })
         .collect();
     ctx.emit(TypeConstraint::Callable {
+        argument_slots: argument_binding.map(|binding| binding.argument_slots),
         call: Some(expr),
         callee,
         generic_params: signature.generic_params,

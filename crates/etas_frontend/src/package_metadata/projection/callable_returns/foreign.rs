@@ -46,6 +46,30 @@ impl Builder<'_, '_> {
         })
     }
 
+    pub(super) fn foreign_parameter(
+        &self,
+        graph: etas_code::CodeFingerprint,
+        parameter: CallableValueParameter,
+        scope: CallableValueScope,
+    ) -> Result<CallableValueParameter, PackageMetadataError> {
+        let source = self
+            .projection
+            .checked
+            .effects
+            .metadata_callable_graphs
+            .get(&graph)
+            .ok_or_else(|| invalid("foreign parameter projection has no checked graph"))?;
+        let path = source.graph.projection_path(parameter)?;
+        self.with_projection(
+            CallableValueParameter {
+                scope,
+                position: parameter.position,
+                projection: None,
+            },
+            path,
+        )
+    }
+
     pub(super) fn foreign_node(
         &mut self,
         index: u32,
@@ -155,95 +179,120 @@ impl Builder<'_, '_> {
             }
         }
         let scope = CallableValueScope::Value(index);
-        let returned_sources = if let Some(returned) = &node.returned_sources {
-            let mut output = BTreeSet::new();
-            for source in returned {
-                match *source {
-                    CallableValueSource::Existential(object) => {
-                        output.insert(CallableValueSource::Existential(
-                            self.reserve_foreign_object(ForeignObjectInstance {
-                                source: etas_effects::MetadataObjectSource {
-                                    graph: instance.source.graph,
-                                    object,
-                                    environment: instance.source.environment,
-                                },
-                                root: instance.root,
-                            })?,
-                        ));
-                    }
-                    CallableValueSource::Value(value)
-                    | CallableValueSource::FrozenContract(value) => {
-                        let index = self.reserve_foreign(ForeignInstance {
-                            source: etas_effects::MetadataCallableSource {
-                                value,
-                                analysis: if matches!(
-                                    source,
-                                    CallableValueSource::FrozenContract(_)
-                                ) {
-                                    etas_effects::CallableAnalysisKind::FrozenContract
-                                } else {
-                                    etas_effects::CallableAnalysisKind::CheckedRevision
-                                },
-                                ..instance.source
-                            },
-                            ..instance
-                        })?;
-                        output.insert(
-                            if matches!(source, CallableValueSource::FrozenContract(_)) {
-                                CallableValueSource::FrozenContract(index)
-                            } else {
-                                CallableValueSource::Value(index)
-                            },
-                        );
-                    }
-                    CallableValueSource::Parameter(parameter) => {
-                        if parameter.scope == CallableValueScope::Value(instance.source.value) {
-                            output.insert(CallableValueSource::Parameter(CallableValueParameter {
-                                scope,
-                                position: parameter.position,
-                            }));
-                            continue;
+        let requests = std::iter::once((None, node.returned_sources.as_ref())).chain(
+            node.returned_projections
+                .iter()
+                .map(|projection| (Some(&projection.path), projection.sources.as_ref())),
+        );
+        let mut returned_sources = None;
+        let mut returned_projections = Vec::new();
+        for (path, requested_sources) in requests {
+            let converted = if let Some(returned) = requested_sources {
+                let mut output = BTreeSet::new();
+                for source in returned {
+                    match *source {
+                        CallableValueSource::Existential(object) => {
+                            output.insert(CallableValueSource::Existential(
+                                self.reserve_foreign_object(ForeignObjectInstance {
+                                    source: etas_effects::MetadataObjectSource {
+                                        graph: instance.source.graph,
+                                        object,
+                                        environment: instance.source.environment,
+                                    },
+                                    root: instance.root,
+                                })?,
+                            ));
                         }
-                        let target = ParameterCallTarget::Graph {
-                            graph: instance.source.graph,
-                            parameter,
-                        };
-                        if let Some(origins) =
-                            environment.and_then(|environment| environment.parameters.get(&target))
-                        {
-                            if origins.is_empty() {
-                                return Ok(None);
+                        CallableValueSource::Value(value)
+                        | CallableValueSource::FrozenContract(value) => {
+                            let index = self.reserve_foreign(ForeignInstance {
+                                source: etas_effects::MetadataCallableSource {
+                                    value,
+                                    analysis: if matches!(
+                                        source,
+                                        CallableValueSource::FrozenContract(_)
+                                    ) {
+                                        etas_effects::CallableAnalysisKind::FrozenContract
+                                    } else {
+                                        etas_effects::CallableAnalysisKind::CheckedRevision
+                                    },
+                                    ..instance.source
+                                },
+                                ..instance
+                            })?;
+                            output.insert(
+                                if matches!(source, CallableValueSource::FrozenContract(_)) {
+                                    CallableValueSource::FrozenContract(index)
+                                } else {
+                                    CallableValueSource::Value(index)
+                                },
+                            );
+                        }
+                        CallableValueSource::Parameter(parameter) => {
+                            if parameter.scope == CallableValueScope::Value(instance.source.value) {
+                                output.insert(CallableValueSource::Parameter(
+                                    self.foreign_parameter(
+                                        instance.source.graph,
+                                        parameter,
+                                        scope,
+                                    )?,
+                                ));
+                                continue;
                             }
-                            for origin in origins {
-                                let Some((source, environment)) = self.checked_origin(*origin)?
-                                else {
+                            let target = ParameterCallTarget::Graph {
+                                graph: instance.source.graph,
+                                parameter,
+                            };
+                            if let Some(origins) = environment
+                                .and_then(|environment| environment.parameters.get(&target))
+                            {
+                                if origins.is_empty() {
                                     return Ok(None);
-                                };
-                                let Some(sources) =
-                                    self.sources(&[source].into(), scope, environment)?
-                                else {
-                                    return Ok(None);
-                                };
-                                output.extend(sources);
-                            }
-                        } else {
-                            if parameter.scope == CallableValueScope::Root {
-                                return Err(invalid(
-                                    "returned metadata parameter has no checked root argument",
+                                }
+                                for origin in origins {
+                                    let Some((source, environment)) =
+                                        self.checked_origin(*origin)?
+                                    else {
+                                        return Ok(None);
+                                    };
+                                    let Some(sources) =
+                                        self.sources(&[source].into(), scope, environment)?
+                                    else {
+                                        return Ok(None);
+                                    };
+                                    output.extend(sources);
+                                }
+                            } else {
+                                if parameter.scope == CallableValueScope::Root {
+                                    return Err(invalid(
+                                        "returned metadata parameter has no checked root argument",
+                                    ));
+                                }
+                                let scope = self.foreign_scope(instance, parameter.scope)?;
+                                output.insert(CallableValueSource::Parameter(
+                                    self.foreign_parameter(
+                                        instance.source.graph,
+                                        parameter,
+                                        scope,
+                                    )?,
                                 ));
                             }
-                            output.insert(CallableValueSource::Parameter(CallableValueParameter {
-                                scope: self.foreign_scope(instance, parameter.scope)?,
-                                position: parameter.position,
-                            }));
                         }
                     }
                 }
+                Some(output.into_iter().collect())
+            } else {
+                None
+            };
+            if let Some(path) = path {
+                returned_projections.push(etas_package_metadata::CallableReturnedProjection {
+                    path: path.clone(),
+                    sources: converted,
+                });
+            } else {
+                returned_sources = converted;
             }
-            Some(output.into_iter().collect())
-        } else {
-            None
-        };
+        }
         let mut labels = BTreeMap::new();
         let mut parameters = BTreeMap::new();
         for target in self.projection.callable_trace_parameters(summary)? {
@@ -258,38 +307,49 @@ impl Builder<'_, '_> {
                 continue;
             }
             let parameter = match target {
-                ParameterCallTarget::Native(symbol) => match self.parameter(symbol, scope)? {
-                    Some(parameter) => parameter,
-                    None => return Ok(None),
-                },
+                target @ (ParameterCallTarget::Native(_)
+                | ParameterCallTarget::Projection(_)
+                | ParameterCallTarget::ExternalProjection(_)) => {
+                    match self.target_parameter(target, scope)? {
+                        Some(parameter) => parameter,
+                        None => return Ok(None),
+                    }
+                }
                 ParameterCallTarget::Graph { graph, parameter }
                     if graph == instance.source.graph
                         && parameter.scope != CallableValueScope::Root =>
                 {
-                    CallableValueParameter {
-                        scope: self.foreign_scope(instance, parameter.scope)?,
-                        position: parameter.position,
-                    }
+                    let scope = self.foreign_scope(instance, parameter.scope)?;
+                    self.foreign_parameter(instance.source.graph, parameter, scope)?
                 }
                 _ => return Ok(None),
             };
             if !self.scope_contains(scope, parameter.scope) {
                 return Ok(None);
             }
-            let label = match parameter.scope {
-                CallableValueScope::Root => format!("rp{}", parameter.position),
-                CallableValueScope::Value(value) => format!("v{value}p{}", parameter.position),
-            };
+            let label = self.parameter_label(parameter);
             labels.insert(target, label.clone());
             parameters.insert(parameter, label);
         }
+        let mut parameter_bindings = parameters
+            .into_iter()
+            .map(
+                |(parameter, label)| etas_package_metadata::CallableValueParameterBinding {
+                    label,
+                    parameter,
+                },
+            )
+            .collect();
+        let invocation_parameters = self.invocation_parameters(scope, &mut parameter_bindings);
+        let invocation_projection = self
+            .projection
+            .with_invocation_parameters(invocation_parameters);
         let Some(projected) = summary::project(
-            self.projection,
+            &invocation_projection,
             summary,
             &generics.type_names,
             &generics.effect_names,
             &labels,
-            false,
         )?
         else {
             return Ok(None);
@@ -312,17 +372,10 @@ impl Builder<'_, '_> {
             requested_actions: projected.requested_actions,
             handled_requested_actions: projected.handled_requested_actions,
             default_handler_effects: projected.default_handler_effects,
-            parameter_bindings: parameters
-                .into_iter()
-                .map(
-                    |(parameter, label)| etas_package_metadata::CallableValueParameterBinding {
-                        label,
-                        parameter,
-                    },
-                )
-                .collect(),
+            parameter_bindings,
             action_trace: projected.action_trace,
             returned_sources,
+            returned_projections,
         }))
     }
 }

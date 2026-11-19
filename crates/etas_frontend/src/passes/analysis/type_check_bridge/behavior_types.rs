@@ -245,7 +245,10 @@ fn collect_parts(
                     }
                 }
             }
-            Part::Target(CallableRequestTarget::Parameter(_)) => {}
+            Part::Target(
+                CallableRequestTarget::Parameter(_)
+                | CallableRequestTarget::ParameterProjection { .. },
+            ) => {}
             Part::Target(CallableRequestTarget::AgentTools(context)) => add(types, context)?,
             Part::Target(CallableRequestTarget::SpecMethod(method)) => {
                 add(types, &method.receiver)?;

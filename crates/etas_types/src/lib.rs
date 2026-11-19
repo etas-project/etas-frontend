@@ -1,12 +1,22 @@
 pub mod api;
+mod call_interface;
+pub use call_interface::{
+    ArgumentBinding, DefaultArgument, ParameterDefaultRef, ParameterInterface,
+};
 pub mod constraint;
 pub mod diagnostic;
 pub mod facts;
 pub mod lower;
 pub mod method;
+pub mod numeric_family;
 pub mod pipeline;
 pub mod solver;
+pub mod source_execution;
+pub mod source_iteration;
+pub mod task_scope;
 pub mod ty;
+pub mod value_projection;
+pub mod value_representation;
 
 pub use api::{
     AnnotationValidationMode, BodyInstantiationError, BodyTypeOutput, CheckBodyRequest,
@@ -65,9 +75,10 @@ pub use ty::{
     NominalTypeRef, PrimitiveType, RecordType, RefinementId, ResourceHandleType, TaskType,
     TrustWrapper, Type, TypeConstructorId, TypeId, TypeInterner, TypeScheme, TypeStore,
     TypeSubstitutionBudget, TypeSubstitutionEngine, TypeSubstitutionError, TypeVarId,
-    applied_representation, nominal_representation_parts, record_fields_with_applied_params,
-    substitute_effect_row_params, substitute_named_params, substitute_named_params_in_store,
-    substitute_type_params, type_contains_named_param, type_contains_source_parameter,
+    applied_representation, applied_representation_in_store, nominal_representation_parts,
+    record_fields_with_applied_params, substitute_effect_row_params, substitute_named_params,
+    substitute_named_params_in_store, substitute_type_params, type_contains_named_param,
+    type_contains_source_parameter,
 };
 
 pub fn check_program(hir: &etas_hir::HirProgram) -> TypeOutput {

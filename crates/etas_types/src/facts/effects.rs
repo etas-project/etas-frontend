@@ -72,6 +72,8 @@ pub struct HandlerTypeBinding {
 )]
 pub struct EffectActionSignature {
     #[serde(default)]
+    pub parameter_interface: Option<Vec<crate::ParameterInterface>>,
+    #[serde(default)]
     pub generic_params: Vec<crate::CallableGenericParam>,
     pub params: Vec<TypeId>,
     pub output: TypeId,

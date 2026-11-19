@@ -71,10 +71,10 @@ impl EffectSemantics<'_> {
         let ty = self.types.facts.expr_types.get(&value).copied()?;
         let sources = self.latent_sources_for_expr(state, value);
         let observation = if self.expr_type_contains_flow(value)
-            || sources
-                .as_ref()
-                .is_some_and(|sources| self.symbolic_contract_value(ty, sources))
-        {
+            || sources.as_ref().is_some_and(|sources| {
+                (sources.is_empty() && self.type_has_parameters(ty))
+                    || self.symbolic_contract_value(ty, sources)
+            }) {
             sources
                 .and_then(|sources| self.returned_callable_sources(state, &sources))
                 .map(ReturnObservation::CallableSources)
@@ -89,9 +89,15 @@ impl EffectSemantics<'_> {
     }
 
     pub(crate) fn record_return(&self, value: Option<HirExprId>, state: &mut EffectState) {
+        if let Some(value) = value {
+            let mut projected = crate::CallableExitSummary::default();
+            self.record_value_return(value, state, &mut projected);
+            state.exits.join_assign(&projected);
+        }
         if let Some(value) = value
             && let Some(sources) = self.latent_sources_for_expr(state, value)
             && (self.expr_type_contains_flow(value)
+                || (sources.is_empty() && self.expr_type_has_parameters(value))
                 || self
                     .types
                     .facts
@@ -168,6 +174,9 @@ impl EffectSemantics<'_> {
         let mut returned = std::collections::BTreeSet::new();
         for source in sources {
             let source = match source {
+                super::state::LatentSource::Projection(id) => {
+                    crate::CallableReturnSource::Projection(*id)
+                }
                 super::state::LatentSource::MetadataObject(source) => {
                     crate::CallableReturnSource::MetadataObject(*source)
                 }
@@ -260,7 +269,7 @@ impl EffectSemantics<'_> {
             };
             returned.insert(source);
         }
-        (!returned.is_empty()).then_some(returned)
+        Some(returned)
     }
 
     pub(crate) fn expr_is_never(&self, expr: HirExprId) -> bool {
@@ -420,15 +429,33 @@ impl EffectSemantics<'_> {
             for exit in &state.exits.parameter_exits {
                 result.record_parameter_exit(exit.clone());
             }
+            // An implicit body result carries the same value origins as an
+            // explicit return, including callbacks inside aggregate payloads.
+            let observe = |expr| {
+                self.checked_control_value(expr, state)
+                    .map(|(ty, observation)| CallableOutcome::Returned { ty, observation })
+            };
+            let implicit = match unit.analysis_body_with_context(&self.context) {
+                HirAnalysisBody::Expr(expr) => Some(expr),
+                HirAnalysisBody::Block(block) => self
+                    .hir
+                    .blocks
+                    .get(block)
+                    .and_then(|block| block.final_expr),
+                _ => None,
+            };
+            if let Some(expr) = implicit {
+                self.record_value_return(expr, state, &mut result);
+            }
             let value = match unit.analysis_body_with_context(&self.context) {
-                HirAnalysisBody::Expr(expr) => self.return_observation(expr),
+                HirAnalysisBody::Expr(expr) => observe(expr),
                 HirAnalysisBody::Block(block) => match self
                     .hir
                     .blocks
                     .get(block)
                     .and_then(|block| block.final_expr)
                 {
-                    Some(expr) => self.return_observation(expr),
+                    Some(expr) => observe(expr),
                     None => self.unit_output_type(unit).and_then(|ty| {
                         matches!(
                             self.types.store.get(ty),
@@ -507,6 +534,12 @@ impl EffectSemantics<'_> {
     pub(crate) fn unit_output_type(&self, unit: EffectUnit) -> Option<TypeId> {
         match unit {
             EffectUnit::Item(item) => self.item_output_type(item),
+            EffectUnit::ParameterDefault { parameter, .. } => {
+                match self.types.facts.symbol_types.get(&parameter)? {
+                    etas_types::SymbolTypeFact::Param { ty } => Some(*ty),
+                    _ => None,
+                }
+            }
             EffectUnit::AnonymousFlow { value, .. } => {
                 let ty = self.types.facts.expr_types.get(&value)?;
                 let Type::Function(function) = self.types.store.get(*ty)? else {

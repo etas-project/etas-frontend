@@ -209,27 +209,24 @@ fn collect_selected_call<E>(
         &checked_args,
         span,
     );
-    let actual = args
-        .iter()
-        .enumerate()
-        .map(|(index, arg)| {
-            let value = match arg {
-                HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
-            };
-            super::expr::collect_expr(
-                ctx,
-                value,
-                hints
-                    .as_ref()
-                    .and_then(|signature| signature.input.get(index))
-                    .copied(),
-            )
-        })
-        .collect::<Result<Vec<_>, E>>()?;
+    let argument_binding = super::call::bind_declared_arguments(
+        ctx,
+        expr,
+        candidate.signature.parameter_interface.as_deref(),
+        args,
+        span,
+    );
+    let actual = super::call::collect_call_args_for_binding(
+        ctx,
+        args,
+        hints.as_ref().map(|signature| signature.input.as_slice()),
+        argument_binding.as_ref(),
+    )?;
     let output = expected
         .or_else(|| hints.as_ref().map(|signature| signature.output))
         .unwrap_or_else(|| ctx.fresh_type_var());
     ctx.emit(TypeConstraint::Callable {
+        argument_slots: argument_binding.map(|binding| binding.argument_slots),
         call: Some(expr),
         callee: candidate.ty,
         generic_params: candidate.signature.generic_params,

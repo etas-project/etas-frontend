@@ -90,6 +90,12 @@ pub enum TypeConstraint {
         output: TypeId,
         origin: ConstraintOrigin,
     },
+    /// A generic arithmetic or ordering operand needs checked Number evidence.
+    /// Solved after substitutions, with the complete body generic bounds.
+    NumericFamilyOperation {
+        operand: TypeId,
+        origin: ConstraintOrigin,
+    },
     NumericLiteral {
         expr: Option<etas_hir::HirExprId>,
         text: String,
@@ -115,6 +121,7 @@ pub enum TypeConstraint {
         reason: AssignabilityReason,
     },
     Callable {
+        argument_slots: Option<Vec<u32>>,
         call: Option<etas_hir::HirExprId>,
         callee: TypeId,
         generic_params: Vec<CallableGenericParam>,
@@ -187,6 +194,7 @@ pub enum TypeConstraint {
         item: TypeId,
         // A fresh (key, value) shape for entry iterables; solved, not guessed by collect.
         entry_pair: TypeId,
+        byte_item: TypeId,
         origin: ConstraintOrigin,
     },
     Unary {
@@ -215,6 +223,16 @@ pub struct CallableCandidate {
 pub enum CallableCandidateOperation {
     #[default]
     Call,
+    SourceFlow {
+        symbol: etas_hir::SymbolId,
+        arguments: crate::ArgumentBinding,
+    },
+    LibraryFlow {
+        symbol: etas_std::StdSymbolId,
+        overload: usize,
+        callable: etas_code::CallableId,
+        arguments: crate::ArgumentBinding,
+    },
     Method {
         index: u32,
         owner_params: Vec<CallableGenericParam>,

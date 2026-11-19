@@ -17,12 +17,21 @@ pub enum ValidationRequest {
         ty: TypeId,
         span: Span,
     },
+    SequenceElement {
+        ty: TypeId,
+        span: Span,
+    },
     EmptyBrace {
         ty: TypeId,
         span: Span,
     },
     HandlerNeverCompletion {
         ty: TypeId,
+        span: Span,
+    },
+    EqualityOperands {
+        left: TypeId,
+        right: TypeId,
         span: Span,
     },
     WritablePlace {

@@ -22,6 +22,19 @@ pub struct ClosureCaptureLayout {
 pub fn analyze_closures(
     view: &HirTreeView<'_>,
 ) -> Result<HashMap<HirExprId, ClosureCaptureLayout>, String> {
+    analyze_captures(view, false)
+}
+
+pub fn analyze_runtime_captures(
+    view: &HirTreeView<'_>,
+) -> Result<HashMap<HirExprId, ClosureCaptureLayout>, String> {
+    analyze_captures(view, true)
+}
+
+fn analyze_captures(
+    view: &HirTreeView<'_>,
+    handlers: bool,
+) -> Result<HashMap<HirExprId, ClosureCaptureLayout>, String> {
     let hir: &HirProgram = view.program();
     let local_symbols: HashSet<_> = hir
         .symbols
@@ -32,7 +45,9 @@ pub fn analyze_closures(
     let mut captures = HashMap::<_, BTreeSet<SymbolId>>::new();
     let mut locals = HashMap::<_, BTreeSet<SymbolId>>::new();
     for (expr, data) in hir.exprs.iter() {
-        if matches!(data, HirExpr::Lambda { .. }) {
+        if matches!(data, HirExpr::Lambda { .. })
+            || (handlers && matches!(data, HirExpr::Handler { .. }))
+        {
             captures.insert(expr, BTreeSet::new());
             locals.insert(expr, BTreeSet::new());
         }
@@ -90,6 +105,58 @@ pub fn analyze_closures(
                 return Err(format!(
                     "local symbol {symbol:?} is outside the lexical scope of {expr:?}"
                 ));
+            }
+            if handlers {
+                use etas_hir::{HirBodyKind, HirOwner};
+                let index = view.index();
+                let mut owner = HirOwner::Expr(expr);
+                loop {
+                    let arm = match owner {
+                        HirOwner::HandlerArm(arm) => Some(arm),
+                        HirOwner::Body(body) => match body.kind {
+                            HirBodyKind::HandlerArm(arm) => Some(arm),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(arm) = arm {
+                        if !scope_index.contains(hir.handler_arms[arm].scope, declaration)?
+                            && let Some(HirOwner::Expr(handler)) = index.handler_arm_owner.get(&arm)
+                        {
+                            captures
+                                .get_mut(handler)
+                                .ok_or("handler has no capture layout")?
+                                .insert(symbol);
+                        }
+                    }
+                    owner = match owner {
+                        HirOwner::Expr(expr) => match index.expr_owner.get(&expr) {
+                            Some(owner) => *owner,
+                            None => break,
+                        },
+                        HirOwner::Body(body) => match index.body_owner.get(&body) {
+                            Some(owner) => *owner,
+                            None => break,
+                        },
+                        HirOwner::Block(block) => match index.block_owner.get(&block) {
+                            Some(owner) => *owner,
+                            None => break,
+                        },
+                        HirOwner::Stmt(stmt) => match index.stmt_block.get(&stmt) {
+                            Some(block) => HirOwner::Block(*block),
+                            None => break,
+                        },
+                        HirOwner::Pattern(pat) => match index.pat_owner.get(&pat) {
+                            Some(owner) => *owner,
+                            None => break,
+                        },
+                        HirOwner::HandlerArm(arm) => match index.handler_arm_owner.get(&arm) {
+                            Some(owner) => *owner,
+                            None => break,
+                        },
+                        HirOwner::Item(_) | HirOwner::Module(_) => break,
+                    };
+                }
             }
             let mut nearest = scope_index.nearest(scope)?;
             while let Some(closure) = nearest {

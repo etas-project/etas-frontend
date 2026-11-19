@@ -97,7 +97,7 @@ fn application_parameters(
         CheckedSpecRef::Canonical(_) => return None,
     };
     let registry = ctx.std_registry.clone();
-    let etas_std::StdDecl::Type(declaration) = &registry.lookup_qualified(&path)?.decl else {
+    let etas_std::StdDecl::Type(declaration) = &registry.lookup_type_dependency(&path)?.decl else {
         return None;
     };
     Some(super::std::lower_std_generic_params(

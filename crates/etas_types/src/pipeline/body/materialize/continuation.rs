@@ -14,12 +14,31 @@ pub(super) fn validate_uses(ctx: &mut TypePipelineContext<'_>, state: &BodyPipel
         .hir_view
         .clone()
         .unwrap_or_else(|| etas_hir::HirTreeView::new(ctx.hir));
-    let permitted = state
+    let mut permitted = state
         .solver_report
         .std_intrinsic_calls
         .iter()
         .filter_map(|(call, fact)| continuation_argument(ctx.hir, *call, fact.intrinsic))
         .collect::<HashSet<_>>();
+    permitted.extend(
+        state
+            .solver_report
+            .checked_method_calls
+            .iter()
+            .filter_map(|(call, fact)| {
+                let slot = match crate::method::execution_role(
+                    ctx.hir,
+                    ctx.signature_base
+                        .map_or(&ctx.signature_facts, |base| &base.facts),
+                    &fact.target,
+                )? {
+                    etas_std::StdExecutionRole::Requeue => 1,
+                    etas_std::StdExecutionRole::Park => 2,
+                    _ => return None,
+                };
+                crate::method::argument_expression(ctx.hir, *call, fact, slot)
+            }),
+    );
 
     for (expr, value) in ctx.hir.exprs.iter() {
         let HirExpr::Path(path) = value else {
@@ -63,23 +82,93 @@ pub(super) fn record_task_owners(ctx: &mut TypePipelineContext<'_>, state: &mut 
         .iter()
         .filter(|(_, fact)| fact.intrinsic == etas_std::intrinsic::task::RUN)
         .filter_map(|(call, _)| first_argument(ctx.hir, *call))
+        .chain(
+            state
+                .solver_report
+                .checked_method_calls
+                .iter()
+                .filter_map(|(call, fact)| {
+                    (crate::method::execution_role(
+                        ctx.hir,
+                        ctx.signature_base
+                            .map_or(&ctx.signature_facts, |base| &base.facts),
+                        &fact.target,
+                    ) == Some(etas_std::StdExecutionRole::ScopeEnter))
+                    .then(|| crate::method::argument_expression(ctx.hir, *call, fact, 1))
+                    .flatten()
+                }),
+        )
+        .chain(ctx.hir.exprs.iter().flat_map(|(call, _)| {
+            crate::task_scope::arguments(
+                ctx.hir,
+                ctx.signature_base
+                    .map_or(&ctx.signature_facts, |base| &base.facts),
+                call,
+                state.solver_report.checked_method_calls.get(&call),
+            )
+        }))
         .collect::<HashSet<_>>();
 
-    let calls = state
+    let mut calls = state
         .solver_report
         .std_intrinsic_calls
         .iter()
         .map(|(expr, fact)| (*expr, fact.intrinsic))
+        .chain(
+            state
+                .solver_report
+                .checked_method_calls
+                .iter()
+                .filter_map(|(call, fact)| {
+                    (crate::method::execution_role(
+                        ctx.hir,
+                        ctx.signature_base
+                            .map_or(&ctx.signature_facts, |base| &base.facts),
+                        &fact.target,
+                    ) == Some(etas_std::StdExecutionRole::ScopeEnter))
+                    .then_some((*call, etas_std::intrinsic::task::RUN))
+                }),
+        )
+        .chain(ctx.hir.exprs.iter().filter_map(|(call, _)| {
+            (expression_type(state, call).is_some()
+                && crate::source_execution::call_target(
+                    ctx.hir,
+                    ctx.signature_base
+                        .map_or(&ctx.signature_facts, |base| &base.facts),
+                    call,
+                ) == Some(etas_std::StdExecutionRole::TaskStart))
+            .then_some((call, etas_std::intrinsic::task::START))
+        }))
+        .chain(ctx.hir.exprs.iter().filter_map(|(call, _)| {
+            (expression_type(state, call).is_some()
+                && !crate::task_scope::arguments(
+                    ctx.hir,
+                    ctx.signature_base
+                        .map_or(&ctx.signature_facts, |base| &base.facts),
+                    call,
+                    state.solver_report.checked_method_calls.get(&call),
+                )
+                .is_empty())
+            .then_some((call, etas_std::intrinsic::task::RUN))
+        }))
         .collect::<Vec<_>>();
+    calls.sort_unstable();
+    calls.dedup();
     for (expr, intrinsic) in calls {
         if intrinsic == etas_std::intrinsic::task::RUN {
             if let Some(ty) = expression_type(state, expr)
-                && contains_scoped_handle(ctx.interner.store(), ty, &mut HashSet::new())
+                && contains_scoped_handle(
+                    ctx.interner.store(),
+                    ctx.signature_base
+                        .map_or(&ctx.signature_facts, |base| &base.facts),
+                    ty,
+                    &mut HashSet::new(),
+                )
             {
                 ctx.diagnostics.push(Diagnostic::type_check(
                     TypeDiagnosticCode::InvalidTaskScope,
                     ctx.hir.exprs[expr].span(&ctx.hir.blocks),
-                    "std.task.run cannot return a Task, Scheduler, or Continuation owned by its scope",
+                    "a task scope cannot return a Task, Scheduler, or Continuation owned by that scope",
                 ));
             }
             continue;
@@ -93,14 +182,16 @@ pub(super) fn record_task_owners(ctx: &mut TypePipelineContext<'_>, state: &mut 
             ctx.diagnostics.push(Diagnostic::type_check(
                 TypeDiagnosticCode::InvalidTaskScope,
                 ctx.hir.exprs[expr].span(&ctx.hir.blocks),
-                "std.task.start must be lexically owned by a std.task.run callback",
+                "task start requires a callback proven to execute within a managed task scope",
             ));
             continue;
         };
         let Some(ty) = expression_type(state, expr) else {
             continue;
         };
-        let Some(crate::Type::Task(task)) = ctx.interner.store().get(ty) else {
+        let Some(task) =
+            crate::source_execution::task(ctx.interner.store(), ctx.known_std_types(), ty)
+        else {
             continue;
         };
         state.provisional.task_owners.insert(
@@ -163,22 +254,24 @@ fn task_owner_scope(
             | HirBodyKind::TopLevelLet
             | HirBodyKind::ImplFlow(_)
             | HirBodyKind::AnnotationArg { .. } => return None,
+            HirBodyKind::ParameterDefault { .. } => return None,
         };
     }
 }
 
 fn contains_scoped_handle(
     store: &crate::TypeStore,
+    facts: &crate::TypeFacts,
     ty: crate::TypeId,
     visited: &mut HashSet<crate::TypeId>,
 ) -> bool {
     if !visited.insert(ty) {
         return false;
     }
+    if crate::source_execution::is_scoped_handle(store, &facts.known_std_types, ty) {
+        return true;
+    }
     match store.get(ty) {
-        Some(
-            crate::Type::Task(_) | crate::Type::SchedulerHandle | crate::Type::Continuation(_),
-        ) => true,
         Some(
             crate::Type::Array(inner)
             | crate::Type::List(inner)
@@ -189,45 +282,60 @@ fn contains_scoped_handle(
             | crate::Type::Schema(inner)
             | crate::Type::MemorySelection(inner)
             | crate::Type::MemoryRegion(inner),
-        ) => contains_scoped_handle(store, *inner, visited),
-        Some(crate::Type::Range { index }) => contains_scoped_handle(store, *index, visited),
+        ) => contains_scoped_handle(store, facts, *inner, visited),
+        Some(crate::Type::Range { index }) => contains_scoped_handle(store, facts, *index, visited),
         Some(crate::Type::Map { key, value } | crate::Type::Store { key, value }) => {
-            contains_scoped_handle(store, *key, visited)
-                || contains_scoped_handle(store, *value, visited)
+            contains_scoped_handle(store, facts, *key, visited)
+                || contains_scoped_handle(store, facts, *value, visited)
         }
         Some(crate::Type::Result { ok, err }) => {
-            contains_scoped_handle(store, *ok, visited)
-                || contains_scoped_handle(store, *err, visited)
+            contains_scoped_handle(store, facts, *ok, visited)
+                || contains_scoped_handle(store, facts, *err, visited)
         }
         Some(crate::Type::Tuple(elements)) => elements
             .iter()
-            .any(|element| contains_scoped_handle(store, *element, visited)),
+            .any(|element| contains_scoped_handle(store, facts, *element, visited)),
         Some(crate::Type::Record(record)) => record
             .fields
             .iter()
-            .any(|field| contains_scoped_handle(store, field.ty, visited)),
+            .any(|field| contains_scoped_handle(store, facts, field.ty, visited)),
         Some(crate::Type::Function(flow)) => {
             flow.input
                 .iter()
-                .any(|input| contains_scoped_handle(store, *input, visited))
-                || contains_scoped_handle(store, flow.output, visited)
+                .any(|input| contains_scoped_handle(store, facts, *input, visited))
+                || contains_scoped_handle(store, facts, flow.output, visited)
         }
         Some(crate::Type::Trust { inner, .. } | crate::Type::Refined { base: inner, .. }) => {
-            contains_scoped_handle(store, *inner, visited)
+            contains_scoped_handle(store, facts, *inner, visited)
         }
         Some(crate::Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema })) => {
-            contains_scoped_handle(store, *schema, visited)
+            contains_scoped_handle(store, facts, *schema, visited)
         }
         Some(crate::Type::ResourceHandle(crate::ResourceHandleType::ExternalTool {
             signature,
-        })) => contains_scoped_handle(store, *signature, visited),
-        Some(crate::Type::ResourceHandle(crate::ResourceHandleType::Other { args, .. }))
-        | Some(crate::Type::Applied { args, .. }) => args
+        })) => contains_scoped_handle(store, facts, *signature, visited),
+        Some(crate::Type::Nominal(owner)) => owner
+            .representation
+            .is_some_and(|layout| contains_scoped_handle(store, facts, layout, visited)),
+        Some(crate::Type::Enum(_)) => facts.enum_layouts.get(&ty).is_some_and(|layout| {
+            layout
+                .variants
+                .iter()
+                .flat_map(|variant| &variant.fields)
+                .any(|field| contains_scoped_handle(store, facts, *field, visited))
+        }),
+        Some(crate::Type::Applied { constructor, args }) => {
+            contains_scoped_handle(store, facts, crate::TypeId(constructor.0), visited)
+                || args
+                    .iter()
+                    .any(|arg| contains_scoped_handle(store, facts, *arg, visited))
+        }
+        Some(crate::Type::ResourceHandle(crate::ResourceHandleType::Other { args, .. })) => args
             .iter()
-            .any(|arg| contains_scoped_handle(store, *arg, visited)),
+            .any(|arg| contains_scoped_handle(store, facts, *arg, visited)),
         Some(crate::Type::Handler(handler)) => handler
             .result
-            .is_some_and(|result| contains_scoped_handle(store, result, visited)),
+            .is_some_and(|result| contains_scoped_handle(store, facts, result, visited)),
         _ => false,
     }
 }
@@ -273,6 +381,7 @@ fn enclosing_handler_arm(
             | HirBodyKind::TopLevelLet
             | HirBodyKind::ImplFlow(_)
             | HirBodyKind::AnnotationArg { .. } => return None,
+            HirBodyKind::ParameterDefault { .. } => return None,
         }
     }
 }

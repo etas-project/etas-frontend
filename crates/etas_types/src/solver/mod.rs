@@ -80,6 +80,7 @@ impl TypeSolver {
         let mut checked_method_constraints = Vec::new();
         let mut pending_unary_constraints = Vec::new();
         let mut numeric_literals = Vec::new();
+        let mut numeric_operations = Vec::new();
         let mut inferences = Vec::new();
         let mut returns = Vec::new();
         let mut captures = Vec::new();
@@ -277,6 +278,9 @@ impl TypeSolver {
                     }
                 }
                 TypeConstraint::NumericLiteral { .. } => numeric_literals.push(constraint),
+                TypeConstraint::NumericFamilyOperation { .. } => {
+                    numeric_operations.push(constraint)
+                }
                 TypeConstraint::Equal { lhs, rhs, origin } => {
                     let lhs = resolve_known_substitutions(input.store, &report, *lhs);
                     let rhs = resolve_known_substitutions(input.store, &report, *rhs);
@@ -343,6 +347,7 @@ impl TypeSolver {
                     }
                 }
                 TypeConstraint::Callable {
+                    argument_slots,
                     call,
                     callee,
                     generic_params,
@@ -386,6 +391,7 @@ impl TypeSolver {
                         input.store,
                         input.spec_facts,
                         CallableConstraintSolveInput {
+                            argument_slots: argument_slots.as_deref(),
                             rigid_type_parameters: input.rigid_type_parameters,
                             call: *call,
                             callee,
@@ -472,6 +478,7 @@ impl TypeSolver {
                     iter,
                     item,
                     entry_pair,
+                    byte_item,
                     origin,
                 } => iterable::solve(
                     input.store,
@@ -480,6 +487,7 @@ impl TypeSolver {
                     *iter,
                     *item,
                     *entry_pair,
+                    *byte_item,
                     origin,
                 ),
                 TypeConstraint::Unary { .. } => pending_unary_constraints.push(constraint),
@@ -539,6 +547,22 @@ impl TypeSolver {
             pending_access_constraints,
             checkpoint,
         )?;
+        for operation in numeric_operations {
+            checkpoint()?;
+            let TypeConstraint::NumericFamilyOperation { operand, origin } = operation else {
+                unreachable!();
+            };
+            let operand = resolve_known_substitutions(input.store, &report, *operand);
+            if matches!(input.store.get(operand), Some(Type::Named(name)) if name.source_parameter.is_some())
+                && !crate::numeric_family::supports(input.store, input.spec_facts, operand)
+            {
+                report.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                    span: origin.span,
+                    message: "generic arithmetic and ordering require the checked Number primitive-family bound".into(),
+                });
+            }
+        }
         callable_reference::solve(input.store, &mut report, &callable_references, checkpoint)?;
         for (from, to, origin) in deferred_bottom {
             checkpoint()?;
@@ -673,6 +697,7 @@ impl TypeSolver {
 }
 
 struct CallableConstraintSolveInput<'a> {
+    argument_slots: Option<&'a [u32]>,
     rigid_type_parameters: &'a [crate::CallableGenericParam],
     call: Option<etas_hir::HirExprId>,
     callee: TypeId,
@@ -776,6 +801,7 @@ fn solve_callable_constraint(
     let mut report = callable::solve_callable_with_named_substitutions(
         store,
         callable::CallableSolveInput {
+            argument_slots: input.argument_slots,
             callee: input.callee,
             generic_param_names,
             explicit_generic_args: &type_generic_args,
@@ -802,8 +828,13 @@ fn solve_callable_constraint(
         let pairs = input
             .args
             .iter()
-            .zip(&flow.input)
-            .map(|(actual, expected)| (*expected, *actual))
+            .enumerate()
+            .map(|(index, actual)| {
+                let slot = input
+                    .argument_slots
+                    .map_or(index, |slots| slots[index] as usize);
+                (flow.input[slot], *actual)
+            })
             .collect::<Vec<_>>();
         let explicit_rows = effect_row_bindings
             .keys()
@@ -1268,6 +1299,7 @@ fn solve_access_constraint(
             AccessConstraintOutcome::Solved(Box::new(field::solve_field_access(
                 store,
                 known,
+                spec_facts,
                 base,
                 field,
                 output,

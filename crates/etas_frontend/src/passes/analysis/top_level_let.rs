@@ -143,6 +143,15 @@ fn classify_top_level_let(
     expr: etas_hir::HirExprId,
 ) -> Option<TopLevelLetClassification> {
     match &hir.exprs[expr] {
+        HirExpr::MethodCall { args, .. } if hir.source_map.is_collection_literal(expr) => args
+            .iter()
+            .map(|argument| match argument {
+                HirArg::Positional(value) | HirArg::Named { value, .. } => {
+                    classify_top_level_let(hir, types, facts, *value)
+                }
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|_| TopLevelLetClassification::Const),
         HirExpr::Literal(_) | HirExpr::Lambda { .. } => Some(TopLevelLetClassification::Const),
         HirExpr::Tuple { elems, .. }
         | HirExpr::Array { elems, .. }
@@ -207,6 +216,13 @@ fn classify_top_level_let(
             }
             _ => Some(TopLevelLetClassification::Invalid),
         },
+        HirExpr::Field { base, .. } if types.field_projections.contains_key(&expr) => {
+            match classify_top_level_let(hir, types, facts, *base) {
+                Some(TopLevelLetClassification::Const) => Some(TopLevelLetClassification::Const),
+                None => None,
+                _ => Some(TopLevelLetClassification::Invalid),
+            }
+        }
         HirExpr::Handler { .. } => Some(TopLevelLetClassification::Handler),
         HirExpr::MethodCall {
             receiver,

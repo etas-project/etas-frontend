@@ -37,6 +37,10 @@ pub enum HirType {
         fields: Vec<HirFieldDecl>,
         span: Span,
     },
+    Array {
+        element: HirTypeId,
+        span: Span,
+    },
     Tuple {
         elems: Vec<HirTypeId>,
         span: Span,
@@ -60,6 +64,7 @@ impl HirType {
             | Self::Primitive { span, .. }
             | Self::Path { span, .. }
             | Self::Record { span, .. }
+            | Self::Array { span, .. }
             | Self::Tuple { span, .. }
             | Self::Refined { span, .. }
             | Self::Error { span } => *span,

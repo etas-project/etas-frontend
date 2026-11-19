@@ -232,6 +232,7 @@ fn expanding_type_depth_is_a_resource_failure_before_native_stack_exhaustion() {
 #[test]
 fn a_wrong_kind_argument_is_not_an_open_template() {
     let signature = etas_types::CallableSignature {
+        parameter_interface: None,
         generic_params: vec![etas_types::CallableGenericParam {
             kind: etas_types::CallableGenericParamKind::Effect,
             name: "E".into(),

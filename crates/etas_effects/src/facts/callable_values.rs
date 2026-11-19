@@ -57,6 +57,8 @@ pub enum CallableGenericValue {
     etas_core::RetainedSize,
 )]
 pub enum CallableValueOrigin {
+    /// A checked path into a source parameter, with its own callable contract.
+    Projection(CodeFingerprint),
     Existential {
         pack: HirExprId,
         environment: CallableEnvironmentId,
@@ -108,6 +110,44 @@ pub enum CallableValueOrigin {
     Unavailable {
         expr: HirExprId,
     },
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct NativeParameterProjection {
+    pub owner: HirItemId,
+    pub parameter: SymbolId,
+    pub path: Vec<etas_code::descriptor::ValueProjectionStep>,
+    pub ty: etas_types::TypeId,
+}
+
+/// A parameter selector in an imported contract. Its input is supplied by the
+/// checked call's binding frame; it is neither a value origin nor authority.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub struct ExternalParameterProjection {
+    pub root: ParameterCallTarget,
+    pub path: Vec<etas_code::descriptor::ValueProjectionStep>,
+}
+
+impl ExternalParameterProjection {
+    pub fn identity(&self) -> Result<CodeFingerprint, serde_json::Error> {
+        Ok(CodeFingerprint::of_bytes(
+            "etas.effects.external-parameter-projection.v1",
+            &serde_json::to_vec(&(self.root, &self.path))?,
+        ))
+    }
+}
+
+impl NativeParameterProjection {
+    pub fn identity(&self) -> Result<CodeFingerprint, serde_json::Error> {
+        Ok(CodeFingerprint::of_bytes(
+            "etas.effects.parameter-projection.v1",
+            &serde_json::to_vec(&(self.owner, self.parameter, &self.path))?,
+        ))
+    }
 }
 
 #[derive(

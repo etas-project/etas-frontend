@@ -32,6 +32,14 @@ impl Parser<'_> {
     }
 
     pub(crate) fn primary_type(&mut self) -> TypeExpr {
+        if let Some(start) = self.eat_open_punct(Punct::LBracket) {
+            let element = self.type_expr();
+            let end = self.expect_punct(Punct::RBracket, "expected `]` after array element type");
+            return TypeExpr::Array {
+                element: Box::new(element),
+                span: start.span.cover(end),
+            };
+        }
         if let Some(start) = self.cursor.eat_punct(Punct::Question) {
             self.expect_punct(Punct::Tilde, "expected `~` after existential `?`");
             let mut bounds = vec![self.type_param_bound()];

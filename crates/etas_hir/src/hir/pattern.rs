@@ -14,6 +14,14 @@ pub enum HirPat {
         span: Span,
     },
     Literal(HirLiteral),
+    EmptyList {
+        span: Span,
+    },
+    ListCons {
+        head: HirPatId,
+        tail: HirPatId,
+        span: Span,
+    },
     Tuple {
         elems: Vec<HirPatId>,
         span: Span,
@@ -38,6 +46,8 @@ impl HirPat {
         match self {
             Self::Binding { span, .. }
             | Self::Wildcard { span }
+            | Self::EmptyList { span }
+            | Self::ListCons { span, .. }
             | Self::Tuple { span, .. }
             | Self::Record { span, .. }
             | Self::Variant { span, .. }

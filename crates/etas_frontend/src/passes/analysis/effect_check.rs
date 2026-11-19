@@ -2,6 +2,7 @@ mod anchors;
 mod body_artifacts;
 mod external_metadata;
 pub(super) mod residual_identity;
+mod task_rows;
 
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
@@ -208,6 +209,17 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        // A source-library bundle requires valid declarations and types before
+        // whole-library effect/provenance analysis can produce usable facts.
+        if context.input.options.standard_library_mode
+            == crate::StandardLibraryMode::SourceBootstrap
+            && context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+        {
+            return PassResult::stop();
+        }
         let limit = context
             .candidate
             .as_ref()
@@ -216,10 +228,23 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 |candidate| candidate.descriptor_limits,
             )
             .max_nodes;
+        let diagnostics_before = context.diagnostics.len();
         for _ in 0..limit {
             let mut requested = None;
             let result = self.run_once(context, manager, &mut requested);
             let Some(ty) = requested else {
+                if matches!(&result.control, etas_utils::PassControl::Continue) {
+                    match task_rows::refine(context) {
+                        Ok(true) => {
+                            // These summaries used the previous task payload ABI.
+                            // Recompute them before publishing any effect proof.
+                            context.diagnostics.truncate(diagnostics_before);
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(error) => return PassResult::failed(error),
+                    }
+                }
                 return result;
             };
             let types = context.types.as_mut().expect("checked type phase");
@@ -233,7 +258,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             types.store = std::sync::Arc::new(interner.into_store());
         }
         pipeline_failure(etas_effects::EffectPipelineError::AnalysisLimitExceeded {
-            resource: "request type materializations",
+            resource: "request and task row materializations",
             limit,
         })
     }
@@ -317,6 +342,9 @@ impl RunEffectPipelinePass {
             .then_some(context.reachability.as_ref())
             .flatten()
             .map(|reachability| &reachability.analysis_items);
+        let Some(source_set) = context.sources.as_ref() else {
+            return PassResult::failed("effect checking requires source snapshots");
+        };
         let frozen_calls = match &context.candidate {
             Some(candidate) => {
                 let Some(modules) = context.modules.as_ref() else {
@@ -328,6 +356,7 @@ impl RunEffectPipelinePass {
                     );
                 };
                 Some(crate::code::definition::FrozenCalls {
+                    sources: source_set.to_source_bundle(),
                     overlay: &candidate.overlay,
                     hir: &hir.hir,
                     types,
@@ -344,9 +373,6 @@ impl RunEffectPipelinePass {
             }
             None => None,
         };
-        let Some(source_set) = context.sources.as_ref() else {
-            return PassResult::failed("effect checking requires source snapshots");
-        };
         let Some(modules) = context.modules.as_ref() else {
             return PassResult::failed("residual identity projection requires the module index");
         };
@@ -356,6 +382,7 @@ impl RunEffectPipelinePass {
                 types,
                 std_registry: context.std_registry.as_ref(),
                 imports: resolved_imports,
+                standard_library_mode: context.input.options.standard_library_mode,
                 modules,
                 sources: source_set,
                 parsed: &context.parsed_sources,
@@ -496,6 +523,7 @@ impl RunEffectPipelinePass {
             .diagnostics
             .extend(output.diagnostics.iter().cloned());
         context.effects = Some(output.into());
+        context.prepared_effect_registry = Some(prepared);
         PassResult::changed(
             PreservedArtifacts::All,
             ArtifactSet::from([TYPE_OUTPUT, EFFECT_OUTPUT, VERIFIED_RESIDUAL_PLANS]),

@@ -27,13 +27,69 @@ pub fn lower_std_symbol(
     symbol: etas_hir::SymbolId,
     std_symbol: &StdSymbol,
 ) -> SymbolTypeFact {
-    lower_std_decl_with_kind(
+    if matches!(std_symbol.decl, StdDecl::Flow(_))
+        && let Some(binding) = registry.body_binding(std_symbol.id)
+        && let Some(signature) = ctx
+            .signature_base
+            .map_or(&ctx.signature_facts, |base| &base.facts)
+            .library_callable_signatures
+            .get(&binding.callable)
+    {
+        return SymbolTypeFact::Flow {
+            signature: signature.clone(),
+        };
+    }
+    let mut fact = lower_std_decl_with_kind(
         ctx,
         registry,
         symbol,
         &std_symbol.decl,
         Some(std_symbol.kind),
         Some(std_symbol.qualified_path.join(".")),
+    );
+    if let Some(parameters) = std_parameter_interface(registry, std_symbol.id) {
+        match &mut fact {
+            SymbolTypeFact::Flow { signature } | SymbolTypeFact::Tool { signature } => {
+                signature.parameter_interface = Some(parameters);
+            }
+            SymbolTypeFact::Agent { signature } => {
+                if let Some(entry) = &mut signature.default_entry {
+                    std::sync::Arc::make_mut(entry).callable.parameter_interface = Some(parameters);
+                }
+            }
+            SymbolTypeFact::EffectAction { signature } => {
+                signature.parameter_interface = Some(parameters);
+            }
+            _ => {}
+        }
+    }
+    fact
+}
+
+pub(crate) fn std_parameter_interface(
+    registry: &StdRegistry,
+    symbol: etas_std::StdSymbolId,
+) -> Option<Vec<crate::ParameterInterface>> {
+    let callable = &registry.body_binding(symbol)?.callable;
+    std_callable_parameter_interface(registry, callable)
+}
+
+pub(crate) fn std_callable_parameter_interface(
+    registry: &StdRegistry,
+    callable: &etas_code::CallableId,
+) -> Option<Vec<crate::ParameterInterface>> {
+    Some(
+        registry
+            .parameter_interface(callable)?
+            .iter()
+            .map(|parameter| crate::ParameterInterface {
+                name: parameter.name.clone(),
+                default: parameter
+                    .default
+                    .clone()
+                    .map(|reference| crate::ParameterDefaultRef::External { reference }),
+            })
+            .collect(),
     )
 }
 
@@ -94,6 +150,7 @@ fn lower_std_decl_with_kind(
         },
         StdDecl::Tool(tool) => SymbolTypeFact::Tool {
             signature: CallableSignature {
+                parameter_interface: None,
                 generic_params: Vec::new(),
                 params: tool
                     .params
@@ -130,6 +187,7 @@ pub fn lower_std_requirement_signature(
     scope: Option<&[String]>,
 ) -> CallableSignature {
     CallableSignature {
+        parameter_interface: None,
         generic_params: Vec::new(),
         params: requirement
             .params
@@ -149,6 +207,7 @@ pub fn lower_std_flow_signature(
     scope: Option<&[String]>,
 ) -> CallableSignature {
     CallableSignature {
+        parameter_interface: None,
         generic_params: lower_std_generic_params(ctx, registry, &flow.type_params),
         params: flow
             .params
@@ -238,6 +297,7 @@ pub fn lower_std_effect_action_signature(
         .collect::<Vec<_>>();
     let selector_len = effect_args.len();
     EffectActionSignature {
+        parameter_interface: None,
         generic_params: lower_std_generic_params(ctx, registry, &action.type_params),
         params: action
             .params
@@ -293,58 +353,38 @@ fn lower_std_constructor_decl(
     qualified_name: Option<&str>,
     scope: Option<&[String]>,
 ) -> SymbolTypeFact {
+    // A role fixes generic positions, while the source owns binder names.
+    // Bootstrap placeholders and source names need not be T/E.
+    let parameters = decl
+        .params
+        .iter()
+        .map(|parameter| {
+            lower_std_type_with_scope(ctx, registry, &StdType::Var(parameter.name.clone()), scope)
+        })
+        .collect::<Vec<_>>();
     let params = match decl.name.as_str() {
-        "Some" => vec![lower_std_type_with_scope(
-            ctx,
-            registry,
-            &StdType::Var("T".to_owned()),
-            scope,
-        )],
-        "Ok" => vec![lower_std_type_with_scope(
-            ctx,
-            registry,
-            &StdType::Var("T".to_owned()),
-            scope,
-        )],
-        "Err" => vec![lower_std_type_with_scope(
-            ctx,
-            registry,
-            &StdType::Var("E".to_owned()),
-            scope,
-        )],
+        "Some" | "Ok" => vec![parameters[0]],
+        "Err" => vec![parameters[1]],
         "None" => Vec::new(),
-        _ => decl
-            .params
-            .iter()
-            .map(|param| {
-                lower_std_type_with_scope(ctx, registry, &StdType::Var(param.name.clone()), scope)
-            })
-            .collect::<Vec<_>>(),
+        _ => parameters.clone(),
     };
     let output = match decl.name.as_str() {
-        "Some" | "None" => {
-            let inner =
-                lower_std_type_with_scope(ctx, registry, &StdType::Var("T".to_owned()), scope);
-            ctx.interner.intern(Type::Option(inner))
-        }
-        "Ok" | "Err" => {
-            let ok = lower_std_type_with_scope(ctx, registry, &StdType::Var("T".to_owned()), scope);
-            let err =
-                lower_std_type_with_scope(ctx, registry, &StdType::Var("E".to_owned()), scope);
-            ctx.interner.intern(Type::Result { ok, err })
-        }
+        "Some" | "None" => ctx.interner.intern(Type::Option(parameters[0])),
+        "Ok" | "Err" => ctx.interner.intern(Type::Result {
+            ok: parameters[0],
+            err: parameters[1],
+        }),
         "Trusted" | "Untrusted" | "Secret" | "Public" | "Sanitized" => {
-            let inner =
-                lower_std_type_with_scope(ctx, registry, &StdType::Var("T".to_owned()), scope);
             ctx.interner.intern(Type::Trust {
                 wrapper: trust_wrapper_from_name(&decl.name).expect("checked wrapper name"),
-                inner,
+                inner: parameters[0],
             })
         }
         _ => lower_std_type_decl_with_name(ctx, registry, decl, qualified_name),
     };
     SymbolTypeFact::Flow {
         signature: CallableSignature {
+            parameter_interface: None,
             generic_params: lower_std_generic_params(ctx, registry, &decl.params),
             params,
             output,
@@ -387,6 +427,20 @@ fn lower_std_type_decl_with_name(
     let scope = qualified_name.and_then(qualified_scope);
     if let Some(ty) = &decl.canonical_type {
         return lower_std_type_with_scope(ctx, registry, ty, scope.as_deref());
+    }
+    if let Some(symbol) = qualified_name.and_then(|name| {
+        ctx.symbols.canonical_path(
+            ctx.hir,
+            &name.split('.').map(str::to_owned).collect::<Vec<_>>(),
+        )
+    }) && ctx.source_type_role(symbol).is_some()
+        && let Some(
+            SymbolTypeFact::NominalType { constructor, .. } | SymbolTypeFact::Type { constructor },
+        ) = ctx.symbol_fact(symbol)
+    {
+        // A source representation completes the predeclared constructor in
+        // place. Re-interning an empty representation would split its identity.
+        return TypeId(constructor.0);
     }
     if let Some(ty) = lower_task_runtime_type_decl(ctx, decl) {
         if !ctx.signature_facts.type_generics.contains_key(&ty) {
@@ -436,6 +490,35 @@ fn lower_task_runtime_type_decl(
         }
         _ => None,
     }
+}
+
+/// The source role owns a normal represented type. Only legacy sessions keep
+/// the historical dedicated Message value type; host signatures in a source
+/// session must refer to the same checked declaration as source methods.
+pub(crate) fn lower_message_type(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    payload: TypeId,
+) -> TypeId {
+    let path = ["std", "agent", "message", "Message"].map(str::to_owned);
+    let local_role = ctx
+        .symbols
+        .canonical_path(ctx.hir, &path)
+        .is_some_and(|symbol| ctx.source_type_role(symbol).is_some());
+    let installed_role = registry
+        .lookup_qualified(&path)
+        .is_some_and(|symbol| registry.declaration_key(symbol.id).is_some());
+    if local_role || installed_role {
+        let owner = ctx
+            .known_std_types()
+            .message
+            .expect("checked source Message role");
+        return ctx.interner.intern(Type::Applied {
+            constructor: TypeConstructorId(owner.0),
+            args: vec![payload],
+        });
+    }
+    ctx.interner.intern(Type::Message(payload))
 }
 
 pub fn lower_std_type(
@@ -489,6 +572,41 @@ fn lower_std_type_with_scope(
     scope: Option<&[String]>,
 ) -> TypeId {
     match ty {
+        StdType::Handler {
+            handled,
+            produced,
+            result,
+        } => {
+            let handled = std_effect_row_expr_with_scope(ctx, registry, handled, scope);
+            let produced = match produced {
+                Some(row) => crate::HandlerProducedEffects::Explicit(
+                    std_effect_row_expr_with_scope(ctx, registry, row, scope),
+                ),
+                None => crate::HandlerProducedEffects::Infer,
+            };
+            let result = result
+                .as_ref()
+                .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope));
+            ctx.interner.intern(Type::Handler(crate::HandlerType {
+                handled,
+                produced,
+                result,
+            }))
+        }
+        StdType::Existential { bounds } => {
+            let bounds = bounds
+                .iter()
+                .map(|bound| crate::CheckedSpecBound {
+                    spec: crate::CheckedSpecRef::Std(bound.path.clone()),
+                    args: bound
+                        .args
+                        .iter()
+                        .map(|ty| lower_std_type_with_scope(ctx, registry, ty, scope))
+                        .collect(),
+                })
+                .collect();
+            ctx.interner.intern(Type::Existential { bounds })
+        }
         StdType::Primitive(primitive) => ctx.interner.primitive(match primitive {
             StdPrimitiveType::Bool => PrimitiveType::Bool,
             StdPrimitiveType::I8 => PrimitiveType::I8,
@@ -598,7 +716,7 @@ fn lower_std_type_with_scope(
         StdType::PromptPart => ctx.interner.intern(Type::PromptPart),
         StdType::Message(inner) => {
             let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
-            ctx.interner.intern(Type::Message(inner))
+            lower_message_type(ctx, registry, inner)
         }
         StdType::MemorySelection(inner) => {
             let inner = lower_std_type_with_scope(ctx, registry, inner, scope);
@@ -855,7 +973,7 @@ fn lookup_scoped_std_type_decl<'a>(
 ) -> Option<(String, &'a etas_std::TypeDecl)> {
     let mut path = scope.to_vec();
     path.push(name.to_owned());
-    let symbol = registry.lookup_qualified(&path)?;
+    let symbol = registry.lookup_type_dependency(&path)?;
     match &symbol.decl {
         StdDecl::Type(decl) => Some((symbol.qualified_path.join("."), decl)),
         _ => None,
@@ -868,13 +986,15 @@ fn lookup_std_type_decl<'a>(
 ) -> Option<(String, &'a etas_std::TypeDecl)> {
     let symbol = if name.contains('.') {
         let path = name.split('.').collect::<Vec<_>>();
-        registry.lookup_qualified(&path)?
+        registry.lookup_type_dependency(&path)?
     } else {
         registry
             .lookup_prelude_in_namespace(name, etas_std::StdNamespace::Type)
             .and_then(|symbol| registry.symbol(symbol.id))
             .or_else(|| {
-                let mut matches = registry.symbols().filter(|symbol| symbol.name == name);
+                let mut matches = registry.symbols().filter(|symbol| {
+                    symbol.name == name && matches!(symbol.decl, StdDecl::Type(_))
+                });
                 let first = matches.next()?;
                 matches.next().is_none().then_some(first)
             })?
@@ -894,61 +1014,121 @@ fn lower_std_type_constructor(
 ) -> TypeId {
     let params = &declaration.params;
     let kind = declaration.kind;
+    let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let identity = ctx
+        .reflection_declaration_identity(&path)
+        .cloned()
+        .or_else(|| {
+            registry
+                .lookup_type_dependency(&path)
+                .and_then(|symbol| registry.declaration_key(symbol.id))
+                .cloned()
+        })
+        .filter(|identity| identity.kind() == etas_code::DefinitionKind::Type);
+    let canonical = identity
+        .as_ref()
+        .and_then(|identity| ctx.interner.canonical_nominal(identity));
+    if let Some(imported) = ctx.external_type_paths.get(&path).copied() {
+        if let Some(canonical) = canonical {
+            assert_eq!(
+                imported, canonical,
+                "checked std import and canonical constructor must share an identity"
+            );
+        }
+        record_std_type_constructor(ctx, registry, imported, declaration, identity.as_ref());
+        return imported;
+    }
+    if let Some(canonical) = canonical {
+        ctx.external_type_paths.insert(path, canonical);
+        record_std_type_constructor(ctx, registry, canonical, declaration, identity.as_ref());
+        return canonical;
+    }
     let read_only_erased_view = declaration
         .code_role
         .is_some_and(etas_std::CodeTypeRole::has_read_only_erased_view);
-    let ty = if let Some(representation) = &declaration.representation {
-        let representation = lower_std_type_with_scope(ctx, registry, representation, scope);
-        ctx.interner.intern(Type::Nominal(NominalTypeRef {
+    let reservation = if declaration.representation.is_some() {
+        Type::Nominal(NominalTypeRef {
             read_only_erased_view,
             name: name.to_owned(),
             params: params.iter().map(|param| param.name.clone()).collect(),
-            representation: Some(representation),
-        }))
+            representation: None,
+        })
     } else {
         match kind {
-            TypeDeclKind::Enum => {
-                let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
-                    name: name.to_owned(),
-                }));
-                lower_std_enum_layout(ctx, registry, ty, name, params, scope);
-                ty
-            }
+            TypeDeclKind::Enum => Type::Enum(crate::EnumTypeRef {
+                name: name.to_owned(),
+            }),
             TypeDeclKind::Struct | TypeDeclKind::Wrapper | TypeDeclKind::Support => {
-                ctx.interner.intern(Type::Nominal(NominalTypeRef {
+                Type::Nominal(NominalTypeRef {
                     read_only_erased_view,
                     name: name.to_owned(),
                     params: params.iter().map(|param| param.name.clone()).collect(),
                     representation: None,
-                }))
+                })
             }
             TypeDeclKind::Primitive => {
-                lower_std_type_with_scope(ctx, registry, &StdType::parse(&declaration.name), scope)
+                let ty = lower_std_type_with_scope(
+                    ctx,
+                    registry,
+                    &StdType::parse(&declaration.name),
+                    scope,
+                );
+                record_std_type_constructor(ctx, registry, ty, declaration, identity.as_ref());
+                return ty;
             }
-            TypeDeclKind::Spec => ctx.interner.intern(Type::Named(NamedTypeRef {
+            TypeDeclKind::Spec => Type::Named(NamedTypeRef {
                 source_parameter: None,
                 name: name.to_owned(),
-            })),
+            }),
+            TypeDeclKind::Alias => unreachable!("checked source alias lowered through its target"),
         }
     };
-    if kind != TypeDeclKind::Spec {
-        if !ctx.signature_facts.type_generics.contains_key(&ty) {
-            // Transitive signature types own the same binders as direct imports.
-            ctx.signature_facts.type_generics.insert(ty, Vec::new());
-            let parameters = lower_std_generic_params(ctx, registry, params);
-            ctx.signature_facts.type_generics.insert(ty, parameters);
-        }
-        let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
-        if let Some(identity) = ctx.reflection_declaration_identity(&path).cloned()
-            && identity.kind() == etas_code::DefinitionKind::Type
-            && kind != TypeDeclKind::Primitive
-        {
-            ctx.signature_facts
-                .reflection_type_identities
-                .insert(ty, identity);
-        }
+    let ty = if let Some(identity) = &identity
+        && matches!(&reservation, Type::Nominal(_))
+    {
+        ctx.interner
+            .intern_canonical_nominal(identity.clone(), reservation)
+            .expect("checked std declaration has a canonical type identity")
+    } else {
+        ctx.interner.intern(reservation)
+    };
+    // Recursive source representations refer back to this same constructor.
+    // Publish its identity and binders before descending into fields or bounds.
+    ctx.external_type_paths.insert(path, ty);
+    record_std_type_constructor(ctx, registry, ty, declaration, identity.as_ref());
+    if let Some(representation) = &declaration.representation {
+        let representation = lower_std_type_with_scope(ctx, registry, representation, scope);
+        ctx.interner.define_nominal(ty, Some(representation));
+    } else if kind == TypeDeclKind::Enum {
+        lower_std_enum_layout(ctx, registry, ty, name, params, scope);
     }
     ty
+}
+
+fn record_std_type_constructor(
+    ctx: &mut TypePipelineContext<'_>,
+    registry: &StdRegistry,
+    ty: TypeId,
+    declaration: &etas_std::TypeDecl,
+    identity: Option<&etas_code::DefinitionKey>,
+) {
+    if declaration.kind == TypeDeclKind::Spec {
+        return;
+    }
+    if ctx.type_generics(ty).is_none() {
+        // Bounds can refer back to this constructor. The completed declaration
+        // always comes from its actual checked parameters, including scalars.
+        ctx.signature_facts.type_generics.insert(ty, Vec::new());
+        let parameters = lower_std_generic_params(ctx, registry, &declaration.params);
+        ctx.signature_facts.type_generics.insert(ty, parameters);
+    }
+    if declaration.kind != TypeDeclKind::Primitive
+        && let Some(identity) = identity
+    {
+        ctx.signature_facts
+            .reflection_type_identities
+            .insert(ty, identity.clone());
+    }
 }
 
 fn lower_std_enum_layout(
@@ -962,7 +1142,7 @@ fn lower_std_enum_layout(
     if ctx.enum_layout(ty).is_some() {
         return;
     }
-    let Some(owner) = registry.lookup_qualified(&name.split('.').collect::<Vec<_>>()) else {
+    let Some(owner) = registry.lookup_type_dependency(&name.split('.').collect::<Vec<_>>()) else {
         return;
     };
     let constructors = registry.enum_constructors(owner.id).collect::<Vec<_>>();

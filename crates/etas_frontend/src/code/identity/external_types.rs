@@ -150,14 +150,13 @@ impl DefinitionIdentityIndex {
                 checked_type: Some(*ty),
                 standard: None,
             };
-            if self
-                .type_names
-                .get(name)
-                .is_some_and(|previous| previous.identity != *identity)
+            if let Some(previous) = self.type_names.get(name)
+                && previous.identity != *identity
             {
-                return Err(ProjectionError::Invalid(
-                    "external type name has conflicting checked identities".into(),
-                ));
+                return Err(ProjectionError::Invalid(format!(
+                    "external type `{name}` has conflicting checked identities: {:?} and {identity:?}",
+                    previous.identity,
+                )));
             }
             self.type_names.insert(name.clone(), declaration.clone());
             self.types.insert(*ty, declaration);

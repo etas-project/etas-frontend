@@ -18,6 +18,7 @@ impl EffectUnit {
         let hir = context.program();
         match self {
             EffectUnit::Item(item) => item_body(hir, context, item),
+            EffectUnit::ParameterDefault { expr, .. } => HirAnalysisBody::Expr(expr),
             EffectUnit::HandlerArm { arm, .. } => HirAnalysisBody::HandlerArm(arm),
             EffectUnit::AnonymousFlow { body, .. } => match body {
                 EffectAnonymousFlowBody::Expr(expr) => HirAnalysisBody::Expr(expr),

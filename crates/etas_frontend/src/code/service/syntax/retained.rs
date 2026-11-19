@@ -120,7 +120,7 @@ impl NativeCodeSyntaxOperations {
         callable: &etas_code::CallableId,
         source: &RetainedBodySource,
     ) -> Result<SyntaxBlockRef, SyntaxOperationError> {
-        self.import_retained_body_with_checkpoint(callable, source, &|| Ok(()))
+        self.import_retained_body_with_checkpoint(callable, source, self.limits, &|| Ok(()))
     }
 
     pub fn import_retained_body_controlled(
@@ -129,7 +129,29 @@ impl NativeCodeSyntaxOperations {
         source: &RetainedBodySource,
         control: &dyn etas_utils::PipelineExecutionControl,
     ) -> Result<SyntaxBlockRef, SyntaxOperationError> {
-        self.import_retained_body_with_checkpoint(callable, source, &|| {
+        self.import_retained_body_bounded_controlled(callable, source, self.limits, control)
+    }
+
+    pub fn import_retained_body_bounded_controlled(
+        &self,
+        callable: &etas_code::CallableId,
+        source: &RetainedBodySource,
+        limits: NativeSyntaxLimits,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<SyntaxBlockRef, SyntaxOperationError> {
+        let limits = NativeSyntaxLimits {
+            parse: stricter_parse(self.limits.parse, limits.parse),
+            max_retained_objects: self
+                .limits
+                .max_retained_objects
+                .min(limits.max_retained_objects),
+            max_retained_bytes: self
+                .limits
+                .max_retained_bytes
+                .min(limits.max_retained_bytes),
+            ..limits
+        };
+        self.import_retained_body_with_checkpoint(callable, source, limits, &|| {
             control
                 .checkpoint()
                 .map_err(SyntaxOperationError::Interrupted)
@@ -140,10 +162,11 @@ impl NativeCodeSyntaxOperations {
         &self,
         callable: &etas_code::CallableId,
         source: &RetainedBodySource,
+        limits: NativeSyntaxLimits,
         checkpoint: &impl Fn() -> Result<(), SyntaxOperationError>,
     ) -> Result<SyntaxBlockRef, SyntaxOperationError> {
         checkpoint()?;
-        let limit = self.limits.parse.max_source_bytes.min(u32::MAX as usize);
+        let limit = limits.parse.max_source_bytes.min(u32::MAX as usize);
         if source.text.len() > limit {
             return Err(SyntaxOperationError::ResourceLimit {
                 resource: SyntaxResource::SourceBytes,
@@ -151,20 +174,28 @@ impl NativeCodeSyntaxOperations {
             });
         }
         let identity = source.identity(callable.fingerprint()).map_err(invalid)?;
-        let cached = self
-            .lock()?
-            .objects
-            .get(&identity)
-            .and_then(|entry| entry.object.upgrade());
+        let cached = self.lock()?.objects.get(&identity).and_then(|entry| {
+            let previous = entry.validated_parse;
+            (previous.max_source_bytes <= limits.parse.max_source_bytes
+                && previous.max_tokens <= limits.parse.max_tokens
+                && previous.max_recursion <= limits.parse.max_recursion)
+                .then(|| entry.object.upgrade())
+                .flatten()
+        });
         if let Some(object) = cached {
             checkpoint()?;
-            return Ok(SyntaxBlockRef::from_backend(object));
+            if limits.max_retained_objects == self.limits.max_retained_objects
+                && limits.max_retained_bytes == self.limits.max_retained_bytes
+            {
+                return Ok(SyntaxBlockRef::from_backend(object));
+            }
+            return self.publish_with_limits(identity, object.syntax.clone(), limits);
         }
         let source_id = self.next_source_id()?;
         let syntax = etas_syntax::RetainedBodyFragment::parse_controlled(
             SourceFile::new(source_id, None, source.text.clone()),
             fragment_form(source.form),
-            self.limits.parse,
+            limits.parse,
             checkpoint,
         )
         .map_err(|error| match error {
@@ -180,12 +211,13 @@ impl NativeCodeSyntaxOperations {
             },
         })?;
         checkpoint()?;
-        self.publish(
+        self.publish_with_limits(
             identity,
             NativeSyntaxPayload::Retained {
                 syntax,
                 origin: RetainedBodyOrigin::from_source(source),
             },
+            limits,
         )
     }
 

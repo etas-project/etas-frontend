@@ -173,6 +173,7 @@ mod tests {
                 param_names: vec![],
                 generic_params: vec![],
                 methods: vec![SpecMethodFact {
+                    updating_receiver: false,
                     receiver_param: None,
                     identity: SpecMethodIdentity::External {
                         package: 1,
@@ -181,6 +182,7 @@ mod tests {
                     name: "show".into(),
                     parameter_names: vec!["self".into()],
                     signature: Some(etas_types::CallableSignature {
+                        parameter_interface: None,
                         generic_params: vec![],
                         params: vec![etas_types::TypeId(1)],
                         output: etas_types::TypeId(2),

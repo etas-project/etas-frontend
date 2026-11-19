@@ -39,6 +39,10 @@ impl<'a> TypeRepresentationMaterializer<'a> {
         roots: impl IntoIterator<Item = TypeId>,
     ) -> Result<(), TypeSubstitutionError> {
         let mut pending: Vec<_> = roots.into_iter().collect();
+        // Roots are a set of checked facts, often stored in hash maps. Their
+        // traversal must assign the same represented TypeIds in every build.
+        pending.sort_unstable();
+        pending.dedup();
         while let Some(ty) = pending.pop() {
             if !self.visited.insert(ty) {
                 continue;

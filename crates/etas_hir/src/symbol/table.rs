@@ -13,6 +13,7 @@ impl SymbolTable {
         if !members.contains(&member) {
             members.push(member);
         }
+        members.sort_unstable();
     }
 
     pub fn rebind_member_owner(&mut self, from: SymbolId, to: SymbolId) {
@@ -40,11 +41,30 @@ impl SymbolTable {
             .map(Vec::as_slice)
         {
             Some([symbol]) => crate::ResolveResult::Resolved(*symbol),
-            Some(symbols) if !symbols.is_empty() => {
-                crate::ResolveResult::Ambiguous(symbols.to_vec())
-            }
+            Some(symbols) if !symbols.is_empty() => self
+                .effect_action_overload_root(symbols)
+                .map(crate::ResolveResult::Resolved)
+                .unwrap_or_else(|| crate::ResolveResult::Ambiguous(symbols.to_vec())),
             _ => crate::ResolveResult::Unresolved,
         }
+    }
+
+    /// Action declarations with the same effect owner share a request name.
+    /// Each declaration remains a separate symbol for checked overload inputs.
+    pub fn effect_action_overload_root(&self, candidates: &[SymbolId]) -> Option<SymbolId> {
+        let first = *candidates.first()?;
+        self.members.iter().find_map(|((owner, _), members)| {
+            (self.get(*owner)?.kind == crate::SymbolKind::Effect
+                && members.contains(&first)
+                && candidates
+                    .iter()
+                    .all(|candidate| members.contains(candidate))
+                && members.iter().all(|member| {
+                    self.get(*member)
+                        .is_some_and(|symbol| symbol.kind == crate::SymbolKind::EffectAction)
+                }))
+            .then(|| members[0])
+        })
     }
 
     pub fn alloc(&mut self, data: SymbolData) -> SymbolId {

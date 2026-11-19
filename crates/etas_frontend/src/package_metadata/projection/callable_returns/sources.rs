@@ -2,6 +2,29 @@ use super::*;
 use etas_effects::facts::{CallableEnvironmentId, CallableValueOrigin};
 
 impl Builder<'_, '_> {
+    pub(super) fn return_projections(
+        &mut self,
+        summary: &EffectSummary,
+        scope: CallableValueScope,
+        environment: Option<CallableEnvironmentId>,
+    ) -> Result<Vec<etas_package_metadata::CallableReturnedProjection>, PackageMetadataError> {
+        let mut result = Vec::new();
+        if let Some(exits) = &summary.exits {
+            for (path, sources) in &exits.value_projections {
+                result.push(etas_package_metadata::CallableReturnedProjection {
+                    path: path.clone(),
+                    sources: match sources {
+                        etas_effects::ProjectedReturnSources::Known(sources) => {
+                            self.sources(sources, scope, environment)?
+                        }
+                        etas_effects::ProjectedReturnSources::Unavailable => None,
+                    },
+                });
+            }
+        }
+        Ok(result)
+    }
+
     pub(super) fn sources(
         &mut self,
         sources: &BTreeSet<CallableReturnSource>,
@@ -25,6 +48,96 @@ impl Builder<'_, '_> {
                 ));
             }
             let instance = match source {
+                CallableReturnSource::Projection(id) => {
+                    if let Some(environment) = environment {
+                        let snapshot = self
+                            .projection
+                            .checked
+                            .effects
+                            .callable_environments
+                            .get(&environment)
+                            .ok_or_else(|| {
+                                invalid("returned projection has no checked capture environment")
+                            })?;
+                        if let Some(origins) = snapshot
+                            .parameters
+                            .get(&etas_effects::ParameterCallTarget::Projection(id))
+                        {
+                            for origin in origins {
+                                let Some((source, environment)) = self.checked_origin(*origin)?
+                                else {
+                                    return Ok(None);
+                                };
+                                pending.push((source, environment));
+                            }
+                            continue;
+                        }
+                        let projection = self
+                            .projection
+                            .checked
+                            .effects
+                            .parameter_projections
+                            .get(&id)
+                            .ok_or_else(|| {
+                                invalid("returned projection has no checked source path")
+                            })?;
+                        if let Some(origins) =
+                            snapshot
+                                .parameters
+                                .get(&etas_effects::ParameterCallTarget::Native(
+                                    projection.parameter,
+                                ))
+                        {
+                            // A recursive factory can bind the captured container
+                            // without separately binding every projected element.
+                            // Keep that checked path on the caller's actual parameter.
+                            let projected = origins
+                                .iter()
+                                .map(|origin| {
+                                    let target = match origin {
+                                        CallableValueOrigin::Parameter { symbol, .. } => {
+                                            etas_effects::ParameterCallTarget::Native(*symbol)
+                                        }
+                                        CallableValueOrigin::Projection(id) => {
+                                            etas_effects::ParameterCallTarget::Projection(*id)
+                                        }
+                                        _ => return Ok(None),
+                                    };
+                                    self.target_parameter(target, scope)?
+                                        .map(|root| self.with_projection(root, &projection.path))
+                                        .transpose()
+                                })
+                                .collect::<Result<Option<Vec<_>>, PackageMetadataError>>()?;
+                            if let Some(projected) = projected {
+                                output.extend(
+                                    projected.into_iter().map(CallableValueSource::Parameter),
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    let Some(parameter) = self.target_parameter(
+                        etas_effects::ParameterCallTarget::Projection(id),
+                        scope,
+                    )?
+                    else {
+                        if self.method_root {
+                            let fact = self
+                                .projection
+                                .checked
+                                .effects
+                                .parameter_projections
+                                .get(&id);
+                            return Err(invalid(&format!(
+                                "returned projection {id:?} has no lexical parameter in {scope:?}: {fact:?}; capture {environment:?}"
+                            )));
+                        }
+                        return Ok(None);
+                    };
+                    output.insert(CallableValueSource::Parameter(parameter));
+                    continue;
+                }
+
                 CallableReturnSource::MetadataObject(source) => {
                     output.insert(CallableValueSource::Existential(
                         self.reserve_foreign_object(ForeignObjectInstance {
@@ -110,8 +223,10 @@ impl Builder<'_, '_> {
                             .parameters
                             .get(&etas_effects::ParameterCallTarget::Native(symbol))
                         {
+                            // An instantiated scalar has checked empty callable
+                            // origins; it does not make the remaining return graph unknown.
                             if origins.is_empty() {
-                                return Ok(None);
+                                continue;
                             }
                             for origin in origins {
                                 let Some((source, environment)) = self.checked_origin(*origin)?
@@ -124,9 +239,20 @@ impl Builder<'_, '_> {
                         }
                     }
                     let Some(parameter) = self.parameter(symbol, scope)? else {
+                        if self.method_root {
+                            let symbol = self.projection.checked.hir.symbols.get(symbol);
+                            return Err(invalid(&format!(
+                                "returned parameter has no lexical binding in {scope:?}: {symbol:?}; capture {environment:?}"
+                            )));
+                        }
                         return Ok(None);
                     };
                     if !self.scope_contains(scope, parameter.scope) {
+                        if self.method_root {
+                            return Err(invalid(&format!(
+                                "returned parameter {parameter:?} is outside {scope:?}"
+                            )));
+                        }
                         return Ok(None);
                     }
                     output.insert(CallableValueSource::Parameter(parameter));
@@ -185,7 +311,11 @@ impl Builder<'_, '_> {
         self.units.insert(instance, index);
         self.parents.insert(
             index,
-            if matches!(instance.unit, EffectUnit::AnonymousFlow { .. }) {
+            if instance.environment.is_some()
+                || matches!(instance.unit, EffectUnit::AnonymousFlow { .. })
+            {
+                // Instantiated captures can depend on the caller's parameters,
+                // including when the captured callable is a named source flow.
                 scope
             } else {
                 CallableValueScope::Root
@@ -252,6 +382,7 @@ impl Builder<'_, '_> {
                 },
                 environment,
             ),
+            CallableValueOrigin::Projection(id) => (CallableReturnSource::Projection(id), None),
             CallableValueOrigin::Parameter { symbol, .. } => {
                 (CallableReturnSource::Parameter(symbol), None)
             }

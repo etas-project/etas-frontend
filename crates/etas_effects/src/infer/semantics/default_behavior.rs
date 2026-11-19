@@ -67,7 +67,11 @@ impl EffectSemantics<'_> {
                             span,
                         )?;
                         let parameter = match &request.parameter {
-                            crate::ExternalCallableRequestTarget::Parameter(name) => name.clone(),
+                            crate::ExternalCallableRequestTarget::Parameter(name)
+                            | crate::ExternalCallableRequestTarget::ParameterProjection {
+                                parameter: name,
+                                ..
+                            } => name.clone(),
                             crate::ExternalCallableRequestTarget::SpecMethod(method) => {
                                 method.method.clone()
                             }

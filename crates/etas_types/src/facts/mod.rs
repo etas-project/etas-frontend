@@ -52,6 +52,16 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub declared_call_arguments: HashMap<HirExprId, crate::ArgumentBinding>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_execution_roles: HashMap<SymbolId, etas_std::StdExecutionRole>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub external_execution_roles: HashMap<etas_code::MethodId, etas_std::StdExecutionRole>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub scoped_callbacks: HashMap<SymbolId, concurrency::ScopedCallbackFact>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub external_scoped_methods: HashMap<etas_code::MethodId, Vec<u32>>,
     #[serde(default)]
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub existential_packs: HashMap<HirExprId, existentials::CheckedExistentialPackFact>,
@@ -94,6 +104,10 @@ pub struct TypeFacts {
     >,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub agent_method_calls: HashMap<HirExprId, SymbolId>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_flow_calls: HashMap<HirExprId, SymbolId>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub library_flow_calls: HashMap<HirExprId, expressions::CheckedLibraryCallFact>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_intrinsic_calls: HashMap<HirExprId, CheckedStdCallFact>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
@@ -145,6 +159,8 @@ pub struct TypeFacts {
     #[serde(default)]
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_callable_signatures: HashMap<etas_std::StdSymbolId, signatures::CallableSignature>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub library_callable_signatures: HashMap<etas_code::CallableId, signatures::CallableSignature>,
     #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub action_signatures: HashMap<SymbolId, EffectActionSignature>,
     #[serde(default)]

@@ -807,6 +807,8 @@ pub struct ProjectExternalModuleInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalPublicMetadataInput {
+    #[serde(default)]
+    pub scoped_callbacks: Vec<etas_package_metadata::ScopedCallbackContract>,
     pub package: ExternalPackageId,
     pub types: Vec<ProjectExternalNamedSignatureInput>,
     pub values: Vec<ProjectExternalNamedSignatureInput>,
@@ -871,6 +873,7 @@ pub struct ProjectExternalSpecMethodInput {
     pub path: Vec<String>,
     pub signature: Option<ProjectExternalFlowSignatureInput>,
     pub receiver_param: Option<u32>,
+    pub updating_receiver: bool,
 }
 
 #[derive(
@@ -885,6 +888,8 @@ pub struct ProjectExternalSpecBoundInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalSpecImplInput {
+    pub owner: Option<etas_code::ImplementationKey>,
+    pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub self_type: ProjectExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ProjectExternalTypeInput>,
@@ -933,6 +938,10 @@ pub enum ProjectExternalTraceSpecConformanceTargetInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalFlowSignatureInput {
+    #[serde(default)]
+    pub definition: Option<etas_code::DefinitionKey>,
+    #[serde(default)]
+    pub parameter_defaults: Vec<etas_package_metadata::ParameterDefault>,
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
@@ -946,6 +955,8 @@ pub struct ProjectExternalFlowSignatureInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalAgentSignatureInput {
+    #[serde(default)]
+    pub parameter_defaults: Vec<etas_package_metadata::ParameterDefault>,
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
@@ -959,6 +970,8 @@ pub struct ProjectExternalAgentSignatureInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalToolSignatureInput {
+    #[serde(default)]
+    pub parameter_defaults: Vec<etas_package_metadata::ParameterDefault>,
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
@@ -980,6 +993,10 @@ pub struct ProjectExternalToolSchemaInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalActionSignatureInput {
+    #[serde(default)]
+    pub param_names: Vec<String>,
+    #[serde(default)]
+    pub parameter_defaults: Vec<etas_package_metadata::ParameterDefault>,
     pub path: Vec<String>,
     pub generic_params: Vec<ProjectExternalActionGenericParamInput>,
     pub params: Vec<ProjectExternalTypeInput>,
@@ -988,6 +1005,7 @@ pub struct ProjectExternalActionSignatureInput {
     pub selector_defaults: Vec<Option<ProjectExternalEffectArgInput>>,
     pub output: ProjectExternalTypeInput,
     pub returns_never: bool,
+    pub default_handler_effects: Option<ProjectExternalEffectRowInput>,
     pub visibility: String,
 }
 
@@ -1149,6 +1167,8 @@ pub struct ProjectExternalRecordFieldInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalEffectSummaryInput {
+    #[serde(default)]
+    pub definition: Option<etas_code::DefinitionKey>,
     pub residual_checks: Vec<etas_code::residual::identity::ResidualObligationRef>,
     pub behavior: Option<etas_package_metadata::CallableValueBehavior>,
     pub handler_requests: Option<ProjectExternalRequestInstantiationInput>,

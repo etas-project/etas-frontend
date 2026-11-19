@@ -114,6 +114,11 @@ impl Builder<'_, '_> {
             },
             None => None,
         };
+        let returned_projections = self.return_projections(
+            summary,
+            CallableValueScope::Value(index),
+            *invocation_environment,
+        )?;
         let mut trace_labels = BTreeMap::new();
         let mut parameter_bindings = vec![];
         let mut bound = BTreeSet::new();
@@ -127,9 +132,11 @@ impl Builder<'_, '_> {
                 continue;
             }
             let parameter = match target {
-                etas_effects::ParameterCallTarget::Native(symbol) => {
+                target @ (etas_effects::ParameterCallTarget::Native(_)
+                | etas_effects::ParameterCallTarget::Projection(_)
+                | etas_effects::ParameterCallTarget::ExternalProjection(_)) => {
                     let Some(parameter) =
-                        self.parameter(symbol, CallableValueScope::Value(index))?
+                        self.target_parameter(target, CallableValueScope::Value(index))?
                     else {
                         return Ok(None);
                     };
@@ -142,16 +149,14 @@ impl Builder<'_, '_> {
                     ) && (position as usize) < signature.input.len() =>
                 {
                     etas_package_metadata::CallableValueParameter {
+                        projection: None,
                         scope: CallableValueScope::Value(index),
                         position,
                     }
                 }
                 _ => return Ok(None),
             };
-            let label = match parameter.scope {
-                CallableValueScope::Root => format!("rp{}", parameter.position),
-                CallableValueScope::Value(value) => format!("v{value}p{}", parameter.position),
-            };
+            let label = self.parameter_label(parameter);
             trace_labels.insert(target, label.clone());
             if bound.insert(parameter) {
                 parameter_bindings.push(etas_package_metadata::CallableValueParameterBinding {
@@ -160,13 +165,17 @@ impl Builder<'_, '_> {
                 });
             }
         }
+        let invocation_parameters =
+            self.invocation_parameters(CallableValueScope::Value(index), &mut parameter_bindings);
+        let invocation_projection = self
+            .projection
+            .with_invocation_parameters(invocation_parameters);
         let Some(projected) = summary::project(
-            self.projection,
+            &invocation_projection,
             summary,
             &projection.type_names,
             &projection.effect_names,
             &trace_labels,
-            false,
         )?
         else {
             return Ok(None);
@@ -195,6 +204,7 @@ impl Builder<'_, '_> {
             parameter_bindings,
             action_trace: projected.action_trace,
             returned_sources,
+            returned_projections,
         }))
     }
 }

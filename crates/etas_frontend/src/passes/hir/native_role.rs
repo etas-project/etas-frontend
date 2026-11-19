@@ -33,7 +33,7 @@ pub(crate) fn bind_parameters(
         let native = registry
             .lookup_qualified(&binding.qualified_path)
             .expect("compiler role query identity");
-        let parameters = parameters
+        let parameters: Vec<_> = parameters
             .iter()
             .zip(role.parameter_kinds())
             .enumerate()
@@ -56,10 +56,28 @@ pub(crate) fn bind_parameters(
                 .collect();
             builder.source_effect_declaration(native.id, parameters, extends);
         } else {
+            let constructors: &[&str] = match role {
+                StdSourceRole::Option => &["Some", "None"],
+                StdSourceRole::Result => &["Ok", "Err"],
+                _ => &[],
+            };
+            for constructor in constructors {
+                let mut path = native.qualified_path[..native.qualified_path.len() - 1].to_vec();
+                path.push((*constructor).to_owned());
+                if !bindings
+                    .iter()
+                    .any(|binding| binding.qualified_path == path)
+                {
+                    let constructor = registry
+                        .lookup_qualified(&path)
+                        .expect("compiler enum constructor role");
+                    builder.source_type_parameters(constructor.id, parameters.clone());
+                }
+            }
             builder.source_type_parameters(native.id, parameters);
         }
     }
-    builder.finish()
+    builder.finish_bootstrap()
 }
 
 /// Bind source actions to their execution ABI. Empty effect declarations still
@@ -160,11 +178,40 @@ pub(crate) fn bind_effect_actions(
                 symbol
             });
             hir.standard_action_targets.insert(symbol, native.id);
+            if let Some(HirItem::Effect(effect)) = owner_data
+                .defining_item
+                .and_then(|item| hir.items.get(item))
+            {
+                let overloads = effect
+                    .body
+                    .actions()
+                    .iter()
+                    .filter(|source| {
+                        hir.symbols
+                            .get(source.symbol)
+                            .unwrap()
+                            .name
+                            .rsplit('.')
+                            .next()
+                            == Some(action.name.as_str())
+                    })
+                    .map(|source| source.symbol)
+                    .collect::<Vec<_>>();
+                for overload in overloads {
+                    hir.standard_action_targets.insert(overload, native.id);
+                }
+            }
             // Aliases resolve through the source action so every use shares its
             // checked generic binders, rather than an independently lowered ABI.
             if source_action.is_some() {
                 for (alias, target) in hir.standard_action_targets.clone() {
-                    if target == native.id && alias != symbol {
+                    if target == native.id
+                        && alias != symbol
+                        && !matches!(
+                            hir.symbols.get(alias).map(|value| &value.def),
+                            Some(SymbolDef::EffectAction { .. })
+                        )
+                    {
                         hir.source_import_targets.insert(alias, symbol);
                     }
                 }
@@ -243,6 +290,9 @@ pub(crate) fn bindings(
             let target = match annotation.args.as_slice() {
                 [HirAnnotationArg::Positional { value, .. }] => match hir.exprs.get(*value) {
                     Some(HirExpr::Literal(HirLiteral::String { value, .. })) => {
+                        if etas_std::StdExecutionRole::from_role(value).is_some() {
+                            continue;
+                        }
                         StdSourceRole::from_path(value)
                     }
                     _ => None,
@@ -265,9 +315,20 @@ pub(crate) fn bindings(
                 HirItem::Type(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
-                    (target.is_bodyless_type() && matches!(source.body, HirTypeDeclBody::Bodyless))
-                        || ((target.is_projected_type() || target.is_represented_type())
-                            && matches!(source.body, HirTypeDeclBody::Representation(_))),
+                    if target == StdSourceRole::Iter {
+                        source_iterator_shape(hir, source)
+                    } else if target == StdSourceRole::WorkspacePath {
+                        source_workspace_path_shape(hir, source)
+                    } else if target == StdSourceRole::Money {
+                        source_money_shape(hir, source)
+                    } else if target == StdSourceRole::Range {
+                        source_range_shape(hir, source)
+                    } else {
+                        (target.is_bodyless_type()
+                            && matches!(source.body, HirTypeDeclBody::Bodyless))
+                            || ((target.is_projected_type() || target.is_represented_type())
+                                && matches!(source.body, HirTypeDeclBody::Representation(_)))
+                    },
                 ),
                 HirItem::Enum(source) => (
                     source.symbol,
@@ -307,10 +368,12 @@ pub(crate) fn bindings(
                 HirItem::Spec(source) => (
                     source.symbol,
                     source.type_params.as_slice(),
+                    // The role identifies the spec; its behavioral members and
+                    // super bounds belong to source and use ordinary spec checks.
                     target.is_spec()
                         && matches!(source.kind, etas_hir::HirSpecKind::TypeSpec)
-                        && source.items.is_empty()
-                        && source.bounds.is_empty(),
+                        && (target != StdSourceRole::Number
+                            || (source.items.is_empty() && source.bounds.is_empty())),
                 ),
                 _ => {
                     diagnostics.push(invalid(
@@ -380,6 +443,172 @@ pub(crate) fn bindings(
     (result, diagnostics)
 }
 
+fn source_range_shape(hir: &HirProgram, source: &etas_hir::HirTypeDecl) -> bool {
+    use etas_hir::{HirPrimitiveType, HirType, ResolveResult};
+    let [index] = source.type_params.as_slice() else {
+        return false;
+    };
+    let HirTypeDeclBody::Representation(representation) = source.body else {
+        return false;
+    };
+    let HirType::Record { fields, .. } = &hir.types[representation] else {
+        return false;
+    };
+    fields.len() == 4
+        && ["start", "end", "include_start", "include_end"]
+            .iter()
+            .all(|name| {
+                fields.iter().any(|field| {
+                    hir.symbols.get(field.symbol).unwrap().name == *name
+                        && match *name {
+                            "start" | "end" => {
+                                matches!(&hir.types[field.ty], HirType::Path { path, args, .. }
+                    if args.is_empty() && path.resolution == ResolveResult::Resolved(*index))
+                            }
+                            _ => matches!(
+                                hir.types[field.ty],
+                                HirType::Primitive {
+                                    kind: HirPrimitiveType::Bool,
+                                    ..
+                                }
+                            ),
+                        }
+                })
+            })
+}
+
+fn source_workspace_path_shape(hir: &HirProgram, source: &etas_hir::HirTypeDecl) -> bool {
+    let HirTypeDeclBody::Representation(representation) = source.body else {
+        return false;
+    };
+    let etas_hir::HirType::Record { fields, .. } = &hir.types[representation] else {
+        return false;
+    };
+    let [relative] = fields.as_slice() else {
+        return false;
+    };
+    relative.visibility == etas_syntax::ast::ty::Visibility::Private
+        && hir.symbols.get(relative.symbol).unwrap().name == "relative"
+        && matches!(
+            hir.types[relative.ty],
+            etas_hir::HirType::Primitive {
+                kind: etas_hir::HirPrimitiveType::String,
+                ..
+            }
+        )
+}
+
+fn source_money_shape(hir: &HirProgram, source: &etas_hir::HirTypeDecl) -> bool {
+    let HirTypeDeclBody::Representation(representation) = source.body else {
+        return false;
+    };
+    let etas_hir::HirType::Record { fields, .. } = &hir.types[representation] else {
+        return false;
+    };
+    fields.len() == 2
+        && fields.iter().any(|field| {
+            hir.symbols
+                .get(field.symbol)
+                .is_some_and(|symbol| symbol.name == "amount")
+                && matches!(
+                    hir.types[field.ty],
+                    etas_hir::HirType::Primitive {
+                        kind: etas_hir::HirPrimitiveType::F64,
+                        ..
+                    }
+                )
+        })
+        && fields.iter().any(|field| {
+            hir.symbols
+                .get(field.symbol)
+                .is_some_and(|symbol| symbol.name == "currency")
+                && matches!(
+                    hir.types[field.ty],
+                    etas_hir::HirType::Primitive {
+                        kind: etas_hir::HirPrimitiveType::String,
+                        ..
+                    }
+                )
+        })
+}
+
+fn source_iterator_shape(hir: &HirProgram, source: &etas_hir::HirTypeDecl) -> bool {
+    use etas_hir::{HirType, ResolveResult};
+    let [element] = source.type_params.as_slice() else {
+        return false;
+    };
+    let HirTypeDeclBody::Representation(representation) = source.body else {
+        return false;
+    };
+    let HirType::Record { fields, .. } = &hir.types[representation] else {
+        return false;
+    };
+    let [next] = fields.as_slice() else {
+        return false;
+    };
+    if hir.symbols.get(next.symbol).unwrap().name != "next" {
+        return false;
+    }
+    let HirType::Arrow {
+        input,
+        output,
+        effect,
+        ..
+    } = &hir.types[next.ty]
+    else {
+        return false;
+    };
+    if !matches!(&hir.types[*input], HirType::Tuple { elems, .. } if elems.is_empty())
+        && !matches!(
+            &hir.types[*input],
+            HirType::Primitive {
+                kind: etas_hir::HirPrimitiveType::Unit,
+                ..
+            }
+        )
+    {
+        return false;
+    }
+    if !effect
+        .as_ref()
+        .is_some_and(|row| row.effects.is_empty() && row.tail.is_none())
+    {
+        return false;
+    }
+    let HirType::Path { path, args, .. } = &hir.types[*output] else {
+        return false;
+    };
+    let ResolveResult::Resolved(option) = path.resolution else {
+        return false;
+    };
+    if canonical_path(hir, option) != ["std", "option", "Option"] {
+        return false;
+    }
+    let [pair] = args.as_slice() else {
+        return false;
+    };
+    let HirType::Tuple { elems, .. } = &hir.types[*pair] else {
+        return false;
+    };
+    let [value, remaining] = elems.as_slice() else {
+        return false;
+    };
+    if !matches!(&hir.types[*value], HirType::Path { path, args, .. }
+        if args.is_empty() && path.resolution == ResolveResult::Resolved(*element))
+    {
+        return false;
+    }
+    let HirType::Path { path, args, .. } = &hir.types[*remaining] else {
+        return false;
+    };
+    let ResolveResult::Resolved(iterator) = path.resolution else {
+        return false;
+    };
+    canonical_path(hir, iterator) == ["std", "collections", "Iter"]
+        && matches!(args.as_slice(), [arg] if matches!(&hir.types[*arg], HirType::Path { path, args, .. }
+            if args.is_empty() && path.resolution == ResolveResult::Resolved(*element)))
+}
+
 fn result_shape(hir: &HirProgram, source: &etas_hir::HirEnumDecl) -> bool {
     source.type_params.len() == 2 && source.variants.len() == 2
         && source.variants.iter().zip(["Ok", "Err"]).enumerate().all(|(position, (variant, name))| {
@@ -405,7 +634,10 @@ fn option_shape(hir: &HirProgram, source: &etas_hir::HirEnumDecl) -> bool {
 }
 
 fn option_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &str) -> bool {
-    let block = &hir.blocks[source.body.block()];
+    let Some(block) = source.body.as_block() else {
+        return false;
+    };
+    let block = &hir.blocks[block];
     let expression = match (block.stmts.as_slice(), block.final_expr) {
         ([statement], None) => match hir.stmts.get(*statement) {
             Some(etas_hir::HirStmt::Return {
@@ -471,7 +703,10 @@ fn option_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &s
 }
 
 fn result_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &str) -> bool {
-    let block = &hir.blocks[source.body.block()];
+    let Some(block) = source.body.as_block() else {
+        return false;
+    };
+    let block = &hir.blocks[block];
     let expression = match (block.stmts.as_slice(), block.final_expr) {
         ([statement], None) => match hir.stmts.get(*statement) {
             Some(etas_hir::HirStmt::Return {
@@ -532,7 +767,7 @@ fn result_constructor(hir: &HirProgram, source: &etas_hir::HirFlowDecl, name: &s
                 if path.resolution == etas_hir::ResolveResult::Resolved(source.params[0])))
 }
 
-fn canonical_path(hir: &HirProgram, symbol: etas_hir::SymbolId) -> Vec<String> {
+pub(super) fn canonical_path(hir: &HirProgram, symbol: etas_hir::SymbolId) -> Vec<String> {
     let symbol = hir.symbols.get(symbol).unwrap();
     if let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def {
         return path.clone();

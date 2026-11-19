@@ -284,6 +284,9 @@ impl Fingerprinter<'_> {
 
     fn ty(&self, ty: &metadata::Type) -> Result<CodeFingerprint, ProjectionError> {
         let mut parts = vec![encoded("kind", &ty.kind)?];
+        if let Some(parameter) = &ty.parameter {
+            parts.push(encoded("generic-parameter", parameter)?);
+        }
         if matches!(
             ty.kind,
             metadata::TypeKind::Named
@@ -465,6 +468,9 @@ impl Fingerprinter<'_> {
         match target {
             metadata::CallableRequestTarget::AgentTools(context) => {
                 Ok(combine("etas.code.agent-tools.v1", [self.ty(context)?]))
+            }
+            metadata::CallableRequestTarget::ParameterProjection { parameter, path } => {
+                encoded("parameter-projection", &(parameter, path))
             }
             metadata::CallableRequestTarget::Parameter(parameter) => {
                 encoded("parameter", parameter)

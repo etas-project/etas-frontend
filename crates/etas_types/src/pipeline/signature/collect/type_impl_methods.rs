@@ -62,7 +62,14 @@ pub fn collect_type_impl_methods(
         };
         let mut owner_params =
             super::callables::callable_generic_params(ctx, state, &declaration.type_params);
-        inherit_owner_bounds(ctx, state, self_type, &mut owner_params, declaration.span);
+        inherit_owner_bounds(
+            ctx,
+            state,
+            self_type,
+            &declaration.target,
+            &mut owner_params,
+            declaration.span,
+        );
         for (body, symbol, name) in methods {
             state.type_impl_methods.insert(
                 symbol,
@@ -84,20 +91,49 @@ pub(super) fn inherit_owner_bounds(
     ctx: &mut TypePipelineContext<'_>,
     state: &mut SignaturePipelineState,
     subject: crate::TypeId,
+    owner: &HirImplTarget,
     parameters: &mut [crate::CallableGenericParam],
     span: etas_core::Span,
 ) {
-    let Some(crate::Type::Applied { constructor, args }) = ctx.interner.store().get(subject) else {
-        return;
-    };
-    let arguments = args.clone();
-    let Some(declared) = ctx
-        .signature_facts
-        .type_generics
-        .get(&crate::TypeId(constructor.0))
-        .cloned()
-    else {
-        return;
+    let (declared, arguments) = if let Some(crate::Type::Applied { constructor, args }) =
+        ctx.interner.store().get(subject)
+    {
+        let Some(declared) = ctx
+            .signature_facts
+            .type_generics
+            .get(&crate::TypeId(constructor.0))
+            .cloned()
+        else {
+            return;
+        };
+        (declared, args.clone())
+    } else {
+        // Structural aliases retain declaration bounds even though their
+        // lowered self type has no nominal constructor (for example Range<I>).
+        let (path, arguments) = match owner {
+            HirImplTarget::Inherent { target, type_args } => (target.clone(), type_args.clone()),
+            HirImplTarget::SpecSatisfaction { self_type, .. } => match &ctx.hir.types[*self_type] {
+                etas_hir::HirType::Path { path, args, .. } => (path.clone(), args.clone()),
+                _ => return,
+            },
+            _ => return,
+        };
+        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+            return;
+        };
+        let Some(crate::SymbolTypeFact::TypeAlias { params, .. }) =
+            ctx.symbol_fact(symbol).cloned()
+        else {
+            return;
+        };
+        let Some(arguments) = arguments
+            .into_iter()
+            .map(|ty| lower_type_ref(ctx, ty))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        (params, arguments)
     };
     let bindings = declared
         .iter()
@@ -154,12 +190,14 @@ pub(super) fn inherit_owner_bounds(
                     .external_specs
                     .aliases
                     .iter()
-                    .find_map(|(symbol, candidate)| (candidate == identity).then_some(*symbol)),
+                    .filter_map(|(symbol, candidate)| (candidate == identity).then_some(*symbol))
+                    .min(),
                 crate::CheckedSpecRef::Std(path) => ctx
                     .signature_facts
                     .std_spec_aliases
                     .iter()
-                    .find_map(|(symbol, candidate)| (candidate == path).then_some(*symbol)),
+                    .filter_map(|(symbol, candidate)| (candidate == path).then_some(*symbol))
+                    .min(),
                 crate::CheckedSpecRef::Canonical(_) => None,
             };
             let Some(spec_symbol) = spec_symbol else {

@@ -8,9 +8,7 @@ impl ProjectMetadataProjection<'_> {
         effect_names: &BTreeSet<String>,
         labels: &BTreeMap<etas_effects::ParameterCallTarget, String>,
     ) -> Result<Option<etas_package_metadata::DefaultBehavior>, PackageMetadataError> {
-        let Some(behavior) = &summary.default_behavior else {
-            return Ok(None);
-        };
+        let behavior = etas_effects::DefaultBehavior::from_summary(summary);
         Ok(Some(etas_package_metadata::DefaultBehavior {
             direct: self.effect_footprint_metadata(
                 &behavior.direct,

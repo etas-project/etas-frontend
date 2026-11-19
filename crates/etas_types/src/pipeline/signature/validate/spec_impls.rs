@@ -6,6 +6,19 @@ use etas_hir::{HirImplItem, HirImplTarget, HirItem, ResolveResult, SymbolKind};
 use crate::pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState};
 
 pub fn validate_spec_impls(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipelineState) {
+    let facts = crate::SpecFacts::from(&ctx.signature_facts);
+    for implementation in &state.spec_impls {
+        if crate::numeric_family::is_number_spec(
+            &facts,
+            &crate::CheckedSpecRef::Source(implementation.spec_symbol),
+        ) {
+            ctx.diagnostics.push(Diagnostic::type_check(
+                etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
+                implementation.span,
+                "Number membership is supplied by the compiler's closed primitive numeric family",
+            ));
+        }
+    }
     validate_impl_member_kinds(ctx);
     validate_duplicate_impls(ctx, state);
     validate_method_bearing_spec_groups(ctx, state);

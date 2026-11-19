@@ -12,13 +12,20 @@ pub(super) fn materialize(
         .keys()
         .copied()
         .collect::<std::collections::HashSet<_>>();
-    for (expr, fact) in state.solver_report.checked_method_calls.iter_mut().chain(
-        state
-            .solver_report
-            .bound_method_values
-            .iter_mut()
-            .map(|(expr, value)| (expr, &mut value.method)),
-    ) {
+    let mut methods = state
+        .solver_report
+        .checked_method_calls
+        .iter_mut()
+        .chain(
+            state
+                .solver_report
+                .bound_method_values
+                .iter_mut()
+                .map(|(expr, value)| (expr, &mut value.method)),
+        )
+        .collect::<Vec<_>>();
+    methods.sort_unstable_by_key(|(expr, _)| **expr);
+    for (expr, fact) in methods {
         if fact
             .instantiation
             .deferred_effect_row_obligations

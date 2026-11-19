@@ -2,8 +2,7 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 use etas_hir::{HirActionSelectorParam, HirEffectActionDecl, HirImplItem, HirItem, SymbolKind};
 
 use crate::{
-    CallableGenericParamKind, EffectActionArgKind, EffectActionSignature, EffectArgRef,
-    EffectRowRef, PrimitiveType, SymbolTypeFact, Type,
+    EffectActionArgKind, EffectActionSignature, EffectArgRef, PrimitiveType, SymbolTypeFact, Type,
     lower::type_ref::lower_type_ref,
     pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState},
 };
@@ -69,49 +68,15 @@ fn collect_action(
     let (effect_args, selector_param_names, selector_defaults) =
         action_effect_selector_signature(ctx, action);
     let generic_params = super::callables::callable_generic_params(ctx, state, &action.type_params);
-    let default_handler_effects = ctx
-        .hir
-        .standard_action_targets
-        .get(&action.symbol)
-        .and_then(|target| ctx.std_registry.symbol(*target))
-        .and_then(|symbol| match &symbol.decl {
-            etas_std::StdDecl::EffectAction(declaration) => Some(declaration.clone()),
-            _ => None,
-        })
-        .and_then(|declaration| {
-            let registry = ctx.std_registry.clone();
-            let native =
-                crate::lower::std::lower_std_effect_action_signature(ctx, &registry, &declaration);
-            let rows = native
-                .generic_params
-                .iter()
-                .zip(&generic_params)
-                .filter(|(a, b)| {
-                    a.kind == CallableGenericParamKind::Effect
-                        && b.kind == CallableGenericParamKind::Effect
-                })
-                .map(|(a, b)| {
-                    (
-                        a.name.clone(),
-                        EffectRowRef {
-                            effects: vec![],
-                            tail: Some(b.name.clone()),
-                        },
-                    )
-                })
-                .collect();
-            native.default_handler_effects.map(|row| {
-                crate::TypeSubstitutionEngine::materializing(
-                    &mut ctx.interner,
-                    &std::collections::HashMap::new(),
-                    None,
-                )
-                .with_effect_arguments(&rows)
-                .substitute_effect_row(row)
-                .expect("checked native handler row")
-            })
-        });
+    let default_handler_effects = action
+        .default_handler_effects
+        .as_ref()
+        .map(|row| crate::lower::effect_row::lower_effect_row(ctx, row));
     let signature = EffectActionSignature {
+        parameter_interface: Some(crate::call_interface::source_parameters(
+            ctx.hir,
+            &action.params,
+        )),
         default_handler_effects,
         generic_params,
         params,
@@ -145,7 +110,7 @@ fn action_effect_selector_signature(
             HirActionSelectorParam::Value { name, kind, .. } => {
                 let kind = kind.join(".");
                 kinds.push(match kind.as_str() {
-                    "MemoryPlace" => EffectActionArgKind::MemoryPlace,
+                    "MemoryPlace" | "std.memory.MemoryPlace" => EffectActionArgKind::MemoryPlace,
                     "string" | "std.core.string" => EffectActionArgKind::StringPattern,
                     _ => EffectActionArgKind::StaticResourcePath { ty: kind },
                 });

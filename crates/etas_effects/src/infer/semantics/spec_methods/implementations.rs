@@ -124,9 +124,36 @@ impl EffectSemantics<'_> {
                     crate::ParameterCallTarget::Graph {
                         graph: graph.graph_key,
                         parameter: etas_package_metadata::CallableValueParameter {
+                            projection: None,
                             scope,
                             position: position as u32,
                         },
+                    },
+                    origins.clone(),
+                );
+            }
+        }
+        for parameter in graph.graph.parameter_references() {
+            if parameter.scope != scope || parameter.projection.is_none() {
+                continue;
+            }
+            let path = graph
+                .graph
+                .projection_path(parameter)
+                .map_err(|error| invalid(&error.to_string()))?;
+            let target = self
+                .intern_external_parameter_projection(
+                    crate::ParameterCallTarget::Interface(parameter.position),
+                    path.to_vec(),
+                )
+                .ok_or_else(|| {
+                    invalid("external method argument projection exceeds its checked graph budget")
+                })?;
+            if let Some(origins) = snapshot.parameters.get(&target) {
+                parameters.insert(
+                    crate::ParameterCallTarget::Graph {
+                        graph: graph.graph_key,
+                        parameter,
                     },
                     origins.clone(),
                 );

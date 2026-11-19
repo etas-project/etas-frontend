@@ -709,6 +709,15 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
         let expr_id = expr.id();
         self.exprs.insert(expr_id);
+        if let Some(symbol) = self
+            .types
+            .and_then(|types| types.source_flow_calls.get(&expr_id))
+        {
+            match self.hir.symbols.get(*symbol).map(|symbol| &symbol.def) {
+                Some(etas_hir::SymbolDef::Item { item }) => self.pending_items.push(*item),
+                _ => *self.missing_method = true,
+            }
+        }
         if let Some(fact) = self
             .types
             .and_then(|types| types.checked_method_calls.get(&expr_id))
@@ -806,8 +815,14 @@ fn local_item_for_expr_path(
         match &resolution.result {
             HirPathResolution::PartialSymbol {
                 prefix, remaining, ..
-            } if remaining.len() == 1 => {
-                return agent_method_for_binding(hir, *prefix, &remaining[0]);
+            } => {
+                if let SymbolDef::TopLevelLet { item, .. } = hir.symbols.get(*prefix)?.def {
+                    return Some(item);
+                }
+                if remaining.len() == 1 {
+                    return agent_method_for_binding(hir, *prefix, &remaining[0]);
+                }
+                return None;
             }
             HirPathResolution::DirectSymbol(symbol) => match &hir.symbols.get(*symbol)?.def {
                 SymbolDef::Item { item } | SymbolDef::TopLevelLet { item, .. } => {

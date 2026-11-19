@@ -5,6 +5,14 @@ use crate::{EffectRowRef, TypeId};
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
+pub struct ScopedCallbackFact {
+    pub parameters: Vec<u32>,
+    pub parameter_names: Vec<String>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ContinuationBindingFact {
     pub arm: HirHandlerArmId,
     pub symbol: SymbolId,

@@ -165,18 +165,19 @@ impl RelocatedSpecFacts {
             .canonical
             .impls
             .iter()
-            .map(|implementation| &implementation.generic_params)
+            .map(|implementation| (&implementation.generic_params, false))
             .chain(
                 self.std_impls
                     .iter()
-                    .map(|implementation| &implementation.generic_params),
+                    .map(|implementation| (&implementation.generic_params, false)),
             )
             .chain(
                 self.checked_impls
                     .iter()
-                    .map(|implementation| &implementation.generic_params),
+                    .map(|implementation| (&implementation.generic_params, true)),
             )
         {
+            let (parameters, native_owner) = parameters;
             let mut subjects = std::collections::HashSet::new();
             for parameter in parameters {
                 checkpoint()?;
@@ -203,6 +204,20 @@ impl RelocatedSpecFacts {
                             }
                         }
                         CheckedSpecRef::Std(_) => {}
+                        CheckedSpecRef::Source(symbol) if native_owner => {
+                            // Checked implementations belong to this target
+                            // program. Their bounds may name its real source
+                            // declarations, unlike portable canonical facts.
+                            if existing.spec_signatures.get(symbol).is_none_or(|target| {
+                                target.kind != SpecKind::TypeSpec
+                                    || target.param_names.len() != bound.args.len()
+                            }) {
+                                return Err(
+                                    "relocated owner bound has no matching checked target spec"
+                                        .into(),
+                                );
+                            }
+                        }
                         CheckedSpecRef::Source(_) | CheckedSpecRef::External(_) => {
                             return Err(
                                 "relocated owner bound contains a source-local reference".into()
@@ -411,6 +426,7 @@ pub enum SpecKind {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecImplFact {
+    pub implementation: Option<etas_hir::HirItemId>,
     pub generic_params: Vec<crate::CallableGenericParam>,
     pub self_type: TypeId,
     pub spec_symbol: etas_hir::SymbolId,
@@ -488,6 +504,7 @@ pub struct SpecMethodFact {
     pub name: String,
     pub parameter_names: Vec<String>,
     pub receiver_param: Option<u32>,
+    pub updating_receiver: bool,
     #[serde(default)]
     pub signature: Option<CallableSignature>,
 }

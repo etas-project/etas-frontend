@@ -6,7 +6,7 @@ use etas_utils::{
 use crate::{
     ProjectContext,
     passes::artifacts::{
-        ANALYSIS_REACHABILITY_FACTS, HIR_OUTPUT, MODULE_INDEX, PROJECT_ANALYSIS_ROOTS,
+        ANALYSIS_REACHABILITY_FACTS, DIAGNOSTICS, HIR_OUTPUT, MODULE_INDEX, PROJECT_ANALYSIS_ROOTS,
         PROJECT_ENTRY, REACHABILITY_FACTS, RESOLVED_PATHS, RUNTIME_SOURCE_REQUIREMENTS,
         TYPE_OUTPUT, VALIDATED_EXTERNAL_ENVIRONMENT,
     },
@@ -26,6 +26,7 @@ impl Pass<ProjectContext> for CompleteTypedRuntimeReachabilityPass {
                 ANALYSIS_REACHABILITY_FACTS,
                 REACHABILITY_FACTS,
                 TYPE_OUTPUT,
+                DIAGNOSTICS,
                 VALIDATED_EXTERNAL_ENVIRONMENT,
             ]))
             .produces(ArtifactSet::from([
@@ -40,6 +41,15 @@ impl Pass<ProjectContext> for CompleteTypedRuntimeReachabilityPass {
         _: &PassContext<ProjectContext>,
         _: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        // Typed analysis does not extend its checked-body closure after an
+        // error. Report those diagnostics before attempting runtime linkage.
+        if context
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+        {
+            return PassResult::stop();
+        }
         let (Some(types), Some(previous), Some(environment)) = (
             &context.types,
             &context.reachability,

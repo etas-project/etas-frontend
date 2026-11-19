@@ -4,6 +4,7 @@ use crate::method::{MethodEvidence, MethodSelection, MethodSignatureFact};
 pub(super) struct Probe {
     pub report: SolverReport,
     pub slots: Vec<u32>,
+    pub defaults: Vec<crate::DefaultArgument>,
 }
 
 pub(super) fn probe(
@@ -18,6 +19,7 @@ pub(super) fn probe(
     let mut result = Probe {
         report: SolverReport::default(),
         slots: Vec::new(),
+        defaults: Vec::new(),
     };
     if call.binding.is_none() {
         super::operation::validate(input.store, &entry.target, call, args, &mut result.report);
@@ -40,8 +42,17 @@ pub(super) fn probe(
     if entry.receiver == crate::method::MethodReceiver::Associated {
         names.insert(0, None);
     }
-    let slots = match crate::method::arguments::slots(&names, call.argument_names) {
-        Ok(slots) => slots,
+    let parameters = if call.binding.is_some() {
+        crate::call_interface::required_parameters(&names)
+    } else {
+        candidate
+            .signature
+            .parameter_interface
+            .clone()
+            .unwrap_or_else(|| crate::call_interface::required_parameters(&names))
+    };
+    let binding = match crate::ArgumentBinding::bind(&parameters, call.argument_names) {
+        Ok(binding) => binding,
         Err(message) => {
             result.report.push(SolverFailure {
                 code: etas_core::TypeDiagnosticCode::ArityMismatch,
@@ -51,12 +62,7 @@ pub(super) fn probe(
             return result;
         }
     };
-    let mut ordered_types = vec![args[0]; slots.len()];
-    let mut ordered_exprs = vec![None; slots.len()];
-    for (source, slot) in slots.iter().enumerate() {
-        ordered_types[*slot as usize] = args[source];
-        ordered_exprs[*slot as usize] = call.arg_exprs[source];
-    }
+    let slots = binding.argument_slots;
     let mut substitutions = known.clone();
     if let MethodSelection::ExplicitSpec {
         args: selected_args,
@@ -141,14 +147,15 @@ pub(super) fn probe(
         input.store,
         input.spec_facts,
         CallableConstraintSolveInput {
+            argument_slots: Some(&slots),
             rigid_type_parameters: input.rigid_type_parameters,
             call: Some(*call.expr),
             callee: candidate.ty,
             generic_params: &candidate.signature.generic_params,
             explicit_generic_args: call.generic_args,
             selector_bindings: &[],
-            arg_exprs: &ordered_exprs,
-            args: &ordered_types,
+            arg_exprs: call.arg_exprs,
+            args,
             output,
             origin: *call.origin,
             known_substitutions: substitutions,
@@ -196,5 +203,6 @@ pub(super) fn probe(
         ));
     }
     result.slots = slots;
+    result.defaults = binding.defaults;
     result
 }

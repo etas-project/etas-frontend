@@ -62,7 +62,9 @@ where
                 HirSemanticUnit::HandlerArm(arm) => {
                     handler_units.insert(arm, *unit);
                 }
-                HirSemanticUnit::Item(_) | HirSemanticUnit::TopLevelLet(_) => {}
+                HirSemanticUnit::Item(_)
+                | HirSemanticUnit::TopLevelLet(_)
+                | HirSemanticUnit::ParameterDefault { .. } => {}
             }
         }
         Self {
@@ -272,6 +274,16 @@ where
                 let value = self.assign_symbol_with_constraints(state, symbol, value, true);
                 self.facts.record_symbol(symbol, value);
             }
+            HirPat::ListCons { head, tail, .. } => {
+                let (first, incomplete) =
+                    Self::solve_projection(state.config, value.clone(), Projection::Index);
+                if incomplete {
+                    state.mark_incomplete();
+                }
+                self.bind_pattern(state, head, first);
+                // The persistent tail shares the original list's storage.
+                self.bind_pattern(state, tail, value);
+            }
             HirPat::Tuple { elems, .. } => {
                 for (index, elem) in elems.into_iter().enumerate() {
                     let (value, incomplete) = Self::solve_projection(
@@ -313,7 +325,7 @@ where
                     self.bind_pattern(state, arg, value);
                 }
             }
-            HirPat::Wildcard { .. } | HirPat::Literal(_) => {}
+            HirPat::EmptyList { .. } | HirPat::Wildcard { .. } | HirPat::Literal(_) => {}
             HirPat::Error { .. } => state.mark_incomplete(),
         }
     }
@@ -483,6 +495,11 @@ where
 
     fn params_for_unit(&self, unit: HirSemanticUnit) -> Vec<SymbolId> {
         match unit {
+            HirSemanticUnit::ParameterDefault { parameter, .. } => self
+                .hir
+                .preceding_parameters(parameter)
+                .unwrap_or_default()
+                .to_vec(),
             HirSemanticUnit::Item(item) => match self.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => flow.params.clone(),
                 Some(HirItem::Tool(tool)) => tool.params.clone(),
@@ -504,6 +521,9 @@ where
             .collect::<BTreeSet<_>>();
         let mut captured = BTreeSet::new();
         match unit {
+            HirSemanticUnit::ParameterDefault { expr, .. } => {
+                self.collect_expr_captures(expr, &mut locals, &mut captured)
+            }
             HirSemanticUnit::AnonymousFlow { expr, .. } => {
                 if let Some(HirExpr::Lambda { params, body, .. }) = self.hir.exprs.get(expr) {
                     locals.extend(params.iter().copied());
@@ -856,6 +876,10 @@ where
             HirPat::Binding { symbol, .. } => {
                 locals.insert(symbol);
             }
+            HirPat::ListCons { head, tail, .. } => {
+                self.collect_pattern_bindings(head, locals);
+                self.collect_pattern_bindings(tail, locals);
+            }
             HirPat::Tuple { elems, .. } => {
                 for elem in elems {
                     self.collect_pattern_bindings(elem, locals);
@@ -873,7 +897,10 @@ where
                     self.collect_pattern_bindings(arg, locals);
                 }
             }
-            HirPat::Wildcard { .. } | HirPat::Literal(_) | HirPat::Error { .. } => {}
+            HirPat::EmptyList { .. }
+            | HirPat::Wildcard { .. }
+            | HirPat::Literal(_)
+            | HirPat::Error { .. } => {}
         }
     }
 

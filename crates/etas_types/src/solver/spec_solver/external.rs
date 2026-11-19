@@ -138,6 +138,9 @@ fn type_satisfies_inner(
     args: &[TypeId],
     visited: &mut ActiveObligations,
 ) -> bool {
+    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::External(spec.clone())) {
+        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    }
     let key = (ty, CheckedSpecRef::External(spec.clone()), args.to_vec());
     if !visited.insert(key.clone()) {
         return false;
@@ -231,6 +234,9 @@ fn source_satisfies_inner(
     args: &[TypeId],
     visited: &mut ActiveObligations,
 ) -> bool {
+    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Source(spec)) {
+        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    }
     match normalize(facts, CheckedSpecRef::Source(spec)) {
         CheckedSpecRef::External(identity) => {
             return type_satisfies_inner(store, facts, ty, &identity, args, visited);
@@ -314,6 +320,9 @@ fn std_satisfies_inner(
     args: &[TypeId],
     visited: &mut ActiveObligations,
 ) -> bool {
+    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Std(spec.to_vec())) {
+        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    }
     let target = CheckedSpecRef::Std(spec.to_vec());
     let key = (ty, target.clone(), args.to_vec());
     if !visited.insert(key.clone()) {

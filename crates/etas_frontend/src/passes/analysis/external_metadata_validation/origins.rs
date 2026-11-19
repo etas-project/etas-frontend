@@ -76,10 +76,15 @@ pub(super) fn validate(
                 .map(|binding| &binding.definition)
                 .collect::<BTreeSet<_>>();
             for binding in &descriptors.declarations {
-                if !declarations.contains(&binding.definition) {
-                    return Err(fail(
-                        "descriptor root has no matching public definition origin".to_owned(),
-                    ));
+                if !declarations.contains(&binding.definition)
+                    && !compiler_scalar_root(std_registry, descriptors, binding)
+                {
+                    return Err(fail(format!(
+                        "descriptor root {:?} has no matching public definition origin (type {:?}, compiler package {:?})",
+                        binding.definition,
+                        descriptors.graph.types.get(binding.ty.0 as usize),
+                        crate::code::identity::standard_package_key(std_registry).ok(),
+                    )));
                 }
             }
             if let Some(bodies) = descriptors
@@ -123,10 +128,17 @@ pub(super) fn validate(
         }
         for binding in &input.origins.declarations {
             let path = binding.path();
+            let published_member = metadata.flows.iter().any(|flow| {
+                flow.definition.as_ref() == Some(&binding.definition)
+                    && exports
+                        .get(&input.package)
+                        .is_some_and(|exports| exports.contains(&flow.path))
+            });
             if !exports
                 .get(&input.package)
                 .is_some_and(|exports| exports.contains(&path))
                 && kinds.get(path.as_slice()) != Some(&DefinitionKind::EnumVariant)
+                && !published_member
             {
                 return Err(fail(format!(
                     "definition `{}` has no matching module export",
@@ -134,19 +146,35 @@ pub(super) fn validate(
                 )));
             }
             let source = re_exports.get(path.as_slice()).copied();
-            let expected = kinds.get(path.as_slice());
-            if expected.is_some_and(|kind| *kind != binding.definition.kind()) {
+            let expected = kinds
+                .get(path.as_slice())
+                .copied()
+                .or_else(|| published_member.then_some(DefinitionKind::Flow));
+            if expected.is_some_and(|kind| kind != binding.definition.kind()) {
                 return Err(fail(format!(
                     "definition `{}` kind disagrees with its checked public signature",
                     path.join(".")
                 )));
             }
+            let overload_group =
+                binding
+                    .definition
+                    .declaration()
+                    .split_last()
+                    .is_some_and(|(member, group)| {
+                        member.starts_with("$overload:")
+                            && group == binding.declaration
+                            && metadata.flows.iter().any(|flow| {
+                                flow.path == path
+                                    && flow.definition.as_ref() == Some(&binding.definition)
+                            })
+                    });
             let direct = source.is_none()
                 && expected.is_some()
                 && binding.definition.package() == input.origins.package
                 && canonical_modules.get(binding.module.as_slice()).copied()
                     == Some(binding.definition.module())
-                && binding.definition.declaration() == binding.declaration;
+                && (binding.definition.declaration() == binding.declaration || overload_group);
             if bindings
                 .insert(
                     path.clone(),
@@ -166,7 +194,7 @@ pub(super) fn validate(
             }
         }
     }
-    validate_chains(&bindings)?;
+    validate_chains(&bindings, std_registry)?;
     for input in &environment.external_definition_origins {
         let metadata = metadata.get(&input.package).ok_or_else(|| {
             Error::package(
@@ -193,6 +221,33 @@ pub(super) fn validate(
         )?;
     }
     Ok(())
+}
+
+/// Scalar extension methods retain their compiler-owned subject descriptor;
+/// the scalar itself is not an authored public declaration of this package.
+fn compiler_scalar_root(
+    registry: &etas_std::StdRegistry,
+    descriptors: &etas_code::descriptor::DefinitionDescriptorSet,
+    binding: &etas_code::descriptor::DefinitionTypeBinding,
+) -> bool {
+    let [name] = binding.definition.declaration() else {
+        return false;
+    };
+    let etas_std::StdType::Primitive(primitive) = etas_std::StdType::parse(name) else {
+        return false;
+    };
+    let target = match descriptors.graph.types.get(binding.ty.0 as usize) {
+        Some(etas_code::descriptor::TypeInfo::Alias {
+            definition,
+            parameters,
+            target,
+        }) if definition == &binding.definition && parameters.is_empty() => *target,
+        _ => binding.ty,
+    };
+    matches!(descriptors.graph.types.get(target.0 as usize),
+        Some(etas_code::descriptor::TypeInfo::Primitive(actual))
+            if *actual == crate::code::descriptor::standard_primitive_info(primitive))
+        && super::method_table::compiler_scalar_subject(registry, &binding.definition, name)
 }
 
 fn validate_type_descriptors<'a>(
@@ -400,18 +455,29 @@ fn validate_callable_definition_parameters<'a>(
         }
     }
     let mut public_signatures = BTreeMap::new();
+    let mut flow_signatures = BTreeMap::new();
     for signature in &metadata.flows {
+        let interface = (
+            signature.params.as_slice(),
+            signature.param_names.as_slice(),
+            signature.generic_params.as_slice(),
+            &signature.output,
+            signature.effects.as_ref(),
+        );
+        if let Some(definition) = &signature.definition {
+            if flow_signatures
+                .insert(definition, interface)
+                .is_some_and(|previous| previous != interface)
+            {
+                return Err(Error::package(
+                    input.package,
+                    "one flow definition has conflicting public signatures",
+                ));
+            }
+            continue;
+        }
         if public_signatures
-            .insert(
-                signature.path.as_slice(),
-                (
-                    signature.params.as_slice(),
-                    signature.param_names.as_slice(),
-                    signature.generic_params.as_slice(),
-                    &signature.output,
-                    signature.effects.as_ref(),
-                ),
-            )
+            .insert(signature.path.as_slice(), interface)
             .is_some()
         {
             return Err(Error::package(
@@ -469,7 +535,9 @@ fn validate_callable_definition_parameters<'a>(
         };
         let path = binding.path();
         let Some(&(parameters, parameter_names, generic_parameters, output, effects)) =
-            public_signatures.get(path.as_slice())
+            flow_signatures
+                .get(&binding.definition)
+                .or_else(|| public_signatures.get(path.as_slice()))
         else {
             continue;
         };
@@ -692,7 +760,10 @@ fn declaration_kinds(
     kinds
 }
 
-fn validate_chains(bindings: &BTreeMap<Vec<String>, Binding<'_>>) -> Result<(), Error> {
+fn validate_chains(
+    bindings: &BTreeMap<Vec<String>, Binding<'_>>,
+    registry: &etas_std::StdRegistry,
+) -> Result<(), Error> {
     let mut verified = BTreeSet::new();
     for (root, binding) in bindings {
         let mut path = root.as_slice();
@@ -704,6 +775,25 @@ fn validate_chains(bindings: &BTreeMap<Vec<String>, Binding<'_>>) -> Result<(), 
                     binding.package,
                     format!("cyclic definition re-export `{}`", path.join(".")),
                 ));
+            }
+            // Language scalars terminate at the explicit compiler contract;
+            // they have no authored std declaration to add to this map.
+            if !bindings.contains_key(path)
+                && path.last().is_some_and(|name| {
+                    super::method_table::compiler_scalar_subject(registry, binding.definition, name)
+                })
+                && binding
+                    .definition
+                    .module()
+                    .iter()
+                    .chain(binding.definition.declaration())
+                    .eq(path)
+                && registry.lookup_qualified(path).is_some_and(|symbol| {
+                    matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
+                        if declaration.kind == etas_std::TypeDeclKind::Primitive)
+                })
+            {
+                break;
             }
             let current = bindings.get(path).ok_or_else(|| {
                 Error::package(

@@ -34,17 +34,56 @@ pub(super) enum PreludeContext {
 
 impl PreludeContext {
     fn accepts(self, kind: etas_std::StdSymbolKind) -> bool {
+        self.accepts_namespace(kind.namespace())
+    }
+
+    fn accepts_namespace(self, namespace: etas_std::StdNamespace) -> bool {
         use etas_std::StdNamespace;
         match self {
             Self::Any => true,
-            Self::Type => kind.namespace() == StdNamespace::Type,
-            Self::Effect => kind.namespace() == StdNamespace::Effect,
+            Self::Type => namespace == StdNamespace::Type,
+            Self::Effect => namespace == StdNamespace::Effect,
             Self::Value => matches!(
-                kind.namespace(),
+                namespace,
                 StdNamespace::Type | StdNamespace::Value | StdNamespace::Module
             ),
         }
     }
+}
+
+/// Calling names from a resolved source prelude. Source targets retain their
+/// declaration coordinates until project symbols have been predeclared.
+#[derive(Clone, Debug)]
+pub struct HirSourcePreludeBinding {
+    pub name: String,
+    pub namespace: etas_std::StdNamespace,
+    pub target: HirSourcePreludeTarget,
+}
+
+#[derive(Clone, Debug)]
+pub enum HirSourcePreludeTarget {
+    Declaration {
+        span: etas_core::Span,
+        member: Option<String>,
+    },
+    Module {
+        path: Vec<String>,
+    },
+    Primitive {
+        symbol: etas_std::StdSymbolId,
+    },
+}
+
+#[derive(Clone)]
+struct SourcePreludeCandidate {
+    namespace: etas_std::StdNamespace,
+    target: SourcePreludeTarget,
+}
+
+#[derive(Clone)]
+enum SourcePreludeTarget {
+    Declaration(SymbolId),
+    Primitive(etas_std::StdSymbolId),
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +136,82 @@ struct HirProjectLoweringModule {
 }
 
 impl HirProjectLowering {
+    pub fn with_source_prelude(
+        mut self,
+        bindings: Vec<HirSourcePreludeBinding>,
+    ) -> Result<Self, String> {
+        let mut prelude = HashMap::<String, Vec<SourcePreludeCandidate>>::new();
+        for binding in bindings {
+            let target = match binding.target {
+                HirSourcePreludeTarget::Declaration { span, member } => {
+                    let key = SyntaxKey {
+                        source: span.source,
+                        start: span.range.start.0,
+                        end: span.range.end.0,
+                    };
+                    let symbol = *self
+                        .ctx
+                        .top_item_symbols
+                        .get(&key)
+                        .ok_or("source prelude target has no predeclared declaration")?;
+                    let symbol = match member {
+                        Some(member) => match self.ctx.symbols.resolve_member(symbol, &member) {
+                            ResolveResult::Resolved(symbol) => symbol,
+                            _ => {
+                                return Err(
+                                    "source prelude member has no predeclared symbol".into()
+                                );
+                            }
+                        },
+                        None => symbol,
+                    };
+                    SourcePreludeTarget::Declaration(symbol)
+                }
+                HirSourcePreludeTarget::Module { path } => {
+                    let name = path.join(".");
+                    let symbol = self
+                        .ctx
+                        .symbols
+                        .iter()
+                        .find(|symbol| {
+                            symbol.name == name && matches!(symbol.def, SymbolDef::Module { .. })
+                        })
+                        .map(|symbol| symbol.id)
+                        .ok_or("source prelude module has no predeclared symbol")?;
+                    SourcePreludeTarget::Declaration(symbol)
+                }
+                HirSourcePreludeTarget::Primitive { symbol } => {
+                    SourcePreludeTarget::Primitive(symbol)
+                }
+            };
+            let candidates = prelude.entry(binding.name).or_default();
+            let duplicate = candidates
+                .iter()
+                .any(|candidate| match (&candidate.target, &target) {
+                    (SourcePreludeTarget::Declaration(a), SourcePreludeTarget::Declaration(b)) => {
+                        a == b
+                    }
+                    (SourcePreludeTarget::Primitive(a), SourcePreludeTarget::Primitive(b)) => {
+                        a == b
+                    }
+                    _ => false,
+                });
+            if !duplicate {
+                candidates.push(SourcePreludeCandidate {
+                    namespace: binding.namespace,
+                    target,
+                });
+            }
+        }
+        self.ctx.source_prelude = Some(prelude);
+        Ok(self)
+    }
+
+    pub fn with_source_standard_types(mut self, enabled: bool) -> Self {
+        self.ctx.hir.source_standard_types = enabled;
+        self
+    }
+
     pub fn new(modules: &[HirProjectModule<'_>]) -> Self {
         Self::new_with_std_registry(modules, Arc::new(etas_std::standard_registry()))
     }
@@ -214,6 +329,19 @@ impl HirProjectLowering {
                 declared_type: None,
                 definition_span: module_decl.span,
             });
+            let public_members = ctx
+                .top_item_symbols
+                .values()
+                .filter_map(|symbol| {
+                    let member = ctx.symbols.get(*symbol)?;
+                    (member.defining_module == target.module_id
+                        && member.visibility == crate::Visibility::Public)
+                        .then(|| (member.name.clone(), *symbol))
+                })
+                .collect::<Vec<_>>();
+            for (name, member) in public_members {
+                ctx.symbols.insert_member(symbol, name, member);
+            }
             for shell in &shells {
                 ctx.insert_module_symbol(shell.scope, &name, symbol, module_decl.span);
             }
@@ -348,6 +476,7 @@ impl HirProjectLowering {
 }
 
 pub(super) struct LowerCtx {
+    source_prelude: Option<HashMap<String, Vec<SourcePreludeCandidate>>>,
     pub(super) body_overlays: HashMap<SyntaxKey, Arc<etas_syntax::RelocatedBodySyntax>>,
     pub(super) hir: HirProgram,
     pub(super) diagnostics: HirDiagnostics,
@@ -357,6 +486,7 @@ pub(super) struct LowerCtx {
     pub(super) symbols: SymbolBuilder,
     pub(super) source_map: SourceMapBuilder,
     pub(super) top_item_symbols: HashMap<SyntaxKey, SymbolId>,
+    pub(super) flow_declarations: HashMap<(HirModuleId, String), SymbolId>,
     pub(super) action_symbols: HashMap<SyntaxKey, SymbolId>,
     pub(super) method_symbols: HashMap<SyntaxKey, SymbolId>,
     pub(super) local_binding: Option<LocalBindingContext>,
@@ -395,6 +525,7 @@ impl LowerCtx {
 
     pub(super) fn new_with_std_registry(std_registry: Arc<etas_std::StdRegistry>) -> Self {
         Self {
+            source_prelude: None,
             body_overlays: HashMap::new(),
             hir: HirProgram::default(),
             diagnostics: HirDiagnostics::default(),
@@ -404,6 +535,7 @@ impl LowerCtx {
             symbols: SymbolBuilder::default(),
             source_map: SourceMapBuilder::default(),
             top_item_symbols: HashMap::new(),
+            flow_declarations: HashMap::new(),
             action_symbols: HashMap::new(),
             method_symbols: HashMap::new(),
             local_binding: None,
@@ -624,7 +756,22 @@ impl LowerCtx {
             declared_type: None,
             definition_span: local_name_span,
         });
-        if let Some(previous) = self.scopes.insert(scope, local_name.clone(), symbol) {
+        // A source prelude publishes contextual names. Its public imports do
+        // not compete for one lexical slot (for example Secret type/effect).
+        let contextual_export = self.source_prelude.is_some()
+            && visibility == crate::Visibility::Public
+            && self.hir.modules_arena[self.current_module]
+                .name
+                .as_ref()
+                .is_some_and(|path| {
+                    path.segments
+                        .iter()
+                        .map(|part| part.name.as_str())
+                        .eq(["std", "prelude"])
+                });
+        if !contextual_export
+            && let Some(previous) = self.scopes.insert(scope, local_name.clone(), symbol)
+        {
             let previous_span = self
                 .symbols
                 .get(previous)
@@ -648,6 +795,50 @@ impl LowerCtx {
     ) -> ResolveResult {
         if self.current_module_scope.is_none() {
             return ResolveResult::Unresolved;
+        }
+        if let Some(prelude) = &self.source_prelude {
+            let bindings = prelude
+                .get(name)
+                .into_iter()
+                .flatten()
+                .filter(|binding| context.accepts_namespace(binding.namespace))
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut candidates = Vec::new();
+            for binding in bindings {
+                let symbol = match binding.target {
+                    SourcePreludeTarget::Declaration(symbol) => symbol,
+                    SourcePreludeTarget::Primitive(id) => {
+                        let path = self
+                            .std_registry
+                            .symbol(id)
+                            .expect("checked primitive prelude target")
+                            .qualified_path
+                            .clone();
+                        self.std_prelude_alias(name, id, path, span)
+                    }
+                };
+                if !candidates.contains(&symbol) {
+                    candidates.push(symbol);
+                }
+            }
+            // Scalar constructors are language capabilities. Other names must
+            // have an actual public declaration in the source prelude.
+            if candidates.is_empty() {
+                let primitives = self.std_registry.prelude().candidates(name)
+                    .filter_map(|binding| self.std_registry.symbol(binding.id))
+                    .filter(|symbol| context.accepts(symbol.kind)
+                        && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration) if declaration.kind == etas_std::TypeDeclKind::Primitive))
+                    .map(|symbol| (symbol.id, symbol.qualified_path.clone())).collect::<Vec<_>>();
+                for (id, path) in primitives {
+                    candidates.push(self.std_prelude_alias(name, id, path, span));
+                }
+            }
+            return match candidates.as_slice() {
+                [] => ResolveResult::Unresolved,
+                [symbol] => ResolveResult::Resolved(*symbol),
+                _ => ResolveResult::Ambiguous(candidates),
+            };
         }
         let candidates = self
             .std_registry

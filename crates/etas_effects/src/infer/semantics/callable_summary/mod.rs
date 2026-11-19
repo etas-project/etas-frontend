@@ -122,9 +122,9 @@ impl CallableSummaryPlan {
                 ),
                 None if plan.own_parameters.contains(&target) => {}
                 _ => {
-                    return Err(invalid(
-                        "captured callable has no checked free-parameter binding",
-                    ));
+                    return Err(invalid(&format!(
+                        "captured callable has no checked free-parameter binding for {target:?}",
+                    )));
                 }
             }
         }

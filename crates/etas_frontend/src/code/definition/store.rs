@@ -57,6 +57,10 @@ pub struct DefinitionCatalog {
     pub(super) callable_bindings: HashMap<SymbolId, CallableId>,
     pub(super) agent_bindings: HashMap<SymbolId, DefinitionKey>,
     pub(super) selected_bindings: HashMap<(SymbolId, DefinitionKey), CallableId>,
+    pub(super) parameter_defaults: BTreeMap<
+        etas_code::descriptor::ParameterDefaultInfo,
+        crate::code::parameter_defaults::ParameterDefaultUnit,
+    >,
 }
 
 impl DefinitionCatalog {
@@ -71,6 +75,22 @@ impl DefinitionCatalog {
     }
     pub fn checked_program(&self) -> &crate::CheckedProgram {
         &self.checked
+    }
+    pub fn parameter_default(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Option<&crate::code::parameter_defaults::ParameterDefaultUnit> {
+        self.parameter_defaults.get(reference)
+    }
+    pub fn parameter_defaults(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &etas_code::descriptor::ParameterDefaultInfo,
+            &crate::code::parameter_defaults::ParameterDefaultUnit,
+        ),
+    > {
+        self.parameter_defaults.iter()
     }
     pub(crate) fn identity_index(&self) -> &DefinitionIdentityIndex {
         &self.identities
@@ -228,7 +248,7 @@ impl DefinitionCatalog {
                 })
             })
             .transpose()?;
-        let body = body.filter(|item| !self.is_declared_host_tool(*item));
+        let body = body.filter(|item| !self.is_declared_primitive(*item));
         let callable_owners = contract
             .callables()
             .map(|(id, _)| {
@@ -240,7 +260,7 @@ impl DefinitionCatalog {
             .collect::<Result<std::collections::BTreeMap<_, _>, ProjectionError>>()?;
         let callable_slots = callable_owners
             .iter()
-            .filter(|(_, item)| !self.is_declared_host_tool(**item))
+            .filter(|(_, item)| !self.is_declared_primitive(**item))
             .map(|(id, item)| {
                 let slot = self
                     .checked
@@ -924,6 +944,23 @@ impl DefinitionCatalog {
 
     pub(super) fn is_declared_host_tool(&self, item: HirItemId) -> bool {
         matches!(self.checked.items.get(item), Some(etas_hir::HirItem::Tool(tool)) if matches!(tool.body, etas_hir::HirToolBody::Decl { .. }))
+    }
+
+    pub(super) fn declared_execution_role(
+        &self,
+        item: HirItemId,
+    ) -> Option<etas_std::StdExecutionRole> {
+        match self.checked.items.get(item) {
+            Some(etas_hir::HirItem::Flow(flow)) => match flow.body {
+                etas_hir::HirFlowBody::Runtime { role, .. } => Some(role),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn is_declared_primitive(&self, item: HirItemId) -> bool {
+        self.is_declared_host_tool(item) || self.declared_execution_role(item).is_some()
     }
 
     pub(super) fn add_selected_views(&mut self) -> Result<(), ProjectionError> {

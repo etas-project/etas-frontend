@@ -294,6 +294,15 @@ fn seed_item_work<'a>(item: &'a ast::Item, work: &mut Vec<AstWork<'a>>) {
 }
 
 fn seed_flow_work<'a>(flow: &'a ast::FlowDecl, work: &mut Vec<AstWork<'a>>) {
+    for annotation in &flow.annotations {
+        for argument in &annotation.args {
+            work.push(AstWork::Expr(match argument {
+                ast::AnnotationArg::Positional(value) | ast::AnnotationArg::Named { value, .. } => {
+                    value
+                }
+            }));
+        }
+    }
     seed_flow_body_work(&flow.body, work);
     if let Some(handler) = &flow.trailing_handler {
         work.push(AstWork::Handler(handler));
@@ -302,6 +311,7 @@ fn seed_flow_work<'a>(flow: &'a ast::FlowDecl, work: &mut Vec<AstWork<'a>>) {
 
 fn seed_flow_body_work<'a>(body: &'a ast::FlowBody, work: &mut Vec<AstWork<'a>>) {
     match body {
+        ast::FlowBody::Decl { .. } => {}
         ast::FlowBody::Block(block) => work.push(AstWork::Block(block)),
         ast::FlowBody::Expr { expr, .. } => work.push(AstWork::Expr(expr)),
     }

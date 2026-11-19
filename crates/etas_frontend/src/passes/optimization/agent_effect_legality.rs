@@ -7,7 +7,7 @@ use etas_utils::{
     PreservedArtifacts,
 };
 
-use crate::passes::artifacts::{EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OUTPUT};
+use crate::passes::artifacts::{EFFECT_OUTPUT, HIR_OPTIMIZATION_LEGALITY, HIR_OUTPUT, TYPE_OUTPUT};
 use crate::{
     AgentEffectLegalityFacts, AgentExpressionLegalityFact, HirOptimizationGroup,
     HirOptimizationPassReport, ProjectContext,
@@ -18,7 +18,7 @@ pub struct AgentEffectLegalityPass;
 impl Pass<ProjectContext> for AgentEffectLegalityPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("AgentEffectLegalityPass", PassKind::Analysis)
-            .requires(ArtifactSet::from([HIR_OUTPUT, EFFECT_OUTPUT]))
+            .requires(ArtifactSet::from([HIR_OUTPUT, EFFECT_OUTPUT, TYPE_OUTPUT]))
             .produces(ArtifactSet::one(HIR_OPTIMIZATION_LEGALITY))
     }
 
@@ -34,6 +34,15 @@ impl Pass<ProjectContext> for AgentEffectLegalityPass {
             .as_ref()
             .expect("effect facts must precede HIR optimization");
         let hir = &context.hir.as_ref().expect("HIR output should exist").hir;
+        let types = &context
+            .types
+            .as_ref()
+            .expect("checked types precede optimization")
+            .facts;
+        let stateful = match crate::passes::analysis::lexical_capture::stateful_items(hir, types) {
+            Ok(items) => items,
+            Err(reason) => return PassResult::failed(reason),
+        };
         for (expression, summary) in &effects.facts.expr_effects {
             let Some(owner) = hir.index().expr_item.get(expression).copied() else {
                 continue;
@@ -45,9 +54,10 @@ impl Pass<ProjectContext> for AgentEffectLegalityPass {
                     owner,
                     reads,
                     version_dependencies,
-                    effect_free: effect_free(summary),
-                    deterministic: summary.determinism == Determinism::Deterministic,
-                    order_stable: order_stable(summary),
+                    effect_free: !stateful.contains(&owner) && effect_free(summary),
+                    deterministic: !stateful.contains(&owner)
+                        && summary.determinism == Determinism::Deterministic,
+                    order_stable: !stateful.contains(&owner) && order_stable(summary),
                 },
             );
         }

@@ -6196,7 +6196,10 @@ flow target() -> Result<WorkspacePath<ArbitraryRoot>, IOError> {
 
 #[test]
 fn action_signature_generics_infer_payloads_and_rows_without_becoming_selectors() {
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(etas_core::SourceId(0), None, r#"
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
+        etas_core::SourceId(0),
+        None,
+        r#"
 module app;
 effect Examples {
     action<T> echo(value: T) -> T;
@@ -6209,20 +6212,42 @@ flow probe(task: Task<string, ![Network]>) -> string {
     let selected: i32 = perform Examples.select<string>("key", first);
     return perform Examples.relay(task);
 }
-"#));
+"#,
+    ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
     let hir = lower_program(&parsed.value);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let output = check_program(&hir);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let actions = hir.items.iter().find_map(|(_, item)| match item { HirItem::Effect(effect) => Some(effect.body.actions()), _ => None }).unwrap();
+    let actions = hir
+        .items
+        .iter()
+        .find_map(|(_, item)| match item {
+            HirItem::Effect(effect) => Some(effect.body.actions()),
+            _ => None,
+        })
+        .unwrap();
     let echo = &output.facts.action_signatures[&actions[0].symbol];
     assert!(echo.effect_args.is_empty());
     let select = &output.facts.action_signatures[&actions[1].symbol];
     assert_eq!(select.selector_param_names, ["Key"]);
-    assert_eq!(select.generic_params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["T", "Key"]);
+    assert_eq!(
+        select
+            .generic_params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["T", "Key"]
+    );
     let relay = &output.facts.action_signatures[&actions[2].symbol];
     assert!(relay.effect_args.is_empty());
-    assert_eq!(relay.generic_params[1].kind, etas_types::CallableGenericParamKind::Effect);
-    assert!(output.facts.generic_instantiations.values().any(|f| f.effect_row_bindings.iter().any(|(name,row)| name=="E" && row.effects.iter().any(|e|e.name.ends_with("Network")))));
+    assert_eq!(
+        relay.generic_params[1].kind,
+        etas_types::CallableGenericParamKind::Effect
+    );
+    assert!(output.facts.generic_instantiations.values().any(|f| {
+        f.effect_row_bindings.iter().any(|(name, row)| {
+            name == "E" && row.effects.iter().any(|e| e.name.ends_with("Network"))
+        })
+    }));
 }

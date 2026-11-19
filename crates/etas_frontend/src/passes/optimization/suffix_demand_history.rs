@@ -61,6 +61,7 @@ impl Pass<ProjectContext> for SuffixDemandHistoryPass {
         if !replacements.is_empty() {
             super::facts::invalidate_replaced_expressions(
                 context,
+                &output.hir,
                 replacements
                     .values()
                     .flat_map(|replacement| replacement.expressions.iter().copied()),

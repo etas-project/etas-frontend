@@ -13,6 +13,9 @@ impl EffectSemantics<'_> {
         if self.is_typed_flow_expr(expr) {
             return false;
         }
+        let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+            return false;
+        };
         if self.checked_enum_constructor(symbol) {
             return matches!(self.type_symbols.symbol_fact(self.hir, &self.types.facts, symbol), Some(SymbolTypeFact::Flow { signature }) if signature.params.is_empty());
         }
@@ -32,6 +35,9 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn checked_enum_constructor(&self, symbol: SymbolId) -> bool {
+        let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+            return false;
+        };
         let Some(definition) = self.hir.symbols.get(symbol) else {
             return false;
         };

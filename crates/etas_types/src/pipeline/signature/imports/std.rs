@@ -35,6 +35,38 @@ pub fn apply_hir_std_prelude(ctx: &mut TypePipelineContext<'_>) {
 pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdSignatureInput) {
     let registry = ctx.std_registry.clone();
     record_known_std_types(ctx, &registry);
+    let executions = ctx
+        .hir
+        .items
+        .iter()
+        .filter_map(|(_, item)| match item {
+            etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                body: etas_hir::HirFlowBody::Runtime { role, .. },
+                ..
+            }) => Some(*role),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for role in executions {
+        let Some(path) = role.native_contract_path() else {
+            continue;
+        };
+        let native = registry
+            .lookup_qualified(&path.split('.').collect::<Vec<_>>())
+            .expect("compiler execution role contract");
+        let etas_std::StdDecl::Flow(flow) = &native.decl else {
+            unreachable!()
+        };
+        let scope = registry
+            .module(native.module)
+            .map(|module| module.path.as_slice());
+        let mut signature = lower_std_flow_signature(ctx, &registry, flow, scope);
+        signature.parameter_interface =
+            crate::lower::std::std_parameter_interface(&registry, native.id);
+        ctx.signature_facts
+            .std_callable_signatures
+            .insert(native.id, signature);
+    }
     ctx.signature_facts.std_spec_impls = lower_std_spec_impls(ctx, &registry);
     ctx.signature_facts.std_spec_impls.retain(|implementation| {
         !input
@@ -82,6 +114,26 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
                 .insert(binding.symbol, native.qualified_path.clone());
         }
         let fact = lower_std_symbol(ctx, &registry, binding.symbol, &contract);
+        if role == etas_std::StdSourceRole::NativeMessage {
+            let SymbolTypeFact::NominalType { constructor, .. } = &fact else {
+                unreachable!("source Message has its own represented declaration");
+            };
+            ctx.signature_facts.known_std_types.message = Some(crate::TypeId(constructor.0));
+        }
+        if let Some(runtime_role) = role.runtime_role() {
+            // Source generic spellings may differ from bootstrap placeholders.
+            // The runtime role must name the source constructor being completed.
+            let ty = match &fact {
+                SymbolTypeFact::NominalType { constructor, .. }
+                | SymbolTypeFact::Type { constructor } => crate::TypeId(constructor.0),
+                SymbolTypeFact::TypeAlias { target, .. } => *target,
+                _ => unreachable!("runtime type role declaration"),
+            };
+            ctx.signature_facts
+                .known_std_types
+                .runtime_types
+                .insert(runtime_role, ty);
+        }
         if let Some(code_role) = role.code_role()
             && let Some(ty) = lower_std_type_symbol(ctx, &registry, &contract)
         {
@@ -103,12 +155,14 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
             let scope = registry
                 .module(symbol.module)
                 .map(|module| module.path.as_slice());
-            let signature = crate::lower::std::lower_std_requirement_signature(
+            let mut signature = crate::lower::std::lower_std_requirement_signature(
                 ctx,
                 &registry,
                 requirement,
                 scope,
             );
+            signature.parameter_interface =
+                crate::lower::std::std_parameter_interface(&registry, symbol.id);
             ctx.signature_facts
                 .std_callable_signatures
                 .insert(symbol.id, signature);
@@ -123,10 +177,26 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
         let etas_std::StdDecl::Flow(flow) = &symbol.decl else {
             continue;
         };
+        for (overload, declaration) in registry.flow_declarations(symbol.id).enumerate() {
+            let Some(binding) = registry.flow_body_binding(symbol.id, overload) else {
+                continue;
+            };
+            let scope = registry
+                .module(symbol.module)
+                .map(|module| module.path.as_slice());
+            let mut signature = lower_std_flow_signature(ctx, &registry, declaration, scope);
+            signature.parameter_interface =
+                crate::lower::std::std_callable_parameter_interface(&registry, &binding.callable);
+            ctx.signature_facts
+                .library_callable_signatures
+                .insert(binding.callable.clone(), signature);
+        }
         let scope = registry
             .module(symbol.module)
             .map(|module| module.path.as_slice());
-        let signature = lower_std_flow_signature(ctx, &registry, flow, scope);
+        let mut signature = lower_std_flow_signature(ctx, &registry, flow, scope);
+        signature.parameter_interface =
+            crate::lower::std::std_parameter_interface(&registry, symbol.id);
         ctx.signature_facts
             .std_callable_signatures
             .insert(symbol.id, signature);
@@ -135,6 +205,14 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
         let Some(symbol) = registry.lookup_qualified(&binding.qualified_path) else {
             continue;
         };
+        if let Some(role) = registry
+            .body_binding(symbol.id)
+            .and_then(|body| registry.execution_role(&body.callable))
+        {
+            ctx.signature_facts
+                .source_execution_roles
+                .insert(binding.symbol, role);
+        }
         let fact = lower_std_symbol(ctx, &registry, binding.symbol, symbol);
         if let etas_std::StdDecl::Value(value) = &symbol.decl
             && let Some(role) = value.runtime_role
@@ -168,6 +246,13 @@ pub fn apply_std_signature_input(ctx: &mut TypePipelineContext<'_>, input: &StdS
 }
 
 fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std::StdRegistry) {
+    ctx.signature_facts.known_std_types.source_iterator = registry
+        .lookup_qualified(&["std", "collections", "Iter"])
+        .filter(|symbol| {
+            matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
+            if declaration.construction != etas_std::StdTypeConstruction::IntrinsicOnly)
+        })
+        .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
     ctx.signature_facts.known_std_types.option_enum = registry
         .lookup_qualified(&["std", "option", "Option"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
@@ -238,7 +323,10 @@ fn record_known_std_types(ctx: &mut TypePipelineContext<'_>, registry: &etas_std
     ctx.signature_facts.known_std_types.ordered_set = registry
         .lookup_qualified(&["std", "collections", "OrderedSet"])
         .and_then(|symbol| lower_std_type_symbol(ctx, registry, symbol));
-    for reference in registry.native_opaque_references() {
+    for reference in registry
+        .native_opaque_references()
+        .filter(|reference| reference.representation.is_none())
+    {
         let ty = crate::lower::std::lower_std_type(
             ctx,
             registry,

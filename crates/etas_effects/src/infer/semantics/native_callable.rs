@@ -67,7 +67,11 @@ impl EffectSemantics<'_> {
             ) {
                 continue;
             }
-            if !self.symbol_type_contains_flow(symbol) {
+            if !self.symbol_type_contains_flow(symbol)
+                && !self
+                    .symbol_value_type(symbol)
+                    .is_some_and(|ty| self.type_has_parameters(ty))
+            {
                 continue;
             }
             let scope = self
@@ -103,6 +107,23 @@ impl EffectSemantics<'_> {
                 _ => {}
             }
         }
+        let parameters = pending
+            .iter()
+            .filter_map(|source| match source {
+                LatentSource::Parameter { symbol, .. } => Some(*symbol),
+                LatentSource::Projection(id) => self
+                    .parameter_projection(*id)
+                    .map(|projection| projection.parameter),
+                _ => None,
+            })
+            .collect();
+        // Select captured fields at this application boundary, while the complete
+        // argument expression is available. Joining a record's callbacks first
+        // would lose which checked field is used by this or a nested closure.
+        pending.extend(
+            self.lambda_projected_captures(value, state, &parameters)
+                .map_err(invalid)?,
+        );
         let mut visited = BTreeSet::new();
         let mut parameters = BTreeMap::new();
         while let Some(source) = pending.pop() {
@@ -110,10 +131,28 @@ impl EffectSemantics<'_> {
                 continue;
             }
             match source {
+                LatentSource::Projection(id) => {
+                    let target = ParameterCallTarget::Projection(id);
+                    let origins = match self.trace_argument(
+                        target,
+                        "captured projected parameter",
+                        bindings,
+                        state,
+                    )? {
+                        Some(binding) => {
+                            self.trace_argument_origins_at(&binding, state, application)?
+                        }
+                        None => [source].into(),
+                    };
+                    parameters.insert(target, origins);
+                }
+
                 LatentSource::Parameter { owner, symbol } => {
                     let target = ParameterCallTarget::Native(symbol);
                     let origins = match bindings.get(&target) {
-                        Some(binding) => self.trace_argument_origins(binding, state)?,
+                        Some(binding) => {
+                            self.trace_argument_origins_at(binding, state, application)?
+                        }
                         None if state.owner == Some(owner) => [source].into(),
                         None => {
                             return Err(invalid(
@@ -206,7 +245,7 @@ impl EffectSemantics<'_> {
         let template = self
             .latent_leaf_summary(LatentSource::Unit(unit), span)
             .ok_or_else(|| invalid("captured callable has no solved template summary"))?;
-        let template = self.specialize_summary_with_residual_bindings(
+        let mut template = self.specialize_summary_with_residual_bindings(
             &template,
             &[],
             &types,
@@ -232,7 +271,55 @@ impl EffectSemantics<'_> {
                 parameters: Some(&type_parameters),
                 rows: &rows,
             },
+            &mut BTreeSet::new(),
         )?;
+        if mode == CallableSummaryMode::Descriptor {
+            let remap = |sources: &mut BTreeSet<crate::CallableReturnSource>| -> Result<(), EffectSpecializationError> {
+                let mapped = sources.iter().map(|source| {
+                    use crate::CallableReturnSource as S;
+                    let mut source = source.clone();
+                    let captured = match &mut source {
+                        S::Captured { environment, .. } | S::Existential { environment, .. } => Some(environment),
+                        S::FrozenContract { environment, .. } => environment.as_mut(),
+                        S::Metadata(source) => source.environment.as_mut(),
+                        S::MetadataObject(source) => source.environment.as_mut(),
+                        S::Reference(reference) => reference.environment.as_mut(),
+                        _ => None,
+                    };
+                    if let Some(captured) = captured {
+                        *captured = self.instantiate_returned_callable_environment(
+                            *captured, environment.application, &bindings, &invocation_state,
+                            super::callable_generics::ScopedGenericArguments {
+                                types: &types, parameters: Some(&type_parameters), rows: &rows,
+                            },
+                        )?;
+                    }
+                    Ok(source)
+                }).collect::<Result<BTreeSet<_>, EffectSpecializationError>>()?;
+                *sources = mapped;
+                Ok(())
+            };
+            if let Some(exits) = &mut template.exits {
+                for exit in &mut exits.exits {
+                    let observation = match &mut exit.outcome {
+                        crate::CallableOutcome::Returned { observation, .. }
+                        | crate::CallableOutcome::HandlerFinished { observation, .. }
+                        | crate::CallableOutcome::HandlerResumed { observation, .. } => {
+                            Some(observation)
+                        }
+                        _ => None,
+                    };
+                    if let Some(crate::ReturnObservation::CallableSources(sources)) = observation {
+                        remap(sources)?;
+                    }
+                }
+                for sources in exits.value_projections.values_mut() {
+                    if let crate::ProjectedReturnSources::Known(sources) = sources {
+                        remap(sources)?;
+                    }
+                }
+            }
+        }
         let bindings = bindings
             .into_iter()
             .map(|(target, binding)| match binding {

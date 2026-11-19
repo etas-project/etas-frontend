@@ -162,6 +162,7 @@ impl NativeDefinitionStore {
                 &evidence.catalog,
                 &identities,
                 &declarations,
+                &producer.catalog,
                 interner.store(),
                 control,
             )

@@ -62,7 +62,8 @@ pub(super) fn validate_target(
         CallableRequestTarget::AgentTools(context) => {
             return validate_metadata_type(context, scope);
         }
-        CallableRequestTarget::Parameter(parameter) => {
+        CallableRequestTarget::Parameter(parameter)
+        | CallableRequestTarget::ParameterProjection { parameter, .. } => {
             return if parameters.contains(parameter) {
                 Ok(())
             } else {

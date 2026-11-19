@@ -237,6 +237,7 @@ impl HirBuilder {
     fn flow(&mut self, params: Vec<SymbolId>, body: HirBlockId) -> HirItemId {
         let symbol = self.symbol();
         self.program.items.alloc(HirItem::Flow(HirFlowDecl {
+            receiver_mode: etas_hir::HirReceiverMode::None,
             symbol,
             type_params: Vec::new(),
             params,

@@ -37,7 +37,7 @@ fn aliases_must_terminate_at_a_checked_declaration() {
         (middle.clone(), binding(&identity, Some(&origin), false)),
         (alias, binding(&identity, Some(&middle), false)),
     ]);
-    validate_chains(&bindings).unwrap();
+    validate_chains(&bindings, &etas_std::standard_registry()).unwrap();
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn same_identity_does_not_validate_a_re_export_cycle() {
         (b.clone(), binding(&identity, Some(&a), false)),
     ]);
     assert!(
-        validate_chains(&bindings)
+        validate_chains(&bindings, &etas_std::standard_registry())
             .unwrap_err()
             .reason
             .contains("cyclic")
@@ -66,7 +66,7 @@ fn verified_target_does_not_hide_an_identity_change() {
         (path("z"), binding(&forged, Some(&origin), false)),
     ]);
     assert!(
-        validate_chains(&bindings)
+        validate_chains(&bindings, &etas_std::standard_registry())
             .unwrap_err()
             .reason
             .contains("changes canonical identity")
@@ -79,14 +79,14 @@ fn absent_and_signatureless_targets_are_not_declarations() {
     let missing = path("missing");
     let bindings = BTreeMap::from([(path("a"), binding(&identity, Some(&missing), false))]);
     assert!(
-        validate_chains(&bindings)
+        validate_chains(&bindings, &etas_std::standard_registry())
             .unwrap_err()
             .reason
             .contains("no canonical target binding")
     );
     let bindings = BTreeMap::from([(path("a"), binding(&identity, None, false))]);
     assert!(
-        validate_chains(&bindings)
+        validate_chains(&bindings, &etas_std::standard_registry())
             .unwrap_err()
             .reason
             .contains("no checked canonical declaration")
@@ -110,7 +110,7 @@ fn long_alias_chains_are_iterative_and_have_no_fixed_depth_fallback() {
             ),
         );
     }
-    validate_chains(&bindings).unwrap();
+    validate_chains(&bindings, &etas_std::standard_registry()).unwrap();
 }
 
 #[test]
@@ -129,7 +129,7 @@ fn graph_budget_is_shared_and_checked_before_building_identity_indexes() {
                             path: vec!["module".into()],
                             canonical_path: vec!["module".into()]
                         };
-                        18_000
+                        MAX_EXTERNAL_METADATA_GRAPH_NODES / 6 + 1
                     ],
                     declarations: Vec::new(),
                 },

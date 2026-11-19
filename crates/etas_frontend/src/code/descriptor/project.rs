@@ -137,6 +137,84 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         Ok(ProjectedSignature { ty })
     }
 
+    /// Input contract of an overload. Root result/effects, parameter names and
+    /// defaults cannot distinguish declarations of the same input signature.
+    pub(crate) fn project_overload_inputs(
+        &mut self,
+        owner: &DefinitionKey,
+        signature: &CallableSignature,
+    ) -> Result<TypeInfoRef, ProjectionError> {
+        self.project_overload_inputs_in_scope(GenericOwner::Declaration(owner.clone()), signature)
+    }
+
+    pub(crate) fn project_action_overload_inputs(
+        &mut self,
+        effect: &DefinitionKey,
+        name: &str,
+        signature: &etas_types::EffectActionSignature,
+    ) -> Result<TypeInfoRef, ProjectionError> {
+        self.project_overload_inputs_in_scope(
+            GenericOwner::Action {
+                effect: effect.clone(),
+                name: name.to_owned(),
+            },
+            &CallableSignature {
+                parameter_interface: None,
+                generic_params: signature.generic_params.clone(),
+                params: signature.params.clone(),
+                output: signature.output,
+                effects: None,
+                requested_actions: None,
+            },
+        )
+    }
+
+    fn project_overload_inputs_in_scope(
+        &mut self,
+        owner: GenericOwner,
+        signature: &CallableSignature,
+    ) -> Result<TypeInfoRef, ProjectionError> {
+        let parameters = signature
+            .generic_params
+            .iter()
+            .enumerate()
+            .map(|(position, parameter)| {
+                let mut declaration = GenericDeclaration::from(parameter);
+                declaration.name = format!("${position}");
+                declaration
+            })
+            .collect::<Vec<_>>();
+        let scope = self.scope(owner, &parameters)?;
+        for (position, parameter) in signature.generic_params.iter().enumerate() {
+            let binder = self.scopes[scope].own_binders[position];
+            self.scopes[scope]
+                .binders
+                .insert(parameter.name.clone(), binder);
+        }
+        let parameters = signature
+            .params
+            .iter()
+            .map(|ty| {
+                Ok(ParameterInfo {
+                    name: None,
+                    default: None,
+                    ty: self.type_ref(*ty, scope)?,
+                })
+            })
+            .collect::<Result<_, ProjectionError>>()?;
+        let output = self.reserve_type()?;
+        self.types[output.0 as usize] = Some(TypeInfo::Primitive(PrimitiveInfo::Unit));
+        let root = self.reserve_type()?;
+        self.types[root.0 as usize] = Some(TypeInfo::Function(SignatureInfo {
+            generics: self.scopes[scope].own_binders.clone(),
+            parameters,
+            output,
+            declared_output: None,
+            effects: None,
+        }));
+        Ok(root)
+    }
+
     pub fn project_type_declaration(
         &mut self,
         symbol: etas_hir::SymbolId,
@@ -147,6 +225,21 @@ impl<'a> DefinitionDescriptorProjector<'a> {
             .get(&symbol)
             .ok_or(ProjectionError::MissingDeclaration(symbol))?
             .clone();
+        self.declaration_ref(declaration.checked_type, declaration)
+    }
+
+    pub(crate) fn project_type_identity(
+        &mut self,
+        identity: &etas_code::DefinitionKey,
+    ) -> Result<TypeInfoRef, ProjectionError> {
+        let declaration = self
+            .identities
+            .type_declarations
+            .values()
+            .chain(self.identities.type_names.values())
+            .find(|declaration| &declaration.identity == identity)
+            .cloned()
+            .ok_or_else(|| ProjectionError::MissingIdentity(format!("type owner {identity:?}")))?;
         self.declaration_ref(declaration.checked_type, declaration)
     }
 
@@ -204,6 +297,21 @@ impl<'a> DefinitionDescriptorProjector<'a> {
             GenericOwner::ImplementationPattern(subject.clone()),
             &parameters,
         )?;
+        types.iter().map(|ty| self.type_ref(*ty, scope)).collect()
+    }
+
+    pub(crate) fn project_implementation_contract(
+        &mut self,
+        owner: &etas_code::ImplementationKey,
+        parameters: &[etas_types::CallableGenericParam],
+        types: &[TypeId],
+    ) -> Result<Vec<TypeInfoRef>, ProjectionError> {
+        self.ensure_edges(types.len())?;
+        let parameters = parameters
+            .iter()
+            .map(GenericDeclaration::from)
+            .collect::<Vec<_>>();
+        let scope = self.scope(GenericOwner::Implementation(owner.clone()), &parameters)?;
         types.iter().map(|ty| self.type_ref(*ty, scope)).collect()
     }
 
@@ -364,12 +472,43 @@ impl<'a> DefinitionDescriptorProjector<'a> {
         if let Some(row) = &signature.effects {
             self.ensure_row(row)?;
         }
+        let interface = match &self.scopes[scope].owner {
+            GenericOwner::Method(identity) => self
+                .checked
+                .types
+                .methods
+                .entries()
+                .find_map(|entry| {
+                    let symbol = match &entry.target {
+                        etas_types::method::MethodTarget::Source { symbol, .. }
+                        | etas_types::method::MethodTarget::Agent { symbol, .. } => *symbol,
+                        _ => return None,
+                    };
+                    (self.identities.method(symbol) == Some(identity))
+                        .then(|| entry.signature.parameter_interface.clone())
+                        .flatten()
+                })
+                .or_else(|| signature.parameter_interface.clone()),
+            _ => signature.parameter_interface.clone(),
+        };
         let mut parameters = Vec::with_capacity(signature.params.len());
-        for (ty, name) in signature.params.iter().zip(names) {
+        for (index, (ty, name)) in signature.params.iter().zip(names).enumerate() {
             if let Some(name) = name {
                 self.text(name)?;
             }
             parameters.push(ParameterInfo {
+                default: interface
+                    .as_ref()
+                    .and_then(|parameters| parameters.get(index))
+                    .and_then(|parameter| parameter.default.as_ref())
+                    .map(|reference| {
+                        crate::code::parameter_defaults::project(
+                            self.checked,
+                            self.identities,
+                            reference,
+                        )
+                    })
+                    .transpose()?,
                 name: name.clone(),
                 ty: self.type_ref(*ty, scope)?,
             });

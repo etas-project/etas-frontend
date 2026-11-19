@@ -74,6 +74,7 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             );
         }
         for unit in facts.unit_effects.keys() {
+            assert_eq!(facts.suspension[unit], global.suspension[unit]);
             let owner = match unit {
                 EffectUnit::Item(item) => *item,
                 EffectUnit::AnonymousFlow { owner, .. } | EffectUnit::HandlerArm { owner, .. } => {

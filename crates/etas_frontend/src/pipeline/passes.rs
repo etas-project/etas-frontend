@@ -131,6 +131,10 @@ fn semantic_pipeline(
         .pass(CompleteTypedAnalysisReachabilityPass)
         .pass(CompleteTypedRuntimeReachabilityPass)
         .pass(PrepareDirectInvocationTypesPass)
+        // Body typing can reify contextual collection literals into calls.
+        // Method origins use the declaration snapshot above; effect analysis
+        // must pin the final HIR revision after these typed rewrites.
+        .pass(PrepareEffectRegistryPass)
         .pass(RunEffectPipelinePass)
         .pass(ValidateResidualBackendSupportPass)
         .pass(CompleteEffectRuntimeReachabilityPass)

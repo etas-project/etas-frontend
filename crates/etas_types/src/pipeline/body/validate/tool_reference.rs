@@ -4,12 +4,12 @@ use etas_hir::{HirArg, HirExpr, HirItem, ResolveResult, SymbolDef, SymbolKind};
 use crate::pipeline::{body::state::BodyPipelineState, context::TypePipelineContext};
 
 pub(super) fn validate(ctx: &mut TypePipelineContext<'_>, state: &BodyPipelineState) {
-    let selected = state
+    let mut selected = state
         .solver_report
         .std_intrinsic_calls
         .iter()
         .filter(|(_, call)| call.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
-        .map(|(expr, _)| expr)
+        .map(|(expr, _)| *expr)
         .chain(
             state
                 .solver_report
@@ -23,12 +23,27 @@ pub(super) fn validate(ctx: &mut TypePipelineContext<'_>, state: &BodyPipelineSt
                             ..
                         }
                     )
-                    .then_some(expr)
+                    .then_some(*expr)
                 }),
-        );
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let facts = ctx
+        .signature_base
+        .map_or(&ctx.signature_facts, |base| &base.facts);
+    selected.extend(
+        state
+            .provisional
+            .expr_types
+            .keys()
+            .filter(|expr| {
+                crate::source_execution::call_target(ctx.hir, facts, **expr)
+                    == Some(etas_std::StdExecutionRole::ToolReference)
+            })
+            .copied(),
+    );
     for expr in selected {
         let Some(HirExpr::Call { args, span, .. } | HirExpr::MethodCall { args, span, .. }) =
-            ctx.hir.exprs.get(*expr)
+            ctx.hir.exprs.get(expr)
         else {
             continue;
         };

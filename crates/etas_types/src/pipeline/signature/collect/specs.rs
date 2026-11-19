@@ -9,15 +9,37 @@ use crate::{
 };
 
 pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePipelineState) {
-    let items = ctx
+    let mut items = ctx
         .hir
         .items
         .iter()
-        .map(|(_, item)| item.clone())
+        .map(|(item, declaration)| (item.0, declaration.clone()))
         .collect::<Vec<_>>();
-    for (impl_group, item) in items.into_iter().enumerate() {
+    // Required methods belong to the spec regardless of source file order.
+    // Preserve each impl's original group while collecting all specs first.
+    items.sort_by_key(|(_, item)| !matches!(item, HirItem::Spec(_)));
+    for (impl_group, item) in items {
         match item {
             HirItem::Spec(decl) => {
+                if ctx.hir.source_standard_types {
+                    let symbol = ctx
+                        .hir
+                        .symbols
+                        .get(decl.symbol)
+                        .expect("source spec symbol");
+                    if let Some(module) = &ctx.hir.modules_arena[symbol.defining_module].name {
+                        let mut path = module
+                            .segments
+                            .iter()
+                            .map(|part| part.name.clone())
+                            .collect::<Vec<_>>();
+                        path.push(symbol.name.clone());
+                        if ctx.std_registry.lookup_type_dependency(&path).is_some_and(|entry|
+                            matches!(&entry.decl, etas_std::StdDecl::Type(ty) if ty.kind == etas_std::TypeDeclKind::Spec)) {
+                            ctx.signature_facts.std_spec_aliases.insert(decl.symbol, path);
+                        }
+                    }
+                }
                 let super_specs = decl
                     .bounds
                     .iter()
@@ -73,6 +95,8 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                         .iter()
                                         .map(|param| symbol_name(ctx, *param))
                                         .collect(),
+                                    updating_receiver: signature.receiver_mode
+                                        == etas_hir::HirReceiverMode::Updating,
                                     receiver_param: signature.receiver_type_param.and_then(
                                         |receiver| {
                                             signature
@@ -138,6 +162,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                         );
                     }
                 }
+                let owner = decl.target.clone();
                 if let HirImplTarget::SpecSatisfaction { specs, self_type } = decl.target {
                     let Some(self_type) = lower_type_ref(ctx, self_type) else {
                         continue;
@@ -148,6 +173,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                         ctx,
                         state,
                         self_type,
+                        &owner,
                         &mut generic_params,
                         decl.span,
                     );
@@ -166,6 +192,7 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 Vec::new()
                             };
                             state.spec_impls.push(SpecImplFact {
+                                implementation: Some(etas_hir::HirItemId(impl_group)),
                                 generic_params: generic_params.clone(),
                                 self_type,
                                 spec_symbol,
@@ -178,9 +205,11 @@ pub fn collect_specs(ctx: &mut TypePipelineContext<'_>, state: &mut SignaturePip
                                 impl_group: impl_group as u32,
                                 span: spec_ref.span,
                             });
-                            if spec_signature(ctx, state, spec_symbol).is_some_and(|signature| {
-                                matches!(signature.kind, SpecKind::TypeSpec)
-                            }) {
+                            if generic_params.is_empty()
+                                && spec_signature(ctx, state, spec_symbol).is_some_and(
+                                    |signature| matches!(signature.kind, SpecKind::TypeSpec),
+                                )
+                            {
                                 state
                                     .type_spec_satisfactions
                                     .push(TypeSpecSatisfactionFact {
@@ -231,6 +260,10 @@ fn callable_signature_from_spec_item(
     signature: &etas_hir::HirFlowSignature,
 ) -> CallableSignature {
     CallableSignature {
+        parameter_interface: Some(crate::call_interface::source_parameters(
+            ctx.hir,
+            &signature.params,
+        )),
         generic_params: super::callables::callable_generic_params(
             ctx,
             state,
@@ -261,6 +294,7 @@ fn callable_signature_from_spec_callable(
         })
         .unwrap_or_default();
     CallableSignature {
+        parameter_interface: None,
         generic_params: Vec::new(),
         params: input,
         output: lower_type_ref(ctx, signature.output)
@@ -279,6 +313,10 @@ fn callable_signature_from_flow(
     flow: &etas_hir::HirFlowDecl,
 ) -> CallableSignature {
     CallableSignature {
+        parameter_interface: Some(crate::call_interface::source_parameters(
+            ctx.hir,
+            &flow.params,
+        )),
         generic_params: super::callables::callable_generic_params(ctx, state, &flow.type_params),
         params: lower_param_types(ctx, &flow.params),
         output: flow

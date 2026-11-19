@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
@@ -36,6 +36,7 @@ impl EffectSemantics<'_> {
         application: etas_code::CodeFingerprint,
         state: &EffectState,
         generics: super::super::callable_generics::ScopedGenericArguments<'_>,
+        formal_parameters: &mut std::collections::BTreeSet<ParameterCallTarget>,
     ) -> Result<(), EffectSpecializationError> {
         let mut calls = BTreeMap::new();
         summary.action_trace.collect_parameter_calls(&mut calls);
@@ -68,6 +69,26 @@ impl EffectSemantics<'_> {
                 environment,
             } = reference.target
             {
+                let definition = self
+                    .method_evidence
+                    .borrow()
+                    .get(&invocation)
+                    .cloned()
+                    .ok_or_else(|| invalid("metadata method has no checked evidence definition"))?;
+                let mut missing = definition
+                    .parameters
+                    .iter()
+                    .map(|(_, parameter)| parameter)
+                    .filter(|parameter| !bindings.contains_key(parameter));
+                if let Some(first) = missing.next()
+                    && formal_parameters.contains(first)
+                    && missing.all(|parameter| formal_parameters.contains(parameter))
+                {
+                    // A first-class callable still owns these formal inputs.
+                    // Its caller binds the method evidence when supplying them.
+                    formal_parameters.insert(reference.target);
+                    continue;
+                }
                 let environment = self.bind_metadata_method_environment(
                     invocation,
                     environment,
@@ -120,16 +141,44 @@ impl EffectSemantics<'_> {
         let arguments = self.checked_method_arguments(call)?;
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
-            if !self.expr_type_contains_flow(expr) && !self.symbolic_contract_expr(state, expr) {
-                continue;
-            }
-            let sources = self
-                .latent_sources_for_expr(state, expr)
-                .ok_or_else(|| invalid("spec invocation callback has no checked value sources"))?;
+            let sources =
+                if self.expr_type_contains_flow(expr) || self.symbolic_contract_expr(state, expr) {
+                    self.latent_sources_for_expr(state, expr).ok_or_else(|| {
+                        invalid("spec invocation callback has no checked value sources")
+                    })?
+                } else {
+                    // A checked scalar supplies an empty callable payload. It is
+                    // still an argument when the method captures a generic input.
+                    BTreeSet::new()
+                };
             captures.insert(
                 ParameterCallTarget::Interface(position as u32),
                 sources.into_iter().collect(),
             );
+            if let Some(paths) = self
+                .types
+                .facts
+                .expr_types
+                .get(&expr)
+                .and_then(|ty| self.value_payload_paths(*ty))
+            {
+                for path in paths {
+                    let target = self
+                        .intern_external_parameter_projection(
+                            ParameterCallTarget::Interface(position as u32),
+                            path.clone(),
+                        )
+                        .ok_or_else(|| {
+                            invalid("spec argument projection exceeds its checked graph budget")
+                        })?;
+                    let sources = self
+                        .projected_sources(expr, &path, state)
+                        .unwrap_or_else(|| {
+                            [super::super::state::LatentSource::Unavailable { expr }].into()
+                        });
+                    captures.insert(target, sources);
+                }
+            }
         }
         let site = self.callable_environment_site(call)?;
         let environment = CallableEnvironmentId {
@@ -171,9 +220,10 @@ impl EffectSemantics<'_> {
             self.native_environment_type_parameters(lexical_owner, &snapshot.generics)?;
         let names = types.iter().cloned().collect::<HashMap<_, _>>();
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
-            .with_type_parameters(&type_parameters)
-            .with_effect_arguments(&type_rows);
+        let mut substitution =
+            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &names)
+                .with_type_parameters(&type_parameters)
+                .with_effect_arguments(&type_rows);
         let mut arguments = self.call_generic_bindings(call);
         for (_, ty) in &mut arguments.types {
             *ty = substitution.substitute(*ty)?;
@@ -361,9 +411,13 @@ impl EffectSemantics<'_> {
                 .ok_or_else(|| invalid("method evidence receiver binder is invalid"))?;
             bound_bindings.insert(parameter.name.clone(), receiver);
         }
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &bound_bindings)
-            .with_type_parameters(&type_parameters)
-            .with_effect_arguments(&type_rows);
+        let mut substitution = TypeSubstitutionEngine::existing_indexed(
+            &self.types.store,
+            self.type_lookup(),
+            &bound_bindings,
+        )
+        .with_type_parameters(&type_parameters)
+        .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &declaration.effects {
             let row = substitution.substitute_effect_row(row.clone())?;

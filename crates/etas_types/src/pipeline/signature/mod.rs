@@ -30,6 +30,24 @@ pub mod validate {
 
 use crate::pipeline::context::TypePipelineContext;
 
+fn capability_field(
+    ctx: &TypePipelineContext<'_>,
+    owner: Option<crate::TypeId>,
+    field: &str,
+) -> Option<crate::TypeId> {
+    let crate::Type::Nominal(owner) = ctx.interner.store().get(owner?)? else {
+        return None;
+    };
+    let crate::Type::Record(record) = ctx.interner.store().get(owner.representation?)? else {
+        return None;
+    };
+    record
+        .fields
+        .iter()
+        .find(|slot| slot.name == field)
+        .map(|slot| slot.ty)
+}
+
 pub fn run_for_hir(ctx: &mut TypePipelineContext<'_>) {
     imports::std::apply_hir_std_prelude(ctx);
     run(ctx);
@@ -46,6 +64,7 @@ pub fn run_from_input<'a>(
     imports::external::apply_external_signature_input(ctx, &input.external);
     run_with_annotations(ctx, input.annotation_validation);
     imports::source::apply_source_signature_input(ctx, &input.source);
+    crate::task_scope::infer(ctx.hir, ctx.interner.store(), &mut ctx.signature_facts);
     imports::reflection::apply(ctx, &input.reflection);
 }
 
@@ -67,6 +86,44 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     collect::trace_patterns::collect_trace_pattern_types(ctx);
     collect::nominal_types::collect_members(ctx, &mut state);
     publish_signature_prefix(ctx, &state);
+    if ctx.hir.source_standard_types {
+        ctx.signature_facts.known_std_types.option_enum =
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "option", "Option"]);
+        ctx.signature_facts.known_std_types.result_enum =
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "result", "Result"]);
+        ctx.signature_facts.known_std_types.source_iterator =
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "collections", "Iter"]);
+        ctx.signature_facts.known_std_types.index_error =
+            crate::lower::type_ref::selected_source_type(
+                ctx,
+                &["std", "runtime", "error", "IndexError"],
+            );
+        let selected = |ctx: &mut TypePipelineContext<'_>, name: &str| {
+            crate::lower::type_ref::selected_source_type(ctx, &["std", "task", name])
+        };
+        let task = selected(ctx, "Task");
+        let scheduler = selected(ctx, "Scheduler");
+        let continuation = selected(ctx, "Continuation");
+        ctx.signature_facts.known_std_types.execution =
+            crate::facts::symbols::KnownExecutionTypes {
+                task,
+                scheduler,
+                continuation,
+                task_handle: capability_field(ctx, task, "handle"),
+                scheduler_state: capability_field(ctx, scheduler, "state"),
+                continuation_state: capability_field(ctx, continuation, "state"),
+            };
+        let known = &mut ctx.signature_facts.known_std_types;
+        known.opaque_values.extend(
+            [
+                known.execution.task_handle,
+                known.execution.scheduler_state,
+                known.execution.continuation_state,
+            ]
+            .into_iter()
+            .flatten(),
+        );
+    }
     collect::effect_actions::collect_effect_actions(ctx, &mut state);
     collect::std_actions::collect_std_actions(ctx, &mut state);
     publish_action_signature_prefix(ctx, &state);
@@ -81,6 +138,7 @@ fn run_with_annotations(ctx: &mut TypePipelineContext<'_>, mode: crate::Annotati
     validate::exported_contracts::validate_exported_contracts(ctx, &state);
     collect::methods::collect(ctx, &mut state);
     materialize::materialize_signature_facts(ctx, state);
+    crate::task_scope::infer(ctx.hir, ctx.interner.store(), &mut ctx.signature_facts);
     validate::type_applications::run(ctx);
     if mode == crate::AnnotationValidationMode::Immediate {
         ctx.diagnostics

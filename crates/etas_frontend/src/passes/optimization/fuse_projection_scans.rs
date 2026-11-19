@@ -64,6 +64,7 @@ impl Pass<ProjectContext> for FuseProjectionScansPass {
         if !fusions.is_empty() {
             super::facts::invalidate_replaced_expressions(
                 context,
+                &output.hir,
                 fusions.values().flatten().flat_map(|fusion| {
                     expression_tree_from_program(output.hir.program(), fusion.second.iterable)
                         .into_iter()

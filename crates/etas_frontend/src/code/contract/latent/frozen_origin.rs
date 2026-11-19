@@ -99,6 +99,7 @@ pub(in crate::code::contract) fn preserves(
                 };
                 if !graph.sources.contains(&CallableValueSource::Parameter(
                     etas_package_metadata::CallableValueParameter {
+                        projection: None,
                         scope: CallableValueScope::Root,
                         position: position as u32,
                     },

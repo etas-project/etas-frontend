@@ -62,6 +62,9 @@ impl BodyEffectOutput {
         expressions!(
             handled_body_requests,
             native_call_targets,
+            source_call_arguments,
+            dynamic_call_sources,
+            iteration_call_sources,
             metadata_call_targets,
             generic_effect_rows,
             expr_effects,
@@ -75,6 +78,13 @@ impl BodyEffectOutput {
             task_calls,
             continuation_transfers
         );
+        for (key, projection) in &output.facts.parameter_projections {
+            if let Some(body) = bodies.get_mut(&projection.owner) {
+                body.facts
+                    .parameter_projections
+                    .insert(*key, projection.clone());
+            }
+        }
         for (stmt, fact) in &output.facts.stmt_effects {
             let owner = index
                 .stmt_item
@@ -162,12 +172,15 @@ impl BodyEffectOutput {
         for (unit, fact) in &output.facts.unit_effects {
             let owner = match unit {
                 EffectUnit::Item(item) => item,
-                EffectUnit::HandlerArm { owner, .. } | EffectUnit::AnonymousFlow { owner, .. } => {
-                    owner
-                }
+                EffectUnit::HandlerArm { owner, .. }
+                | EffectUnit::AnonymousFlow { owner, .. }
+                | EffectUnit::ParameterDefault { owner, .. } => owner,
             };
             if let Some(body) = bodies.get_mut(owner) {
                 body.facts.unit_effects.insert(*unit, fact.clone());
+                if let Some(summary) = output.facts.suspension.get(unit) {
+                    body.facts.suspension.insert(*unit, *summary);
+                }
             }
         }
         for contract in &output.facts.public_contracts {
@@ -224,6 +237,10 @@ impl BodyEffectOutput {
             if let Some(specs) = output.facts.trace_specs.symbols.get(&symbol) {
                 body.facts.trace_specs.symbols.insert(symbol, specs.clone());
             }
+        }
+        for body in bodies.values_mut() {
+            body.facts.external_parameter_projections =
+                output.facts.external_parameter_projections.clone();
         }
         Ok(bodies)
     }

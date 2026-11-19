@@ -7,7 +7,18 @@ pub enum Pattern {
     Ident(Name),
     Wildcard(Span),
     Literal(Literal),
-    Tuple { elems: Vec<Pattern>, span: Span },
+    Tuple {
+        elems: Vec<Pattern>,
+        span: Span,
+    },
+    EmptyList {
+        span: Span,
+    },
+    ListCons {
+        head: Box<Pattern>,
+        tail: Box<Pattern>,
+        span: Span,
+    },
     Record(RecordPattern),
     Variant(VariantPattern),
     Error(Span),
@@ -17,7 +28,11 @@ impl Pattern {
     pub fn span(&self) -> Span {
         match self {
             Self::Ident(name) => name.span,
-            Self::Wildcard(span) | Self::Tuple { span, .. } | Self::Error(span) => *span,
+            Self::Wildcard(span)
+            | Self::Tuple { span, .. }
+            | Self::EmptyList { span }
+            | Self::ListCons { span, .. }
+            | Self::Error(span) => *span,
             Self::Literal(literal) => literal.span(),
             Self::Record(record) => record.span,
             Self::Variant(variant) => variant.span,

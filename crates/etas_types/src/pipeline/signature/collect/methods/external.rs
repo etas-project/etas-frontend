@@ -95,7 +95,11 @@ pub(super) fn collect(ctx: &TypePipelineContext<'_>) -> Vec<MethodSignatureFact>
             result.push(MethodSignatureFact {
                 name: member.name.clone(),
                 owner: MethodOwner::Spec(spec_ref.clone()),
-                receiver: crate::method::MethodReceiver::Value { slot: 0 },
+                receiver: if member.updating_receiver {
+                    crate::method::MethodReceiver::Updating { slot: 0 }
+                } else {
+                    crate::method::MethodReceiver::Value { slot: 0 }
+                },
                 receiver_type,
                 owner_params,
                 parameter_names: member.parameter_names.iter().cloned().map(Some).collect(),

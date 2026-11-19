@@ -1926,15 +1926,19 @@ flow invalid() -> char {
 
 #[test]
 fn action_signature_generics_are_distinct_from_selectors() {
-    let parsed = parse_program(source(r#"
+    let parsed = parse_program(source(
+        r#"
 effect Examples {
     action<T, effect E> await(task: Task<T, ![E]>) -> T;
     action choose<Output>(schema: Schema<Output>) -> Output;
     action<T> select<Key>(key: Key, value: T) -> T;
 }
-"#));
+"#,
+    ));
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let Item::Effect(effect) = &parsed.value.items[0].item else { panic!("effect") };
+    let Item::Effect(effect) = &parsed.value.items[0].item else {
+        panic!("effect")
+    };
     let actions = effect.body.actions();
     assert_eq!(actions[0].type_params.len(), 2);
     assert_eq!(actions[0].type_params[1].kind, TypeParamKind::Effect);

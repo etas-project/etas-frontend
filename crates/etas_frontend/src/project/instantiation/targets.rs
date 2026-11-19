@@ -8,6 +8,9 @@ pub(super) fn external_signature<'a>(
     types: &'a TypeOutput,
     expr: HirExprId,
 ) -> Option<&'a etas_types::CallableSignature> {
+    if let Some(selected) = types.facts.library_flow_calls.get(&expr) {
+        return Some(&selected.signature);
+    }
     if let Some(selected) = types.facts.std_intrinsic_calls.get(&expr) {
         return Some(&selected.signature);
     }
@@ -57,6 +60,13 @@ pub(crate) fn direct_targets(
     types: &TypeOutput,
 ) -> Result<HashMap<HirExprId, BTreeSet<HirItemId>>, String> {
     let mut targets = HashMap::<_, BTreeSet<_>>::new();
+    for (expr, symbol) in &types.facts.source_flow_calls {
+        let Some(SymbolDef::Item { item }) = hir.symbols.get(*symbol).map(|symbol| &symbol.def)
+        else {
+            return Err("selected source overload has no callable body".into());
+        };
+        targets.entry(*expr).or_default().insert(*item);
+    }
     for (expr, method) in types.facts.checked_method_calls.iter().chain(
         types
             .facts
@@ -71,6 +81,9 @@ pub(crate) fn direct_targets(
         }
     }
     for (expr, fact) in &types.facts.generic_instantiations {
+        if types.facts.source_flow_calls.contains_key(expr) {
+            continue;
+        }
         if !fact.deferred_effect_row_obligations.is_empty() {
             continue;
         }

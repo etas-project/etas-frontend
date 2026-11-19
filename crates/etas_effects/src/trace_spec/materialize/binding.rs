@@ -96,9 +96,13 @@ impl TraceSpecMaterializer<'_> {
                         GenericParameterKind::Type,
                     ))
                 }
-                (HirType::Path { .. } | HirType::Tuple { .. } | HirType::Record { .. }, _)
-                    if self.types.facts.type_refs.get(source) == Some(checked_id) =>
-                {
+                (
+                    HirType::Path { .. }
+                    | HirType::Tuple { .. }
+                    | HirType::Record { .. }
+                    | HirType::Array { .. },
+                    _,
+                ) if self.types.facts.type_refs.get(source) == Some(checked_id) => {
                     let fingerprint = etas_types::ty::closed_structural_type_fingerprint(
                         &self.types.store,
                         *checked_id,

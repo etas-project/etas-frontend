@@ -278,26 +278,27 @@ fn select(
         let Some(ast::ImplItem::Flow(flow)) = decl.items.get(member) else {
             return Err(RetainedBodyError::MissingBody);
         };
-        return Ok(flow_body(&flow.body));
+        return flow_body(&flow.body);
     }
     match &item.item {
-        ast::Item::Flow(flow) => Ok(flow_body(&flow.body)),
+        ast::Item::Flow(flow) => flow_body(&flow.body),
         ast::Item::Agent(agent) => match &agent.body {
             ast::AgentBody::Source(block) => Ok(SourceBodyView::Block(block)),
             _ => Err(RetainedBodyError::MissingBody),
         },
         ast::Item::Tool(tool) => match &tool.body {
-            ast::ToolBody::Source(body) => Ok(flow_body(body)),
+            ast::ToolBody::Source(body) => flow_body(body),
             _ => Err(RetainedBodyError::MissingBody),
         },
         _ => Err(RetainedBodyError::MissingBody),
     }
 }
 
-fn flow_body(body: &ast::FlowBody) -> SourceBodyView<'_> {
+fn flow_body(body: &ast::FlowBody) -> Result<SourceBodyView<'_>, RetainedBodyError> {
     match body {
-        ast::FlowBody::Block(block) => SourceBodyView::Block(block),
-        ast::FlowBody::Expr { expr, .. } => SourceBodyView::Expression(expr),
+        ast::FlowBody::Decl { .. } => Err(RetainedBodyError::MissingBody),
+        ast::FlowBody::Block(block) => Ok(SourceBodyView::Block(block)),
+        ast::FlowBody::Expr { expr, .. } => Ok(SourceBodyView::Expression(expr)),
     }
 }
 

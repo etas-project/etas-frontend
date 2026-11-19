@@ -8,6 +8,14 @@ pub(super) fn declared_field_hint<E>(
     field: &str,
     span: etas_core::Span,
 ) -> Option<TypeId> {
+    if let Some(projection) = crate::value_representation::checked_value_projection(
+        ctx.ctx.interner.store(),
+        &ctx.ctx.spec_facts(),
+        base,
+        field,
+    ) {
+        return projection.output_type(ctx.ctx.interner.store(), base);
+    }
     let representation = match crate::applied_representation(&mut ctx.ctx.interner, base) {
         Ok(Some(ty)) => ty,
         Ok(None) => base,

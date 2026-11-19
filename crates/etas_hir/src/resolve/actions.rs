@@ -28,8 +28,12 @@ pub fn resolve_action_ref(
             ResolveResult::Unresolved
         }
         many => {
-            diagnostics.ambiguous_name(&qualified, action.span);
-            ResolveResult::Ambiguous(many.to_vec())
+            if let Some(root) = symbols.effect_action_overload_root(many) {
+                ResolveResult::Resolved(root)
+            } else {
+                diagnostics.ambiguous_name(&qualified, action.span);
+                ResolveResult::Ambiguous(many.to_vec())
+            }
         }
     };
 

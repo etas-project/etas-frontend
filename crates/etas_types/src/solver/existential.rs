@@ -81,7 +81,8 @@ fn witnesses(
     let closure =
         spec_solver::bound_evidence::closure(input.store, input.spec_facts, bounds.to_vec())?;
     let mut result = Vec::new();
-    for bound in closure {
+    for mut bound in closure {
+        bound.spec = spec_solver::bound_evidence::declaration(input.spec_facts, &bound.spec);
         let methods = match &bound.spec {
             crate::CheckedSpecRef::Source(symbol) => input
                 .spec_facts

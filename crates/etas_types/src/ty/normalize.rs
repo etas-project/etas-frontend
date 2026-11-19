@@ -25,11 +25,31 @@ pub fn applied_representation_in_store(
     store: &TypeStore,
     ty: TypeId,
 ) -> Result<Option<TypeId>, TypeSubstitutionError> {
+    applied_representation_with_lookup(store, None, ty)
+}
+
+pub fn applied_representation_in_store_indexed(
+    store: &TypeStore,
+    lookup: &super::TypeLookupIndex,
+    ty: TypeId,
+) -> Result<Option<TypeId>, TypeSubstitutionError> {
+    applied_representation_with_lookup(store, Some(lookup), ty)
+}
+
+fn applied_representation_with_lookup(
+    store: &TypeStore,
+    lookup: Option<&super::TypeLookupIndex>,
+    ty: TypeId,
+) -> Result<Option<TypeId>, TypeSubstitutionError> {
     let Some((representation, substitutions)) = nominal_representation_parts(store, ty) else {
         return Ok(None);
     };
     let canonical = application_parameters(store, ty)?;
-    TypeSubstitutionEngine::existing(store, &substitutions)
+    let engine = match lookup {
+        Some(lookup) => TypeSubstitutionEngine::existing_indexed(store, lookup, &substitutions),
+        None => TypeSubstitutionEngine::existing(store, &substitutions),
+    };
+    engine
         .with_canonical_parameters(&canonical)
         .substitute(representation)
         .map(Some)

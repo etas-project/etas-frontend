@@ -39,7 +39,12 @@ pub fn lower_external_action_signature(
         &action.path,
         &action.generic_params,
     )?;
+    let default_handler_effects = action
+        .default_handler_effects
+        .as_ref()
+        .map(|row| lower_external_effect_row(ctx, span, row));
     Some(EffectActionSignature {
+        parameter_interface: Some(action.parameter_interface.clone()),
         generic_params,
         params: action
             .params
@@ -58,7 +63,7 @@ pub fn lower_external_action_signature(
             })
             .collect(),
         returns_never: action.returns_never,
-        default_handler_effects: None,
+        default_handler_effects,
     })
 }
 
@@ -357,9 +362,24 @@ pub fn lower_external_type(
             ctx.interner.primitive(PrimitiveType::Never)
         }
         crate::ExternalTypeInput::Enum { path, .. } => {
-            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
-                name: path.join("."),
-            }));
+            // Reexports name the checked declaration, not a new enum. Use the
+            // bundle's canonical owner so prelude aliases share its layout and
+            // all applied types with the original module.
+            let name = ctx
+                .std_registry
+                .lookup_type_dependency(path)
+                .and_then(|symbol| ctx.std_registry.declaration_key(symbol.id))
+                .map(|identity| {
+                    identity
+                        .module()
+                        .iter()
+                        .chain(identity.declaration())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(".")
+                })
+                .unwrap_or_else(|| path.join("."));
+            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef { name }));
             ctx.external_type_paths.insert(path.clone(), ty);
             ty
         }
@@ -605,17 +625,36 @@ pub fn lower_external_type_declaration(
     ty: Option<&crate::ExternalTypeInput>,
 ) -> TypeId {
     let registry = ctx.std_registry.clone();
-    if let Some(symbol) = registry.lookup_qualified(path)
+    if let Some(symbol) = registry.lookup_type_dependency(path)
         && registry.declaration_key(symbol.id).is_some()
         && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
             if declaration.runtime_role.is_some()
-                || declaration.code_role.is_some()
+                || (declaration.code_role.is_some()
+                    && declaration.construction == etas_std::StdTypeConstruction::IntrinsicOnly)
                 || registry.native_record_reference(&path.join(".")).is_some()
                 || registry.native_opaque_reference(&symbol.qualified_path.join(".")).is_some())
     {
         let ty = crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol).unwrap();
         ctx.external_type_paths.insert(path.to_vec(), ty);
         return ty;
+    }
+    // A source std query supplies constructor identity, not an opaque override
+    // of its checked package metadata. Complete its actual representation,
+    // including private nominal dependencies, using the normal importer. Seed
+    // the same constructor first so readonly CallableDef keeps its identity.
+    if let Some(symbol) = registry.lookup_type_dependency(path)
+        && registry.declaration_key(symbol.id).is_some()
+        && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
+            if declaration.construction == etas_std::StdTypeConstruction::Public
+                && declaration.canonical_type.is_none()
+                && !matches!(declaration.kind, etas_std::TypeDeclKind::Primitive | etas_std::TypeDeclKind::Spec))
+    {
+        let constructor = crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol)
+            .expect("checked source std constructor");
+        ctx.external_type_paths.insert(path.to_vec(), constructor);
+        if ty.is_none() {
+            return constructor;
+        }
     }
     match ty {
         Some(

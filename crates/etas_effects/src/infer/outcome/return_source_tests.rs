@@ -149,7 +149,15 @@ fn known_callable_values_do_not_erase_unknown_control_or_supply_missing_values()
         gaps: BTreeSet::from([OutcomeAnalysisGap::ExternalCall(HirExprId(8))]),
         handler_gaps: Default::default(),
         parameter_exits: Vec::new(),
+        value_projections: Default::default(),
     };
+    summary.record(
+        CallableOutcome::Returned {
+            ty: TypeId(4),
+            observation: ReturnObservation::CallableSources(BTreeSet::new()),
+        },
+        ActionTraceDomain::Empty,
+    );
     let before = summary.clone();
     assert_eq!(
         summary.callable_return_sources(),
