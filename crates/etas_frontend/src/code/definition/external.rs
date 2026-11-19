@@ -72,6 +72,13 @@ impl DefinitionCatalog {
             }
         }
         let mut pending = bindings.values().cloned().collect::<BTreeSet<_>>();
+        pending.extend(
+            self.checked
+                .types
+                .library_flow_calls
+                .values()
+                .map(|call| call.callable.clone()),
+        );
         pending.extend(self.checked.types.methods.entries().filter_map(
             |method| match &method.target {
                 etas_types::method::MethodTarget::External { identity } => {

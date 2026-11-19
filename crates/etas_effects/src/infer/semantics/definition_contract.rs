@@ -144,17 +144,22 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Option<Vec<LatentSource>> {
-        if let Some(recipe) = self.types.facts.definition_operations.get(&expr) {
+        let input = self
+            .types
+            .facts
+            .definition_operations
+            .get(&expr)
+            .map(|recipe| recipe.input)
+            .or_else(|| self.source_compile_input(expr));
+        if let Some(input) = input {
             // Both operations preserve the frozen contract. The compile request
             // itself contributes only its ordinary service effects elsewhere.
-            return self
-                .latent_sources_for_expr(state, recipe.input)
-                .map(|sources| {
-                    sources
-                        .into_iter()
-                        .map(|source| freeze(source, expr))
-                        .collect()
-                });
+            return self.latent_sources_for_expr(state, input).map(|sources| {
+                sources
+                    .into_iter()
+                    .map(|source| freeze(source, expr))
+                    .collect()
+            });
         }
         let fact = self.types.facts.reflections.get(&expr)?;
         match fact.target {
@@ -199,6 +204,49 @@ impl EffectSemantics<'_> {
                 .external_reflection_metadata(expr)
                 .map(|_| vec![LatentSource::ExternalFrozen { reflection: expr }]),
         }
+    }
+
+    fn source_compile_input(&self, expr: HirExprId) -> Option<HirExprId> {
+        let (symbol, signature, path) =
+            if let Some(call) = self.types.facts.library_flow_calls.get(&expr) {
+                let body = self
+                    .std_registry
+                    .flow_body_binding(call.symbol, call.overload)?;
+                if body.callable != call.callable {
+                    return None;
+                }
+                (
+                    call.symbol,
+                    &call.signature,
+                    &["std", "compiler", "compile"][..],
+                )
+            } else {
+                let call = self.types.facts.action_calls.get(&expr)?;
+                (
+                    call.target,
+                    &call.signature,
+                    &["std", "effects", "Code", "compile"][..],
+                )
+            };
+        let declaration = self.std_registry.symbol(symbol)?;
+        let [parameter] = signature.params.as_slice() else {
+            return None;
+        };
+        if declaration.qualified_path != path
+            || self.descriptor_contract_type(*parameter) != Some(signature.output)
+        {
+            return None;
+        }
+        let args = match self.hir.exprs.get(expr)? {
+            HirExpr::Call { args, .. } | HirExpr::Perform { args, .. } => args,
+            _ => return None,
+        };
+        let [arg] = args.as_slice() else {
+            return None;
+        };
+        Some(*match arg {
+            etas_hir::HirArg::Positional(value) | etas_hir::HirArg::Named { value, .. } => value,
+        })
     }
 
     pub(super) fn descriptor_contract_type(&self, ty: TypeId) -> Option<TypeId> {
