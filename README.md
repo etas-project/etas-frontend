@@ -32,9 +32,7 @@ cargo test -p etas_syntax
 ## Documentation
 
 - [Frontend design](docs/architect/phase1-frontend-design.md)
+- [Standard library source implementation](https://github.com/etas-project/etas-core/blob/main/docs/std-source-declarations.md)
 - [Language specification](https://github.com/etas-project/etas/tree/main/docs/design)
 
 [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)
-
-The source standard-library implementation and bootstrap contracts are documented
-in [Etas Core](https://github.com/etas-project/etas-core/blob/main/docs/std-source-declarations.md).

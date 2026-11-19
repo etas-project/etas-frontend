@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
@@ -149,7 +149,7 @@ impl EffectSemantics<'_> {
                 } else {
                     // A checked scalar supplies an empty callable payload. It is
                     // still an argument when the method captures a generic input.
-                    BTreeSet::new()
+                Vec::new()
                 };
             captures.insert(
                 ParameterCallTarget::Interface(position as u32),
