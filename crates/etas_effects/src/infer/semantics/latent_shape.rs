@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, VecDeque};
 
-use etas_types::{Type, TypeId, TypeOutput};
+use etas_types::{CheckedSpecRef, SpecKind, Type, TypeId, TypeOutput};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct Shape {
@@ -100,8 +100,13 @@ impl LatentTypeShapes {
         ) {
             return shape;
         }
-        if descriptor || matches!(value, Type::Function(_) | Type::Existential { .. }) {
+        if descriptor || matches!(value, Type::Function(_)) {
             shape.callable = true;
+        } else if let Type::Existential { bounds } = value {
+            // A marker package retains type evidence but exposes no callable
+            // members. A private marker can therefore appear in a data record
+            // without making every constructor and field update a callback.
+            shape.callable = bounds.iter().any(|bound| !marker_spec(types, &bound.spec));
         } else if matches!(value, Type::Named(_)) {
             shape.parameters.insert(ty);
         } else if let Type::Applied { constructor, args } = value {
@@ -134,6 +139,41 @@ impl LatentTypeShapes {
             }
         }
         shape
+    }
+}
+
+fn marker_spec(types: &TypeOutput, spec: &CheckedSpecRef) -> bool {
+    let facts = &types.facts;
+    let external = |identity| {
+        facts
+            .external_specs
+            .signatures
+            .get(identity)
+            .is_some_and(|signature| {
+                signature.kind == SpecKind::TypeSpec
+                    && signature.methods.is_empty()
+                    && signature.super_specs.is_empty()
+            })
+    };
+    let source = |symbol| {
+        facts.spec_signatures.get(symbol).is_some_and(|signature| {
+            signature.kind == SpecKind::TypeSpec
+                && signature.methods.is_empty()
+                && signature.super_specs.is_empty()
+        })
+    };
+    match spec {
+        CheckedSpecRef::Source(symbol) => facts
+            .external_specs
+            .aliases
+            .get(symbol)
+            .map_or_else(|| source(symbol), external),
+        CheckedSpecRef::External(identity) => external(identity),
+        CheckedSpecRef::Std(path) => facts
+            .std_spec_aliases
+            .iter()
+            .any(|(symbol, alias)| alias == path && source(symbol)),
+        CheckedSpecRef::Canonical(_) => false,
     }
 }
 
