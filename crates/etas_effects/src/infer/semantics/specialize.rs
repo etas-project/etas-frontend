@@ -465,27 +465,6 @@ impl EffectSemantics<'_> {
         Ok(specialized)
     }
 
-    pub(crate) fn call_bindings_from_param_names(
-        &self,
-        site: &CallSite<EffectUnit>,
-        param_names: &[String],
-    ) -> Vec<(String, HirExprId)> {
-        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
-            self.hir.exprs.get(site.call)
-        else {
-            return Vec::new();
-        };
-        param_names
-            .iter()
-            .enumerate()
-            .filter_map(|(index, param)| {
-                args.get(index)
-                    .and_then(arg_expr)
-                    .map(|arg| (param.clone(), arg))
-            })
-            .collect()
-    }
-
     pub(crate) fn call_generic_bindings(&self, call: HirExprId) -> CheckedGenericBindings {
         if let Some(fact) = self.types.facts.checked_method_calls.get(&call) {
             return CheckedGenericBindings {

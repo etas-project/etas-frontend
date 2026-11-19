@@ -362,9 +362,22 @@ impl EffectSemantics<'_> {
         generic_source: Option<HirExprId>,
     ) -> Result<Option<EffectSummary>, super::specialize::EffectSpecializationError> {
         let Some(mut summary) = self.external_summary_from_metadata(metadata, site.span) else {
-            return Ok(None);
+            return Err(
+                super::specialize::EffectSpecializationError::InvalidCallableEnvironment {
+                    reason: format!(
+                        "cannot reconstruct the checked effect contract for `{}`",
+                        metadata.item.join(".")
+                    ),
+                },
+            );
         };
-        let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
+        let arguments = self.call_argument_slots(site, metadata.param_names.len())?;
+        let bindings = metadata
+            .param_names
+            .iter()
+            .zip(&arguments)
+            .filter_map(|(name, argument)| Some((name.clone(), (*argument)?)))
+            .collect::<Vec<_>>();
         let parameter_targets = (0..metadata.param_names.len())
             .map(|position| crate::ParameterCallTarget::Interface(position as u32))
             .collect::<Vec<_>>();
@@ -450,7 +463,6 @@ impl EffectSemantics<'_> {
         self.solve_callback_completion(&mut summary, &trace_bindings, &type_bindings, state)?;
         self.forward_callback_outcomes(&mut summary, &trace_bindings, &parameter_targets, state)?;
         if let Some(graph) = &metadata.returned_callables {
-            let arguments = self.call_arguments(site, metadata.param_names.len())?;
             self.record_metadata_projections(
                 super::metadata_callable::MetadataCallBindings {
                     key: metadata.callable_graph_key,
@@ -717,10 +729,25 @@ impl EffectSemantics<'_> {
                 span,
             )?;
             let aggregate = behavior.aggregate();
+            // The public row contains requested actions covered by a handler.
+            // The footprint also records handlers for an entire effect, even
+            // when a callback has not yet supplied a matching request.
+            let handled_requests = aggregate.requested_actions.effects.iter().filter(|action| {
+                coverage.covers_requested_action(
+                    action,
+                    &aggregate.handled_actions,
+                    &aggregate.default_actions,
+                )
+            });
+            let handled_tail = aggregate
+                .handled_actions
+                .open
+                .or(aggregate.default_actions.open);
             if aggregate.escaping_effects != summary.escaping_effects
                 || aggregate.requested_actions != summary.requested_actions
                 || aggregate.default_actions != summary.default_actions
-                || aggregate.handled_actions != summary.handled_actions
+                || handled_requests.ne(handled_effects.iter())
+                || handled_tail != summary.handled_actions.open
                 || aggregate.handler_requests != summary.handler_requests
             {
                 return None;

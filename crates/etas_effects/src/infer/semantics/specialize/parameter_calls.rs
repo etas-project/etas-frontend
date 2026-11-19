@@ -444,11 +444,14 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         parameters: &[ParameterCallTarget],
     ) -> Result<TraceArgumentBindings, EffectSpecializationError> {
-        let arguments = self.call_arguments(site, parameters.len())?;
+        let arguments = self.call_argument_slots(site, parameters.len())?;
         Ok(parameters
             .iter()
             .copied()
-            .zip(arguments.into_iter().map(TraceArgumentBinding::Expression))
+            .zip(arguments)
+            .filter_map(|(parameter, argument)| {
+                Some((parameter, TraceArgumentBinding::Expression(argument?)))
+            })
             .collect())
     }
 
@@ -457,13 +460,25 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         arity: usize,
     ) -> Result<Vec<HirExprId>, EffectSpecializationError> {
+        self.call_argument_slots(site, arity)?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
+    }
+
+    /// A default in a foreign revision has no expression in the caller's HIR.
+    pub(crate) fn call_argument_slots(
+        &self,
+        site: &CallSite<EffectUnit>,
+        arity: usize,
+    ) -> Result<Vec<Option<HirExprId>>, EffectSpecializationError> {
         if self
             .types
             .facts
             .checked_method_calls
             .contains_key(&site.call)
         {
-            let arguments = self.checked_method_arguments(site.call)?;
+            let arguments = self.checked_method_argument_slots(site.call)?;
             if arguments.len() != arity {
                 return Err(EffectSpecializationError::InvalidCallableParameterInterface);
             }
@@ -487,7 +502,9 @@ impl EffectSemantics<'_> {
         };
         if let Some(binding) = self.types.facts.declared_call_arguments.get(&site.call) {
             let invalid = || EffectSpecializationError::InvalidCallableParameterInterface;
-            if arguments.len() != binding.argument_slots.len() {
+            if arguments.len() != binding.argument_slots.len()
+                || arguments.len() + binding.defaults.len() != arity
+            {
                 return Err(invalid());
             }
             let mut ordered = vec![None; arity];
@@ -495,26 +512,22 @@ impl EffectSemantics<'_> {
                 *ordered.get_mut(*slot as usize).ok_or_else(invalid)? = Some(argument);
             }
             for default in &binding.defaults {
-                let etas_types::ParameterDefaultRef::Source { parameter } = default.source else {
-                    return Err(invalid());
-                };
-                *ordered.get_mut(default.slot as usize).ok_or_else(invalid)? = Some(
-                    *self
-                        .hir
-                        .parameter_defaults
-                        .get(&parameter)
-                        .ok_or_else(invalid)?,
-                );
+                if let etas_types::ParameterDefaultRef::Source { parameter } = default.source {
+                    *ordered.get_mut(default.slot as usize).ok_or_else(invalid)? = Some(
+                        *self
+                            .hir
+                            .parameter_defaults
+                            .get(&parameter)
+                            .ok_or_else(invalid)?,
+                    );
+                }
             }
-            return ordered
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(invalid);
+            return Ok(ordered);
         }
         if arguments.len() != arity {
             return Err(EffectSpecializationError::InvalidCallableParameterInterface);
         }
-        Ok(arguments)
+        Ok(arguments.into_iter().map(Some).collect())
     }
 }
 

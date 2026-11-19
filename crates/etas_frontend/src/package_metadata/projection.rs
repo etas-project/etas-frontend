@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use etas_effects::{
     ActionEventSource, ActionRef, ActionTraceDomain, Effect, EffectCoverage, EffectRegistry,
-    EffectRow, EffectSet, TraceSpecClauseFact,
+    EffectRow, TraceSpecClauseFact,
 };
 use etas_hir::{HirItem, HirItemId, SymbolId, Visibility};
 use etas_package_metadata::{
@@ -1935,12 +1935,11 @@ impl<'a> ProjectMetadataProjection<'a> {
             .effects
             .iter()
             .filter(|effect| {
-                if !effect.is_action() {
-                    return false;
-                }
-                let requested = EffectRow::closed(EffectSet::one((*effect).clone()));
-                coverage.row_covers(&summary.default_actions, &requested)
-                    || coverage.row_covers(&summary.handled_actions, &requested)
+                coverage.covers_requested_action(
+                    effect,
+                    &summary.handled_actions,
+                    &summary.default_actions,
+                )
             })
             .map(|effect| self.summary_effect_ref_metadata(effect, type_generic_names))
             .collect::<Result<Vec<_>, _>>()?;

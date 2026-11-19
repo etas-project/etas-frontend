@@ -13,7 +13,7 @@ pub(super) struct MetadataCallBindings<'a> {
     pub key: Option<etas_code::CodeFingerprint>,
     pub scope: CallableValueScope,
     pub environment: Option<crate::facts::CallableEnvironmentId>,
-    pub arguments: &'a [HirExprId],
+    pub arguments: &'a [Option<HirExprId>],
     pub generics: &'a [(String, etas_types::CallableGenericParamKind)],
     pub type_bindings: &'a [(String, TypeId)],
     pub effect_row_bindings: &'a [(String, EffectRow)],
@@ -685,7 +685,8 @@ impl EffectSemantics<'_> {
                 value,
             );
         }
-        for (position, expr) in context.arguments.iter().enumerate() {
+        for (position, argument) in context.arguments.iter().enumerate() {
+            let Some(expr) = argument else { continue };
             let origins = self.trace_argument_origins(
                 &super::specialize::TraceArgumentBinding::Expression(*expr),
                 state,
@@ -712,9 +713,11 @@ impl EffectSemantics<'_> {
                 if parameter.scope != context.scope || parameter.projection.is_none() {
                     continue;
                 }
-                let expr = *context
+                let expr = context
                     .arguments
                     .get(parameter.position as usize)
+                    .copied()
+                    .flatten()
                     .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)?;
                 let path = graph
                     .projection_path(parameter)
@@ -788,7 +791,7 @@ impl EffectSemantics<'_> {
             })
             .collect::<Vec<_>>();
         let (call_types, call_rows) = self.checked_call_generic_values(site.call, state)?;
-        let arguments = self.call_arguments(site, node.params.len())?;
+        let arguments = self.call_argument_slots(site, node.params.len())?;
         if !generics.is_empty() {
             source.environment = self
                 .bind_metadata_environment(

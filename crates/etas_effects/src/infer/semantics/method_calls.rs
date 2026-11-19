@@ -18,6 +18,16 @@ impl EffectSemantics<'_> {
         &self,
         call: HirExprId,
     ) -> Result<Vec<HirExprId>, EffectSpecializationError> {
+        self.checked_method_argument_slots(call)?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
+    }
+
+    pub(super) fn checked_method_argument_slots(
+        &self,
+        call: HirExprId,
+    ) -> Result<Vec<Option<HirExprId>>, EffectSpecializationError> {
         let invalid = || EffectSpecializationError::InvalidCallableParameterInterface;
         let fact = self
             .types
@@ -50,20 +60,16 @@ impl EffectSemantics<'_> {
             });
         }
         for default in &fact.defaults {
-            let etas_types::ParameterDefaultRef::Source { parameter } = default.source else {
-                return Err(invalid());
-            };
-            *ordered.get_mut(default.slot as usize).ok_or_else(invalid)? = Some(
-                *self
-                    .hir
-                    .parameter_defaults
-                    .get(&parameter)
-                    .ok_or_else(invalid)?,
-            );
+            if let etas_types::ParameterDefaultRef::Source { parameter } = default.source {
+                *ordered.get_mut(default.slot as usize).ok_or_else(invalid)? = Some(
+                    *self
+                        .hir
+                        .parameter_defaults
+                        .get(&parameter)
+                        .ok_or_else(invalid)?,
+                );
+            }
         }
-        ordered
-            .into_iter()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(invalid)
+        Ok(ordered)
     }
 }

@@ -108,42 +108,29 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                                 observation: crate::ReturnObservation::Any,
                             }
                         }
-                        etas_std::StdExecutionRole::TaskStart => {
+                        etas_std::StdExecutionRole::TaskStart
+                        | etas_std::StdExecutionRole::ScopeEnter => {
                             let etas_hir::HirItem::Flow(flow) = &self.hir.items[item] else {
                                 unreachable!()
                             };
                             summary = self
                                 .summary_for_item_signature(item, span)
-                                .expect("task start signature");
+                                .expect("task callback signature");
                             summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
                             summary.independent_determinism =
                                 Some(crate::Determinism::Deterministic);
-                            summary.action_trace = crate::ActionTraceDomain::ParameterCall {
-                                target: crate::ParameterCallTarget::Native(flow.params[0]),
-                                parameter: "body".into(),
-                                span,
+                            let body = if *role == etas_std::StdExecutionRole::TaskStart {
+                                flow.params[0]
+                            } else {
+                                flow.params[1]
                             };
-                            let etas_types::ItemSignature::Flow(signature) =
-                                &self.types.facts.item_signatures[&item]
-                            else {
-                                unreachable!()
-                            };
-                            crate::CallableOutcome::Returned {
-                                ty: signature.output,
-                                observation: crate::ReturnObservation::Any,
-                            }
-                        }
-                        etas_std::StdExecutionRole::ScopeEnter => {
-                            let etas_hir::HirItem::Flow(flow) = &self.hir.items[item] else {
-                                unreachable!()
-                            };
-                            summary = self
-                                .summary_for_item_signature(item, span)
-                                .expect("scope signature");
-                            summary.require_runtime(crate::RuntimeRequirementReason::TaskScheduler);
-                            summary.independent_determinism =
-                                Some(crate::Determinism::Deterministic);
-                            let target = crate::ParameterCallTarget::Native(flow.params[1]);
+                            let target = crate::ParameterCallTarget::Native(body);
+                            summary.handler_requests =
+                                crate::RequestInstantiationSummary::parameter(
+                                    target,
+                                    "body".into(),
+                                    span,
+                                );
                             summary.action_trace = crate::ActionTraceDomain::ParameterCall {
                                 target,
                                 parameter: "body".into(),
