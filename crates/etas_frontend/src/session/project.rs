@@ -54,7 +54,7 @@ where
     pub(super) std_version: String,
     pub(super) options_hash: String,
     pub(super) std_registry: Arc<etas_std::StdRegistry>,
-    pub(super) standard_library: Option<Arc<crate::StandardLibrary>>,
+    pub(super) standard_library: Option<super::StandardLibraryInput>,
 }
 
 struct MetadataSummaryArtifact<T> {
@@ -86,7 +86,7 @@ where
         input: ProjectInput,
         store: S,
         std_registry: Arc<etas_std::StdRegistry>,
-        standard_library: Option<Arc<crate::StandardLibrary>>,
+        standard_library: Option<super::StandardLibraryInput>,
     ) -> Self {
         let sources = source_set_from_input(&input);
         let options_hash = input.options.canonical_options_fingerprint();

@@ -132,18 +132,10 @@ impl EffectSemantics<'_> {
             return Ok(id);
         }
         let ty = self.symbol_value_type(parameter).ok_or_else(invalid)?;
-        let lookup = self
-            .projection_type_lookup
-            .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&self.types.store));
-        let ty = etas_types::value_projection::project_indexed(
-            &self.types.store,
-            &self.types.facts,
-            lookup,
-            ty,
-            &path,
-        )
-        .map_err(|_| invalid())?
-        .ok_or_else(invalid)?;
+        let ty = self
+            .project_value(ty, &path)
+            .map_err(|_| invalid())?
+            .ok_or_else(invalid)?;
         // Session-local IDs are retained only with their checked HIR revision.
         // Public metadata exports the scoped root and path, never this ID.
         let mut projections = self.parameter_projections.borrow_mut();

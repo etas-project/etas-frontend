@@ -1688,6 +1688,20 @@ impl CheckedProgramData {
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct StandardLibrary {
     pub program: CheckedProgram,
+    pub interface: Arc<StandardLibraryInterface>,
+}
+
+impl std::ops::Deref for StandardLibrary {
+    type Target = StandardLibraryInterface;
+
+    fn deref(&self) -> &Self::Target {
+        &self.interface
+    }
+}
+
+/// Published standard-library declarations used by consumers during checking.
+#[derive(Clone, Debug, etas_core::RetainedSize)]
+pub struct StandardLibraryInterface {
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,
     pub package: ProjectExternalPackageInput,
     pub metadata: ProjectExternalPublicMetadataInput,
@@ -1695,7 +1709,7 @@ pub struct StandardLibrary {
     pub origins: etas_code::identity::PackageDefinitionOrigins,
 }
 
-impl StandardLibrary {
+impl StandardLibraryInterface {
     /// Add the verified toolchain library to the prepared project environment.
     /// Reusing that environment in a frontend session preserves its package ID.
     pub fn append_environment(

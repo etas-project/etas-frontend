@@ -37,14 +37,9 @@ impl EffectSemantics<'_> {
             return None;
         }
         let schema = *self.types.facts.handler_actions.get(&arm)?.params.get(1)?;
-        let function = etas_types::value_projection::project_indexed(
-            &self.types.store,
-            &self.types.facts,
-            self.type_lookup(),
-            schema,
-            &Self::inference_decoder_path(),
-        )
-        .ok()??;
+        let function = self
+            .project_value(schema, &Self::inference_decoder_path())
+            .ok()??;
         let etas_types::Type::Function(function) = self.types.store.get(function)? else {
             return None;
         };

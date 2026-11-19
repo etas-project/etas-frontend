@@ -196,7 +196,9 @@ impl EffectSemantics<'_> {
             })
             .filter_map(|binding| {
                 let ty = *checked.params.get(binding.parameter.position as usize)?;
-                let ty = etas_types::value_projection::project_indexed(&self.types.store, &self.types.facts, self.type_lookup(), ty, graph.projection_path(binding.parameter).ok()?).ok()??;
+                let ty = self
+                    .project_value(ty, graph.projection_path(binding.parameter).ok()?)
+                    .ok()??;
                 let Some(etas_types::Type::Function(function)) = self.types.store.get(ty) else {
                     return None;
                 };

@@ -91,7 +91,7 @@ pub(crate) struct EffectSemantics<'a> {
             >,
         >,
     >,
-    pub(crate) projection_type_lookup: std::cell::OnceCell<etas_types::ty::TypeLookupIndex>,
+    pub(super) type_queries: std::rc::Rc<super::type_queries::EffectTypeQueries>,
     pub(crate) metadata_callables:
         std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
     pub(crate) callable_references:
@@ -185,6 +185,7 @@ impl<'a> EffectSemantics<'a> {
                 memory_provenance,
             },
             argument_writes,
+            Default::default(),
         );
         semantics.analysis_units = std::sync::Arc::new(units.into_iter().collect());
         semantics
@@ -193,6 +194,7 @@ impl<'a> EffectSemantics<'a> {
     pub(crate) fn from_input(
         input: crate::infer::analysis::EffectAnalysisInput<'a>,
         argument_writes: std::sync::Arc<super::argument_values::ArgumentWrites>,
+        type_queries: std::rc::Rc<super::type_queries::EffectTypeQueries>,
     ) -> Self {
         let crate::infer::analysis::EffectAnalysisInput {
             spec_unit_targets,
@@ -268,7 +270,7 @@ impl<'a> EffectSemantics<'a> {
             ),
             callable_environments: std::cell::RefCell::new(callable_environments),
             parameter_projections: std::cell::RefCell::new(parameter_projections),
-            projection_type_lookup: Default::default(),
+            type_queries,
             external_parameter_projections: std::cell::RefCell::new(external_parameter_projections),
             metadata_callables: Default::default(),
             callable_references: Default::default(),
@@ -328,7 +330,8 @@ impl<'a> EffectSemantics<'a> {
     }
 
     pub(crate) fn type_lookup(&self) -> &etas_types::ty::TypeLookupIndex {
-        self.projection_type_lookup
+        self.type_queries
+            .index
             .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&self.types.store))
     }
 

@@ -112,7 +112,7 @@ pub(super) fn compute_reachability(
         .as_ref()
         .ok_or("runtime source planning requires a module index")?;
     let mut planner = RuntimeSourceRequirementPlanner {
-        checked_library: context.standard_library.as_ref().and_then(|library| {
+        checked_library: context.standard_library_interface().and_then(|library| {
             environment
                 .external_definition_origins
                 .iter()

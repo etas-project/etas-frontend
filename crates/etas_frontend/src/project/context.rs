@@ -31,6 +31,7 @@ pub struct ProjectContext {
     pub input: ProjectInput,
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub standard_library: Option<Arc<crate::StandardLibrary>>,
+    pub(crate) standard_library_interface: Option<Arc<crate::StandardLibraryInterface>>,
     pub incremental: bool,
     pub check_scope: CheckScope,
     pub project_wide_change: bool,
@@ -88,6 +89,14 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    pub(crate) fn standard_library_interface(&self) -> Option<&crate::StandardLibraryInterface> {
+        self.standard_library_interface.as_deref().or_else(|| {
+            self.standard_library
+                .as_ref()
+                .map(|library| library.interface.as_ref())
+        })
+    }
+
     #[cfg(test)]
     pub fn new(input: ProjectInput) -> Self {
         Self::new_with_std_registry(input, Arc::new(etas_std::standard_registry()))
@@ -112,6 +121,7 @@ impl ProjectContext {
             input,
             std_registry,
             standard_library: None,
+            standard_library_interface: None,
             incremental: false,
             check_scope: CheckScope::FullProject,
             project_wide_change: false,

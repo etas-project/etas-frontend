@@ -68,7 +68,7 @@ fn external_signature_input(
     })?;
     let mut anchors =
         crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
-    let standard = context.standard_library.as_ref().map(|library| {
+    let standard = context.standard_library_interface().map(|library| {
         environment
             .external_packages
             .iter()
@@ -1016,7 +1016,7 @@ fn std_signature_input(
             });
     }
 
-    if context.standard_library.is_some() {
+    if context.standard_library_interface().is_some() {
         input.symbol_bindings.retain(|binding| {
             registry
                 .lookup_qualified(&binding.qualified_path)

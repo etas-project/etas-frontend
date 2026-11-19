@@ -53,7 +53,7 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let mut environment = context.input.environment.clone();
-        if let Some(library) = &context.standard_library {
+        if let Some(library) = context.standard_library_interface() {
             library.append_environment(&mut environment);
         }
         let Some(sources) = context.sources.as_ref() else {

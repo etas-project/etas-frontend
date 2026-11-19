@@ -43,3 +43,4 @@ mod std_action;
 mod std_callable;
 pub mod std_intrinsics;
 mod transfer;
+pub(crate) mod type_queries;

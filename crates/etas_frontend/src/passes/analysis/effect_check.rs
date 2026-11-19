@@ -291,12 +291,14 @@ impl RunEffectPipelinePass {
         let Some(validated_environment) = context.validated_external_environment.as_ref() else {
             return PassResult::failed("effect checking requires validated external metadata");
         };
-        let mut environment = validated_environment.environment().clone();
-        let standard_package = context
-            .standard_library
-            .as_ref()
-            .map(|library| library.append_environment(&mut environment));
-        let environment = &environment;
+        let environment = validated_environment.environment();
+        let standard_package = context.standard_library_interface().and_then(|library| {
+            environment
+                .external_packages
+                .iter()
+                .find(|package| package.import_root == library.package.import_root)
+                .map(|package| package.id)
+        });
         let Some(catalog) = context.module_catalog.as_ref() else {
             return PassResult::failed("effect checking requires the module catalog");
         };

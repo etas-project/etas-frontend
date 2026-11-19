@@ -80,8 +80,14 @@ where
     projects: HashMap<ProjectSessionId, FrontendProjectState<S>>,
     new_store: Box<dyn Fn() -> Result<S, FrontendSessionError>>,
     std_registry: Arc<etas_std::StdRegistry>,
-    standard_library: Option<Arc<crate::StandardLibrary>>,
+    standard_library: Option<StandardLibraryInput>,
     memory_probe: Option<FrontendMemoryProbe>,
+}
+
+#[derive(Clone)]
+pub(crate) enum StandardLibraryInput {
+    Executable(Arc<crate::StandardLibrary>),
+    Interface(Arc<crate::StandardLibraryInterface>),
 }
 
 impl Default for FrontendSession<MemoryArtifactStore> {
@@ -135,7 +141,15 @@ where
     S: FrontendArtifactStore + 'static,
 {
     pub fn with_standard_library(mut self, library: Arc<crate::StandardLibrary>) -> Self {
-        self.standard_library = Some(library);
+        self.standard_library = Some(StandardLibraryInput::Executable(library));
+        self
+    }
+
+    pub fn with_standard_library_interface(
+        mut self,
+        interface: Arc<crate::StandardLibraryInterface>,
+    ) -> Self {
+        self.standard_library = Some(StandardLibraryInput::Interface(interface));
         self
     }
 
