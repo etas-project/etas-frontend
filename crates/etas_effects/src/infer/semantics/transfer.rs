@@ -127,90 +127,17 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
-    fn after_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
-        let mut state = state;
-        self.record_structural_latent_result(expr, &mut state);
-        state = self.validate_callback_arguments(expr, state);
-        self.note_operation_outcomes(expr, &mut state);
-        if let Some(HirExpr::Infer { action, .. }) = self.hir.exprs.get(expr) {
-            let span = action.span;
-            let Some(fact) = self.types.facts.agent_inferences.get(&expr) else {
-                return self.incomplete_at(
-                    span,
-                    "agent inference requires checked owner, prompt and output facts",
-                    state,
-                );
-            };
-            let Some((invocation, summary)) = self.agent_infer_summary(expr, fact, action, span)
-            else {
-                return self.incomplete_at(
-                    span,
-                    "agent inference requires its canonical action descriptor and solved model-tool summaries",
-                    state,
-                );
-            };
-            self.inputs.performed_actions.insert(
-                expr,
-                crate::PerformedActionFact {
-                    expr,
-                    invocation,
-                    effect_segments: action
-                        .effect
-                        .path
-                        .segments
-                        .iter()
-                        .map(|segment| segment.name.clone())
-                        .collect(),
-                    action: action.action.clone(),
-                    action_symbol: Some(fact.action_symbol),
-                    args: vec![fact.prompt],
-                    span,
-                    summary: summary.clone(),
-                },
-            );
-            state.summary.seq_assign(&summary);
-        }
-        if let Some(error) = self.types.facts.checked_index_errors.get(&expr).copied() {
-            state.summary.record_escaping_effect(Effect::Error(error));
-        } else if matches!(self.hir.exprs.get(expr), Some(HirExpr::Index { .. }))
-            && !matches!(
-                self.types.facts.index_facts.get(&expr),
-                Some(etas_types::CheckedIndexKind::MapLookup { .. })
-            )
-        {
-            let span = self.hir.exprs[expr].span(&self.hir.blocks);
-            state = self.incomplete_at(
-                span,
-                "checked index expression requires a materialized IndexError fact",
-                state,
-            );
-        }
-        if let Some(EffectUnit::Item(item)) = state.unit {
-            if matches!(
-                self.hir.items.get(item),
-                Some(etas_hir::HirItem::TopLevelLet(value)) if value.value == expr
-            ) && self.flow_container_missing_latent_sources(&state, expr)
-            {
-                let span = self.hir.exprs[expr].span(&self.hir.blocks);
-                state = self.reject_effect_state(
-                    span,
-                    "top-level flow-value container requires checked latent source facts",
-                    state,
-                );
-            }
-        }
-        let mut fact = state.summary.clone();
-        fact.exits = None;
-        self.inputs.expr_effects.insert(expr, fact);
+    fn after_expr(&mut self, expr: HirExprId, mut state: Self::Domain) -> Self::Domain {
+        self.update_expr_state(expr, &mut state);
         state
     }
 
     fn after_expr_control(
         &mut self,
         expr: HirExprId,
-        control: etas_hir_analysis::intraprocedural::Control<Self::Domain>,
+        mut control: etas_hir_analysis::intraprocedural::Control<Self::Domain>,
     ) -> etas_hir_analysis::intraprocedural::Control<Self::Domain> {
-        let control = control.map_states(|state| self.after_expr(expr, state));
+        control.for_each_state_mut(|state| self.update_expr_state(expr, state));
         let completion = control
             .normal_state()
             .and_then(|state| state.unit)
@@ -807,6 +734,84 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
 }
 
 impl EffectSemantics<'_> {
+    fn update_expr_state(&mut self, expr: HirExprId, state: &mut EffectState) {
+        self.record_structural_latent_result(expr, state);
+        self.validate_callback_arguments(expr, state);
+        self.note_operation_outcomes(expr, state);
+        if let Some(HirExpr::Infer { action, .. }) = self.hir.exprs.get(expr) {
+            let span = action.span;
+            let Some(fact) = self.types.facts.agent_inferences.get(&expr) else {
+                self.mark_incomplete_at(
+                    span,
+                    "agent inference requires checked owner, prompt and output facts",
+                    state,
+                );
+                return;
+            };
+            let Some((invocation, summary)) = self.agent_infer_summary(expr, fact, action, span)
+            else {
+                self.mark_incomplete_at(
+                    span,
+                    "agent inference requires its canonical action descriptor and solved model-tool summaries",
+                    state,
+                );
+                return;
+            };
+            self.inputs.performed_actions.insert(
+                expr,
+                crate::PerformedActionFact {
+                    expr,
+                    invocation,
+                    effect_segments: action
+                        .effect
+                        .path
+                        .segments
+                        .iter()
+                        .map(|segment| segment.name.clone())
+                        .collect(),
+                    action: action.action.clone(),
+                    action_symbol: Some(fact.action_symbol),
+                    args: vec![fact.prompt],
+                    span,
+                    summary: summary.clone(),
+                },
+            );
+            state.summary.seq_assign(&summary);
+        }
+        if let Some(error) = self.types.facts.checked_index_errors.get(&expr).copied() {
+            state.summary.record_escaping_effect(Effect::Error(error));
+        } else if matches!(self.hir.exprs.get(expr), Some(HirExpr::Index { .. }))
+            && !matches!(
+                self.types.facts.index_facts.get(&expr),
+                Some(etas_types::CheckedIndexKind::MapLookup { .. })
+            )
+        {
+            let span = self.hir.exprs[expr].span(&self.hir.blocks);
+            self.mark_incomplete_at(
+                span,
+                "checked index expression requires a materialized IndexError fact",
+                state,
+            );
+        }
+        if let Some(EffectUnit::Item(item)) = state.unit {
+            if matches!(
+                self.hir.items.get(item),
+                Some(etas_hir::HirItem::TopLevelLet(value)) if value.value == expr
+            ) && self.flow_container_missing_latent_sources(state, expr)
+            {
+                let span = self.hir.exprs[expr].span(&self.hir.blocks);
+                self.mark_rejected_at(
+                    span,
+                    "top-level flow-value container requires checked latent source facts",
+                    state,
+                );
+            }
+        }
+        let mut fact = state.summary.clone();
+        fact.exits = None;
+        self.inputs.expr_effects.insert(expr, fact);
+    }
+
     fn proven_non_callable_iteration_type(&self, root: TypeId) -> bool {
         let mut pending = vec![root];
         let mut visited = std::collections::HashSet::new();

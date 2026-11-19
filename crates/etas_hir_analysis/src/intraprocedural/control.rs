@@ -207,6 +207,23 @@ where
         self
     }
 
+    pub fn for_each_state_mut(&mut self, mut visit: impl FnMut(&mut D)) {
+        for state in [
+            &mut self.normal,
+            &mut self.returned,
+            &mut self.broken,
+            &mut self.continued,
+            &mut self.resumed,
+            &mut self.finished,
+            &mut self.errored,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            visit(state);
+        }
+    }
+
     pub fn into_joined_domain(self) -> D {
         let mut joined = D::bottom();
         if let Some(state) = self.normal {

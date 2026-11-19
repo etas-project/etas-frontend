@@ -382,13 +382,22 @@ impl<'a> EffectSemantics<'a> {
         message: impl Into<String>,
         mut state: EffectState,
     ) -> EffectState {
+        self.mark_incomplete_at(span, message, &mut state);
+        state
+    }
+
+    pub(super) fn mark_incomplete_at(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        state: &mut EffectState,
+    ) {
         self.diagnostics.push(Diagnostic::effect_check(
             EffectDiagnosticCode::IncompleteEffectFacts,
             span,
             message,
         ));
         state.mark_incomplete();
-        state
     }
 
     pub(crate) fn incomplete_at_anchor(

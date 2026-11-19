@@ -612,15 +612,19 @@ impl EffectSemantics<'_> {
         message: impl Into<String>,
         mut state: EffectState,
     ) -> EffectState {
-        self.diagnostics.push(Diagnostic::effect_check(
-            EffectDiagnosticCode::IncompleteEffectFacts,
-            span,
-            message,
-        ));
-        state.mark_incomplete();
+        self.mark_rejected_at(span, message, &mut state);
+        state
+    }
+
+    pub(super) fn mark_rejected_at(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        state: &mut EffectState,
+    ) {
+        self.mark_incomplete_at(span, message, state);
         state.summary.support =
             InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
-        state
     }
 
     pub(crate) fn flow_container_missing_latent_sources(

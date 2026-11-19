@@ -1,15 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use etas_utils::{
-    ConvergenceStatus, FixpointEngine, FixpointStats, GraphView, JoinSemiLattice, topological_sort,
-};
+use etas_utils::{ConvergenceStatus, FixpointEngine, FixpointStats, GraphView, topological_sort};
 
 use crate::intraprocedural::{Control, HirAbstractInterpreter, HirAnalysisSemantics};
 
 use super::{
     AnalysisPhase, AnalysisUnit, CallGraph, HirAnalysisBody, InterproceduralDiagnostic,
     InterproceduralSemantics, SummaryStore, UnitContext,
-    adapter::{CallGraphCollectionAdapter, SummaryApplicationAdapter},
+    adapter::{CallGraphCollectionAdapter, CallGraphDiscoveryState, SummaryApplicationAdapter},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,10 +168,9 @@ impl SummarySolver {
                 continue;
             }
 
-            let entry = <S as InterproceduralSemantics>::Domain::bottom();
             let adapter = CallGraphCollectionAdapter::new(semantics, *unit, &mut graph);
             let mut interpreter = HirAbstractInterpreter::new(adapter);
-            traverse_body(&mut interpreter, body, entry, checkpoint)?;
+            traverse_body(&mut interpreter, body, CallGraphDiscoveryState, checkpoint)?;
             checkpoint()?;
         }
 

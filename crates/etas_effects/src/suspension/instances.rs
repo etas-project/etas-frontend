@@ -62,7 +62,7 @@ pub(super) fn expression_type(context: CallContext<'_>, expression: HirExprId) -
 pub(super) fn substitute_type(context: CallContext<'_>, ty: TypeId) -> Option<TypeId> {
     let names = HashMap::new();
     let parameters = context.bindings.iter().copied().collect();
-    TypeSubstitutionEngine::existing(&context.types.store, &names)
+    TypeSubstitutionEngine::existing_indexed(&context.types.store, context.type_lookup, &names)
         .with_type_parameters(&parameters)
         .with_execution_control(context.control)
         .substitute(ty)
@@ -79,9 +79,10 @@ fn bind(
     let target = signature(context, unit)?;
     let names = HashMap::new();
     let inherited = context.bindings.iter().copied().collect();
-    let mut substitution = TypeSubstitutionEngine::existing(&context.types.store, &names)
-        .with_type_parameters(&inherited)
-        .with_execution_control(context.control);
+    let mut substitution =
+        TypeSubstitutionEngine::existing_indexed(&context.types.store, context.type_lookup, &names)
+            .with_type_parameters(&inherited)
+            .with_execution_control(context.control);
     let mut bindings = HashMap::new();
     for (parameter, argument) in owner {
         bindings.insert(*parameter, substitution.substitute(*argument).ok()?);
@@ -301,9 +302,10 @@ pub(super) fn witness(
     };
     let names = HashMap::new();
     let parameters = context.bindings.iter().copied().collect();
-    let mut substitution = TypeSubstitutionEngine::existing(&context.types.store, &names)
-        .with_type_parameters(&parameters)
-        .with_execution_control(context.control);
+    let mut substitution =
+        TypeSubstitutionEngine::existing_indexed(&context.types.store, context.type_lookup, &names)
+            .with_type_parameters(&parameters)
+            .with_execution_control(context.control);
     let receiver = substitution.substitute(call.receiver_type).ok()?;
     let args = args
         .iter()
