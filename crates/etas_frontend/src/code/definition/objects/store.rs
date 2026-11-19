@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
 };
 
 use etas_code::{
     RevisionKey,
     definition::{DefinitionOperationError, DefinitionRef, DefinitionResource},
 };
-use etas_core::memory::MemoryFootprint;
+use etas_core::memory::{MemoryFootprint, MemoryVisitor};
 
 use super::{
     NativeAgentMethodView, NativeDefinition, NativeDefinitionError, NativeDefinitionLimits,
@@ -19,6 +19,35 @@ use crate::code::{definition::DefinitionCatalog, service::NativeCodeSyntaxOperat
 struct Objects {
     revisions: HashMap<RevisionKey, Vec<Weak<NativeDefinition>>>,
     source_views: HashMap<SourceReflectionKey, Weak<NativeDefinition>>,
+}
+
+struct RetainedDefinitions {
+    objects: Mutex<Vec<Weak<NativeDefinition>>>,
+    toolchain_base: Option<crate::CheckedProgram>,
+    toolchain_bytes: OnceLock<u64>,
+}
+
+impl RetainedDefinitions {
+    fn bytes(&self, objects: &[Arc<NativeDefinition>]) -> u64 {
+        if objects.is_empty() {
+            return 0;
+        }
+        let mut memory = MemoryVisitor::default();
+        for object in objects {
+            memory.enqueue(object);
+        }
+        // This ledger already owns the installed SDK. Visiting both roots
+        // counts shared allocations once, including those reached through a
+        // specialized program. Private application and revision data remain
+        // chargeable even when they use the same source-level types.
+        let base_bytes = self.toolchain_base.as_ref().map_or(0, |base| {
+            memory.enqueue(base);
+            *self
+                .toolchain_bytes
+                .get_or_init(|| MemoryFootprint::of(base).estimated_bytes())
+        });
+        memory.finish().estimated_bytes() - base_bytes
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -49,7 +78,7 @@ pub struct NativeDefinitionStore {
     pub(super) syntax: Arc<NativeCodeSyntaxOperations>,
     limits: NativeDefinitionLimits,
     objects: Mutex<Objects>,
-    retained: Arc<Mutex<Vec<Weak<NativeDefinition>>>>,
+    retained: Arc<RetainedDefinitions>,
 }
 
 impl NativeDefinitionStore {
@@ -98,12 +127,17 @@ impl NativeDefinitionStore {
         syntax: Arc<NativeCodeSyntaxOperations>,
         limits: NativeDefinitionLimits,
     ) -> Self {
+        let toolchain_base = catalog.checked_program().toolchain_base.clone();
         Self {
             catalog,
             syntax,
             limits,
             objects: Mutex::new(Objects::default()),
-            retained: Arc::new(Mutex::new(Vec::new())),
+            retained: Arc::new(RetainedDefinitions {
+                objects: Mutex::new(Vec::new()),
+                toolchain_base,
+                toolchain_bytes: OnceLock::new(),
+            }),
         }
     }
 
@@ -143,6 +177,7 @@ impl NativeDefinitionStore {
     pub fn retained_bytes(&self) -> Result<u64, DefinitionOperationError> {
         let objects = self
             .retained
+            .objects
             .lock()
             .map_err(|_| DefinitionOperationError::BackendUnavailable {
                 reason: "native definition resource ledger lock is poisoned".into(),
@@ -150,7 +185,7 @@ impl NativeDefinitionStore {
             .iter()
             .filter_map(Weak::upgrade)
             .collect::<Vec<_>>();
-        Ok(retained_bytes(&objects))
+        Ok(self.retained.bytes(&objects))
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Objects>, DefinitionOperationError> {
@@ -268,12 +303,11 @@ impl NativeDefinitionStore {
         {
             return Ok(DefinitionRef::from_backend(existing));
         }
-        let mut retained =
-            self.retained
-                .lock()
-                .map_err(|_| DefinitionOperationError::BackendUnavailable {
-                    reason: "native definition resource ledger lock is poisoned".into(),
-                })?;
+        let mut retained = self.retained.objects.lock().map_err(|_| {
+            DefinitionOperationError::BackendUnavailable {
+                reason: "native definition resource ledger lock is poisoned".into(),
+            }
+        })?;
         retained.retain(|entry| entry.strong_count() > 0);
         let mut live = retained
             .iter()
@@ -287,7 +321,7 @@ impl NativeDefinitionStore {
         }
         let object = Arc::new(object);
         live.push(object.clone());
-        if retained_bytes(&live) > self.limits.max_retained_bytes {
+        if self.retained.bytes(&live) > self.limits.max_retained_bytes {
             return Err(DefinitionOperationError::ResourceLimit {
                 resource: DefinitionResource::RetainedBytes,
                 limit: self.limits.max_retained_bytes,
@@ -353,12 +387,6 @@ pub(super) fn same_checked_application(
         && left.owner() == right.owner()
         && left.arguments() == right.arguments()
         && left.presented_type() == right.presented_type()
-}
-
-fn retained_bytes(objects: &Vec<Arc<NativeDefinition>>) -> u64 {
-    MemoryFootprint::of(objects)
-        .estimated_bytes()
-        .saturating_sub((objects.capacity() * size_of::<Arc<NativeDefinition>>()) as u64)
 }
 
 #[cfg(test)]

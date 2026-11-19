@@ -643,6 +643,7 @@ impl StandardLibrary {
             InstantiationError::Interrupted(error) => error.reason,
         })?;
         let mut program = base_program.as_ref().clone();
+        program.toolchain_base = consumer.toolchain_base.clone();
         program.types = facts;
         program.reflection_targets = reflection_targets;
         program.foreign_type_bindings = Arc::new(foreign_type_bindings);

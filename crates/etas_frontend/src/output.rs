@@ -1574,6 +1574,8 @@ pub struct CheckedProgramData {
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
     /// Independently checked toolchain body owner for artifact std callables.
     pub standard_library: Option<Arc<StandardLibrary>>,
+    /// Installed SDK program before linking caller-specific types and methods.
+    pub(crate) toolchain_base: Option<CheckedProgram>,
     pub(crate) checked_std_library_implementations:
         std::sync::Arc<crate::passes::CheckedStandardLibraryImplementations>,
     pub project_environment_fingerprint: String,
