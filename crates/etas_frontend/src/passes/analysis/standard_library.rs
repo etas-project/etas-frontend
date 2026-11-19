@@ -269,7 +269,8 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
         checked
             .implementations
             .sort_by_key(|implementation| implementation.declaration);
-        if hir.hir.source_standard_types
+        if context.input.options.standard_library_mode
+            == crate::StandardLibraryMode::SourceBootstrap
             && !context
                 .diagnostics
                 .iter()
