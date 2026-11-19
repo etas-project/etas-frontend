@@ -145,7 +145,8 @@ impl EffectSemantics<'_> {
                 Some(sources)
             }
             HirExpr::EmptySequence { .. } | HirExpr::EmptyRecordOrMap { .. } => {
-                self.expr_type_contains_flow(expr).then(Vec::new)
+                (self.expr_type_contains_flow(expr) || self.expr_type_has_parameters(expr))
+                    .then(Vec::new)
             }
             HirExpr::Array { elems, .. }
             | HirExpr::List { elems, .. }
@@ -153,7 +154,8 @@ impl EffectSemantics<'_> {
             | HirExpr::Set { elems, .. }
                 if elems.is_empty() =>
             {
-                self.expr_type_contains_flow(expr).then(Vec::new)
+                (self.expr_type_contains_flow(expr) || self.expr_type_has_parameters(expr))
+                    .then(Vec::new)
             }
             HirExpr::Array { elems, .. }
             | HirExpr::List { elems, .. }
@@ -164,13 +166,32 @@ impl EffectSemantics<'_> {
                     .filter_map(|elem| self.latent_payload_sources(state, *elem)),
             ),
             HirExpr::Map { entries, .. } if entries.is_empty() => {
-                self.expr_type_contains_flow(expr).then(Vec::new)
+                (self.expr_type_contains_flow(expr) || self.expr_type_has_parameters(expr))
+                    .then(Vec::new)
             }
             HirExpr::Map { entries, .. } => self.union_latent_sources(
                 entries
                     .iter()
                     .filter_map(|entry| self.latent_payload_sources(state, entry.value)),
             ),
+            HirExpr::Binary {
+                lhs,
+                op: etas_hir::HirBinaryOp::Add,
+                rhs,
+                ..
+            } if self
+                .types
+                .facts
+                .expr_types
+                .get(&expr)
+                .is_some_and(|ty| matches!(self.types.store.get(*ty), Some(Type::Array(_)))) =>
+            {
+                self.union_latent_sources(
+                    [*lhs, *rhs]
+                        .into_iter()
+                        .filter_map(|value| self.latent_payload_sources(state, value)),
+                )
+            }
             HirExpr::ListCons { head, tail, .. } => self.union_latent_sources(
                 [*head, *tail]
                     .into_iter()

@@ -384,10 +384,28 @@ impl EffectSemantics<'_> {
             )
             .ok()
             .flatten()
-            && !self.type_contains_flow(selected)
-            && !self.type_has_parameters(selected)
         {
-            return Some(BTreeSet::new());
+            if !self.type_contains_flow(selected) && !self.type_has_parameters(selected) {
+                return Some(BTreeSet::new());
+            }
+            if let Some(children) = self.value_payload_paths(selected)
+                && !children.is_empty()
+            {
+                let mut origins = BTreeSet::new();
+                let mut complete = true;
+                for suffix in children {
+                    let mut child = path.to_vec();
+                    child.extend(suffix);
+                    let Some(found) = self.known_projection_sources(state, expr, &child) else {
+                        complete = false;
+                        break;
+                    };
+                    origins.extend(found);
+                }
+                if complete {
+                    return Some(origins);
+                }
+            }
         }
         let mut pending = vec![(expr, path.to_vec())];
         let mut seen = BTreeSet::new();
@@ -425,12 +443,40 @@ impl EffectSemantics<'_> {
                 continue;
             }
             match self.hir.exprs.get(expr)? {
+                HirExpr::EmptySequence { .. }
+                    if matches!(
+                        step,
+                        Step::SequenceElement | Step::ListHead | Step::ListTail
+                    ) => {}
+                HirExpr::EmptyRecordOrMap { .. }
+                    if matches!(step, Step::MapKey | Step::MapValue) => {}
                 HirExpr::Array { elems, .. }
                 | HirExpr::List { elems, .. }
                 | HirExpr::Set { elems, .. }
                     if matches!(step, Step::SequenceElement) =>
                 {
                     pending.extend(elems.iter().map(|element| (*element, rest.to_vec())));
+                }
+                HirExpr::ListCons { head, tail, .. } => match step {
+                    Step::SequenceElement => {
+                        pending.push((*head, rest.to_vec()));
+                        pending.push((*tail, path));
+                    }
+                    Step::ListHead => pending.push((*head, rest.to_vec())),
+                    Step::ListTail => pending.push((*tail, rest.to_vec())),
+                    _ => return None,
+                },
+                HirExpr::Binary {
+                    lhs,
+                    op: etas_hir::HirBinaryOp::Add,
+                    rhs,
+                    ..
+                } if matches!(step, Step::SequenceElement)
+                    && self.types.facts.expr_types.get(&expr).is_some_and(|ty| {
+                        matches!(self.types.store.get(*ty), Some(Type::Array(_)))
+                    }) =>
+                {
+                    pending.extend([(*lhs, path.clone()), (*rhs, path)]);
                 }
                 HirExpr::Map { entries, .. } if matches!(step, Step::MapKey | Step::MapValue) => {
                     pending.extend(entries.iter().map(|entry| {

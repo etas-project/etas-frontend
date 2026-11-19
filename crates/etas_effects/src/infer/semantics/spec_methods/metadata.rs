@@ -132,7 +132,12 @@ impl EffectSemantics<'_> {
                         .find(|(parameter, _)| parameter == name)
                         .map(|(_, ty)| ty)
                         .ok_or_else(|| {
-                            invalid(format!("metadata method type binding `{name}` is missing"))
+                            invalid(format!(
+                                "metadata method {}.{} type binding `{name}` is missing; available types {types:?}; interface {:?}",
+                                definition.invocation.spec.path.join("."),
+                                definition.invocation.method,
+                                definition.parameters,
+                            ))
                         })?,
                 ),
                 CallableGenericParamKind::Effect => CallableGenericValue::EffectRow(

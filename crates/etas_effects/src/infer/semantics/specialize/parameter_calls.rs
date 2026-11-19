@@ -52,6 +52,41 @@ impl EffectSemantics<'_> {
             return Ok(Some(binding.clone()));
         }
         if let Some((root, path)) = self.parameter_projection_target(target) {
+            let element_path = element_origin_path(&path);
+            if let Some(binding) = bindings.iter().find_map(|(candidate, binding)| {
+                let (base, selected) = self.parameter_projection_target(*candidate)?;
+                (base == root && element_origin_path(&selected) == element_path).then_some(binding)
+            }) {
+                return Ok(Some(binding.clone()));
+            }
+            if let ParameterCallTarget::Projection(id) = target
+                && let Some(paths) = self
+                    .parameter_projection(id)
+                    .and_then(|projection| self.value_payload_paths(projection.ty))
+                && !paths.is_empty()
+            {
+                let mut origins = std::collections::BTreeSet::new();
+                let mut complete = true;
+                for suffix in paths {
+                    let mut selected = path.clone();
+                    selected.extend(suffix);
+                    let selected = element_origin_path(&selected);
+                    let child = bindings.iter().find_map(|(candidate, binding)| {
+                        let (base, candidate_path) =
+                            self.parameter_projection_target(*candidate)?;
+                        (base == root && element_origin_path(&candidate_path) == selected)
+                            .then_some(binding)
+                    });
+                    let Some(binding) = child else {
+                        complete = false;
+                        break;
+                    };
+                    origins.extend(self.trace_argument_origins(binding, state)?);
+                }
+                if complete {
+                    return Ok(Some(TraceArgumentBinding::Origins(origins)));
+                }
+            }
             let prefix = bindings
                 .iter()
                 .filter_map(|(candidate, binding)| {
@@ -227,6 +262,17 @@ impl EffectSemantics<'_> {
             state,
             inferred_parameters,
         )?;
+        if let Some(behavior) = &mut target.default_behavior {
+            behavior.direct.handler_requests = self.specialize_handler_requests(
+                &behavior.direct.handler_requests,
+                bindings,
+                state,
+            )?;
+            for footprint in behavior.guarded.values_mut() {
+                footprint.handler_requests =
+                    self.specialize_handler_requests(&footprint.handler_requests, bindings, state)?;
+            }
+        }
         target.handler_requests = requests;
         Ok(())
     }
@@ -470,4 +516,27 @@ impl EffectSemantics<'_> {
         }
         Ok(arguments)
     }
+}
+
+fn element_origin_path(
+    path: &[etas_code::descriptor::ValueProjectionStep],
+) -> Vec<etas_code::descriptor::ValueProjectionStep> {
+    use etas_code::descriptor::ValueProjectionStep as Step;
+    // List origins join all elements. Selecting an element after a tail
+    // therefore uses the same checked set of possible callable origins.
+    path.iter()
+        .enumerate()
+        .filter_map(|(position, step)| match step {
+            Step::ListTail
+                if matches!(
+                    path.get(position + 1),
+                    Some(Step::SequenceElement | Step::ListHead | Step::ListTail)
+                ) =>
+            {
+                None
+            }
+            Step::ListHead => Some(Step::SequenceElement),
+            _ => Some(step.clone()),
+        })
+        .collect()
 }

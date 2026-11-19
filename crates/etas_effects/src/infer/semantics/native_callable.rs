@@ -161,6 +161,28 @@ impl EffectSemantics<'_> {
                         }
                     };
                     parameters.insert(target, origins);
+                    let ty = self
+                        .symbol_value_type(symbol)
+                        .ok_or_else(|| invalid("captured parameter has no checked type"))?;
+                    let paths = self.value_payload_paths(ty).ok_or_else(|| {
+                        invalid("captured parameter payload exceeds the analysis budget")
+                    })?;
+                    for path in paths {
+                        let projection = self.intern_parameter_projection(owner, symbol, path)?;
+                        let target = ParameterCallTarget::Projection(projection);
+                        let origins = match self.trace_argument(
+                            target,
+                            "captured parameter payload",
+                            bindings,
+                            state,
+                        )? {
+                            Some(binding) => {
+                                self.trace_argument_origins_at(&binding, state, application)?
+                            }
+                            None => [LatentSource::Projection(projection)].into(),
+                        };
+                        parameters.insert(target, origins);
+                    }
                 }
                 LatentSource::Metadata(source) => {
                     if let Some(id) = source.environment {

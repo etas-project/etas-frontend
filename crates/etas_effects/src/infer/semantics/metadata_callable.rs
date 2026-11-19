@@ -292,10 +292,10 @@ impl EffectSemantics<'_> {
             .map(|id| self.callable_environment(id))
             .transpose()?;
         let scopes = self.metadata_callable_scopes(source)?;
-        // Implementation roots describe an already applied method. Unlike a
-        // first-class callable value, their own callback inputs are captured
-        // by the checked spec invocation and must be substituted here.
-        let applied_implementation = mode != CallableSummaryMode::Descriptor
+        // A declaration descriptor keeps its inputs formal. A checked method
+        // application captures them, including when its descriptor is exported.
+        let applied_implementation = (mode != CallableSummaryMode::Descriptor
+            || source.environment.is_some())
             && self.implementation_graphs.contains_key(&source.graph)
             && graph.sources.as_slice() == [CallableValueSource::Value(source.value)];
         let mut own_parameters = node

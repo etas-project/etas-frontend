@@ -220,7 +220,9 @@ impl EffectSemantics<'_> {
             | LatentSource::MetadataSpecMethod { .. } => self.solve_callable_summary(source, span),
             _ => self.latent_leaf_summary(source, span).ok_or_else(|| {
                 super::specialize::EffectSpecializationError::InvalidCallableEnvironment {
-                    reason: "callable source requires a solved checked effect fact".into(),
+                    reason: format!(
+                        "callable source {source:?} requires a solved checked effect fact"
+                    ),
                 }
             }),
         }

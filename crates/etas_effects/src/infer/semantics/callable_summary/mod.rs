@@ -85,6 +85,10 @@ impl CallableSummaryPlan {
         let mut dependencies = BTreeSet::new();
         let mut calls = Vec::new();
         let mut pending = vec![&plan.template.action_trace];
+        if let Some(exits) = &plan.template.exits {
+            pending.extend(exits.exits.iter().map(|exit| &exit.trace));
+            pending.extend(exits.parameter_exits.iter().map(|exit| &exit.prefix));
+        }
         while let Some(trace) = pending.pop() {
             match trace {
                 ActionTraceDomain::ParameterCall { target, span, .. } => {

@@ -44,6 +44,9 @@ impl EffectSemantics<'_> {
             for exit in &exits.exits {
                 exit.trace.collect_parameter_calls(&mut calls);
             }
+            for exit in &exits.parameter_exits {
+                exit.prefix.collect_parameter_calls(&mut calls);
+            }
         }
         if let crate::RequestInstantiationSummary::Available { parameters, .. } =
             &summary.handler_requests
@@ -149,7 +152,7 @@ impl EffectSemantics<'_> {
                 } else {
                     // A checked scalar supplies an empty callable payload. It is
                     // still an argument when the method captures a generic input.
-                Vec::new()
+                    Vec::new()
                 };
             captures.insert(
                 ParameterCallTarget::Interface(position as u32),

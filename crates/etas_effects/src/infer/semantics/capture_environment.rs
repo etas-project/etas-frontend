@@ -405,7 +405,13 @@ impl EffectSemantics<'_> {
                                             self.descriptor_projected_origins(sources, path).ok_or_else(|| {
                                                 self.callable_summaries.borrow().interruption.clone()
                                                     .map(EffectSpecializationError::Interrupted)
-                                                    .unwrap_or_else(|| invalid("captured return projection has no checked callable origins"))
+                                                    .unwrap_or_else(|| {
+                                                        let projections = sources.iter().filter_map(|source| match source {
+                                                            LatentSource::Projection(id) => self.parameter_projection(*id).map(|projection| projection.path),
+                                                            _ => None,
+                                                        }).collect::<Vec<_>>();
+                                                        invalid(&format!("captured return projection {path:?} of {sources:?} (paths {projections:?}) has no checked callable origins"))
+                                                    })
                                             })?,
                                         _ => self.trace_argument_origins(&binding, state)?,
                                     };

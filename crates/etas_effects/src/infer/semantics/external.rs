@@ -438,6 +438,10 @@ impl EffectSemantics<'_> {
         summary.action_trace =
             self.specialize_parameter_call_trace(&summary.action_trace, &trace_bindings, state)?;
         if let Some(exits) = &mut summary.exits {
+            for exit in &mut exits.parameter_exits {
+                exit.prefix =
+                    self.specialize_parameter_call_trace(&exit.prefix, &trace_bindings, state)?;
+            }
             for exit in &mut exits.exits {
                 exit.trace =
                     self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
