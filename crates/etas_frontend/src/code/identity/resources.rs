@@ -25,8 +25,10 @@ impl DefinitionIdentityIndex {
             let mut ty = *schema;
             let fields = &path[prefix.len()..];
             for field in fields {
-                if let Some(etas_types::Type::MemoryRegion(schema)) = checked.type_store.get(ty) {
-                    ty = *schema;
+                if let Some(schema) =
+                    etas_types::value_representation::memory_region_schema(checked.type_store, ty)
+                {
+                    ty = schema;
                 }
                 let record = etas_types::record_fields_with_applied_params(checked.type_store, ty)
                     .map_err(|error| ProjectionError::Invalid(error.to_string()))?

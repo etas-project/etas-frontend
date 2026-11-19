@@ -42,7 +42,18 @@ pub fn solve_field_access(
         }
         return report;
     }
-    let projected = projected_fields(store, known, base);
+    let schema_field = crate::value_representation::memory_region_schema(store, base).and_then(
+        |schema| match store.get(schema)? {
+            Type::Record(record) if record.fields.iter().any(|entry| entry.name == field) => {
+                Some(record.clone())
+            }
+            _ => None,
+        },
+    );
+    let projected = schema_field.map_or_else(
+        || projected_fields(store, known, base),
+        |record| Ok(Some(record)),
+    );
     let record = match projected.and_then(|projected| {
         projected.map_or_else(|| record_fields(store, base), |record| Ok(Some(record)))
     }) {

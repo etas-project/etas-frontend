@@ -1115,13 +1115,7 @@ fn record_field_memory_place<E>(
 }
 
 fn is_memory_place_root_type<E>(ctx: &BodyCollectContext<'_, '_, E>, ty: TypeId) -> bool {
-    matches!(
-        ctx.ctx.interner.store().get(ty),
-        Some(Type::MemoryRegion(_))
-            | Some(Type::ResourceHandle(
-                crate::ResourceHandleType::MemoryRegion { .. }
-            ))
-    )
+    crate::value_representation::memory_region_schema(ctx.ctx.interner.store(), ty).is_some()
 }
 
 pub fn symbol_value_type<E>(

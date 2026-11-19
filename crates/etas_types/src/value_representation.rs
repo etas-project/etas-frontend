@@ -3,6 +3,46 @@
 //! algorithms or authority-bearing objects. Nominal lookalikes gain no role.
 use crate::{PrimitiveType as P, Type, TypeId, TypeStore};
 
+/// The resource schema remains part of the checked type. The selected source
+/// record only carries the live region's descriptive identity.
+pub fn source_memory_region_parameter(store: &TypeStore, ty: TypeId) -> Option<TypeId> {
+    let [schema] = standard_nominal_arguments(store, ty, "std.memory.MemoryRegion")? else {
+        return None;
+    };
+    Some(*schema)
+}
+
+pub fn memory_region_schema(store: &TypeStore, ty: TypeId) -> Option<TypeId> {
+    let parameter = |ty| match store.get(ty)? {
+        Type::MemoryRegion(schema)
+        | Type::ResourceHandle(crate::ResourceHandleType::MemoryRegion { schema }) => Some(*schema),
+        _ => source_memory_region_parameter(store, ty),
+    };
+    let schema = parameter(ty)?;
+    Some(parameter(schema).unwrap_or(schema))
+}
+
+pub fn source_memory_store_parameters(store: &TypeStore, ty: TypeId) -> Option<(TypeId, TypeId)> {
+    let [key, value] = standard_nominal_arguments(store, ty, "std.memory.Store")? else {
+        return None;
+    };
+    Some((*key, *value))
+}
+
+fn standard_nominal_arguments<'a>(
+    store: &'a TypeStore,
+    ty: TypeId,
+    name: &str,
+) -> Option<&'a [TypeId]> {
+    let Type::Applied { constructor, args } = store.get(ty)? else {
+        return None;
+    };
+    match store.get(TypeId(constructor.0))? {
+        Type::Nominal(nominal) if nominal.name == name => Some(args),
+        _ => None,
+    }
+}
+
 /// Optional primitive payloads use the selected source Option constructor.
 pub fn option_parameter(
     store: &TypeStore,

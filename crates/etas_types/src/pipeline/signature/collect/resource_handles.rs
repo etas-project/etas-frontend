@@ -1,5 +1,5 @@
 use etas_hir::{HirArg, HirExpr, HirGenericArg, HirLiteral, ResolveResult, SymbolDef};
-use etas_std::{FlowDecl, StdDecl, StdSymbol, StdType};
+use etas_std::{FlowDecl, StdDecl, StdType};
 
 use crate::{
     ResourceHandleFact, ResourceHandleType, Type, TypeId, lower::type_ref::lower_type_ref,
@@ -21,53 +21,38 @@ pub fn top_level_resource_handle_signature(
     let HirExpr::Path(path) = &ctx.hir.exprs[*callee] else {
         return None;
     };
-    let path_segments = path
-        .segments
-        .iter()
-        .map(|segment| segment.name.clone())
-        .collect::<Vec<_>>();
     let registry = ctx.std_registry.clone();
-    let std_symbol = registry.lookup_qualified(&path_segments)?;
-    if !is_checked_std_path(ctx, &path_segments, &path.resolution, std_symbol) {
+    let ResolveResult::Resolved(symbol) = path.resolution else {
         return None;
-    }
+    };
+    let SymbolDef::ImportAlias { path, .. } = &ctx.hir.symbols.get(symbol)?.def else {
+        return None;
+    };
+    let std_symbol = registry.lookup_qualified(path)?;
     let StdDecl::Flow(flow) = &std_symbol.decl else {
         return None;
     };
-    match &flow.output {
-        StdType::ResourceHandleMemoryRegion(schema) => {
-            let schema = lower_std_output_type_arg(ctx, flow, schema, generic_args)?;
-            let ty = ctx
-                .interner
-                .intern(Type::ResourceHandle(ResourceHandleType::MemoryRegion {
-                    schema,
-                }));
-            let stable_id = named_string_arg(ctx, expr, "stable_id")?;
-            Some((ty, ResourceHandleFact::MemoryRegion { schema, stable_id }))
+    let schema = match &flow.output {
+        StdType::ResourceHandleMemoryRegion(schema) => schema.as_ref(),
+        StdType::NamedApplied { name, args }
+            if name == "std.memory.MemoryRegion"
+                && std_symbol.qualified_path == ["std", "memory", "region"] =>
+        {
+            let [schema] = args.as_slice() else {
+                return None;
+            };
+            schema
         }
-        _ => None,
-    }
-}
-
-fn is_checked_std_path(
-    ctx: &TypePipelineContext<'_>,
-    path: &[String],
-    resolution: &ResolveResult,
-    std_symbol: &StdSymbol,
-) -> bool {
-    if path != std_symbol.qualified_path {
-        return false;
-    }
-    match resolution {
-        ResolveResult::Resolved(symbol) => ctx.hir.symbols.get(*symbol).is_some_and(|symbol| {
-            matches!(
-                &symbol.def,
-                SymbolDef::ImportAlias { path: alias_path, .. }
-                    if alias_path == &std_symbol.qualified_path
-            )
-        }),
-        _ => false,
-    }
+        _ => return None,
+    };
+    let schema = lower_std_output_type_arg(ctx, flow, schema, generic_args)?;
+    let ty = ctx
+        .interner
+        .intern(Type::ResourceHandle(ResourceHandleType::MemoryRegion {
+            schema,
+        }));
+    let stable_id = stable_id_arg(ctx, expr)?;
+    Some((ty, ResourceHandleFact::MemoryRegion { schema, stable_id }))
 }
 
 fn lower_std_output_type_arg(
@@ -91,21 +76,22 @@ fn lower_std_output_type_arg(
     }
 }
 
-fn named_string_arg(
-    ctx: &TypePipelineContext<'_>,
-    expr: etas_hir::HirExprId,
-    expected_name: &str,
-) -> Option<String> {
+fn stable_id_arg(ctx: &TypePipelineContext<'_>, expr: etas_hir::HirExprId) -> Option<String> {
     let HirExpr::Call { args, .. } = &ctx.hir.exprs[expr] else {
         return None;
     };
-    args.iter().find_map(|arg| match arg {
-        HirArg::Named { name, value, .. } if name == expected_name => {
-            match &ctx.hir.exprs[*value] {
-                HirExpr::Literal(HirLiteral::String { value, .. }) => Some(value.clone()),
-                _ => None,
-            }
-        }
+    let value = args
+        .iter()
+        .find_map(|arg| match arg {
+            HirArg::Named { name, value, .. } if name == "stable_id" => Some(*value),
+            _ => None,
+        })
+        .or_else(|| match args.first() {
+            Some(HirArg::Positional(value)) => Some(*value),
+            _ => None,
+        })?;
+    match &ctx.hir.exprs[value] {
+        HirExpr::Literal(HirLiteral::String { value, .. }) => Some(value.clone()),
         _ => None,
-    })
+    }
 }

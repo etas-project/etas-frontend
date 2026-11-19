@@ -5,6 +5,75 @@ use super::{engine::EffectSemantics, specialize::EffectSpecializationError};
 use crate::infer::unit::EffectUnit;
 
 impl EffectSemantics<'_> {
+    /// Source Store bodies share a request across all receiver values. An
+    /// application call can narrow that request to its checked resource place.
+    pub(super) fn specialize_source_memory_method(
+        &self,
+        call: HirExprId,
+        summary: crate::EffectSummary,
+    ) -> Result<crate::EffectSummary, EffectSpecializationError> {
+        use crate::Effect;
+        use etas_types::EffectArgRef;
+        if !summary.requested_actions.effects.iter().any(|effect| {
+            matches!(effect, Effect::AppliedAction(action)
+                if action.action.tag == crate::MEMORY_TAG && action.args == [EffectArgRef::Wildcard])
+        }) {
+            return Ok(summary);
+        }
+        let Some(MethodTarget::External { identity }) = self
+            .types
+            .facts
+            .checked_method_calls
+            .get(&call)
+            .map(|fact| &fact.target)
+        else {
+            return Ok(summary);
+        };
+        let implementation = identity.implementation();
+        let subject = self
+            .std_registry
+            .lookup_qualified(&["std", "memory", "Store"])
+            .and_then(|store| self.std_registry.declaration_key(store.id));
+        if !subject.is_some_and(|store| {
+            implementation.subject() == store && implementation.package() == store.package()
+        }) {
+            return Ok(summary);
+        }
+        let Some(HirExpr::MethodCall { receiver, .. } | HirExpr::SpecMethodCall { receiver, .. }) =
+            self.hir.exprs.get(call)
+        else {
+            return Ok(summary);
+        };
+        let Ok(places) = self
+            .memory_provenance
+            .arguments(self.hir, self.types, *receiver)
+        else {
+            return Ok(summary);
+        };
+        // A formal parameter is not a portable resource identity. Keep its
+        // requested row open to all checked receivers until a root is known.
+        if !places.iter().all(|place| match place {
+            EffectArgRef::Path(path) => self.types.facts.resource_handles.keys().any(|symbol| {
+                self.hir
+                    .declaration_path(*symbol)
+                    .is_some_and(|root| path.starts_with(&root))
+            }),
+            _ => false,
+        }) {
+            return Ok(summary);
+        }
+        let mut alternatives = places
+            .iter()
+            .map(|place| self.specialize_summary_at_memory_place(&summary, place));
+        let Some(mut specialized) = alternatives.next().transpose()? else {
+            return Ok(summary);
+        };
+        for alternative in alternatives {
+            specialized.join_branch(&alternative?);
+        }
+        Ok(specialized)
+    }
+
     pub(super) fn checked_method_target(&self, call: HirExprId) -> Option<EffectUnit> {
         match &self.types.facts.checked_method_calls.get(&call)?.target {
             MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } => {

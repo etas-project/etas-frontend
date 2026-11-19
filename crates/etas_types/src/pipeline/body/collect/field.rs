@@ -16,6 +16,13 @@ pub(super) fn declared_field_hint<E>(
     ) {
         return projection.output_type(ctx.ctx.interner.store(), base);
     }
+    let store = ctx.ctx.interner.store();
+    if let Some(schema) = crate::value_representation::memory_region_schema(store, base)
+        && let Some(Type::Record(record)) = store.get(schema)
+        && let Some(found) = record.fields.iter().find(|entry| entry.name == field)
+    {
+        return Some(found.ty);
+    }
     let representation = match crate::applied_representation(&mut ctx.ctx.interner, base) {
         Ok(Some(ty)) => ty,
         Ok(None) => base,

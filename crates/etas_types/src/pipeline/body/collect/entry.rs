@@ -131,15 +131,31 @@ pub fn collect_body_item<E>(
                             _ => None,
                         })
                 });
+            // An immutable top-level resource has a checked place identity.
+            // Its ordinary source constructor still produces a MemoryRegion.
+            let source_resource = ctx.hir.source_standard_types
+                && top.type_annotation.is_none()
+                && matches!(
+                    state
+                        .expected_return
+                        .and_then(|ty| ctx.interner.store().get(ty)),
+                    Some(crate::Type::ResourceHandle(
+                        crate::ResourceHandleType::MemoryRegion { .. }
+                    ))
+                );
             let mut body = BodyCollectContext {
                 ctx,
                 state,
                 execution: checkpoint,
             };
             let expected = body.state.expected_return;
-            let ty =
-                crate::pipeline::body::collect::expr::collect_expr(&mut body, top.value, expected)?;
-            if let Some(expected) = expected {
+            let initializer_type = expected.filter(|_| !source_resource);
+            let ty = crate::pipeline::body::collect::expr::collect_expr(
+                &mut body,
+                top.value,
+                initializer_type,
+            )?;
+            if let Some(expected) = initializer_type {
                 body.emit(crate::TypeConstraint::Assignable {
                     from: ty,
                     to: expected,

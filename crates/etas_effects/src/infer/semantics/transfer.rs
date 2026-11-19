@@ -500,7 +500,10 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         match self.spec_method_call_evidence(expr, &state) {
             Ok(super::spec_methods::MethodEvidence::Resolved(
                 source @ LatentSource::Metadata(_),
-            )) => match self.latent_source_summary(source, span) {
+            )) => match self
+                .latent_source_summary(source, span)
+                .and_then(|summary| self.specialize_source_memory_method(expr, summary))
+            {
                 Ok(summary) => {
                     if let LatentSource::Metadata(source) = source {
                         if let Err(error) =

@@ -551,12 +551,41 @@ impl EffectSemantics<'_> {
                 residual_bindings,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
                 owner,
+                source_memory_place: None,
                 types: etas_types::TypeSubstitutionEngine::existing_indexed(
                     &self.types.store,
                     self.type_lookup(),
                     &names,
                 )
                 .with_type_parameters(type_parameters),
+            },
+            summary,
+        )
+    }
+
+    pub(super) fn specialize_summary_at_memory_place(
+        &self,
+        summary: &EffectSummary,
+        place: &EffectArgRef,
+    ) -> Result<EffectSummary, EffectSpecializationError> {
+        let empty = std::collections::HashMap::new();
+        let empty_names = std::collections::HashMap::new();
+        crate::substitution::map_summary(
+            &mut summary_mapper::CallSummaryMapper {
+                semantics: self,
+                bindings: &[],
+                type_bindings: &[],
+                type_parameters: &empty,
+                rows: &[],
+                residual_bindings: None,
+                residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+                owner: None,
+                source_memory_place: Some(place),
+                types: etas_types::TypeSubstitutionEngine::existing_indexed(
+                    &self.types.store,
+                    self.type_lookup(),
+                    &empty_names,
+                ),
             },
             summary,
         )

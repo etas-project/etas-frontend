@@ -21,6 +21,7 @@ pub(super) struct CallSummaryMapper<'a, 'hir> {
     pub(super) residual_work: usize,
     pub(super) owner: Option<etas_hir::HirItemId>,
     pub(super) types: TypeSubstitutionEngine<'a>,
+    pub(super) source_memory_place: Option<&'a etas_types::EffectArgRef>,
 }
 
 impl SummaryMapper for CallSummaryMapper<'_, '_> {
@@ -94,6 +95,12 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
             .specialize_effect(effect, self.bindings, &[])?;
         match &mut effect {
             Effect::AppliedAction(action) => {
+                if let Some(place) = self.source_memory_place
+                    && action.action.tag == crate::MEMORY_TAG
+                    && action.args == [etas_types::EffectArgRef::Wildcard]
+                {
+                    action.args[0] = place.clone();
+                }
                 for arg in &mut action.args {
                     if let etas_types::EffectArgRef::Type(ty) = arg {
                         *ty = self.ty(*ty)?;
