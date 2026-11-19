@@ -993,6 +993,13 @@ pub(super) fn unquote_string(text: &str) -> String {
             Some('n') => decoded.push('\n'),
             Some('r') => decoded.push('\r'),
             Some('t') => decoded.push('\t'),
+            Some('u') => match unicode_scalar_escape(chars.as_str()) {
+                Some((scalar, rest)) => {
+                    decoded.push(scalar);
+                    chars = rest.chars();
+                }
+                None => decoded.push_str("\\u"),
+            },
             Some(other) => {
                 decoded.push('\\');
                 decoded.push(other);
@@ -1005,6 +1012,10 @@ pub(super) fn unquote_string(text: &str) -> String {
 
 pub(super) fn unquote_char(text: &str) -> Option<char> {
     let inner = text.strip_prefix('\'')?.strip_suffix('\'')?;
+    if let Some(escape) = inner.strip_prefix("\\u") {
+        let (scalar, rest) = unicode_scalar_escape(escape)?;
+        return rest.is_empty().then_some(scalar);
+    }
     match inner {
         "\\n" => Some('\n'),
         "\\r" => Some('\r'),
@@ -1017,4 +1028,17 @@ pub(super) fn unquote_char(text: &str) -> Option<char> {
             chars.next().is_none().then_some(value)
         }
     }
+}
+
+fn unicode_scalar_escape(input: &str) -> Option<(char, &str)> {
+    let digits = input.strip_prefix('{')?;
+    let width = digits
+        .bytes()
+        .take(6)
+        .take_while(u8::is_ascii_hexdigit)
+        .count();
+    let (hex, suffix) = digits.split_at(width);
+    let rest = suffix.strip_prefix('}')?;
+    let scalar = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+    Some((scalar, rest))
 }
