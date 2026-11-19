@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
@@ -142,8 +142,31 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| invalid("spec invocation has no checked owner"))?;
         let generics = self.lexical_generic_values(owner)?;
         let arguments = self.checked_method_arguments(call)?;
+        let mut required_paths = BTreeMap::<u32, BTreeSet<_>>::new();
+        if let Some(fact) = self.types.facts.checked_method_calls.get(&call)
+            && let etas_types::method::MethodTarget::External { identity } = &fact.target
+        {
+            // A generic implementation can return a projection even when the
+            // caller's instantiation gives it an empty callable payload.
+            let (implementation, root) = self.external_method_graph(identity)?;
+            for parameter in implementation.graph.parameter_references() {
+                if parameter.scope == etas_package_metadata::CallableValueScope::Value(root)
+                    && parameter.projection.is_some()
+                {
+                    let path = implementation
+                        .graph
+                        .projection_path(parameter)
+                        .map_err(|error| invalid(&error.to_string()))?;
+                    required_paths
+                        .entry(parameter.position)
+                        .or_default()
+                        .insert(path.to_vec());
+                }
+            }
+        }
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
+            let position = position as u32;
             let sources =
                 if self.expr_type_contains_flow(expr) || self.symbolic_contract_expr(state, expr) {
                     self.latent_sources_for_expr(state, expr).ok_or_else(|| {
@@ -155,32 +178,32 @@ impl EffectSemantics<'_> {
                     Vec::new()
                 };
             captures.insert(
-                ParameterCallTarget::Interface(position as u32),
+                ParameterCallTarget::Interface(position),
                 sources.into_iter().collect(),
             );
-            if let Some(paths) = self
+            let mut paths = required_paths.remove(&position).unwrap_or_default();
+            if let Some(payload_paths) = self
                 .types
                 .facts
                 .expr_types
                 .get(&expr)
                 .and_then(|ty| self.value_payload_paths(*ty))
             {
-                for path in paths {
-                    let target = self
-                        .intern_external_parameter_projection(
-                            ParameterCallTarget::Interface(position as u32),
-                            path.clone(),
-                        )
-                        .ok_or_else(|| {
-                            invalid("spec argument projection exceeds its checked graph budget")
-                        })?;
-                    let sources = self
-                        .projected_sources(expr, &path, state)
-                        .unwrap_or_else(|| {
-                            [super::super::state::LatentSource::Unavailable { expr }].into()
-                        });
-                    captures.insert(target, sources);
-                }
+                paths.extend(payload_paths);
+            }
+            for path in paths {
+                let sources = self
+                    .projected_sources(expr, &path, state)
+                    .unwrap_or_else(|| [LatentSource::Unavailable { expr }].into());
+                let target = self
+                    .intern_external_parameter_projection(
+                        ParameterCallTarget::Interface(position),
+                        path,
+                    )
+                    .ok_or_else(|| {
+                        invalid("spec argument projection exceeds its checked graph budget")
+                    })?;
+                captures.insert(target, sources);
             }
         }
         let site = self.callable_environment_site(call)?;
