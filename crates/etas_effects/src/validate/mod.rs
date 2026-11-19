@@ -621,13 +621,13 @@ fn declared_action_effect(
     action: ActionRef,
     args: &[etas_types::EffectArgRef],
 ) -> Result<crate::Effect, DeclaredRowError> {
-    let Some(signature) = registry.action_signature(&action) else {
+    let Some(selectors) = registry.action_selectors(&action) else {
         return Err(DeclaredRowError::missing_action_descriptor());
     };
-    if signature.effect_args.len() != args.len() {
-        return Err(DeclaredRowError::missing_action_arg(signature));
+    if selectors.len() != args.len() {
+        return Err(DeclaredRowError::missing_action_arg(selectors));
     }
-    for (kind, arg) in signature.effect_args.iter().zip(args) {
+    for (kind, arg) in selectors.iter().zip(args) {
         validate_declared_action_arg(registry, types, kind, arg)?;
     }
     Ok(if args.is_empty() {
@@ -702,17 +702,17 @@ fn validate_declared_effect_row(
         match effect {
             Effect::Action(action)
                 if registry
-                    .action_signature(action)
-                    .is_some_and(action_signature_requires_sandbox_profile) =>
+                    .action_selectors(action)
+                    .is_some_and(selectors_require_sandbox_profile) =>
             {
                 return Err(DeclaredRowError::missing_sandbox_action_arg());
             }
             Effect::AppliedAction(action) => {
-                let Some(signature) = registry.action_signature(&action.action) else {
+                let Some(selectors) = registry.action_selectors(&action.action) else {
                     return Err(DeclaredRowError::missing_action_descriptor());
                 };
-                if signature.effect_args.len() != action.args.len() {
-                    return Err(DeclaredRowError::missing_action_arg(signature));
+                if selectors.len() != action.args.len() {
+                    return Err(DeclaredRowError::missing_action_arg(selectors));
                 }
             }
             _ => {}
@@ -760,8 +760,8 @@ fn declared_requires_tool_sandbox_action(
             tag_declares_unparameterized_sandbox_boundary(registry, *tag)
         }
         Effect::Action(action) => registry
-            .action_signature(action)
-            .is_some_and(action_signature_requires_sandbox_profile),
+            .action_selectors(action)
+            .is_some_and(selectors_require_sandbox_profile),
         Effect::AppliedAction(_) | Effect::Var(_) | Effect::Error(_) => false,
     })
 }
@@ -775,8 +775,8 @@ fn tag_declares_unparameterized_sandbox_boundary(
         .is_some_and(|command| tag == command || registry.tag_extends(tag, command))
 }
 
-fn action_signature_requires_sandbox_profile(signature: &crate::EffectActionSig) -> bool {
-    signature.effect_args.iter().any(|kind| {
+fn selectors_require_sandbox_profile(selectors: &[EffectActionArgKind]) -> bool {
+    selectors.iter().any(|kind| {
         matches!(
             kind,
             EffectActionArgKind::StaticResourcePath { ty } if ty == "SandboxProfile"
@@ -872,8 +872,8 @@ impl DeclaredRowError {
         }
     }
 
-    fn missing_action_arg(signature: &crate::EffectActionSig) -> Self {
-        if action_signature_requires_sandbox_profile(signature) {
+    fn missing_action_arg(selectors: &[EffectActionArgKind]) -> Self {
+        if selectors_require_sandbox_profile(selectors) {
             return Self::missing_sandbox_action_arg();
         }
         Self {

@@ -466,6 +466,7 @@ impl StandardLibrary {
             .extend_methods_checked(&source, &method_declarations, &control)
             .map_err(|e| e.to_string())?;
         let mut seeds = base_program.native_instantiations.instances().to_vec();
+        let first_consumer_call = seeds.len();
         let mut control_roots = Vec::new();
         {
             let mut relocation = TypeSubstitutionEngine::relocating_materialized(
@@ -653,6 +654,7 @@ impl StandardLibrary {
             consumer,
             &program,
             &prepared.foreign_methods,
+            &seeds[first_consumer_call..],
             limits,
             &control,
         )?;

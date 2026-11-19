@@ -200,7 +200,9 @@ impl HandlerContexts {
             let Some(instances) = self.arms.get(&arm) else {
                 continue;
             };
-            let previous = contexts.clone();
+            // Each matched request binds the arm's generic parameters. The
+            // arm's unspecialized signature is not another invocation.
+            let previous = std::mem::take(&mut contexts);
             for outer in &previous {
                 for instance in instances {
                     let mut context = outer.clone();

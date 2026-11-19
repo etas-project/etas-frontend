@@ -318,7 +318,10 @@ pub(crate) fn prepare_from_targets(
             }
             drop(substitution);
             for (site, ty) in roots.get(&instance.owner).into_iter().flatten() {
-                for context in handlers.at(hir, *site, limits.max_nodes)?.into_iter().skip(1) {
+                for context in handlers.at(hir, *site, limits.max_nodes)? {
+                    if context.types.is_empty() && context.rows.is_empty() {
+                        continue;
+                    }
                     let (parameters, rows) = context.apply(
                         &mut interner, &type_bindings, &parameters, &row_bindings,
                         limits.max_expansion_depth, control,

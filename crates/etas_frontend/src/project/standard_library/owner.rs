@@ -12,17 +12,45 @@ pub(super) fn prepare(
     owner: &mut CheckedProgramData,
     library: &CheckedProgramData,
     applications: &[ForeignMethodInstantiation],
+    consumer_calls: &[NativeInstantiation],
     limits: etas_code::descriptor::DescriptorLimits,
     control: &dyn etas_utils::PipelineExecutionControl,
 ) -> Result<(), String> {
-    if applications.is_empty() {
+    // Imported defaults evaluate in their defining revision. Their argument
+    // slots and result must also have concrete types in the caller's arena.
+    let mut default_types = std::collections::BTreeSet::new();
+    for call in consumer_calls {
+        let Some(signature) = instantiation::signature(&library.types, call.owner) else {
+            continue;
+        };
+        let Some(last_default) = signature
+            .parameter_interface
+            .as_deref()
+            .and_then(|params| params.iter().rposition(|param| param.default.is_some()))
+        else {
+            continue;
+        };
+        let (names, rows) = call.bindings(Some(signature))?;
+        let parameters = call.type_parameters(Some(signature));
+        let mut substitution = TypeSubstitutionEngine::existing(&library.type_store, &names)
+            .with_type_parameters(&parameters)
+            .with_effect_arguments(&rows);
+        for slot in &signature.params[..=last_default] {
+            default_types.insert(
+                substitution
+                    .substitute(*slot)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+    }
+    if applications.is_empty() && default_types.is_empty() {
         return Ok(());
     }
     let source = Arc::new(catalog(Arc::new(library.clone()))?);
     let target = catalog(Arc::new(owner.clone()))?;
     let correspondence =
         NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
-    let mut roots = Vec::new();
+    let mut roots = default_types.iter().copied().collect::<Vec<_>>();
     let mut rows = Vec::new();
     for application in applications {
         for argument in &application.arguments {
@@ -107,6 +135,11 @@ pub(super) fn prepare(
             },
         )
         .with_spec_identities(&specs.mapping);
+        for ty in default_types {
+            relocation
+                .substitute(ty)
+                .map_err(|error| error.to_string())?;
+        }
         for application in applications {
             let (origin, item, imported) = library
                 .foreign_method(&application.identity)
