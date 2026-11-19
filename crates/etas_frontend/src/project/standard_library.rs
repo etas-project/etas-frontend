@@ -418,6 +418,22 @@ impl StandardLibrary {
                     .intern_canonical_parameter(identity.clone(), parameter.name.clone())
                     .map_err(str::to_owned)?;
                 declarations.insert(*ty, target);
+            } else if let Some(etas_types::Type::AgentContext(context)) =
+                consumer.type_store.get(*ty)
+            {
+                let method =
+                    match context {
+                        etas_types::AgentContextRef::Source(symbol) => {
+                            Box::new(source.identity_index().method(*symbol).cloned().ok_or(
+                                "std invocation context has no checked agent method identity",
+                            )?)
+                        }
+                        etas_types::AgentContextRef::Portable(method) => method.clone(),
+                    };
+                let target = interner.intern(etas_types::Type::AgentContext(
+                    etas_types::AgentContextRef::Portable(method),
+                ));
+                declarations.insert(*ty, target);
             }
         }
         methods::reserve_parameters(&imported_methods, &mut interner, &mut declarations)?;
