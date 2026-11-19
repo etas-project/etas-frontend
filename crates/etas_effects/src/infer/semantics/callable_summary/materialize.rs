@@ -6,6 +6,33 @@ use crate::{CallableReturnSource, EffectPipelineError, EffectUnit, facts::Captur
 mod descriptors;
 mod metadata;
 
+/// Discover descriptor edges at each checked returned position. An unknown
+/// sibling payload does not erase known closure fields; it still leaves the
+/// containing aggregate's callable-origin evidence unavailable.
+fn descriptor_return_sources(summary: &crate::EffectSummary) -> BTreeSet<CallableReturnSource> {
+    let Some(exits) = &summary.exits else {
+        return BTreeSet::new();
+    };
+    let mut sources = exits.callable_return_sources().unwrap_or_default();
+    for exit in &exits.exits {
+        let observation = match &exit.outcome {
+            crate::CallableOutcome::Returned { observation, .. }
+            | crate::CallableOutcome::HandlerFinished { observation, .. }
+            | crate::CallableOutcome::HandlerResumed { observation, .. } => Some(observation),
+            _ => None,
+        };
+        if let Some(crate::ReturnObservation::CallableSources(found)) = observation {
+            sources.extend(found.iter().cloned());
+        }
+    }
+    for position in exits.value_projections.values() {
+        if let crate::ProjectedReturnSources::Known(found) = position {
+            sources.extend(found.iter().cloned());
+        }
+    }
+    sources
+}
+
 impl EffectSemantics<'_> {
     pub(crate) fn materialize_captured_callable_analyses(
         &mut self,

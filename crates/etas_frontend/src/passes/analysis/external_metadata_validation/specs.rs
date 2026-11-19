@@ -127,6 +127,7 @@ mod tests {
         specs: Vec<ProjectExternalSpecSignatureInput>,
     ) -> ProjectExternalPublicMetadataInput {
         ProjectExternalPublicMetadataInput {
+            scoped_callbacks: Vec::new(),
             package: ExternalPackageId(package),
             types: vec![],
             values: vec![],

@@ -110,12 +110,63 @@ impl ProjectMetadataProjection<'_> {
                 let binding = DefinitionBindingOrigin {
                     module: module.path.segments.clone(),
                     declaration: vec![export.name.clone()],
-                    definition,
+                    definition: definition.clone(),
                 };
                 if declarations.insert(binding.path(), binding).is_some() {
                     return Err(PackageMetadataError::InvalidMetadataType {
                         reason: "duplicate definition export binding".into(),
                     });
+                }
+                if let Some(group) = self.checked.hir.flow_overload_group(symbol) {
+                    for member in group {
+                        let definition = identities
+                            .symbol(*member)
+                            .ok_or_else(|| {
+                                invalid(
+                                    crate::code::descriptor::ProjectionError::MissingDeclaration(
+                                        *member,
+                                    ),
+                                )
+                            })?
+                            .clone();
+                        let binding = DefinitionBindingOrigin {
+                            module: definition.module().to_vec(),
+                            declaration: definition.declaration().to_vec(),
+                            definition,
+                        };
+                        declarations.entry(binding.path()).or_insert(binding);
+                    }
+                }
+                if definition.module() == origin.module()
+                    && definition.declaration() == [export.name.clone()]
+                    && let Some(etas_hir::HirItem::Enum(owner)) = self.checked.items.get(item)
+                {
+                    for variant in &owner.variants {
+                        let definition = identities
+                            .symbol(variant.symbol)
+                            .ok_or_else(|| {
+                                invalid(
+                                    crate::code::descriptor::ProjectionError::MissingDeclaration(
+                                        variant.symbol,
+                                    ),
+                                )
+                            })?
+                            .clone();
+                        let binding = DefinitionBindingOrigin {
+                            module: module.path.segments.clone(),
+                            declaration: vec![
+                                export.name.clone(),
+                                self.checked
+                                    .symbols
+                                    .get(variant.symbol)
+                                    .unwrap()
+                                    .name
+                                    .clone(),
+                            ],
+                            definition,
+                        };
+                        declarations.insert(binding.path(), binding);
+                    }
                 }
             }
         }

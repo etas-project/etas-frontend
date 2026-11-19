@@ -289,11 +289,29 @@ impl Parser<'_> {
         let name = self.name("expected type name");
         let type_params = self.type_params();
         let (body, mut span) = if self.cursor.eat_punct(Punct::Eq).is_some() {
-            let representation = self.type_expr();
-            (
-                TypeDeclBody::Representation(representation.clone()),
-                start.cover(representation.span()),
-            )
+            if self.cursor.at_punct(Punct::LBracket)
+                && self.cursor.nth(1).kind == TokenKind::Punct(Punct::RBracket)
+            {
+                let empty = self.cursor.eat_punct(Punct::LBracket).unwrap();
+                self.expect_punct(Punct::RBracket, "expected `]` in empty constructor");
+                self.expect_punct(Punct::Pipe, "expected `|` after empty constructor");
+                let element = self.type_expr();
+                self.expect_punct(Punct::ColonColon, "expected `::` in cell constructor");
+                let tail = self.type_expr();
+                let body_span = empty.span.cover(tail.span());
+                (
+                    TypeDeclBody::Sequence {
+                        element,
+                        tail,
+                        span: body_span,
+                    },
+                    start.cover(body_span),
+                )
+            } else {
+                let representation = self.type_expr();
+                let span = start.cover(representation.span());
+                (TypeDeclBody::Representation(representation), span)
+            }
         } else {
             (TypeDeclBody::Bodyless, start.cover(name.span))
         };
@@ -645,6 +663,7 @@ impl Parser<'_> {
             let span = start.cover(specs.last().map_or(target.span, |spec| spec.span));
             return self.impl_body(
                 start,
+                Vec::new(),
                 ImplTarget::Agent {
                     target,
                     specs,
@@ -652,6 +671,7 @@ impl Parser<'_> {
                 },
             );
         }
+        let type_params = self.type_params();
         let self_type = self.type_expr();
         let target = if self.cursor.at_punct(Punct::Comma) || self.cursor.at_keyword(Keyword::For) {
             self.legacy_impl_for_target(self_type)
@@ -687,12 +707,18 @@ impl Parser<'_> {
                 }
             }
         };
-        self.impl_body(start, target)
+        self.impl_body(start, type_params, target)
     }
 
-    fn impl_body(&mut self, start: etas_core::Span, target: ImplTarget) -> ImplDecl {
+    fn impl_body(
+        &mut self,
+        start: etas_core::Span,
+        type_params: Vec<TypeParam>,
+        target: ImplTarget,
+    ) -> ImplDecl {
         if let Some(semi) = self.cursor.eat_punct(Punct::Semi) {
             return ImplDecl {
+                type_params,
                 span: start.cover(semi.span),
                 target,
                 items: Vec::new(),
@@ -703,11 +729,25 @@ impl Parser<'_> {
         let owner_path = target.owner_path().cloned();
         while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
             let before = self.cursor.position();
+            let mut annotations = Vec::new();
+            while self.cursor.at_punct(Punct::At) {
+                annotations.push(self.annotation());
+            }
             let visibility = self.item_visibility();
             if self.cursor.at_keyword(Keyword::Flow) {
-                items.push(ImplItem::Flow(Box::new(
-                    self.flow_decl_with_receiver(visibility, true),
-                )));
+                let mut flow = self.flow_decl_with_receiver(visibility, true);
+                flow.annotations = annotations;
+                if matches!(target, ImplTarget::Agent { .. })
+                    && let Some(param) = flow.params.first()
+                    && matches!(param.ty, ParamType::SelfReceiver { updating: true, .. })
+                {
+                    self.diagnostics.push(Diagnostic::syntax(
+                        SyntaxDiagnosticCode::InvalidItem,
+                        param.span,
+                        "var self is only valid in ordinary type methods, not impl agent",
+                    ));
+                }
+                items.push(ImplItem::Flow(Box::new(flow)));
             } else if self.cursor.at_keyword(Keyword::Action)
                 && !matches!(target, ImplTarget::Agent { .. })
             {
@@ -717,7 +757,9 @@ impl Parser<'_> {
                         .last()
                         .map(|segment| segment.text.as_str())
                 });
-                items.push(ImplItem::Action(Box::new(self.effect_action_decl(owner))));
+                items.push(ImplItem::Action(Box::new(
+                    self.effect_action_decl(owner, annotations),
+                )));
             } else {
                 let span = self.cursor.peek().span;
                 self.diagnostics.push(Diagnostic::syntax(
@@ -732,6 +774,7 @@ impl Parser<'_> {
         }
         let end = self.expect_punct(Punct::RBrace, "expected `}` after impl block");
         ImplDecl {
+            type_params,
             target,
             items,
             span: start.cover(end),
@@ -810,8 +853,12 @@ impl Parser<'_> {
             let mut actions = Vec::new();
             while !self.cursor.at_eof() && !self.cursor.at_punct(Punct::RBrace) {
                 let before = self.cursor.position();
+                let mut annotations = Vec::new();
+                while self.cursor.at_punct(Punct::At) {
+                    annotations.push(self.annotation());
+                }
                 if self.cursor.at_keyword(Keyword::Action) {
-                    actions.push(self.effect_action_decl(Some(name.text.as_str())));
+                    actions.push(self.effect_action_decl(Some(name.text.as_str()), annotations));
                 } else {
                     let span = self.cursor.peek().span;
                     self.diagnostics.push(Diagnostic::syntax(
@@ -845,19 +892,45 @@ impl Parser<'_> {
         }
     }
 
-    pub(crate) fn effect_action_decl(&mut self, owner: Option<&str>) -> EffectActionDecl {
+    pub(crate) fn effect_action_decl(
+        &mut self,
+        owner: Option<&str>,
+        annotations: Vec<Annotation>,
+    ) -> EffectActionDecl {
         let start = self.expect_keyword(Keyword::Action, "expected `action`");
+        let mut default_handler = false;
+        for annotation in annotations {
+            if annotation.path.segments.len() == 1
+                && annotation.path.segments[0].text == "default_handler"
+                && annotation.args.is_empty()
+                && !default_handler
+            {
+                default_handler = true;
+            } else {
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    annotation.span,
+                    "action declarations accept one argument-free `@default_handler` annotation",
+                ));
+            }
+        }
+        let type_params = self.type_params();
         let name = self.name("expected action name");
         let selector_params = self.action_selector_params();
-        let type_params = selector_params
-            .iter()
-            .map(|param| match param {
-                ActionSelectorParam::Type(param) => param.clone(),
-            })
-            .collect();
         let params = self.param_list();
         self.expect_punct(Punct::Arrow, "expected action return type");
         let return_type = self.type_expr();
+        let default_handler_effects = self
+            .cursor
+            .eat_punct(Punct::Bang)
+            .map(|_| self.effect_row());
+        if default_handler != default_handler_effects.is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                SyntaxDiagnosticCode::InvalidItem,
+                start.cover(return_type.span()),
+                "`@default_handler` requires an explicit default Effect row; action Effect suffixes require `@default_handler`",
+            ));
+        }
         let end = if self.cursor.at_punct(Punct::LBrace) {
             let body_span = self.recover_braced_block();
             let label = owner
@@ -878,6 +951,7 @@ impl Parser<'_> {
             type_params,
             params,
             return_type,
+            default_handler_effects,
             span: start.cover(end),
         }
     }
@@ -896,13 +970,20 @@ impl Parser<'_> {
                     "action selector declaration cannot use `_`; omit the selector at perform/handler sites to request wildcard matching",
                 ));
             }
-            ActionSelectorParam::Type(param)
+            if this.cursor.at_punct(Punct::Colon) {
+                this.cursor.bump();
+                let kind = this.path();
+                ActionSelectorParam::Value { name: param.name, kind }
+            } else {
+                ActionSelectorParam::Type(param)
+            }
         });
         self.expect_punct(Punct::Gt, "expected `>` after action selectors");
         params
             .into_iter()
             .filter(|param| match param {
                 ActionSelectorParam::Type(param) => param.name.text != "_",
+                ActionSelectorParam::Value { name, .. } => name.text != "_",
             })
             .collect()
     }
@@ -937,7 +1018,11 @@ impl Parser<'_> {
             }
             break;
         }
-        let body = if self.cursor.at_punct(Punct::Eq) {
+        let body = if let Some(semi) = self.cursor.eat_punct(Punct::Semi) {
+            FlowBody::Decl {
+                semicolon_span: semi.span,
+            }
+        } else if self.cursor.at_punct(Punct::Eq) {
             let eq = self.expect_punct(Punct::Eq, "expected `=` before expression flow body");
             let expr = self.expr();
             let end = self
@@ -951,7 +1036,9 @@ impl Parser<'_> {
         } else {
             FlowBody::Block(self.block())
         };
-        let trailing_handler = if self.cursor.eat_keyword(Keyword::With).is_some() {
+        let trailing_handler = if !matches!(body, FlowBody::Decl { .. })
+            && self.cursor.eat_keyword(Keyword::With).is_some()
+        {
             Some(self.handler_arg_expr())
         } else {
             None
@@ -962,6 +1049,7 @@ impl Parser<'_> {
                 .map_or_else(|| body.span(), |handler| handler.span()),
         );
         FlowDecl {
+            annotations: Vec::new(),
             visibility,
             name,
             type_params,
@@ -1230,6 +1318,20 @@ impl Parser<'_> {
 fn inherent_impl_target_from_type(ty: TypeExpr) -> Option<(Path, Vec<TypeExpr>, crate::Span)> {
     match ty {
         TypeExpr::Path { path, args, span } => Some((path, args, span)),
+        TypeExpr::Primitive { kind, span } => Some((
+            Path {
+                segments: ["std", "core", kind.as_str()]
+                    .into_iter()
+                    .map(|text| Name {
+                        text: text.to_owned(),
+                        span,
+                    })
+                    .collect(),
+                span,
+            },
+            Vec::new(),
+            span,
+        )),
         _ => None,
     }
 }

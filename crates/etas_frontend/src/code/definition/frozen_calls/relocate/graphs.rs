@@ -159,6 +159,15 @@ impl Relocation<'_> {
                     .map(|ty| self.ty(scope, ty))
                     .collect::<Result<_, _>>()?;
                 value.output = self.ty(scope, value.output)?;
+                if let Some(behavior) = &mut value.default_handler_effects.behavior {
+                    self.graph_footprint(&mut behavior.direct, scope)?;
+                    for (guards, footprint) in &mut behavior.guarded {
+                        for guard in guards {
+                            self.graph_effect(guard, scope)?;
+                        }
+                        self.graph_footprint(footprint, scope)?;
+                    }
+                }
                 for row in [
                     &mut value.public_effects,
                     &mut value.requested_actions,
@@ -200,6 +209,12 @@ impl Relocation<'_> {
                     match trace {
                         ExternalActionTraceMetadata::Event { action, .. } => {
                             self.graph_effect(action, scope)?
+                        }
+                        ExternalActionTraceMetadata::DefaultHandler { guards, body } => {
+                            for guard in guards {
+                                self.graph_effect(guard, scope)?;
+                            }
+                            pending.push(body);
                         }
                         ExternalActionTraceMetadata::Seq(parts)
                         | ExternalActionTraceMetadata::Choice(parts) => pending.extend(parts),
@@ -266,6 +281,73 @@ impl Relocation<'_> {
         for argument in &mut method.callable_arguments {
             argument.values = self.graph_values(std::mem::take(&mut argument.values), scope)?;
             argument.objects = self.graph_objects(std::mem::take(&mut argument.objects), scope)?;
+        }
+        Ok(())
+    }
+
+    fn graph_footprint(
+        &self,
+        value: &mut etas_effects::ExternalEffectFootprintMetadata,
+        scope: &GenericOwner,
+    ) -> Result<(), ProjectionError> {
+        for row in [
+            &mut value.escaping_effects,
+            &mut value.requested_actions,
+            &mut value.default_actions,
+            &mut value.handled_actions,
+        ] {
+            self.graph_row(row, scope)?;
+        }
+        if let Some(requests) = &mut value.handler_requests {
+            for action in &mut requests.actions {
+                self.graph_effect(&mut action.action, scope)?;
+                for (_, ty) in action.type_bindings.iter_mut().flatten() {
+                    *ty = self.ty(scope, *ty)?;
+                }
+                if let Some(signature) = &mut action.signature {
+                    for ty in signature
+                        .params
+                        .iter_mut()
+                        .chain(std::iter::once(&mut signature.output))
+                    {
+                        *ty = self.ty(scope, *ty)?;
+                    }
+                }
+            }
+            for parameter in &mut requests.parameters {
+                self.graph_target(&mut parameter.parameter, scope)?;
+                for effect in &mut parameter.excluded {
+                    self.graph_effect(effect, scope)?;
+                }
+            }
+        }
+        for requirement in value
+            .requirements
+            .trace_requirements
+            .iter_mut()
+            .chain(&mut value.requirements.trace_obligations)
+        {
+            if let etas_effects::ExternalMethodTraceRequirement::Clause(clause) = requirement {
+                for row in [
+                    &mut clause.pattern,
+                    &mut clause.guard,
+                    &mut clause.target,
+                    &mut clause.obligation,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for action in &mut row.effects {
+                        let mut effect = ExternalEffectMetadata {
+                            path: std::mem::take(&mut action.path),
+                            args: std::mem::take(&mut action.args),
+                        };
+                        self.graph_effect(&mut effect, scope)?;
+                        action.path = effect.path;
+                        action.args = effect.args;
+                    }
+                }
+            }
         }
         Ok(())
     }

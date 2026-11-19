@@ -21,10 +21,11 @@ impl NativeInstantiationPlan {
         self.instances.push(instance);
     }
 
-    pub(crate) fn checked_instance(
+    pub(crate) fn checked_instance_with_owner_bindings(
         &self,
         owner: etas_hir::HirItemId,
         arguments: &[CallableGenericArg],
+        owner_bindings: Option<&[(TypeId, TypeId)]>,
     ) -> Result<Option<&NativeInstantiation>, String> {
         if !self.instances.is_empty() && self.by_hash.is_empty() {
             return Err("native application index is missing".into());
@@ -44,6 +45,15 @@ impl NativeInstantiationPlan {
                 .get(*position)
                 .ok_or("native application index references a missing instance")?;
             if instance.owner != owner || instance.arguments.len() != arguments.len() {
+                continue;
+            }
+            if let Some(bindings) = owner_bindings
+                && (bindings.len() != instance.owner_bindings.len()
+                    || instance
+                        .owner_bindings
+                        .iter()
+                        .any(|binding| !bindings.contains(binding)))
+            {
                 continue;
             }
             let equal = instance
@@ -73,6 +83,26 @@ impl NativeInstantiationPlan {
             }
         }
         Ok(selected)
+    }
+}
+
+// Only native application keys cross the bundle boundary. Rebuild the lookup
+// table in the receiving process; its hashes are never portable identities.
+impl serde::Serialize for NativeInstantiationPlan {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&self.instances, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NativeInstantiationPlan {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let instances =
+            <Vec<NativeInstantiation> as serde::Deserialize>::deserialize(deserializer)?;
+        let mut plan = Self::default();
+        for instance in instances {
+            plan.push(instance);
+        }
+        Ok(plan)
     }
 }
 
@@ -118,6 +148,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn library_round_trip_rebuilds_generic_application_lookup() {
+        let owner = etas_hir::HirItemId(7);
+        let arguments = [CallableGenericArg::Type(TypeId(3))];
+        let mut plan = NativeInstantiationPlan::default();
+        plan.push(NativeInstantiation {
+            owner,
+            arguments: vec![NativeGenericArgument::Type(TypeId(3))],
+            owner_bindings: vec![(TypeId(2), TypeId(3))],
+        });
+        let bytes = bincode::serde::encode_to_vec(&plan, bincode::config::standard()).unwrap();
+        let (restored, consumed): (NativeInstantiationPlan, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(
+            restored
+                .checked_instance_with_owner_bindings(owner, &arguments, None)
+                .unwrap(),
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn a_hash_hit_does_not_replace_full_application_identity() {
         let owner = etas_hir::HirItemId(7);
         let arguments = [CallableGenericArg::Type(TypeId(3))];
@@ -129,10 +182,20 @@ mod tests {
         });
         let hash = application_hash(owner, 1, [Argument::Type(TypeId(3))].into_iter());
         plan.by_hash.insert(hash, vec![0]);
-        assert!(plan.checked_instance(owner, &arguments).unwrap().is_none());
+        assert!(
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .unwrap()
+                .is_none()
+        );
         plan.by_hash.insert(hash, vec![1]);
-        assert!(plan.checked_instance(owner, &arguments).is_err());
+        assert!(
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .is_err()
+        );
         plan.by_hash.clear();
-        assert!(plan.checked_instance(owner, &arguments).is_err());
+        assert!(
+            plan.checked_instance_with_owner_bindings(owner, &arguments, None)
+                .is_err()
+        );
     }
 }

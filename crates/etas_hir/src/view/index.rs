@@ -105,9 +105,11 @@ impl HirTreeIndexBuilder<'_> {
         }
         match item {
             HirItem::Flow(flow) => {
-                let body = HirBodyRef::new(item_id, HirBodyKind::Flow);
-                self.insert_body(item_id, body, HirOwner::Item(item_id), Some(flow.scope));
-                self.index_flow_body(flow.body, body, item_id);
+                if flow.body.as_block().is_some() {
+                    let body = HirBodyRef::new(item_id, HirBodyKind::Flow);
+                    self.insert_body(item_id, body, HirOwner::Item(item_id), Some(flow.scope));
+                    self.index_flow_body(flow.body, body, item_id);
+                }
             }
             HirItem::Tool(tool) => {
                 if let HirToolBody::Source(body_data) = tool.body {
@@ -152,19 +154,31 @@ impl HirTreeIndexBuilder<'_> {
                             .push(*callable);
                         self.insert_item_module(*callable, self.index.item_module[&item_id]);
                         self.insert_scope_owner(HirOwner::Item(*callable), flow.scope);
-                        let body = HirBodyRef::new(item_id, HirBodyKind::ImplFlow(index as u32));
-                        self.insert_body(
-                            *callable,
-                            body,
-                            HirOwner::Item(*callable),
-                            Some(flow.scope),
-                        );
-                        self.index_flow_body(flow.body, body, *callable);
+                        if flow.body.as_block().is_some() {
+                            let body =
+                                HirBodyRef::new(item_id, HirBodyKind::ImplFlow(index as u32));
+                            self.insert_body(
+                                *callable,
+                                body,
+                                HirOwner::Item(*callable),
+                                Some(flow.scope),
+                            );
+                            self.index_flow_body(flow.body, body, *callable);
+                        }
                         self.index_item_annotations(*callable, Some(flow.scope));
+                        self.index_parameter_defaults(*callable);
                     } else if let crate::HirImplItem::Flow(flow) = impl_item {
-                        let body = HirBodyRef::new(item_id, HirBodyKind::ImplFlow(index as u32));
-                        self.insert_body(item_id, body, HirOwner::Item(item_id), Some(flow.scope));
-                        self.index_flow_body(flow.body, body, item_id);
+                        if flow.body.as_block().is_some() {
+                            let body =
+                                HirBodyRef::new(item_id, HirBodyKind::ImplFlow(index as u32));
+                            self.insert_body(
+                                item_id,
+                                body,
+                                HirOwner::Item(item_id),
+                                Some(flow.scope),
+                            );
+                            self.index_flow_body(flow.body, body, item_id);
+                        }
                     }
                 }
             }
@@ -177,6 +191,33 @@ impl HirTreeIndexBuilder<'_> {
             | HirItem::Error { .. } => {}
         }
         self.index_item_annotations(item_id, item_scope(item));
+        self.index_parameter_defaults(item_id);
+    }
+
+    fn index_parameter_defaults(&mut self, item_id: HirItemId) {
+        let mut defaults = self
+            .program
+            .parameter_defaults
+            .iter()
+            .filter_map(|(parameter, expr)| {
+                matches!(self.program.symbols.get(*parameter).map(|symbol| &symbol.def),
+                Some(crate::SymbolDef::Param { owner, .. }) if *owner == item_id)
+                .then_some((*parameter, *expr))
+            })
+            .collect::<Vec<_>>();
+        defaults.sort_by_key(|(parameter, _)| *parameter);
+        for (parameter, expr) in defaults {
+            let scope = self
+                .program
+                .scopes
+                .iter()
+                .find(|scope| scope.symbols.contains(&parameter))
+                .map(|scope| scope.id);
+            let body = HirBodyRef::new(item_id, HirBodyKind::ParameterDefault { parameter });
+            self.insert_body(item_id, body, HirOwner::Item(item_id), scope);
+            self.index_expr(expr, HirOwner::Body(body), item_id);
+            self.index.body_exprs.entry(body).or_default().push(expr);
+        }
     }
 
     fn index_item_annotations(&mut self, item_id: HirItemId, scope: Option<ScopeId>) {
@@ -205,6 +246,7 @@ impl HirTreeIndexBuilder<'_> {
 
     fn index_flow_body(&mut self, body_data: HirFlowBody, body: HirBodyRef, item_id: HirItemId) {
         match body_data {
+            HirFlowBody::Decl { .. } | HirFlowBody::Runtime { .. } => {}
             HirFlowBody::Block(block) => {
                 self.index_block(block, HirOwner::Body(body), item_id);
                 self.index.body_blocks.entry(body).or_default().push(block);
@@ -428,7 +470,14 @@ impl HirTreeIndexBuilder<'_> {
         owner: HirOwner,
         scope: Option<ScopeId>,
     ) -> bool {
-        self.index.item_body.entry(item).or_insert(body);
+        // Annotation values belong to the declaration, not its execution body.
+        // A declaration without a source body must remain external to analyses.
+        if !matches!(
+            body.kind,
+            HirBodyKind::AnnotationArg { .. } | HirBodyKind::ParameterDefault { .. }
+        ) {
+            self.index.item_body.entry(item).or_insert(body);
+        }
         self.index.item_bodies.entry(item).or_default().push(body);
         if let Some(previous) = self.index.body_owner.insert(body, owner) {
             self.diagnostics

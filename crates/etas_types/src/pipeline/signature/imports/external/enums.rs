@@ -18,6 +18,16 @@ pub(super) fn lower(
         &item.path,
         &item.generic_params,
     )?;
+    let result_role = item.path == ["std", "result", "Result"]
+        && ctx
+            .std_registry
+            .lookup_qualified(&item.path)
+            .is_some_and(|symbol| ctx.std_registry.declaration_key(symbol.id).is_some());
+    let option_role = item.path == ["std", "option", "Option"]
+        && ctx
+            .std_registry
+            .lookup_qualified(&item.path)
+            .is_some_and(|symbol| ctx.std_registry.declaration_key(symbol.id).is_some());
     let output = if parameters.is_empty() {
         ty
     } else {
@@ -59,6 +69,7 @@ pub(super) fn lower(
             path,
             SymbolTypeFact::Flow {
                 signature: CallableSignature {
+                    parameter_interface: None,
                     generic_params: parameters.clone(),
                     params: fields.clone(),
                     output,
@@ -85,6 +96,12 @@ pub(super) fn lower(
         },
     );
     ctx.signature_facts.type_generics.insert(ty, parameters);
+    if result_role {
+        ctx.signature_facts.known_std_types.result_enum = Some(ty);
+    }
+    if option_role {
+        ctx.signature_facts.known_std_types.option_enum = Some(ty);
+    }
     facts.push((
         item.path.clone(),
         SymbolTypeFact::Type {

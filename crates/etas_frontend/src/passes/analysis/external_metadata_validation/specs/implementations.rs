@@ -39,12 +39,6 @@ pub(super) fn validate(
                     "behavioral implementation has the wrong spec kind or method set".to_owned(),
                 ));
             }
-            let subject_path = subject_path(&implementation.self_type).ok_or_else(|| {
-                fail("behavioral implementation has no nominal subject".to_owned())
-            })?;
-            let subject = origins.get(subject_path).ok_or_else(|| {
-                fail("behavioral implementation subject has no canonical origin".to_owned())
-            })?;
             let selected = origins.get(&implementation.spec).ok_or_else(|| {
                 fail("behavioral implementation spec has no canonical origin".to_owned())
             })?;
@@ -55,16 +49,51 @@ pub(super) fn validate(
                 .ok_or_else(|| {
                     fail("behavioral implementation package has no canonical origins".to_owned())
                 })?;
-            let headers = owner
-                .descriptors
-                .as_ref()
-                .and_then(|set| set.headers.as_ref())
-                .ok_or_else(|| {
-                    fail(
-                        "behavioral implementation method has no canonical descriptor headers"
-                            .to_owned(),
-                    )
+            let descriptors = owner.descriptors.as_ref().ok_or_else(|| {
+                fail("behavioral implementation subject has no canonical descriptors".to_owned())
+            })?;
+            let headers = descriptors.headers.as_ref().ok_or_else(|| {
+                fail(
+                    "behavioral implementation method has no canonical descriptor headers"
+                        .to_owned(),
+                )
+            })?;
+            let (subject, receiver) = if let Some(path) = subject_path(&implementation.self_type) {
+                let subject = origins.get(path).ok_or_else(|| {
+                    fail("behavioral implementation subject has no canonical origin".to_owned())
                 })?;
+                (*subject, None)
+            } else {
+                // Primitive and structural receivers have no nominal path.
+                // The method table has already validated their published owner,
+                // receiver contract, canonical headers and descriptor roots.
+                let identity = &implementation.methods[0];
+                let method = metadata
+                    .methods
+                    .iter()
+                    .find(|method| &method.identity == identity)
+                    .ok_or_else(|| {
+                        fail("behavioral implementation references an unpublished method".into())
+                    })?;
+                let root = descriptors
+                    .declarations
+                    .iter()
+                    .find(|root| &root.definition == method.identity.implementation().subject())
+                    .ok_or_else(|| {
+                        fail(
+                            "behavioral implementation subject has no canonical descriptor root"
+                                .to_owned(),
+                        )
+                    })?;
+                (
+                    &root.definition,
+                    Some(
+                        super::super::super::type_check_bridge::convert_external_type(
+                            &implementation.self_type,
+                        ),
+                    ),
+                )
+            };
             let mut names = BTreeSet::new();
             for identity in &implementation.methods {
                 let method = metadata
@@ -74,6 +103,17 @@ pub(super) fn validate(
                     .ok_or_else(|| {
                         fail("behavioral implementation references an unpublished method".into())
                     })?;
+                if let Some(receiver) = &receiver {
+                    let method_receiver =
+                        etas_types::lower::external::package_type_input(&method.self_type)
+                            .map_err(|error| fail(error.message))?;
+                    if &method_receiver != receiver {
+                        return Err(fail(
+                            "behavioral implementation receiver disagrees with its published method"
+                                .to_owned(),
+                        ));
+                    }
+                }
                 let key = identity.implementation();
                 if !names.insert(identity.name())
                     || !spec
@@ -93,7 +133,7 @@ pub(super) fn validate(
                     return Err(fail("behavioral implementation method identity has conflicting behavior evidence".to_owned()));
                 }
                 if key.package() != owner.origins.package
-                    || key.subject() != *subject
+                    || key.subject() != subject
                     || key
                         .selected_spec()
                         .is_some_and(|selection| selection != *selected)

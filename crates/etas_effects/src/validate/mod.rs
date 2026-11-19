@@ -310,6 +310,22 @@ impl ContractValidator<'_, '_> {
     }
 
     fn materialize_public_contracts(&mut self) {
+        let public_methods = self
+            .types
+            .facts
+            .methods
+            .entries()
+            .filter_map(|method| {
+                if !method.public {
+                    return None;
+                }
+                match method.target {
+                    etas_types::method::MethodTarget::Source { callable, .. }
+                    | etas_types::method::MethodTarget::Agent { callable, .. } => Some(callable),
+                    _ => None,
+                }
+            })
+            .collect::<BTreeSet<_>>();
         for (item, hir_item) in self.hir.items.iter() {
             if !self.item_is_reachable(item) {
                 continue;
@@ -320,7 +336,7 @@ impl ContractValidator<'_, '_> {
             let Some(symbol_data) = self.hir.symbols.get(symbol) else {
                 continue;
             };
-            if symbol_data.visibility != Visibility::Public {
+            if symbol_data.visibility != Visibility::Public && !public_methods.contains(&item) {
                 continue;
             }
             let span = hir_item.span();
@@ -367,7 +383,7 @@ impl ContractValidator<'_, '_> {
             } else {
                 PublicEffectContractSource::GeneratedCheckedMetadata
             };
-            let latent_flows = self
+            let mut latent_flows = self
                 .effects
                 .facts
                 .latent_effects
@@ -381,6 +397,7 @@ impl ContractValidator<'_, '_> {
                     inferred: latent.inferred.clone(),
                 })
                 .collect::<Vec<_>>();
+            latent_flows.sort_unstable_by_key(|latent| latent.value);
             let mut inferred = summary.escaping_effects.clone();
             if matches!(signature, etas_types::ItemSignature::TopLevelLet(_)) {
                 for latent in &latent_flows {
@@ -604,13 +621,13 @@ fn declared_action_effect(
     action: ActionRef,
     args: &[etas_types::EffectArgRef],
 ) -> Result<crate::Effect, DeclaredRowError> {
-    let Some(signature) = registry.action_signature(&action) else {
+    let Some(selectors) = registry.action_selectors(&action) else {
         return Err(DeclaredRowError::missing_action_descriptor());
     };
-    if signature.effect_args.len() != args.len() {
-        return Err(DeclaredRowError::missing_action_arg(signature));
+    if selectors.len() != args.len() {
+        return Err(DeclaredRowError::missing_action_arg(selectors));
     }
-    for (kind, arg) in signature.effect_args.iter().zip(args) {
+    for (kind, arg) in selectors.iter().zip(args) {
         validate_declared_action_arg(registry, types, kind, arg)?;
     }
     Ok(if args.is_empty() {
@@ -685,17 +702,17 @@ fn validate_declared_effect_row(
         match effect {
             Effect::Action(action)
                 if registry
-                    .action_signature(action)
-                    .is_some_and(action_signature_requires_sandbox_profile) =>
+                    .action_selectors(action)
+                    .is_some_and(selectors_require_sandbox_profile) =>
             {
                 return Err(DeclaredRowError::missing_sandbox_action_arg());
             }
             Effect::AppliedAction(action) => {
-                let Some(signature) = registry.action_signature(&action.action) else {
+                let Some(selectors) = registry.action_selectors(&action.action) else {
                     return Err(DeclaredRowError::missing_action_descriptor());
                 };
-                if signature.effect_args.len() != action.args.len() {
-                    return Err(DeclaredRowError::missing_action_arg(signature));
+                if selectors.len() != action.args.len() {
+                    return Err(DeclaredRowError::missing_action_arg(selectors));
                 }
             }
             _ => {}
@@ -743,8 +760,8 @@ fn declared_requires_tool_sandbox_action(
             tag_declares_unparameterized_sandbox_boundary(registry, *tag)
         }
         Effect::Action(action) => registry
-            .action_signature(action)
-            .is_some_and(action_signature_requires_sandbox_profile),
+            .action_selectors(action)
+            .is_some_and(selectors_require_sandbox_profile),
         Effect::AppliedAction(_) | Effect::Var(_) | Effect::Error(_) => false,
     })
 }
@@ -758,8 +775,8 @@ fn tag_declares_unparameterized_sandbox_boundary(
         .is_some_and(|command| tag == command || registry.tag_extends(tag, command))
 }
 
-fn action_signature_requires_sandbox_profile(signature: &crate::EffectActionSig) -> bool {
-    signature.effect_args.iter().any(|kind| {
+fn selectors_require_sandbox_profile(selectors: &[EffectActionArgKind]) -> bool {
+    selectors.iter().any(|kind| {
         matches!(
             kind,
             EffectActionArgKind::StaticResourcePath { ty } if ty == "SandboxProfile"
@@ -855,8 +872,8 @@ impl DeclaredRowError {
         }
     }
 
-    fn missing_action_arg(signature: &crate::EffectActionSig) -> Self {
-        if action_signature_requires_sandbox_profile(signature) {
+    fn missing_action_arg(selectors: &[EffectActionArgKind]) -> Self {
+        if selectors_require_sandbox_profile(selectors) {
             return Self::missing_sandbox_action_arg();
         }
         Self {
@@ -1142,6 +1159,9 @@ fn type_label(types: &etas_types::TypeStore, ty: etas_types::TypeId) -> String {
                 format!("{name}[{args}]")
             }
         },
+        Some(etas_types::Type::AgentContext(method)) => {
+            format!("agent method context {method}")
+        }
         None => "<unknown>".to_owned(),
     }
 }

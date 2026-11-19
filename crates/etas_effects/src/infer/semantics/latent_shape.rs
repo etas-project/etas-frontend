@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, VecDeque};
 
-use etas_types::{Type, TypeId, TypeOutput};
+use etas_types::{CheckedSpecRef, SpecKind, Type, TypeId, TypeOutput};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct Shape {
@@ -21,7 +21,7 @@ pub(crate) struct LatentTypeShapes {
 }
 
 impl LatentTypeShapes {
-    pub(super) fn build(types: &TypeOutput, descriptor: impl Fn(TypeId) -> bool) -> Self {
+    pub(crate) fn build(types: &TypeOutput) -> Self {
         let mut result = Self {
             shapes: vec![Shape::default(); types.store.len()],
             opaque_parameters: types
@@ -59,7 +59,10 @@ impl LatentTypeShapes {
         // applications, whose concrete arguments may grow without a fixed depth.
         while let Some(ty) = pending.pop_front() {
             queued[ty.0 as usize] = false;
-            let shape = result.transfer(types, ty, descriptor(ty));
+            let descriptor = matches!(types.store.get(ty), Some(Type::Applied { constructor, args })
+                if args.len() == 1 && [types.facts.known_std_types.code.callable_definition,
+                    types.facts.known_std_types.code.agent_definition].contains(&Some(TypeId(constructor.0))));
+            let shape = result.transfer(types, ty, descriptor);
             if result.shapes[ty.0 as usize] == shape {
                 continue;
             }
@@ -74,7 +77,7 @@ impl LatentTypeShapes {
         result
     }
 
-    pub(super) fn contains(&self, ty: TypeId) -> bool {
+    pub(crate) fn contains(&self, ty: TypeId) -> bool {
         let shape = &self.shapes[ty.0 as usize];
         shape.callable
             || shape
@@ -83,11 +86,27 @@ impl LatentTypeShapes {
                 .any(|ty| self.opaque_parameters.contains(ty))
     }
 
+    pub(crate) fn has_parameters(&self, ty: TypeId) -> bool {
+        !self.shapes[ty.0 as usize].parameters.is_empty()
+    }
+
     fn transfer(&self, types: &TypeOutput, ty: TypeId, descriptor: bool) -> Shape {
         let value = types.store.get(ty).expect("indexed checked type shape");
         let mut shape = Shape::default();
-        if descriptor || matches!(value, Type::Function(_) | Type::Existential { .. }) {
+        if etas_types::source_execution::is_scoped_handle(
+            &types.store,
+            &types.facts.known_std_types,
+            ty,
+        ) {
+            return shape;
+        }
+        if descriptor || matches!(value, Type::Function(_)) {
             shape.callable = true;
+        } else if let Type::Existential { bounds } = value {
+            // A marker package retains type evidence but exposes no callable
+            // members. A private marker can therefore appear in a data record
+            // without making every constructor and field update a callback.
+            shape.callable = bounds.iter().any(|bound| !marker_spec(types, &bound.spec));
         } else if matches!(value, Type::Named(_)) {
             shape.parameters.insert(ty);
         } else if let Type::Applied { constructor, args } = value {
@@ -123,7 +142,49 @@ impl LatentTypeShapes {
     }
 }
 
+fn marker_spec(types: &TypeOutput, spec: &CheckedSpecRef) -> bool {
+    let facts = &types.facts;
+    let external = |identity| {
+        facts
+            .external_specs
+            .signatures
+            .get(identity)
+            .is_some_and(|signature| {
+                signature.kind == SpecKind::TypeSpec
+                    && signature.methods.is_empty()
+                    && signature.super_specs.is_empty()
+            })
+    };
+    let source = |symbol| {
+        facts.spec_signatures.get(symbol).is_some_and(|signature| {
+            signature.kind == SpecKind::TypeSpec
+                && signature.methods.is_empty()
+                && signature.super_specs.is_empty()
+        })
+    };
+    match spec {
+        CheckedSpecRef::Source(symbol) => facts
+            .external_specs
+            .aliases
+            .get(symbol)
+            .map_or_else(|| source(symbol), external),
+        CheckedSpecRef::External(identity) => external(identity),
+        CheckedSpecRef::Std(path) => facts
+            .std_spec_aliases
+            .iter()
+            .any(|(symbol, alias)| alias == path && source(symbol)),
+        CheckedSpecRef::Canonical(_) => false,
+    }
+}
+
 fn children(types: &TypeOutput, ty: TypeId, value: &Type) -> Vec<TypeId> {
+    if etas_types::source_execution::is_scoped_handle(
+        &types.store,
+        &types.facts.known_std_types,
+        ty,
+    ) {
+        return Vec::new();
+    }
     match value {
         Type::Array(inner)
         | Type::List(inner)
@@ -170,6 +231,7 @@ fn children(types: &TypeOutput, ty: TypeId, value: &Type) -> Vec<TypeId> {
         | Type::Prompt
         | Type::PromptPart
         | Type::MemoryPlace(_)
-        | Type::ResourceHandle(_) => Vec::new(),
+        | Type::ResourceHandle(_)
+        | Type::AgentContext(_) => Vec::new(),
     }
 }

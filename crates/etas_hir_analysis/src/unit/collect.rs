@@ -1,4 +1,4 @@
-use etas_hir::{HirBodyKind, HirItem, HirRevision, HirToolBody};
+use etas_hir::{HirBodyKind, HirItem, HirRevision};
 
 use crate::HirAnalysisContext;
 
@@ -22,16 +22,12 @@ impl HirSemanticUnitCollector {
                     units.push(HirSemanticUnit::Item(item.id()));
                 }
                 HirItem::Agent(agent) => {
-                    if !matches!(agent.body, etas_hir::HirAgentBody::Source { .. }) {
-                        continue;
+                    if matches!(agent.body, etas_hir::HirAgentBody::Source { .. }) {
+                        units.push(HirSemanticUnit::Item(item.id()));
                     }
-                    units.push(HirSemanticUnit::Item(item.id()));
                 }
-                HirItem::Tool(tool) => {
+                HirItem::Tool(_) => {
                     units.push(HirSemanticUnit::Item(item.id()));
-                    if !matches!(tool.body, HirToolBody::Source(_)) {
-                        continue;
-                    }
                 }
                 HirItem::TopLevelLet(_) => {
                     units.push(HirSemanticUnit::TopLevelLet(item.id()));
@@ -41,6 +37,13 @@ impl HirSemanticUnitCollector {
 
             for body in item.bodies() {
                 match body.id().kind {
+                    HirBodyKind::ParameterDefault { parameter } => {
+                        units.push(HirSemanticUnit::ParameterDefault {
+                            owner: item.id(),
+                            parameter,
+                            expr: view.program().parameter_defaults[&parameter],
+                        });
+                    }
                     HirBodyKind::Lambda(expr) => {
                         if let Some(body) = anonymous_flow_body(body) {
                             units.push(HirSemanticUnit::AnonymousFlow {

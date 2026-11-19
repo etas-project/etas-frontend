@@ -347,6 +347,16 @@ impl AstDump for ast::TypeDecl {
         f.node("TypeDecl", self.span, fields, |f| match &self.body {
             ast::TypeDeclBody::Bodyless => f.line("Bodyless", self.span, Vec::new()),
             ast::TypeDeclBody::Representation(ty) => ty.dump(f),
+            ast::TypeDeclBody::Sequence {
+                element,
+                tail,
+                span,
+            } => {
+                f.node("SequenceConstructors", *span, Vec::new(), |f| {
+                    element.dump(f);
+                    tail.dump(f);
+                });
+            }
         });
     }
 }
@@ -485,6 +495,7 @@ impl AstDump for ast::FlowSignature {
 impl AstDump for ast::ImplDecl {
     fn dump(&self, f: &mut AstDumpWriter) {
         let mut fields = Vec::new();
+        push_type_params(f, &mut fields, &self.type_params);
         match &self.target {
             ast::ImplTarget::Agent { target, specs, .. } => {
                 push_path_field(f, &mut fields, "target", target);
@@ -583,6 +594,7 @@ impl AstDump for ast::EffectDecl {
 impl AstDump for ast::EffectActionDecl {
     fn dump(&self, f: &mut AstDumpWriter) {
         let mut fields = name_fields(f, &self.name);
+        push_type_params(f, &mut fields, &self.type_params);
         if !self.selector_params.is_empty() {
             fields.push(format!(
                 "selectors={}",
@@ -590,6 +602,7 @@ impl AstDump for ast::EffectActionDecl {
                     .iter()
                     .map(|param| match param {
                         ast::ActionSelectorParam::Type(param) => param.name.text.as_str(),
+                        ast::ActionSelectorParam::Value { name, .. } => name.text.as_str(),
                     })
                     .collect::<Vec<_>>()
                     .join(",")
@@ -602,6 +615,11 @@ impl AstDump for ast::EffectActionDecl {
             f.node("ReturnType", self.return_type.span(), Vec::new(), |f| {
                 self.return_type.dump(f);
             });
+            if let Some(row) = &self.default_handler_effects {
+                f.node("DefaultHandlerEffects", row.span, Vec::new(), |f| {
+                    row.dump(f)
+                });
+            }
         });
     }
 }
@@ -611,6 +629,9 @@ impl AstDump for ast::FlowDecl {
         let mut fields = name_fields(f, &self.name);
         push_type_params(f, &mut fields, &self.type_params);
         f.node("FlowDecl", self.span, fields, |f| {
+            for annotation in &self.annotations {
+                annotation.dump(f);
+            }
             for conformance in &self.conformances {
                 conformance.dump(f);
             }
@@ -626,6 +647,9 @@ impl AstDump for ast::FlowDecl {
                 });
             }
             match &self.body {
+                ast::FlowBody::Decl { semicolon_span } => {
+                    f.node("FlowDeclBody", *semicolon_span, Vec::new(), |_| {});
+                }
                 ast::FlowBody::Block(block) => block.dump(f),
                 ast::FlowBody::Expr { expr, span } => {
                     f.node("ExprBody", *span, Vec::new(), |f| expr.dump(f));
@@ -794,17 +818,24 @@ impl AstDump for ast::ProtocolMsg {
 
 impl AstDump for ast::Param {
     fn dump(&self, f: &mut AstDumpWriter) {
-        f.node(
-            "Param",
-            self.span,
-            name_fields(f, &self.name),
-            |f| match &self.ty {
+        f.node("Param", self.span, name_fields(f, &self.name), |f| {
+            match &self.ty {
                 ast::ParamType::Explicit(ty) => ty.dump(f),
-                ast::ParamType::SelfReceiver { span } => {
-                    f.node("SelfReceiver", *span, Vec::new(), |_| {});
+                ast::ParamType::SelfReceiver { updating, span } => {
+                    let kind = if *updating {
+                        "UpdatingSelfReceiver"
+                    } else {
+                        "SelfReceiver"
+                    };
+                    f.node(kind, *span, Vec::new(), |_| {});
                 }
-            },
-        );
+            }
+            if let Some(default) = &self.default {
+                f.node("ParameterDefault", default.span(), Vec::new(), |f| {
+                    default.dump(f)
+                });
+            }
+        });
     }
 }
 
@@ -853,6 +884,9 @@ impl AstDump for TypeExpr {
                 });
             }
             Self::Record(record) => record.dump(f),
+            Self::Array { element, span } => {
+                f.node("ArrayType", *span, Vec::new(), |f| element.dump(f))
+            }
             Self::Tuple { elems, span } => f.node("TupleType", *span, Vec::new(), |f| {
                 for elem in elems {
                     elem.dump(f);
@@ -1546,6 +1580,13 @@ impl AstDump for Pattern {
             Self::Literal(literal) => f.node("LiteralPattern", literal.span(), Vec::new(), |f| {
                 literal.dump(f);
             }),
+            Self::EmptyList { span } => f.node("EmptyListPattern", *span, Vec::new(), |_| {}),
+            Self::ListCons { head, tail, span } => {
+                f.node("ListConsPattern", *span, Vec::new(), |f| {
+                    head.dump(f);
+                    tail.dump(f);
+                })
+            }
             Self::Tuple { elems, span } => f.node("TuplePattern", *span, Vec::new(), |f| {
                 for elem in elems {
                     elem.dump(f);
@@ -1686,6 +1727,7 @@ fn type_param_bound_text(bound: &ast::TypeParamBound) -> String {
 
 fn type_expr_text(ty: &ast::TypeExpr) -> String {
     match ty {
+        ast::TypeExpr::Array { element, .. } => format!("[{}]", type_expr_text(element)),
         ast::TypeExpr::Primitive { kind, .. } => primitive_type_name(*kind).to_owned(),
         ast::TypeExpr::Path { path, args, .. } => {
             let mut text = path_text(path);

@@ -15,11 +15,20 @@ pub fn collect_body_item<E>(
 ) -> Result<(), E> {
     checkpoint()?;
     let item = ctx.hir.items[state.item].clone();
+    if let HirItem::Flow(flow) = &item {
+        let facts = ctx
+            .signature_base
+            .map_or(&ctx.signature_facts, |base| &base.facts);
+        if let Some(method) = facts.type_impl_methods.get(&flow.symbol) {
+            state.owner_params = method.owner_params.clone();
+        }
+    }
+    super::defaults::collect(ctx, state, checkpoint)?;
     match item {
         HirItem::Flow(flow) => {
-            if let Some(method) = ctx.signature_facts.type_impl_methods.get(&flow.symbol) {
-                state.owner_params = method.owner_params.clone();
-            }
+            let Some(block) = flow.body.as_block() else {
+                return Ok(());
+            };
             state.expected_return =
                 ctx.item_signature(state.item)
                     .and_then(|signature| match signature {
@@ -41,8 +50,8 @@ pub fn collect_body_item<E>(
                 .is_none()
                 .then_some(expected)
                 .flatten();
-            let result = collect_block(&mut body, flow.body.block(), hint)?;
-            let final_expr = body.ctx.hir.blocks[flow.body.block()].final_expr;
+            let result = collect_block(&mut body, block, hint)?;
+            let final_expr = body.ctx.hir.blocks[block].final_expr;
             if let Some(mut candidates) = body.state.inferred_returns.take() {
                 if let Some(expr) = final_expr {
                     candidates.push((
@@ -122,15 +131,31 @@ pub fn collect_body_item<E>(
                             _ => None,
                         })
                 });
+            // An immutable top-level resource has a checked place identity.
+            // Its ordinary source constructor still produces a MemoryRegion.
+            let source_resource = ctx.hir.source_standard_types
+                && top.type_annotation.is_none()
+                && matches!(
+                    state
+                        .expected_return
+                        .and_then(|ty| ctx.interner.store().get(ty)),
+                    Some(crate::Type::ResourceHandle(
+                        crate::ResourceHandleType::MemoryRegion { .. }
+                    ))
+                );
             let mut body = BodyCollectContext {
                 ctx,
                 state,
                 execution: checkpoint,
             };
             let expected = body.state.expected_return;
-            let ty =
-                crate::pipeline::body::collect::expr::collect_expr(&mut body, top.value, expected)?;
-            if let Some(expected) = expected {
+            let initializer_type = expected.filter(|_| !source_resource);
+            let ty = crate::pipeline::body::collect::expr::collect_expr(
+                &mut body,
+                top.value,
+                initializer_type,
+            )?;
+            if let Some(expected) = initializer_type {
                 body.emit(crate::TypeConstraint::Assignable {
                     from: ty,
                     to: expected,

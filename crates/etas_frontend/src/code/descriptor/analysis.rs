@@ -14,7 +14,21 @@ impl DefinitionDescriptorProjector<'_> {
             .checked
             .effects
             .and_then(|effects| effects.item_effects.get(&item));
-        self.project_analysis_with_summary(callable, item, signature, summary)
+        let mut analysis =
+            self.project_analysis_with_summary(callable, item, signature, summary)?;
+        analysis.suspension = self
+            .checked
+            .effects
+            .and_then(|effects| {
+                effects
+                    .suspension
+                    .get(&etas_effects::EffectUnit::Item(item))
+            })
+            .map(|summary| SuspensionInfo {
+                may_suspend: summary.may_suspend,
+                unknown: summary.unknown,
+            });
+        Ok(analysis)
     }
 
     pub(crate) fn project_analysis_with_summary(
@@ -61,6 +75,7 @@ impl DefinitionDescriptorProjector<'_> {
             })?;
         let Some(summary) = summary else {
             return Ok(CallableAnalysisInfo {
+                suspension: None,
                 effects: EffectSummaryInfo {
                     declared_bound,
                     ..Default::default()
@@ -71,25 +86,26 @@ impl DefinitionDescriptorProjector<'_> {
                 outcomes: None,
             });
         };
-        // A generic behavioral dispatch does not yet identify its concrete
-        // requested actions. Portable effect metadata retains that evidence;
-        // this reflection view must not claim its partial sets are solved.
-        let deferred_method = |target| {
+        // Uninstantiated dispatch cannot advertise its partial sets as solved
+        // analysis. The effect summary retains its symbolic dependency.
+        let deferred_analysis = |target| {
             matches!(
                 target,
                 etas_effects::ParameterCallTarget::SpecMethod { .. }
                     | etas_effects::ParameterCallTarget::MetadataSpecMethod { .. }
+                    | etas_effects::ParameterCallTarget::AgentTools(_)
             )
         };
         if summary
             .action_trace
             .parameter_calls()
             .iter()
-            .any(|call| deferred_method(call.target))
+            .any(|call| deferred_analysis(call.target))
             || matches!(&summary.handler_requests, etas_effects::RequestInstantiationSummary::Available { parameters, .. }
-                if parameters.iter().any(|request| deferred_method(request.target)))
+                if parameters.iter().any(|request| deferred_analysis(request.target)))
         {
             return Ok(CallableAnalysisInfo {
+                suspension: None,
                 effects: EffectSummaryInfo {
                     declared_bound,
                     ..Default::default()
@@ -118,6 +134,7 @@ impl DefinitionDescriptorProjector<'_> {
             .map(|exits| self.project_outcomes(exits, callable, signature.ty, &parameters, scope))
             .transpose()?;
         Ok(CallableAnalysisInfo {
+            suspension: None,
             effects: EffectSummaryInfo {
                 declared_bound,
                 escaping: Some(escaping),
@@ -221,17 +238,17 @@ impl DefinitionDescriptorProjector<'_> {
         };
         let owner = self.identities.effect_tag(tag)?.clone();
         let target = if let Some(action) = action {
-            let signature = self
+            let action_name = self
                 .checked
                 .effect_registry
-                .action_signature(action)
+                .action_name(action.tag, action.action)
                 .ok_or_else(|| {
                     ProjectionError::Invalid("checked action has no registry descriptor".into())
                 })?;
-            self.text(&signature.name)?;
+            self.text(action_name)?;
             EffectTargetInfo::Action {
                 effect: owner,
-                name: signature.name.clone(),
+                name: action_name.into(),
             }
         } else {
             EffectTargetInfo::Effect(owner)
@@ -257,6 +274,10 @@ impl DefinitionDescriptorProjector<'_> {
         while let Some((trace, target)) = work.pop() {
             let node = match trace {
                 ActionTraceDomain::Empty => TraceInfo::Empty,
+                ActionTraceDomain::DefaultHandler { body, .. } => {
+                    work.push((body, target));
+                    continue;
+                }
                 ActionTraceDomain::Event(event) => {
                     TraceInfo::Event(self.analysis_effect(&event.action, scope)?)
                 }
@@ -274,6 +295,9 @@ impl DefinitionDescriptorProjector<'_> {
                         },
                     )?;
                     TraceInfo::ParameterCall(parameter_call(
+                        self.checked
+                            .effects
+                            .map(|effects| &effects.parameter_projections),
                         callable,
                         signature,
                         parameters,
@@ -284,10 +308,9 @@ impl DefinitionDescriptorProjector<'_> {
                 }
                 ActionTraceDomain::TaskAwait { .. } => TraceInfo::Empty,
                 ActionTraceDomain::TaskStart { .. } | ActionTraceDomain::Parallel(_) => {
-                    TraceInfo::UnknownOrder(self.analysis_row(
-                        &EffectRow::closed(trace.action_set()),
-                        scope,
-                    )?)
+                    TraceInfo::UnknownOrder(
+                        self.analysis_row(&EffectRow::closed(trace.action_set()), scope)?,
+                    )
                 }
                 ActionTraceDomain::Seq(parts) | ActionTraceDomain::Choice(parts) => {
                     self.ensure_edges(parts.len())?;
@@ -332,6 +355,9 @@ impl DefinitionDescriptorProjector<'_> {
                                 },
                             )?;
                             calls.push(parameter_call(
+                                self.checked
+                                    .effects
+                                    .map(|effects| &effects.parameter_projections),
                                 callable,
                                 signature,
                                 parameters,
@@ -368,18 +394,29 @@ impl DefinitionDescriptorProjector<'_> {
         span: etas_core::Span,
         exits: Option<&etas_effects::CallableExitSummary>,
     ) -> Option<Vec<ParameterArgumentInfo>> {
-        let position = parameters
-            .iter()
-            .position(|symbol| target == etas_effects::ParameterCallTarget::Native(*symbol))?;
-        let Some(Some(TypeInfo::Function(owner))) = self.types.get(signature.0 as usize) else {
-            return None;
+        let arity = if let etas_effects::ParameterCallTarget::Projection(id) = target {
+            let projection = self.checked.effects?.parameter_projections.get(&id)?;
+            let etas_types::Type::Function(callback) =
+                self.checked.type_store.get(projection.ty)?
+            else {
+                return None;
+            };
+            callback.input.len()
+        } else {
+            let position = parameters
+                .iter()
+                .position(|symbol| target == etas_effects::ParameterCallTarget::Native(*symbol))?;
+            let Some(Some(TypeInfo::Function(owner))) = self.types.get(signature.0 as usize) else {
+                return None;
+            };
+            let parameter = owner.parameters.get(position)?;
+            let Some(Some(TypeInfo::Function(callback))) = self.types.get(parameter.ty.0 as usize)
+            else {
+                return None;
+            };
+            callback.parameters.len()
         };
-        let parameter = owner.parameters.get(position)?;
-        let Some(Some(TypeInfo::Function(callback))) = self.types.get(parameter.ty.0 as usize)
-        else {
-            return None;
-        };
-        if callback.parameters.is_empty() {
+        if arity == 0 {
             return Some(vec![]);
         }
         let mut matching = exits?
@@ -387,7 +424,7 @@ impl DefinitionDescriptorProjector<'_> {
             .iter()
             .filter(|exit| exit.target == target && exit.source.span() == span);
         let values = checked_argument_values(matching.next()?.arguments.as_deref()?)?;
-        if values.len() != callback.parameters.len()
+        if values.len() != arity
             || matching.any(|exit| {
                 exit.arguments
                     .as_deref()
@@ -411,6 +448,12 @@ impl DefinitionDescriptorProjector<'_> {
 }
 
 pub(super) fn parameter_call(
+    projections: Option<
+        &std::collections::BTreeMap<
+            etas_code::CodeFingerprint,
+            etas_effects::facts::NativeParameterProjection,
+        >,
+    >,
     callable: &CallableId,
     signature: TypeInfoRef,
     parameters: &[etas_hir::SymbolId],
@@ -418,12 +461,29 @@ pub(super) fn parameter_call(
     arguments: Option<Vec<ParameterArgumentInfo>>,
     handlers: Option<Vec<ParameterHandlerScopeInfo>>,
 ) -> Result<ParameterCallInfo, ProjectionError> {
+    let (target, projection) = match target {
+        etas_effects::ParameterCallTarget::Projection(id) => {
+            let projection = projections
+                .and_then(|projections| projections.get(&id))
+                .ok_or_else(|| {
+                    ProjectionError::Invalid(
+                        "trace projection has no checked parameter path".into(),
+                    )
+                })?;
+            (
+                etas_effects::ParameterCallTarget::Native(projection.parameter),
+                projection.path.clone(),
+            )
+        }
+        target => (target, Vec::new()),
+    };
     let mut positions = parameters
         .iter()
         .enumerate()
         .filter(|(_, parameter)| target == etas_effects::ParameterCallTarget::Native(**parameter));
     match (positions.next(), positions.next()) {
         (Some((position, _)), None) => Ok(ParameterCallInfo {
+            projection,
             callable: callable.clone(),
             signature,
             position: position as u32,

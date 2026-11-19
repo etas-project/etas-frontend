@@ -1,6 +1,6 @@
 use etas_hir::{
-    HirEffectArg, HirGenericArg, HirType, SymbolDef, resolved_static_type_selector_symbol,
-    static_selector_path_segments,
+    HirEffectArg, HirGenericArg, HirType, ResolveResult, SymbolDef,
+    resolved_static_type_selector_symbol, static_selector_path_segments,
 };
 
 use crate::{
@@ -17,6 +17,25 @@ pub(super) fn overload_signatures<E>(
     else {
         return None;
     };
+    let source = ctx
+        .ctx
+        .hir
+        .items
+        .iter()
+        .filter_map(|(_, item)| match item {
+            etas_hir::HirItem::Effect(effect) => Some(effect.body.actions()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|action| ctx.ctx.hir.standard_action_targets.get(&action.symbol) == Some(&target))
+        .map(|action| match ctx.ctx.symbol_fact(action.symbol) {
+            Some(SymbolTypeFact::EffectAction { signature }) => Some(signature.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !source.is_empty() {
+        return (source.len() > 1).then(|| (target, source.into_iter().enumerate().collect()));
+    }
     let registry = ctx.ctx.std_registry.clone();
     if registry.action_declarations(target).count() < 2 {
         return None;
@@ -236,7 +255,7 @@ fn selector_arg_matches_kind<E>(
             HirGenericArg::EffectRow(_) => false,
         },
         EffectActionArgKind::MemoryPlace => match arg {
-            HirGenericArg::Type(ty) => static_memory_place_selector(ctx, *ty),
+            HirGenericArg::Type(ty) => memory_place_arg_from_type(ctx, *ty).is_some(),
             HirGenericArg::Wildcard { .. } => true,
             HirGenericArg::EffectRow(_) => false,
         },
@@ -301,6 +320,11 @@ fn static_type_selector<E>(
 ) -> Option<TypeId> {
     match ctx.ctx.hir.types.get(ty)?.clone() {
         HirType::Path { path, args, .. } => {
+            if let Some(method) = crate::lower::type_ref::agent_context_ref(ctx.ctx, &path)
+                && args.is_empty()
+            {
+                return Some(ctx.ctx.interner.intern(Type::AgentContext(method)));
+            }
             let declaration = type_arg_from_path(ctx, &path)?;
             if args.is_empty() {
                 Some(declaration)
@@ -335,29 +359,49 @@ fn static_path_arg_from_type<E>(
     .map(EffectArgRef::Path)
 }
 
-fn static_memory_place_selector<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
-    ty: etas_hir::HirTypeId,
-) -> bool {
-    let Some(type_id) = crate::lower::type_ref::lower_type_ref(ctx.ctx, ty) else {
-        return false;
-    };
-    matches!(
-        ctx.ctx.interner.store().get(type_id),
-        Some(Type::MemoryPlace(_))
-    )
-}
-
 fn memory_place_arg_from_type<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
+    ctx: &BodyCollectContext<'_, '_, E>,
     ty: etas_hir::HirTypeId,
 ) -> Option<EffectArgRef> {
-    if let Some(type_id) = crate::lower::type_ref::lower_type_ref(ctx.ctx, ty)
-        && let Some(Type::MemoryPlace(place)) = ctx.ctx.interner.store().get(type_id)
-    {
-        return Some(EffectArgRef::Path(place.segments.clone()));
+    let HirType::Path { path, args, .. } = ctx.ctx.hir.types.get(ty)? else {
+        return None;
+    };
+    if !args.is_empty() {
+        return None;
     }
-    static_path_arg_from_type(ctx, ty)
+    memory_place_arg_from_path(ctx, path)
+}
+
+fn memory_place_arg_from_path<E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
+    path: &etas_hir::ResolvedPath,
+) -> Option<EffectArgRef> {
+    let (root, fields) = match &path.resolution {
+        ResolveResult::Resolved(symbol) => (*symbol, [].as_slice()),
+        ResolveResult::PartiallyResolved(partial) => {
+            (partial.resolved_prefix?, partial.remaining.as_slice())
+        }
+        _ => return None,
+    };
+    let SymbolTypeFact::TopLevelLet { ty, .. } = ctx.ctx.symbol_fact(root)? else {
+        return None;
+    };
+    let store = ctx.ctx.interner.store();
+    let schema = crate::value_representation::memory_region_schema(store, *ty)?;
+    match fields {
+        [] => {}
+        [field] => {
+            let Type::Record(record) = store.get(schema)? else {
+                return None;
+            };
+            let ty = record.fields.iter().find(|entry| entry.name == *field)?.ty;
+            if !matches!(store.get(ty), Some(Type::Store { .. })) {
+                crate::value_representation::source_memory_store_parameters(store, ty)?;
+            }
+        }
+        _ => return None,
+    }
+    static_resource_path_arg(ctx, path)
 }
 
 fn effect_arg_default<E>(
@@ -379,7 +423,7 @@ fn lower_selector_effect_arg<E>(
     match kind {
         EffectActionArgKind::Type => effect_arg_type(ctx, arg).map(EffectArgRef::Type),
         EffectActionArgKind::MemoryPlace => match arg {
-            HirEffectArg::Path(path) => static_resource_path_arg(ctx, path),
+            HirEffectArg::Path(path) => memory_place_arg_from_path(ctx, path),
             _ => None,
         },
         EffectActionArgKind::StaticResourcePath { .. } => match arg {

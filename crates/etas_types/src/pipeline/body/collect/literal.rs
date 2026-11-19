@@ -5,6 +5,28 @@ use crate::{
     pipeline::context::BodyCollectContext,
 };
 
+pub(super) fn trusted_constructor<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    callee: etas_hir::HirExprId,
+    explicit: &[TypeId],
+) -> Option<TypeId> {
+    let registry = ctx.ctx.std_registry.clone();
+    let target = super::std_member::resolved_std_callee(ctx, &registry, callee)?;
+    let identity = registry.declaration_key(target.id)?;
+    if identity.module() != ["std", "security", "trust"] || identity.declaration() != ["Trusted"] {
+        return None;
+    }
+    let string = ctx.primitive(PrimitiveType::String);
+    if !explicit.is_empty() && explicit != [string] {
+        return None;
+    }
+    let owner = crate::lower::std::lower_std_type_symbol(ctx.ctx, &registry, target)?;
+    Some(ctx.ctx.interner.intern(Type::Applied {
+        constructor: crate::TypeConstructorId(owner.0),
+        args: vec![string],
+    }))
+}
+
 pub fn collect_literal<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     expr: Option<etas_hir::HirExprId>,

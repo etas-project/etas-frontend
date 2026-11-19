@@ -65,6 +65,7 @@ impl Pass<ProjectContext> for PrepareDirectInvocationTypesPass {
                 limits,
                 control: manager.execution_control(),
                 phase: instantiation::PreparationPhase::Types,
+                handlers: None,
             },
             &[],
             None,

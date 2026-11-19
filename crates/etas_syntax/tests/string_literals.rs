@@ -29,6 +29,7 @@ fn string_escapes_are_decoded_once_from_left_to_right() {
         (r#""\"""#, "\""),
         (r#""\\""#, "\\"),
         (r#""\q""#, r"\q"),
+        (r#""a\u{fffd}\u{1f600}b""#, "a�😀b"),
     ] {
         assert_eq!(string_value(source), expected, "{source}");
     }

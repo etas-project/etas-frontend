@@ -177,6 +177,12 @@ impl Encoder {
                     self.byte(8);
                     match trace {
                         Trace::Empty => self.byte(0),
+                        Trace::DefaultHandler { guards, body } => {
+                            self.byte(8);
+                            self.number(guards.len());
+                            tasks.push(Task::Trace(body));
+                            tasks.extend(guards.iter().rev().map(Task::Effect));
+                        }
                         Trace::Event { action, source } => {
                             self.byte(1);
                             self.byte(match source {
@@ -279,6 +285,10 @@ impl Encoder {
                     self.path(&action.path);
                     self.text(&action.visibility);
                     self.byte(u8::from(action.returns_never));
+                    self.optional(action.default_handler_effects.is_some());
+                    if let Some(row) = &action.default_handler_effects {
+                        tasks.push(Task::Row(row));
+                    }
                     self.texts(&action.selector_param_names);
                     self.number(action.generic_params.len());
                     self.number(action.params.len());
@@ -397,6 +407,10 @@ impl Encoder {
                 Task::Type(ty) => {
                     self.byte(4);
                     match ty {
+                        Type::AgentContext(method) => {
+                            self.byte(30);
+                            self.0.update(method.fingerprint().as_bytes());
+                        }
                         Type::Existential { bounds } => {
                             self.byte(27);
                             self.number(bounds.len());
@@ -670,6 +684,7 @@ pub(crate) fn external_dependency_effects(
     for action in &value.actions {
         encoder.path(&action.path);
         encoder.byte(u8::from(action.returns_never));
+        encoder.byte(u8::from(action.has_default_handler));
         requirement(&mut encoder, &action.runtime_requirement);
         encoder.number(action.effect_args.len());
         for arg in &action.effect_args {
@@ -730,6 +745,14 @@ pub(crate) fn external_dependency_effects(
 pub(crate) fn external_spec_impl(value: &crate::ProjectExternalSpecImplInput) -> String {
     let mut encoder = Encoder::new();
     encoder.byte(26);
+    encoder.optional(value.owner.is_some());
+    if let Some(owner) = &value.owner {
+        encoder.0.update(owner.fingerprint().as_bytes());
+    }
+    encoder.number(value.generic_params.len());
+    for parameter in &value.generic_params {
+        encoder.encode(Task::Generic(parameter));
+    }
     encoder.path(&value.spec);
     encoder.number(value.methods.len());
     for method in &value.methods {
@@ -864,6 +887,10 @@ pub(crate) fn external_effect_summary(value: &crate::ProjectExternalEffectSummar
     encoder.text(&external_requests(&value.handler_requests));
     encoder.optional(value.default_handler_effects.is_some());
     if let Some(defaults) = &value.default_handler_effects {
+        encoder.optional(defaults.behavior.is_some());
+        if let Some(behavior) = &defaults.behavior {
+            encoder.0.update(behavior.fingerprint().as_bytes());
+        }
         encoder.encode(Task::Row(&defaults.direct_effects));
         encoder.encode(Task::Row(&defaults.default_actions));
         encoder.number(defaults.handlers.len());
@@ -1073,6 +1100,8 @@ mod tests {
     #[test]
     fn callable_spec_and_action_fields_are_part_of_structural_identity() {
         let flow = Flow {
+            definition: None,
+            parameter_defaults: vec![],
             path: vec!["app".into(), "f".into()],
             generic_params: vec![],
             param_names: vec![],
@@ -1098,6 +1127,9 @@ mod tests {
         spec.callable.as_mut().unwrap().output = Type::Primitive("string".into());
         assert_ne!(before, external_spec(&spec));
         let mut action = Action {
+            param_names: vec![],
+            parameter_defaults: vec![],
+            default_handler_effects: None,
             path: vec!["app".into(), "E".into(), "a".into()],
             generic_params: vec![],
             params: vec![],
@@ -1151,6 +1183,7 @@ mod tests {
     fn dependency_effect_selector_metadata_and_source_bindings_are_fingerprinted() {
         let mut metadata = etas_effects::DependencyEffectMetadata {
             actions: vec![etas_effects::DependencyEffectAction {
+                has_default_handler: false,
                 path: vec!["dep".into(), "E".into(), "act".into()],
                 effect_args: vec![etas_effects::EffectActionArgKind::Type],
                 selector_param_names: vec!["T".into()],
@@ -1232,6 +1265,7 @@ mod tests {
             ProjectExternalLatentFlowSummaryInput as Latent,
         };
         let mut summary = Summary {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -1246,6 +1280,7 @@ mod tests {
         };
         let before = external_effect_summary(&summary);
         summary.default_handler_effects = Some(Defaults {
+            behavior: None,
             direct_effects: Row::default(),
             default_actions: Row::default(),
             handlers: vec![],

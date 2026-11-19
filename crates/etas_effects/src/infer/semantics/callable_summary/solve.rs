@@ -190,41 +190,55 @@ impl EffectSemantics<'_> {
             CallableSummaryPlan::Leaf(summary) => return Ok(summary.clone()),
         };
         let mut summary = plan.template.clone();
-        let requests = match &plan.template.handler_requests {
-            crate::RequestInstantiationSummary::Unavailable => {
-                crate::RequestInstantiationSummary::Unavailable
-            }
-            crate::RequestInstantiationSummary::Available {
-                actions,
-                parameters,
-            } => {
-                let mut requests = crate::RequestInstantiationSummary::Available {
-                    actions: actions.clone(),
-                    parameters: BTreeSet::new(),
-                };
-                for parameter in parameters {
-                    if let Some(origins) = plan.bindings.get(&parameter.target) {
-                        let mut captured =
-                            joined_origins(origins, parameter.span, summaries, mode)?
-                                .handler_requests;
-                        captured.subtract_handled(
-                            &crate::EffectCoverage {
-                                registry: self.registry,
-                                types: &self.types.store,
-                            },
-                            &crate::EffectRow::closed(parameter.excluded.clone()),
-                        );
-                        requests.union_assign(&captured);
-                    } else if let crate::RequestInstantiationSummary::Available {
-                        parameters, ..
-                    } = &mut requests
-                    {
-                        parameters.insert(parameter.clone());
-                    }
+        let instantiate_requests = |requests: &crate::RequestInstantiationSummary| -> Result<
+            crate::RequestInstantiationSummary,
+            EffectSpecializationError,
+        > {
+            Ok(match requests {
+                crate::RequestInstantiationSummary::Unavailable => {
+                    crate::RequestInstantiationSummary::Unavailable
                 }
-                requests
-            }
+                crate::RequestInstantiationSummary::Available {
+                    actions,
+                    parameters,
+                } => {
+                    let mut requests = crate::RequestInstantiationSummary::Available {
+                        actions: actions.clone(),
+                        parameters: BTreeSet::new(),
+                    };
+                    for parameter in parameters {
+                        if let Some(origins) = plan.bindings.get(&parameter.target) {
+                            let mut captured =
+                                joined_origins(origins, parameter.span, summaries, mode)?
+                                    .handler_requests;
+                            captured.subtract_handled(
+                                &crate::EffectCoverage {
+                                    registry: self.registry,
+                                    types: &self.types.store,
+                                },
+                                &crate::EffectRow::closed(parameter.excluded.clone()),
+                            );
+                            requests.union_assign(&captured);
+                        } else if let crate::RequestInstantiationSummary::Available {
+                            parameters,
+                            ..
+                        } = &mut requests
+                        {
+                            parameters.insert(parameter.clone());
+                        }
+                    }
+                    requests
+                }
+            })
         };
+        let requests = instantiate_requests(&plan.template.handler_requests)?;
+        if let Some(behavior) = &mut summary.default_behavior {
+            behavior.direct.handler_requests =
+                instantiate_requests(&behavior.direct.handler_requests)?;
+            for footprint in behavior.guarded.values_mut() {
+                footprint.handler_requests = instantiate_requests(&footprint.handler_requests)?;
+            }
+        }
         summary.action_trace =
             substitute_parameter_calls(&plan.template.action_trace, |target, _, span| {
                 let Some(origins) = plan.bindings.get(&target) else {
@@ -234,6 +248,26 @@ impl EffectSemantics<'_> {
                 summary.merge_request_footprint_without_escaping_or_trace(&captured);
                 Ok(ParameterCallSubstitution::Trace(captured.action_trace))
             })?;
+        if let Some(exits) = &mut summary.exits {
+            for exit in &mut exits.exits {
+                exit.trace = substitute_parameter_calls(&exit.trace, |target, _, span| {
+                    let Some(origins) = plan.bindings.get(&target) else {
+                        return Ok(ParameterCallSubstitution::Symbolic);
+                    };
+                    let captured = joined_origins(origins, span, summaries, mode)?;
+                    Ok(ParameterCallSubstitution::Trace(captured.action_trace))
+                })?;
+            }
+            for exit in &mut exits.parameter_exits {
+                exit.prefix = substitute_parameter_calls(&exit.prefix, |target, _, span| {
+                    let Some(origins) = plan.bindings.get(&target) else {
+                        return Ok(ParameterCallSubstitution::Symbolic);
+                    };
+                    let captured = joined_origins(origins, span, summaries, mode)?;
+                    Ok(ParameterCallSubstitution::Trace(captured.action_trace))
+                })?;
+            }
+        }
         summary.handler_requests = requests;
         self.solve_callback_completion_with(&mut summary, &plan.type_bindings, |target, span| {
             plan.bindings

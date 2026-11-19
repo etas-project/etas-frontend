@@ -5,6 +5,11 @@ use crate::{HirAnalysisContext, interprocedural::HirAnalysisBody};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HirSemanticUnit {
     Item(HirItemId),
+    ParameterDefault {
+        owner: HirItemId,
+        parameter: etas_hir::SymbolId,
+        expr: HirExprId,
+    },
     AnonymousFlow {
         owner: HirItemId,
         expr: HirExprId,
@@ -25,6 +30,7 @@ impl HirSemanticUnit {
         match self {
             Self::Item(item) | Self::TopLevelLet(item) => Some(item),
             Self::AnonymousFlow { owner, .. } => Some(owner),
+            Self::ParameterDefault { owner, .. } => Some(owner),
             Self::HandlerArm(_) => None,
         }
     }
@@ -38,6 +44,7 @@ impl HirSemanticUnit {
         let hir = context.program();
         match self {
             Self::Item(item) => item_body(hir, context, item),
+            Self::ParameterDefault { expr, .. } => HirAnalysisBody::Expr(expr),
             Self::TopLevelLet(item) => match hir.items.get(item) {
                 Some(HirItem::TopLevelLet(decl)) => HirAnalysisBody::Expr(decl.value),
                 Some(_) => HirAnalysisBody::Missing,

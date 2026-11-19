@@ -18,8 +18,12 @@ pub(super) fn analyze(
     registry: &EffectRegistry,
     types: &etas_types::TypeFacts,
     standard: &etas_std::StdRegistry,
-) -> ConcurrencyFacts {
+) -> (ConcurrencyFacts, Vec<etas_core::Diagnostic>) {
     let hir = view.program();
+    let mut diagnostics = constant_limit_diagnostics(hir, standard);
+    if !diagnostics.is_empty() {
+        return (ConcurrencyFacts::default(), diagnostics);
+    }
     let owners = ownership::task_scopes(effects.task_calls.values());
     let mut scope_facts = HashMap::new();
     let mut sites = HashMap::new();
@@ -57,7 +61,13 @@ pub(super) fn analyze(
         };
         let concurrency_limit = calls
             .iter()
-            .filter_map(|call| concurrency_limit(call))
+            .filter_map(|call| match concurrency_limit(call) {
+                Ok(limit) => limit,
+                Err(value) => {
+                    diagnostics.push(invalid_limit(call_span(hir, call.call), value));
+                    None
+                }
+            })
             .min();
         let scope = TaskScopeFact {
             owner_scope,
@@ -159,16 +169,69 @@ pub(super) fn analyze(
 
     let (resource_callables, resource_closures) =
         super::resource::analyze(view, types, standard, effects);
-    ConcurrencyFacts {
-        sites,
-        owners: scope_facts,
-        starts,
-        awaits,
-        continuation_transfers,
-        plans,
-        resource_callables,
-        resource_closures,
+    (
+        ConcurrencyFacts {
+            sites,
+            owners: scope_facts,
+            starts,
+            awaits,
+            continuation_transfers,
+            plans,
+            resource_callables,
+            resource_closures,
+        },
+        diagnostics,
+    )
+}
+
+fn constant_limit_diagnostics(
+    hir: &etas_hir::HirProgram,
+    standard: &etas_std::StdRegistry,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (_, expr) in hir.exprs.iter() {
+        let HirExpr::Call { callee, args, .. } = expr else {
+            continue;
+        };
+        let HirExpr::Path(path) = &hir.exprs[*callee] else {
+            continue;
+        };
+        let ResolveResult::Resolved(symbol) = path.resolution else {
+            continue;
+        };
+        if etas_types::facts::enums::standard_limit_constructor(hir, standard, symbol)
+            != Some(etas_std::StdLimitKind::Concurrency)
+        {
+            continue;
+        }
+        let [HirArg::Positional(value) | HirArg::Named { value, .. }] = args.as_slice() else {
+            continue;
+        };
+        let HirExpr::Literal(etas_hir::HirLiteral::Int { text, span }) = &hir.exprs[*value] else {
+            continue;
+        };
+        let Ok(value) = etas_types::checked_integer_literal(text, etas_types::PrimitiveType::USize)
+        else {
+            continue;
+        };
+        if value.magnitude == 0
+            || value.magnitude > u128::from(etas_std::intrinsic::task::MAX_CONCURRENCY)
+        {
+            diagnostics.push(invalid_limit(*span, value.magnitude));
+        }
     }
+    diagnostics
+}
+
+fn invalid_limit(span: etas_core::Span, value: impl std::fmt::Display) -> etas_core::Diagnostic {
+    etas_core::Diagnostic::effect_check(
+        etas_core::EffectDiagnosticCode::MissingOrInvalidLimit,
+        span,
+        format!(
+            "Concurrency({value}) requires a positive usize no greater than {}",
+            etas_std::intrinsic::task::MAX_CONCURRENCY
+        ),
+    )
 }
 
 fn call_span(hir: &etas_hir::HirProgram, call: etas_hir::HirExprId) -> etas_core::Span {
@@ -254,17 +317,22 @@ fn resolve_task_start(
     bindings.get(&symbol).copied()
 }
 
-fn concurrency_limit(call: &TaskCallFact) -> Option<u32> {
-    call.behavior.requirements.iter().find_map(|requirement| {
+fn concurrency_limit(call: &TaskCallFact) -> Result<Option<u32>, u64> {
+    let mut selected: Option<u32> = None;
+    for requirement in call.behavior.requirements.iter() {
         let RequirementFact::Limit(limit) = requirement else {
-            return None;
+            continue;
         };
         if limit.kind != LimitKind::Concurrency {
-            return None;
+            continue;
         }
         let Some(LimitValue::Count(value)) = limit.value else {
-            return None;
+            continue;
         };
-        u32::try_from(value).ok()
-    })
+        if value == 0 || value > u64::from(etas_std::intrinsic::task::MAX_CONCURRENCY) {
+            return Err(value);
+        }
+        selected = Some(selected.map_or(value as u32, |previous| previous.min(value as u32)));
+    }
+    Ok(selected)
 }

@@ -56,12 +56,19 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
         .reflection_type_identities
         .extend(body.reflection_type_identities);
     facts.expr_types.extend(body.expr_types);
+    facts
+        .declared_call_arguments
+        .extend(body.declared_call_arguments);
     facts.agent_method_calls.extend(body.agent_method_calls);
+    facts.trusted_literals.extend(body.trusted_literals);
+    facts.source_flow_calls.extend(body.source_flow_calls);
+    facts.library_flow_calls.extend(body.library_flow_calls);
     facts.checked_method_calls.extend(body.checked_method_calls);
     facts.bound_method_values.extend(body.bound_method_values);
     facts.existential_packs.extend(body.existential_packs);
     facts.reflections.extend(body.reflections);
     facts.agent_inferences.extend(body.agent_inferences);
+    facts.agent_controllers.extend(body.agent_controllers);
     facts.std_intrinsic_calls.extend(body.std_intrinsic_calls);
     facts.action_calls.extend(body.action_calls);
     facts
@@ -102,6 +109,13 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
     if facts.known_std_types.message.is_none() {
         facts.known_std_types.message = body.known_std_types.message;
     }
+    if facts.known_std_types.source_iterator.is_none() {
+        facts.known_std_types.source_iterator = body.known_std_types.source_iterator;
+    }
+    facts
+        .known_std_types
+        .execution
+        .merge_missing(body.known_std_types.execution);
     if facts.known_std_types.priority_queue.is_none() {
         facts.known_std_types.priority_queue = body.known_std_types.priority_queue;
     }

@@ -263,8 +263,18 @@ impl Parser<'_> {
     pub(crate) fn param_list_with_receiver(&mut self, allow_receiver: bool) -> Vec<Param> {
         self.expect_punct(Punct::LParen, "expected parameter list");
         let mut first = true;
+        let mut has_default = false;
         let params = self.comma_list(Punct::RParen, |this| {
             let param = this.param(allow_receiver && first);
+            if param.default.is_some() {
+                has_default = true;
+            } else if has_default && matches!(param.ty, ParamType::Explicit(_)) {
+                this.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    param.span,
+                    "required parameters must precede defaulted parameters",
+                ));
+            }
             first = false;
             param
         });
@@ -273,8 +283,27 @@ impl Parser<'_> {
     }
 
     fn param(&mut self, allow_receiver: bool) -> Param {
+        let updating = self
+            .cursor
+            .eat_keyword(Keyword::Var)
+            .map(|token| token.span);
         let name = self.name("expected parameter name");
-        if name.text == "self" && !self.cursor.at_punct(Punct::Colon) {
+        if updating.is_some() && (name.text != "self" || !allow_receiver) {
+            self.diagnostics.push(Diagnostic::syntax(
+                SyntaxDiagnosticCode::InvalidItem,
+                updating.unwrap().cover(name.span),
+                "var self is only valid as the first parameter of an ordinary type method",
+            ));
+        }
+        if name.text == "self" && (updating.is_some() || !self.cursor.at_punct(Punct::Colon)) {
+            if updating.is_some() && self.cursor.eat_punct(Punct::Colon).is_some() {
+                let ty = self.type_expr();
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    name.span.cover(ty.span()),
+                    "var self takes its type from the enclosing type method; omit the explicit type",
+                ));
+            }
             if !allow_receiver {
                 self.diagnostics.push(Diagnostic::syntax(
                     SyntaxDiagnosticCode::InvalidItem,
@@ -282,18 +311,43 @@ impl Parser<'_> {
                     "implicit self is only valid as the first parameter of a method",
                 ));
             }
+            let default = self
+                .cursor
+                .eat_punct(Punct::Eq)
+                .map(|_| Box::new(self.expr()));
+            let span = updating.map_or(name.span, |span| span.cover(name.span));
+            if let Some(default) = &default {
+                self.diagnostics.push(Diagnostic::syntax(
+                    SyntaxDiagnosticCode::InvalidItem,
+                    default.span(),
+                    "a receiver cannot have a default value",
+                ));
+            }
             return Param {
-                span: name.span,
-                ty: ParamType::SelfReceiver { span: name.span },
+                span: default
+                    .as_ref()
+                    .map_or(span, |default| span.cover(default.span())),
+                ty: ParamType::SelfReceiver {
+                    updating: updating.is_some(),
+                    span: updating.map_or(name.span, |span| span.cover(name.span)),
+                },
                 name,
+                default,
             };
         }
         self.expect_punct(Punct::Colon, "expected `:` after parameter name");
         let ty = self.type_expr();
+        let default = self
+            .cursor
+            .eat_punct(Punct::Eq)
+            .map(|_| Box::new(self.expr()));
         Param {
-            span: name.span.cover(ty.span()),
+            span: name
+                .span
+                .cover(default.as_ref().map_or(ty.span(), |default| default.span())),
             name,
             ty: ParamType::Explicit(Box::new(ty)),
+            default,
         }
     }
 

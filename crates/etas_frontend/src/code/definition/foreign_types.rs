@@ -12,6 +12,15 @@ use crate::code::descriptor::ProjectionError;
 pub(crate) struct ForeignTypeBindings {
     bindings: HashMap<TypeId, ForeignTypeBinding>,
     specs: HashMap<DefinitionKey, ForeignSpecBinding>,
+    methods: HashMap<etas_code::MethodId, ForeignMethodBinding>,
+    effects: HashMap<etas_effects::EffectTagId, ForeignEffectBinding>,
+}
+
+#[derive(Clone, etas_core::RetainedSize)]
+struct ForeignEffectBinding {
+    identity: DefinitionKey,
+    source: etas_effects::EffectTagId,
+    catalog: Arc<DefinitionCatalog>,
 }
 
 #[derive(Clone, etas_core::RetainedSize)]
@@ -27,6 +36,12 @@ struct ForeignSpecBinding {
     catalog: Arc<DefinitionCatalog>,
 }
 
+#[derive(Clone, etas_core::RetainedSize)]
+struct ForeignMethodBinding {
+    catalog: Arc<DefinitionCatalog>,
+    declaration: etas_types::method::MethodSignatureFact,
+}
+
 impl std::fmt::Debug for ForeignTypeBindings {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -38,13 +53,24 @@ impl std::fmt::Debug for ForeignTypeBindings {
 }
 
 impl ForeignTypeBindings {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bindings.is_empty()
+            && self.specs.is_empty()
+            && self.methods.is_empty()
+            && self.effects.is_empty()
+    }
+
     pub(crate) fn relocate_checked(
         &self,
         declarations: &HashMap<TypeId, TypeId>,
         target: &TypeStore,
         control: &dyn PipelineExecutionControl,
     ) -> Result<Self, ProjectionError> {
-        let mut result = Self::default();
+        let mut result = Self {
+            methods: self.methods.clone(),
+            effects: self.effects.clone(),
+            ..Self::default()
+        };
         for (source, binding) in &self.bindings {
             control.checkpoint().map_err(|error| {
                 ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
@@ -87,10 +113,15 @@ impl ForeignTypeBindings {
         catalog: &Arc<DefinitionCatalog>,
         identities: &HashMap<TypeId, DefinitionKey>,
         declarations: &HashMap<TypeId, TypeId>,
+        target_definitions: &DefinitionCatalog,
         target: &TypeStore,
         control: &dyn PipelineExecutionControl,
     ) -> Result<Self, ProjectionError> {
-        let mut result = Self::default();
+        let mut result = Self {
+            methods: self.methods.clone(),
+            effects: self.effects.clone(),
+            ..Self::default()
+        };
         for (id, binding) in &self.bindings {
             control.checkpoint().map_err(|error| {
                 ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
@@ -110,27 +141,39 @@ impl ForeignTypeBindings {
             let Some(target_id) = declarations.get(source).copied() else {
                 continue;
             };
-            // Declarations already present in the destination are represented
-            // by its own checked index, not by a foreign binding.
-            match target.nominal_identity(target_id) {
-                None => continue,
-                Some(actual) if actual == identity => {}
-                Some(_) => {
-                    return Err(ProjectionError::Invalid(
-                        "conflicting foreign type identities".into(),
-                    ));
-                }
-            }
             if catalog.native_type_declaration(*source) != Some(identity) {
                 return Err(ProjectionError::MissingIdentity(format!(
                     "foreign checked declaration {source:?}"
                 )));
             }
+            // Declarations already present in the destination are represented
+            // by its own checked index, not by a foreign binding.
+            // Source std owns the canonical declaration even when its interner
+            // retains the original bootstrap ABI reservation identity.
+            if let Some(actual) = target_definitions.native_type_declaration(target_id) {
+                if actual != identity {
+                    return Err(ProjectionError::Invalid(format!(
+                        "foreign type conflicts with checked target declaration: {identity:?} -> {actual:?}"
+                    )));
+                }
+                continue;
+            }
+            match target.nominal_identity(target_id) {
+                None => continue,
+                Some(actual) if actual == identity => {}
+                Some(actual) => {
+                    return Err(ProjectionError::Invalid(format!(
+                        "conflicting foreign type identities: source {source:?} {identity:?} -> target {target_id:?} {actual:?} {:?}",
+                        target.get(target_id),
+                    )));
+                }
+            }
             if let Some(existing) = result.bindings.get(&target_id) {
                 if existing.identity != *identity {
-                    return Err(ProjectionError::Invalid(
-                        "conflicting foreign type identities".into(),
-                    ));
+                    return Err(ProjectionError::Invalid(format!(
+                        "conflicting foreign type identities: source {source:?} {identity:?} -> target {target_id:?}, existing {:?}",
+                        existing.identity,
+                    )));
                 }
                 continue;
             }
@@ -144,6 +187,67 @@ impl ForeignTypeBindings {
             );
         }
         Ok(result)
+    }
+
+    pub(crate) fn extend_methods_checked(
+        &mut self,
+        catalog: &Arc<DefinitionCatalog>,
+        declarations: &[etas_types::method::MethodSignatureFact],
+        control: &dyn PipelineExecutionControl,
+    ) -> Result<(), ProjectionError> {
+        for declaration in declarations {
+            let etas_types::method::MethodTarget::External { identity } = &declaration.target
+            else {
+                return Err(ProjectionError::Invalid(
+                    "foreign method has no canonical target".into(),
+                ));
+            };
+            control.checkpoint().map_err(|error| {
+                ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
+            })?;
+            let callable = etas_code::CallableId::method(identity.clone());
+            let item = catalog.item_owner(&callable).ok_or_else(|| {
+                ProjectionError::MissingIdentity("foreign method has no checked source body".into())
+            })?;
+            if !matches!(
+                catalog.checked_program().hir.items.get(item),
+                Some(etas_hir::HirItem::Flow(_))
+            ) {
+                return Err(ProjectionError::Invalid(
+                    "foreign method owner has no source flow".into(),
+                ));
+            }
+            self.methods.insert(
+                identity.clone(),
+                ForeignMethodBinding {
+                    catalog: catalog.clone(),
+                    declaration: declaration.clone(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn method(
+        &self,
+        identity: &etas_code::MethodId,
+    ) -> Option<(
+        &crate::CheckedProgram,
+        etas_hir::HirItemId,
+        &etas_types::method::MethodSignatureFact,
+    )> {
+        let binding = self.methods.get(identity)?;
+        Some((
+            binding.catalog.checked_program(),
+            binding
+                .catalog
+                .item_owner(&etas_code::CallableId::method(identity.clone()))?,
+            &binding.declaration,
+        ))
+    }
+
+    pub(crate) fn methods(&self) -> impl Iterator<Item = &etas_code::MethodId> {
+        self.methods.keys()
     }
 
     pub(crate) fn extend_specs_checked(
@@ -238,6 +342,44 @@ impl ForeignTypeBindings {
             }
             CheckedSpecRef::Std(_) | CheckedSpecRef::Canonical(_) => false,
         }
+    }
+
+    pub(crate) fn bind_effect(
+        &mut self,
+        catalog: &Arc<DefinitionCatalog>,
+        source: etas_effects::EffectTagId,
+        target: etas_effects::EffectTagId,
+    ) -> Result<(), ProjectionError> {
+        let identity = catalog.native_effect_identity(source)?.clone();
+        self.effects.insert(
+            target,
+            ForeignEffectBinding {
+                identity,
+                source,
+                catalog: catalog.clone(),
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn effects(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            etas_effects::EffectTagId,
+            &DefinitionKey,
+            etas_effects::EffectTagId,
+            &DefinitionCatalog,
+        ),
+    > {
+        self.effects.iter().map(|(target, binding)| {
+            (
+                *target,
+                &binding.identity,
+                binding.source,
+                binding.catalog.as_ref(),
+            )
+        })
     }
 
     pub(crate) fn iter(

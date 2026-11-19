@@ -122,6 +122,9 @@ pub enum HirBodyKind {
         annotation: u32,
         arg: u32,
     },
+    ParameterDefault {
+        parameter: crate::SymbolId,
+    },
     Lambda(HirExprId),
     HandlerArm(HirHandlerArmId),
     MatchArm {

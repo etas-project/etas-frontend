@@ -98,7 +98,11 @@ impl CheckedCallableApplication {
             // callable/handler types, without allocating a new type universe.
             checked
                 .native_instantiations
-                .checked_instance(self.owner(), self.arguments())
+                .checked_instance_with_owner_bindings(
+                    self.owner(),
+                    self.arguments(),
+                    Some(self.owner_bindings()),
+                )
                 .map_err(CallableBehaviorError::InvalidApplication)?
                 .ok_or_else(|| {
                     CallableBehaviorError::InvalidApplication("prepared instance is missing".into())
@@ -120,7 +124,9 @@ impl CheckedCallableApplication {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let names = HashMap::new();
+        let owner_types = self.owner_bindings().iter().copied().collect();
         let types = TypeSubstitutionEngine::existing(&checked.type_store, &names)
+            .with_type_parameters(&owner_types)
             .with_source_parameters(&types)
             .with_effect_arguments(&row_refs)
             .with_expansion_depth(limits.max_expansion_depth);

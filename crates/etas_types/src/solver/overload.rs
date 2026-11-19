@@ -37,15 +37,23 @@ pub(super) fn solve<E>(
     // select an overload or recover an erased descriptor's generic contract.
     for (candidate, probe) in call.candidates.iter().zip(call.probes) {
         checkpoint()?;
-        let solved = solve_callable_constraint(
+        let mut solved = solve_callable_constraint(
             input.store,
             input.spec_facts,
             CallableConstraintSolveInput {
+                argument_slots: match &candidate.operation {
+                    crate::CallableCandidateOperation::SourceFlow { arguments, .. }
+                    | crate::CallableCandidateOperation::LibraryFlow { arguments, .. } => {
+                        Some(&arguments.argument_slots)
+                    }
+                    _ => None,
+                },
                 rigid_type_parameters: input.rigid_type_parameters,
                 call: Some(call.expr),
                 callee: candidate.ty,
                 generic_params: &candidate.signature.generic_params,
                 explicit_generic_args: call.generic_args,
+                selector_bindings: &[],
                 arg_exprs: call.arg_exprs,
                 args: &args,
                 output: *probe,
@@ -53,6 +61,37 @@ pub(super) fn solve<E>(
                 known_substitutions: report.substitutions.clone(),
             },
         );
+        // Literal constraints are normally finalized after calls. Candidate
+        // probes must still respect them: an unconstrained integer variable
+        // cannot make a string or tuple overload look applicable.
+        for constraint in input.constraints {
+            checkpoint()?;
+            let TypeConstraint::NumericLiteral {
+                ty,
+                text,
+                kind,
+                origin,
+                ..
+            } = constraint
+            else {
+                continue;
+            };
+            let before = resolve_known_substitutions(input.store, report, *ty);
+            let after = resolve_known_substitutions(input.store, &solved, *ty);
+            if before != after
+                && !is_unresolved_type_var(input.store, after)
+                && let Err(reason) = numeric_literal::validate(input.store, *kind, text, after)
+            {
+                solved.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                    span: origin.span,
+                    message: format!(
+                        "numeric literal `{text}` does not match overload input: {reason}"
+                    ),
+                });
+                break;
+            }
+        }
         if solved.failures.is_empty() {
             if selected.is_some() {
                 report.push(SolverFailure { code: etas_core::TypeDiagnosticCode::TypeMismatch, span: call.origin.span, message: "call input types match more than one overload; supply unambiguous arguments".into() });
@@ -85,11 +124,19 @@ pub(super) fn solve<E>(
         input.store,
         input.spec_facts,
         CallableConstraintSolveInput {
+            argument_slots: match &candidate.operation {
+                crate::CallableCandidateOperation::SourceFlow { arguments, .. }
+                | crate::CallableCandidateOperation::LibraryFlow { arguments, .. } => {
+                    Some(&arguments.argument_slots)
+                }
+                _ => None,
+            },
             rigid_type_parameters: input.rigid_type_parameters,
             call: Some(call.expr),
             callee: candidate.ty,
             generic_params: &candidate.signature.generic_params,
             explicit_generic_args: call.generic_args,
+            selector_bindings: &[],
             arg_exprs: call.arg_exprs,
             args: &args,
             output: resolve_known_substitutions(input.store, report, call.output),
@@ -98,6 +145,35 @@ pub(super) fn solve<E>(
         },
     );
     if solved.failures.is_empty() {
+        if let crate::CallableCandidateOperation::LibraryFlow {
+            symbol,
+            overload,
+            callable,
+            arguments,
+        } = &candidate.operation
+        {
+            solved.library_flow_calls.insert(
+                call.expr,
+                crate::facts::expressions::CheckedLibraryCallFact {
+                    symbol: *symbol,
+                    overload: *overload,
+                    callable: callable.clone(),
+                    callable_type: candidate.ty,
+                    signature: candidate.signature.clone(),
+                },
+            );
+            solved
+                .declared_call_arguments
+                .insert(call.expr, arguments.clone());
+        }
+        if let crate::CallableCandidateOperation::SourceFlow { symbol, arguments } =
+            &candidate.operation
+        {
+            solved.source_flow_calls.insert(call.expr, *symbol);
+            solved
+                .declared_call_arguments
+                .insert(call.expr, arguments.clone());
+        }
         let mut unifier = TypeUnifier::with_known_substitution(input.store, &solved.substitutions);
         if unifier.unify(call.callee, candidate.ty).is_err() {
             solved.push(SolverFailure {

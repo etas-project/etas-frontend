@@ -43,6 +43,7 @@ impl LowerCtx {
                     pending.extend(args.iter().rev());
                 }
                 ast::TypeExpr::Tuple { elems, .. } => pending.extend(elems.iter().rev()),
+                ast::TypeExpr::Array { element, .. } => pending.push(element),
                 ast::TypeExpr::Record(record) => {
                     pending.extend(record.fields.iter().rev().map(|field| &field.ty));
                 }

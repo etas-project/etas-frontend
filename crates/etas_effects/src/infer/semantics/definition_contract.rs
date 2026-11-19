@@ -13,14 +13,87 @@ impl EffectSemantics<'_> {
     pub(super) fn symbolic_contract_value(&self, ty: TypeId, sources: &[LatentSource]) -> bool {
         !sources.is_empty()
             && sources.iter().all(|source| match source {
+                LatentSource::Projection(id) => {
+                    self.parameter_projection(*id).is_some_and(|projection| {
+                        projection.ty == ty
+                            || self.descriptor_contract_type(projection.ty) == Some(ty)
+                            || self.generic_value_parameters(projection.ty).iter().any(
+                                |parameter| self.generic_value_parameters(ty).contains(parameter),
+                            )
+                    })
+                }
                 LatentSource::Parameter { symbol, .. } => {
+                    let payloads = self.generic_parameter_payloads(*symbol);
                     self.symbol_value_type(*symbol).is_some_and(|parameter| {
                         self.descriptor_contract_type(parameter) == Some(ty)
                             || (parameter == ty && self.symbolic_callable_parameter(*symbol))
+                            || (!payloads.is_empty()
+                                && (parameter == ty
+                                    || self
+                                        .generic_value_parameters(ty)
+                                        .iter()
+                                        .any(|payload| payloads.contains(payload))))
                     })
                 }
                 _ => false,
             })
+    }
+
+    // Generic data may later contain a callable. Preserve its origin through
+    // containers and patterns without granting the generic value a call contract.
+    pub(super) fn generic_parameter_payloads(&self, symbol: etas_hir::SymbolId) -> Vec<TypeId> {
+        if !matches!(
+            self.hir.symbols.get(symbol).map(|symbol| &symbol.def),
+            Some(SymbolDef::Param { .. })
+        ) {
+            return Vec::new();
+        }
+        self.symbol_value_type(symbol)
+            .map(|ty| self.generic_value_parameters(ty))
+            .unwrap_or_default()
+    }
+
+    fn generic_value_parameters(&self, ty: TypeId) -> Vec<TypeId> {
+        let mut pending = vec![ty];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut parameters = Vec::new();
+        while let Some(ty) = pending.pop() {
+            if !seen.insert(ty) {
+                continue;
+            }
+            match self.types.store.get(ty) {
+                Some(Type::Named(parameter)) if parameter.source_parameter.is_some() => {
+                    parameters.push(ty);
+                }
+                Some(
+                    Type::Array(inner)
+                    | Type::List(inner)
+                    | Type::Set(inner)
+                    | Type::Slice(inner)
+                    | Type::Option(inner)
+                    | Type::Range { index: inner },
+                ) => {
+                    pending.push(*inner);
+                }
+                Some(
+                    Type::Map { key, value }
+                    | Type::Result {
+                        ok: key,
+                        err: value,
+                    },
+                ) => {
+                    pending.extend([*key, *value]);
+                }
+                Some(Type::Tuple(elements)) => pending.extend(elements),
+                Some(Type::Nominal(nominal)) => pending.extend(nominal.representation),
+                Some(Type::Record(record)) => {
+                    pending.extend(record.fields.iter().map(|field| field.ty));
+                }
+                Some(Type::Applied { args, .. }) => pending.extend(args),
+                _ => {}
+            }
+        }
+        parameters
     }
 
     pub(super) fn symbolic_callable_parameter(&self, symbol: etas_hir::SymbolId) -> bool {

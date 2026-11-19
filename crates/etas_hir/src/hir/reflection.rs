@@ -2,13 +2,13 @@ use etas_core::Span;
 
 use crate::{HirTypeId, ResolvedPath};
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirReflectExpr {
     pub target: HirReflectTarget,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirReflectTarget {
     Path(ResolvedPath),
     SpecMethod {

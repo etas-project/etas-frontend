@@ -474,7 +474,10 @@ impl DefinitionDescriptorProjector<'_> {
         let matches_owner = match owner {
             GenericOwner::Declaration(id) => self.identities.symbol(symbol) == Some(id),
             GenericOwner::Method(id) => self.identities.method(symbol) == Some(id),
-            GenericOwner::Implementation(_) | GenericOwner::ImplementationPattern(_) => false,
+            GenericOwner::Implementation(_)
+            | GenericOwner::ImplementationPattern(_)
+            | GenericOwner::Action { .. }
+            | GenericOwner::ActionOverload { .. } => false,
         };
         if !matches_owner {
             return Err(TraceTemplateProjectionError::CallableOwnerMismatch);
@@ -1197,12 +1200,12 @@ impl DefinitionDescriptorProjector<'_> {
             Effect::AppliedAction(action) => (&action.action, Some(action.args.as_slice())),
             _ => return Err(TraceTemplateProjectionError::EffectFamily),
         };
-        let signature = self
+        let selectors = self
             .checked
             .effect_registry
-            .action_signature(action)
+            .action_selectors(action)
             .ok_or(TraceTemplateProjectionError::MissingActionSignature)?;
-        let selector_count = signature.effect_args.len();
+        let selector_count = selectors.len();
         if selector_count > limits.evidence.pattern.max_selectors {
             return Err(TraceTemplateProjectionError::Pattern(
                 ActionPatternError::SelectorLimit,
@@ -1217,8 +1220,7 @@ impl DefinitionDescriptorProjector<'_> {
             let types =
                 etas_types::ty::TypeSubstitutionEngine::existing(self.checked.type_store, &empty)
                     .with_budget(budget);
-            for (index, (kind, argument)) in signature.effect_args.iter().zip(arguments).enumerate()
-            {
+            for (index, (kind, argument)) in selectors.iter().zip(arguments).enumerate() {
                 if matches!(
                     kind,
                     etas_effects::EffectActionArgKind::MemoryPlace

@@ -49,11 +49,12 @@ pub(super) fn build_exported(
         .callables
         .values()
         .filter(|callable| {
-            callable
-                .header
-                .id
-                .as_declaration()
-                .is_some_and(|identity| identity.kind() == etas_code::DefinitionKind::Flow)
+            callable.header.id.as_declaration().is_some_and(|identity| {
+                matches!(
+                    identity.kind(),
+                    etas_code::DefinitionKind::Flow | etas_code::DefinitionKind::Tool
+                )
+            })
         })
         .map(|callable| callable.header.clone())
         .collect::<Vec<_>>();
@@ -112,8 +113,17 @@ fn build_selected(
     let mut callables = BTreeMap::new();
     let mut callable_bindings = HashMap::new();
     for (id, symbol, item) in pending {
-        if !selected_callable(&checked, &identities, symbol, item, selection)? {
+        if !selected_callable(&checked, Some(&identities), symbol, item, selection)? {
             continue;
+        }
+        if selection.is_some()
+            && let Some(method) = id.as_method()
+        {
+            let subject = method.implementation().subject();
+            if !declarations.contains_key(subject) {
+                let root = projector.project_type_identity(subject)?;
+                declarations.insert(subject.clone(), root);
+            }
         }
         let signature = callable_signature(checked.as_ref().into(), item)
             .ok_or(ProjectionError::MissingCallable(symbol))?;
@@ -325,7 +335,65 @@ fn build_selected(
         }
         agent_bindings.insert(decl.symbol, identity);
     }
+    // Source std callables have a native body in another checked program.
+    // Keep their local signature types under the callable's canonical scope so
+    // cross-program generic bindings use declaration identity.
+    for (callable, signature) in &checked.types.library_callable_signatures {
+        let owner = match callable.as_method() {
+            Some(method) => GenericOwner::Method(method.clone()),
+            None => GenericOwner::Declaration(
+                callable
+                    .as_declaration()
+                    .ok_or_else(|| {
+                        ProjectionError::Invalid("std callable has no canonical declaration".into())
+                    })?
+                    .clone(),
+            ),
+        };
+        projector.project_signature(owner, signature, &vec![None; signature.params.len()], None)?;
+    }
+    // Imported method binders also need local checked type origins. Their
+    // portable header alone cannot relocate session-local generic TypeIds.
+    let mut methods = checked.types.external_methods.iter().collect::<Vec<_>>();
+    methods.sort_by(|left, right| left.identity.cmp(&right.identity));
+    for method in methods {
+        projector.project_signature(
+            GenericOwner::Method(method.identity.clone()),
+            &method.signature,
+            &method.parameter_names,
+            None,
+        )?;
+    }
+    for action in super::actions::native_signatures(&checked, &identities, limits)? {
+        if !action.signature.generic_params.is_empty() {
+            let owner = match action.overload {
+                Some(signature) => GenericOwner::ActionOverload {
+                    effect: action.effect,
+                    name: action.name,
+                    signature,
+                },
+                None => GenericOwner::Action {
+                    effect: action.effect,
+                    name: action.name,
+                },
+            };
+            projector.project_action_signature(owner, action.signature)?;
+        }
+    }
+    for implementation in &checked.types.spec_impls {
+        let Some(owner) = implementation
+            .implementation
+            .and_then(|item| identities.implementation(item))
+        else {
+            continue;
+        };
+        let mut types = vec![implementation.self_type];
+        types.extend_from_slice(&implementation.args);
+        projector.project_implementation_contract(owner, &implementation.generic_params, &types)?;
+    }
     let projection = projector.finish_native()?;
+    let parameter_defaults =
+        crate::code::parameter_defaults::collect_units(checked.as_ref().into(), &identities)?;
     let mut catalog = DefinitionCatalog {
         checked,
         origins: Arc::new(origins.clone()),
@@ -339,6 +407,7 @@ fn build_selected(
         callable_bindings,
         agent_bindings,
         selected_bindings: HashMap::new(),
+        parameter_defaults,
     };
     if selection.is_none() {
         catalog.bind_external_callables(limits)?;
@@ -356,7 +425,7 @@ fn build_selected(
 
 pub(crate) fn selected_callable(
     checked: &CheckedProgram,
-    identities: &DefinitionIdentityIndex,
+    identities: Option<&DefinitionIdentityIndex>,
     symbol: etas_hir::SymbolId,
     item: HirItemId,
     selection: Option<&BTreeSet<HirItemId>>,
@@ -365,6 +434,11 @@ pub(crate) fn selected_callable(
         return Ok(true);
     };
     if let Some(method) = checked.types.type_impl_methods.get(&symbol) {
+        let identities = identities.ok_or_else(|| {
+            ProjectionError::MissingIdentity(
+                "public method requires canonical package origins".into(),
+            )
+        })?;
         let id = identities
             .method(symbol)
             .ok_or(ProjectionError::MissingCallable(symbol))?;
@@ -378,7 +452,16 @@ pub(crate) fn selected_callable(
                     == Some(definition)
             })
         };
-        if !exported(id.implementation().subject()) {
+        // Language scalars have compiler-owned declarations rather than a
+        // source type item. Their public extension methods still export, while
+        // private aliases of those scalars retain their own visibility.
+        let scalar_owner = matches!(
+            checked.type_store.get(method.self_type),
+            Some(etas_types::Type::Primitive(_))
+        ) && identities
+            .method_subject(&checked.type_store, method.self_type)
+            .is_ok_and(|(declaration, _)| &declaration.identity == id.implementation().subject());
+        if !exported(id.implementation().subject()) && !scalar_owner {
             return Ok(false);
         }
         if method.inherent {

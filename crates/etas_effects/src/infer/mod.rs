@@ -1,5 +1,7 @@
 pub(crate) mod analysis;
+mod default_behavior;
 mod default_handlers;
+pub use default_behavior::{DefaultBehavior, EffectFootprint};
 pub mod domain;
 pub use default_handlers::{DefaultHandlerContribution, DefaultHandlerEffects};
 mod outcome;
@@ -9,7 +11,7 @@ pub use outcome::{
     CallableReturnReference, CallableReturnSource, ExitTraceFact, FrozenSourceLocation,
     HandlerGapEvidence, MetadataCallableSource, MetadataObjectSource, OutcomeAnalysisGap,
     ParameterArgumentValue, ParameterExitArgument, ParameterExitFact, ParameterHandlerScopeRef,
-    ReturnObservation,
+    ProjectedReturnSources, ReturnObservation,
 };
 pub use requests::{ActionRequestInstance, ParameterRequest, RequestInstantiationSummary};
 pub(crate) mod memory_provenance;

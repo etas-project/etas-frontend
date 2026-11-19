@@ -70,7 +70,10 @@ impl EffectSemantics<'_> {
                         .and_then(|target| bindings.get(target))
                         .and_then(|binding| match binding {
                             TraceArgumentBinding::Expression(expr) => self.hir.exprs.get(*expr),
-                            TraceArgumentBinding::Origins(_) => None,
+                            TraceArgumentBinding::Origins(_)
+                            | TraceArgumentBinding::ProjectedExpression { .. }
+                            | TraceArgumentBinding::ProjectedOrigins { .. }
+                            | TraceArgumentBinding::AgentTools(_) => None,
                         })
                         .and_then(|expression| {
                             super::super::argument_values::checked_literal_value(
@@ -110,10 +113,12 @@ impl EffectSemantics<'_> {
         state: &EffectState,
     ) -> Result<(), EffectSpecializationError> {
         self.solve_callback_completion_with(summary, type_bindings, |target, span| {
-            let Some(binding) = bindings.get(&target) else {
+            let Some(binding) =
+                self.trace_argument(target, "callback completion", bindings, state)?
+            else {
                 return Ok(None);
             };
-            let origins = self.trace_argument_origins(binding, state)?;
+            let origins = self.trace_argument_origins(&binding, state)?;
             self.latent_summary_for_origins(origins, span, "callback completion")
                 .map(Some)
         })

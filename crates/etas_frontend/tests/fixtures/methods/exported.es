@@ -16,6 +16,10 @@ impl Packet {
         return Packet { value };
     }
 
+    public flow copy(source: Packet) -> Packet ![] {
+        return Packet { value = source.value };
+    }
+
     public flow convert(self, increment: i32) -> Encoded ![] {
         return Encoded { value = self.value + increment };
     }
@@ -25,4 +29,9 @@ impl Packet {
 
 impl Encoded ~ Encode {
     flow encode(self) -> i32 ![] { return self.value; }
+}
+
+flow main() -> i32 ![] {
+    let original = Packet.new(7);
+    return Packet.copy(original).convert(3)::Encode.encode();
 }

@@ -13,6 +13,6 @@ pub mod stmt;
 pub mod ty;
 
 pub use program::{
-    HirProjectLowering, HirProjectModule, HirProjectNamespace, lower_program, lower_project,
-    lower_source,
+    HirProjectLowering, HirProjectModule, HirProjectNamespace, HirSourcePreludeBinding,
+    HirSourcePreludeTarget, lower_program, lower_project, lower_source,
 };

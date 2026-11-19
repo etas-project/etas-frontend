@@ -22,9 +22,26 @@ pub(super) struct PackBodies {
     pub applications: Vec<NativeInstantiation>,
 }
 
-pub(super) struct MethodApplication {
-    pub body: HirItemId,
-    pub instance: Option<NativeInstantiation>,
+pub(super) enum MethodApplication {
+    Native {
+        body: HirItemId,
+        instance: Option<NativeInstantiation>,
+    },
+    Foreign(Option<ForeignMethodInstantiation>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ForeignMethodInstantiation {
+    pub identity: etas_code::MethodId,
+    pub arguments: Vec<super::NativeGenericArgument>,
+    pub owner_bindings: Vec<(etas_types::TypeId, etas_types::TypeId)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ForeignFlowInstantiation {
+    pub symbol: etas_hir::SymbolId,
+    pub site: etas_hir::HirExprId,
+    pub arguments: Vec<super::NativeGenericArgument>,
 }
 
 impl<'a> WitnessResolver<'a> {
@@ -100,6 +117,22 @@ impl<'a> WitnessResolver<'a> {
         let Some(witness) = self.resolve(call.receiver_type, args, member, substitution)? else {
             return Ok(None);
         };
+        if let MethodTarget::External { identity } = &witness.declaration.target {
+            let target = &witness.declaration.signature;
+            let mapped = self.instantiation(member, target, &call.instantiation)?;
+            if !mapped.deferred_effect_row_obligations.is_empty() {
+                return Ok(Some(MethodApplication::Foreign(None)));
+            }
+            let mut owner_bindings = witness.owner_bindings.into_iter().collect::<Vec<_>>();
+            owner_bindings.sort_unstable();
+            return Ok(Some(MethodApplication::Foreign(Some(
+                ForeignMethodInstantiation {
+                    identity: identity.clone(),
+                    arguments: super::prepare::bind_call(substitution, target, &mapped)?,
+                    owner_bindings,
+                },
+            ))));
+        }
         let (MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. }) =
             witness.declaration.target
         else {
@@ -109,14 +142,14 @@ impl<'a> WitnessResolver<'a> {
             .ok_or("native witness has no callable signature")?;
         let mapped = self.instantiation(member, target, &call.instantiation)?;
         if !mapped.deferred_effect_row_obligations.is_empty() {
-            return Ok(Some(MethodApplication {
+            return Ok(Some(MethodApplication::Native {
                 body: callable,
                 instance: None,
             }));
         }
         let mut owner_bindings = witness.owner_bindings.into_iter().collect::<Vec<_>>();
         owner_bindings.sort_unstable();
-        Ok(Some(MethodApplication {
+        Ok(Some(MethodApplication::Native {
             body: callable,
             instance: Some(NativeInstantiation {
                 owner: callable,

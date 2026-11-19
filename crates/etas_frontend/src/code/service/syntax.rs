@@ -52,6 +52,13 @@ pub struct NativeCodeSyntaxOperations {
     state: Mutex<SyntaxStore>,
 }
 
+/// Lexer observations of the retained AST's body envelope. Formatting policy
+/// belongs to source code; these tags only expose compiler token categories.
+pub struct NativeSyntaxTokenObservation {
+    pub kind: &'static str,
+    pub text: String,
+}
+
 #[derive(Default)]
 struct SyntaxStore {
     objects: HashMap<SyntaxIdentity, StoredSyntax>,
@@ -109,6 +116,83 @@ impl NativeBodyLease {
 }
 
 impl NativeCodeSyntaxOperations {
+    pub fn max_formatted_bytes(&self) -> usize {
+        self.limits.max_formatted_bytes
+    }
+    pub fn observe_tokens_controlled(
+        &self,
+        reference: &SyntaxBlockRef,
+        limits: NativeSyntaxLimits,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<Vec<NativeSyntaxTokenObservation>, SyntaxOperationError> {
+        use etas_code::syntax::RetainedBodyForm as F;
+        let checkpoint = || {
+            control
+                .checkpoint()
+                .map_err(SyntaxOperationError::Interrupted)
+        };
+        checkpoint()?;
+        let source = self.export_body_source_bounded(reference, limits.parse.max_source_bytes)?;
+        let text = match source.form {
+            F::BlockContents | F::Expression => source.text,
+            F::HandledBlock => format!("handle {}", source.text),
+            F::HandledExpression => {
+                let lease = self.resolve(reference)?;
+                let body = lease.body()?.span();
+                let handler = match &lease.0.syntax {
+                    NativeSyntaxPayload::Source(value) => value.trailing_handler(),
+                    NativeSyntaxPayload::Retained { syntax, .. } => syntax.trailing_handler(),
+                    NativeSyntaxPayload::Fragment(_) => None,
+                }
+                .ok_or_else(|| SyntaxOperationError::BackendUnavailable {
+                    reason: "retained handled expression has no handler AST".into(),
+                })?
+                .span();
+                let slice = |span: etas_core::Span| {
+                    lease
+                        .source()
+                        .text()
+                        .get(span.range.start.to_usize()..span.range.end.to_usize())
+                        .filter(|_| span.source == lease.source().id)
+                        .ok_or(SyntaxOperationError::ForeignSyntaxObject)
+                };
+                format!("handle {{ {} }} with {}", slice(body)?, slice(handler)?)
+            }
+        };
+        let source = SourceFile::new(SourceId(0), None, text);
+        let tokens = etas_syntax::lex(&source);
+        let limit = limits.parse.max_tokens.min(self.limits.parse.max_tokens);
+        if tokens.tokens.len() > limit {
+            return Err(SyntaxOperationError::ResourceLimit {
+                resource: SyntaxResource::Tokens,
+                limit: limit as u64,
+            });
+        }
+        tokens
+            .tokens
+            .into_iter()
+            .map(|token| {
+                checkpoint()?;
+                let kind = match token.kind {
+                    etas_syntax::TokenKind::Ident => "Identifier",
+                    etas_syntax::TokenKind::Keyword(_) => "Keyword",
+                    etas_syntax::TokenKind::Punct(_) => "Punctuation",
+                    etas_syntax::TokenKind::Whitespace | etas_syntax::TokenKind::Comment(_) => {
+                        "Trivia"
+                    }
+                    etas_syntax::TokenKind::Eof => "Eof",
+                    _ => "Other",
+                };
+                Ok(NativeSyntaxTokenObservation {
+                    kind,
+                    text: source.text()
+                        [token.span.range.start.to_usize()..token.span.range.end.to_usize()]
+                        .to_owned(),
+                })
+            })
+            .collect()
+    }
+
     pub fn new(limits: NativeSyntaxLimits) -> Self {
         Self {
             limits,

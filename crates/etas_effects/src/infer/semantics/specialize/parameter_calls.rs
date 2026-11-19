@@ -10,6 +10,15 @@ use crate::{
 pub(crate) enum TraceArgumentBinding {
     Expression(HirExprId),
     Origins(std::collections::BTreeSet<LatentSource>),
+    ProjectedExpression {
+        expr: HirExprId,
+        path: Vec<etas_code::descriptor::ValueProjectionStep>,
+    },
+    ProjectedOrigins {
+        sources: std::collections::BTreeSet<LatentSource>,
+        path: Vec<etas_code::descriptor::ValueProjectionStep>,
+    },
+    AgentTools(TypeId),
 }
 
 pub(crate) type TraceArgumentBindings = BTreeMap<ParameterCallTarget, TraceArgumentBinding>;
@@ -26,21 +35,133 @@ impl EffectSemantics<'_> {
                 return Ok(super::ParameterCallSubstitution::Symbolic);
             };
             Ok(super::ParameterCallSubstitution::Trace(
-                self.trace_argument_summary(binding, state, label, span)?
+                self.trace_argument_summary(&binding, state, label, span)?
                     .action_trace,
             ))
         })
     }
 
-    fn trace_argument<'b>(
+    pub(crate) fn trace_argument(
         &self,
         target: ParameterCallTarget,
         label: &str,
-        bindings: &'b TraceArgumentBindings,
+        bindings: &TraceArgumentBindings,
         state: &EffectState,
-    ) -> Result<Option<&'b TraceArgumentBinding>, EffectSpecializationError> {
+    ) -> Result<Option<TraceArgumentBinding>, EffectSpecializationError> {
         if let Some(binding) = bindings.get(&target) {
-            return Ok(Some(binding));
+            return Ok(Some(binding.clone()));
+        }
+        if let Some((root, path)) = self.parameter_projection_target(target) {
+            let element_path = element_origin_path(&path);
+            if let Some(binding) = bindings.iter().find_map(|(candidate, binding)| {
+                let (base, selected) = self.parameter_projection_target(*candidate)?;
+                (base == root && element_origin_path(&selected) == element_path).then_some(binding)
+            }) {
+                return Ok(Some(binding.clone()));
+            }
+            if let ParameterCallTarget::Projection(id) = target
+                && let Some(paths) = self
+                    .parameter_projection(id)
+                    .and_then(|projection| self.value_payload_paths(projection.ty))
+                && !paths.is_empty()
+            {
+                let mut origins = std::collections::BTreeSet::new();
+                let mut complete = true;
+                for suffix in paths {
+                    let mut selected = path.clone();
+                    selected.extend(suffix);
+                    let selected = element_origin_path(&selected);
+                    let child = bindings.iter().find_map(|(candidate, binding)| {
+                        let (base, candidate_path) =
+                            self.parameter_projection_target(*candidate)?;
+                        (base == root && element_origin_path(&candidate_path) == selected)
+                            .then_some(binding)
+                    });
+                    let Some(binding) = child else {
+                        complete = false;
+                        break;
+                    };
+                    origins.extend(self.trace_argument_origins(binding, state)?);
+                }
+                if complete {
+                    return Ok(Some(TraceArgumentBinding::Origins(origins)));
+                }
+            }
+            let prefix = bindings
+                .iter()
+                .filter_map(|(candidate, binding)| {
+                    let (base, selected) = self.parameter_projection_target(*candidate)?;
+                    (base == root && selected.len() < path.len() && path.starts_with(&selected))
+                        .then_some((selected, binding))
+                })
+                .max_by_key(|(selected, _)| selected.len());
+            if let Some((prefix, binding)) = prefix {
+                let suffix = &path[prefix.len()..];
+                return Ok(Some(match binding {
+                    TraceArgumentBinding::Expression(expr) => {
+                        TraceArgumentBinding::ProjectedExpression {
+                            expr: *expr,
+                            path: suffix.to_vec(),
+                        }
+                    }
+                    TraceArgumentBinding::Origins(sources) => {
+                        TraceArgumentBinding::ProjectedOrigins {
+                            sources: sources.clone(),
+                            path: suffix.to_vec(),
+                        }
+                    }
+                    TraceArgumentBinding::ProjectedExpression { expr, path: prefix } => {
+                        let mut path = prefix.clone();
+                        path.extend_from_slice(suffix);
+                        TraceArgumentBinding::ProjectedExpression { expr: *expr, path }
+                    }
+                    TraceArgumentBinding::ProjectedOrigins {
+                        sources,
+                        path: prefix,
+                    } => {
+                        let mut path = prefix.clone();
+                        path.extend_from_slice(suffix);
+                        TraceArgumentBinding::ProjectedOrigins {
+                            sources: sources.clone(),
+                            path,
+                        }
+                    }
+                    TraceArgumentBinding::AgentTools(ty) => TraceArgumentBinding::AgentTools(*ty),
+                }));
+            }
+            if let Some(binding) = bindings.get(&root) {
+                let mut binding = binding.clone();
+                match &mut binding {
+                    TraceArgumentBinding::Expression(expr) => {
+                        return Ok(Some(TraceArgumentBinding::ProjectedExpression {
+                            expr: *expr,
+                            path,
+                        }));
+                    }
+                    TraceArgumentBinding::Origins(sources) => {
+                        return Ok(Some(TraceArgumentBinding::ProjectedOrigins {
+                            sources: sources.clone(),
+                            path,
+                        }));
+                    }
+                    TraceArgumentBinding::ProjectedExpression { path: prefix, .. }
+                    | TraceArgumentBinding::ProjectedOrigins { path: prefix, .. } => {
+                        prefix.extend(path);
+                        return Ok(Some(binding));
+                    }
+                    TraceArgumentBinding::AgentTools(_) => {}
+                }
+            }
+            if let ParameterCallTarget::Native(parameter) = root
+                && matches!(self.hir.symbols.get(parameter).map(|symbol| &symbol.def), Some(SymbolDef::Param { owner, .. }) if state.owner == Some(*owner))
+            {
+                return Ok(None);
+            }
+        }
+        if let ParameterCallTarget::AgentTools(context) = target
+            && self.agent_context_parameter(context, state.owner).is_some()
+        {
+            return Ok(None);
         }
         // A caller's checked parameter remains symbolic until that lexical
         // call boundary is instantiated. Foreign unresolved captures are errors.
@@ -65,13 +186,17 @@ impl EffectSemantics<'_> {
         state: &EffectState,
     ) -> Result<std::collections::BTreeSet<LatentSource>, EffectSpecializationError> {
         match binding {
+            TraceArgumentBinding::AgentTools(_) => Ok(Default::default()),
             TraceArgumentBinding::Expression(expr) => {
                 if !self.types.facts.expr_types.contains_key(expr) {
                     return Err(EffectSpecializationError::InvalidCallableEnvironment {
                         reason: "call argument has no checked value type".into(),
                     });
                 }
-                if !self.expr_type_contains_flow(*expr) {
+                if !self.expr_type_contains_flow(*expr)
+                    && !self.expr_type_has_parameters(*expr)
+                    && !self.symbolic_contract_expr(state, *expr)
+                {
                     return Ok(Default::default());
                 }
                 Ok(self
@@ -81,6 +206,16 @@ impl EffectSemantics<'_> {
                     .collect())
             }
             TraceArgumentBinding::Origins(sources) => Ok(sources.clone()),
+            TraceArgumentBinding::ProjectedExpression { expr, path } => Ok(self
+                .projected_sources(*expr, path, state)
+                .unwrap_or_else(|| [LatentSource::Unavailable { expr: *expr }].into())),
+            TraceArgumentBinding::ProjectedOrigins { sources, path } => self
+                .project_parameter_origins(sources.iter().copied(), path)
+                .ok_or_else(|| EffectSpecializationError::InvalidCallableEnvironment {
+                    reason: format!(
+                        "checked argument origins {sources:?} have no selected position {path:?}"
+                    ),
+                }),
         }
     }
 
@@ -92,12 +227,21 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         match binding {
+            TraceArgumentBinding::AgentTools(context) => self
+                .agent_tool_summary(*context, span)
+                .map_err(|reason| EffectSpecializationError::InvalidCallableEnvironment { reason }),
             TraceArgumentBinding::Expression(expr) => {
                 self.latent_summary_for_expr(state, *expr, label)
             }
             TraceArgumentBinding::Origins(sources) => {
                 self.latent_summary_for_origins(sources.iter().copied(), span, label)
             }
+            TraceArgumentBinding::ProjectedExpression { .. }
+            | TraceArgumentBinding::ProjectedOrigins { .. } => self.latent_summary_for_origins(
+                self.trace_argument_origins(binding, state)?,
+                span,
+                label,
+            ),
         }
     }
 
@@ -118,6 +262,17 @@ impl EffectSemantics<'_> {
             state,
             inferred_parameters,
         )?;
+        if let Some(behavior) = &mut target.default_behavior {
+            behavior.direct.handler_requests = self.specialize_handler_requests(
+                &behavior.direct.handler_requests,
+                bindings,
+                state,
+            )?;
+            for footprint in behavior.guarded.values_mut() {
+                footprint.handler_requests =
+                    self.specialize_handler_requests(&footprint.handler_requests, bindings, state)?;
+            }
+        }
         target.handler_requests = requests;
         Ok(())
     }
@@ -151,7 +306,7 @@ impl EffectSemantics<'_> {
                 continue;
             };
             let mut source = self
-                .trace_argument_summary(binding, state, &parameter.parameter, parameter.span)?
+                .trace_argument_summary(&binding, state, &parameter.parameter, parameter.span)?
                 .handler_requests;
             source.subtract_handled(
                 &crate::EffectCoverage {
@@ -185,15 +340,17 @@ impl EffectSemantics<'_> {
                     return Ok(());
                 };
                 let mut source_summary =
-                    self.trace_argument_summary(binding, state, parameter, *span)?;
+                    self.trace_argument_summary(&binding, state, parameter, *span)?;
                 source_summary.handler_requests = crate::RequestInstantiationSummary::default();
-                self.remove_intercepted_callback_defaults(
+                self.apply_callback_handlers(
                     target,
                     *parameter_target,
                     *span,
                     &mut source_summary,
                 )?;
-                if inferred_parameters.contains(parameter_target) {
+                if inferred_parameters.contains(parameter_target)
+                    || matches!(parameter_target, ParameterCallTarget::AgentTools(_))
+                {
                     source_summary.action_trace = ActionTraceDomain::Empty;
                     target.seq_assign(&source_summary);
                 } else {
@@ -213,7 +370,9 @@ impl EffectSemantics<'_> {
                     )?;
                 }
             }
-            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+            ActionTraceDomain::Repeat(item)
+            | ActionTraceDomain::TaskStart { body: item, .. }
+            | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 self.merge_parameter_call_summaries_inner(
                     target,
                     item,
@@ -232,15 +391,17 @@ impl EffectSemantics<'_> {
                         continue;
                     };
                     let mut source_summary =
-                        self.trace_argument_summary(binding, state, &call.parameter, call.span)?;
+                        self.trace_argument_summary(&binding, state, &call.parameter, call.span)?;
                     source_summary.handler_requests = crate::RequestInstantiationSummary::default();
-                    self.remove_intercepted_callback_defaults(
+                    self.apply_callback_handlers(
                         target,
                         call.target,
                         call.span,
                         &mut source_summary,
                     )?;
-                    if inferred_parameters.contains(&call.target) {
+                    if inferred_parameters.contains(&call.target)
+                        || matches!(call.target, ParameterCallTarget::AgentTools(_))
+                    {
                         source_summary.action_trace = ActionTraceDomain::Empty;
                         target.seq_assign(&source_summary);
                     } else {
@@ -283,11 +444,14 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         parameters: &[ParameterCallTarget],
     ) -> Result<TraceArgumentBindings, EffectSpecializationError> {
-        let arguments = self.call_arguments(site, parameters.len())?;
+        let arguments = self.call_argument_slots(site, parameters.len())?;
         Ok(parameters
             .iter()
             .copied()
-            .zip(arguments.into_iter().map(TraceArgumentBinding::Expression))
+            .zip(arguments)
+            .filter_map(|(parameter, argument)| {
+                Some((parameter, TraceArgumentBinding::Expression(argument?)))
+            })
             .collect())
     }
 
@@ -296,13 +460,25 @@ impl EffectSemantics<'_> {
         site: &CallSite<EffectUnit>,
         arity: usize,
     ) -> Result<Vec<HirExprId>, EffectSpecializationError> {
+        self.call_argument_slots(site, arity)?
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(EffectSpecializationError::InvalidCallableParameterInterface)
+    }
+
+    /// A default in a foreign revision has no expression in the caller's HIR.
+    pub(crate) fn call_argument_slots(
+        &self,
+        site: &CallSite<EffectUnit>,
+        arity: usize,
+    ) -> Result<Vec<Option<HirExprId>>, EffectSpecializationError> {
         if self
             .types
             .facts
             .checked_method_calls
             .contains_key(&site.call)
         {
-            let arguments = self.checked_method_arguments(site.call)?;
+            let arguments = self.checked_method_argument_slots(site.call)?;
             if arguments.len() != arity {
                 return Err(EffectSpecializationError::InvalidCallableParameterInterface);
             }
@@ -324,9 +500,56 @@ impl EffectSemantics<'_> {
                 .collect::<Result<Vec<_>, _>>()?,
             _ => return Err(EffectSpecializationError::InvalidCallableParameterInterface),
         };
+        if let Some(binding) = self.types.facts.declared_call_arguments.get(&site.call) {
+            let invalid = || EffectSpecializationError::InvalidCallableParameterInterface;
+            if arguments.len() != binding.argument_slots.len()
+                || arguments.len() + binding.defaults.len() != arity
+            {
+                return Err(invalid());
+            }
+            let mut ordered = vec![None; arity];
+            for (argument, slot) in arguments.into_iter().zip(&binding.argument_slots) {
+                *ordered.get_mut(*slot as usize).ok_or_else(invalid)? = Some(argument);
+            }
+            for default in &binding.defaults {
+                if let etas_types::ParameterDefaultRef::Source { parameter } = default.source {
+                    *ordered.get_mut(default.slot as usize).ok_or_else(invalid)? = Some(
+                        *self
+                            .hir
+                            .parameter_defaults
+                            .get(&parameter)
+                            .ok_or_else(invalid)?,
+                    );
+                }
+            }
+            return Ok(ordered);
+        }
         if arguments.len() != arity {
             return Err(EffectSpecializationError::InvalidCallableParameterInterface);
         }
-        Ok(arguments)
+        Ok(arguments.into_iter().map(Some).collect())
     }
+}
+
+fn element_origin_path(
+    path: &[etas_code::descriptor::ValueProjectionStep],
+) -> Vec<etas_code::descriptor::ValueProjectionStep> {
+    use etas_code::descriptor::ValueProjectionStep as Step;
+    // List origins join all elements. Selecting an element after a tail
+    // therefore uses the same checked set of possible callable origins.
+    path.iter()
+        .enumerate()
+        .filter_map(|(position, step)| match step {
+            Step::ListTail
+                if matches!(
+                    path.get(position + 1),
+                    Some(Step::SequenceElement | Step::ListHead | Step::ListTail)
+                ) =>
+            {
+                None
+            }
+            Step::ListHead => Some(Step::SequenceElement),
+            _ => Some(step.clone()),
+        })
+        .collect()
 }

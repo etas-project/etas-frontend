@@ -27,7 +27,7 @@ impl LowerCtx {
             .map(|(param_index, param)| {
                 let ty = match &param.ty {
                     ast::ParamType::Explicit(ty) => self.lower_type(ty, scope, item_id),
-                    ast::ParamType::SelfReceiver { span } if param_index == 0 => receiver_type
+                    ast::ParamType::SelfReceiver { span, .. } if param_index == 0 => receiver_type
                         .unwrap_or_else(|| {
                             self.diagnostics.push(etas_core::Diagnostic::type_check(
                                 etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
@@ -36,7 +36,7 @@ impl LowerCtx {
                             ));
                             self.lower_type(&ast::TypeExpr::Error(*span), scope, item_id)
                         }),
-                    ast::ParamType::SelfReceiver { span } => {
+                    ast::ParamType::SelfReceiver { span, .. } => {
                         self.diagnostics.push(etas_core::Diagnostic::type_check(
                             etas_core::TypeDiagnosticCode::InvalidImplTargetKind,
                             *span,
@@ -45,7 +45,13 @@ impl LowerCtx {
                         self.lower_type(&ast::TypeExpr::Error(*span), scope, item_id)
                     }
                 };
-                self.bind_symbol_with_def(
+                // Retain a definition-site expression before introducing this
+                // parameter, for the default checker and call binder.
+                let default = param
+                    .default
+                    .as_ref()
+                    .map(|value| self.lower_expr(value, scope, item_id));
+                let symbol = self.bind_symbol_with_def(
                     scope,
                     SymbolData {
                         name: param.name.text.clone(),
@@ -62,7 +68,11 @@ impl LowerCtx {
                         declared_type: Some(ty),
                         definition_span: param.name.span,
                     },
-                )
+                );
+                if let Some(default) = default {
+                    self.hir.parameter_defaults.insert(symbol, default);
+                }
+                symbol
             })
             .collect()
     }
@@ -304,7 +314,12 @@ impl LowerCtx {
         let resolution = if path.segments.len() > 1 {
             match self.resolve_name_in_context(&full_path, path.span, scope, false, context) {
                 ResolveResult::Unresolved => {
-                    self.resolve_qualified_prefix(path, scope, report, context)
+                    match self.resolve_module_name(&full_path, path.span, scope, false) {
+                        ResolveResult::Unresolved => {
+                            self.resolve_qualified_prefix(path, scope, report, context)
+                        }
+                        resolution => resolution,
+                    }
                 }
                 ResolveResult::Ambiguous(symbols) => {
                     if report {
@@ -404,6 +419,12 @@ impl LowerCtx {
                 result
             }
             ResolveResult::Ambiguous(symbols) => {
+                if let Some(root) = self.hir.flow_overload_root(&symbols) {
+                    return ResolveResult::Resolved(root);
+                }
+                if let Some(root) = self.symbols.effect_action_overload_root(&symbols) {
+                    return ResolveResult::Resolved(root);
+                }
                 if report && !name.is_empty() {
                     self.diagnostics.ambiguous_name(name, span);
                 }
@@ -451,7 +472,15 @@ impl LowerCtx {
                 .map(|segment| segment.text.as_str())
                 .collect::<Vec<_>>()
                 .join(".");
-            match self.resolve_name_in_context(&prefix, path.span, scope, false, context) {
+            let resolution =
+                self.resolve_name_in_context(&prefix, path.span, scope, false, context);
+            let resolution = match resolution {
+                ResolveResult::Unresolved => {
+                    self.resolve_module_name(&prefix, path.span, scope, false)
+                }
+                resolution => resolution,
+            };
+            match resolution {
                 ResolveResult::Resolved(symbol) => {
                     let remaining = path.segments[prefix_len..]
                         .iter()
@@ -467,6 +496,20 @@ impl LowerCtx {
                         self.resolve_std_enum_member(symbol, &remaining, path.span)
                     {
                         return ResolveResult::Resolved(member);
+                    }
+                    if matches!(
+                        self.symbols.get(symbol).map(|symbol| &symbol.def),
+                        Some(SymbolDef::Module { .. })
+                    ) {
+                        let qualified = path
+                            .segments
+                            .iter()
+                            .map(|segment| segment.text.clone())
+                            .collect::<Vec<_>>();
+                        if let Some(member) = self.resolve_std_qualified_path(&qualified, path.span)
+                        {
+                            return ResolveResult::Resolved(member);
+                        }
                     }
                     return ResolveResult::PartiallyResolved(PartialResolution {
                         resolved_prefix: Some(symbol),
@@ -634,6 +677,16 @@ impl LowerCtx {
         span: Span,
     ) {
         if let Some(previous) = self.scopes.insert(scope, name.to_owned(), symbol) {
+            if self.hir.flow_overload_root(&[previous, symbol]).is_some() {
+                return;
+            }
+            if self
+                .symbols
+                .effect_action_overload_root(&[previous, symbol])
+                .is_some()
+            {
+                return;
+            }
             let previous_span = self
                 .symbols
                 .get(previous)

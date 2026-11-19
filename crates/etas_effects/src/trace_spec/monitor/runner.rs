@@ -125,6 +125,9 @@ impl<'a> SingleComponentMonitor<'a> {
         match trace {
             ActionTraceDomain::Empty => TraceRun::known(states),
             ActionTraceDomain::Event(event) => self.step_event(states, event, matcher),
+            ActionTraceDomain::DefaultHandler { body, .. } => {
+                self.run_trace(body, states, matcher, unknown_needs_order)
+            }
             ActionTraceDomain::ParameterCall { .. } => TraceRun::unknown(),
             ActionTraceDomain::TaskAwait { .. } => TraceRun::known(states),
             ActionTraceDomain::TaskStart { body, .. } => {

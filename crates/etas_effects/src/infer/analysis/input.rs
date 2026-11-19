@@ -48,6 +48,12 @@ impl<'a> EffectSourceSnapshots<'a> {
 
 #[derive(Clone)]
 pub struct EffectAnalysisInput<'a> {
+    pub external_parameter_projections: std::sync::Arc<
+        std::collections::BTreeMap<
+            etas_code::CodeFingerprint,
+            crate::facts::ExternalParameterProjection,
+        >,
+    >,
     pub(crate) spec_unit_targets: std::sync::Arc<
         std::collections::HashMap<
             etas_hir::HirItemId,
@@ -78,6 +84,12 @@ pub struct EffectAnalysisInput<'a> {
         std::collections::BTreeMap<
             crate::facts::CallableEnvironmentId,
             crate::facts::CallableEnvironment,
+        >,
+    >,
+    pub parameter_projections: std::sync::Arc<
+        std::collections::BTreeMap<
+            etas_code::CodeFingerprint,
+            crate::facts::NativeParameterProjection,
         >,
     >,
     pub(crate) global_values: std::sync::Arc<super::super::semantics::state::LatentEnv>,

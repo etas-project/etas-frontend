@@ -31,6 +31,10 @@ pub fn apply_external_signature_input(
     }
     specs::prepare(ctx, input);
     let mut symbols = HashMap::<(ExternalPackageKey, Vec<String>), SymbolTypeFact>::new();
+    let mut scoped = HashMap::<
+        (ExternalPackageKey, Vec<String>),
+        crate::facts::concurrency::ScopedCallbackFact,
+    >::new();
     let mut actions =
         HashMap::<(ExternalPackageKey, Vec<String>), crate::EffectActionSignature>::new();
     let mut trace_specs = HashMap::<(ExternalPackageKey, Vec<String>), ()>::new();
@@ -42,6 +46,25 @@ pub fn apply_external_signature_input(
             continue;
         };
         methods::prepare(ctx, metadata, span);
+        for method in &metadata.methods {
+            if let Some(role) = ctx
+                .std_registry
+                .execution_role(&etas_code::CallableId::method(method.identity.clone()))
+            {
+                ctx.signature_facts
+                    .external_execution_roles
+                    .insert(method.identity.clone(), role);
+            }
+        }
+        for contract in &metadata.scoped_callbacks {
+            if let etas_package_metadata::CallableContractTarget::Method(identity) =
+                &contract.target
+            {
+                ctx.signature_facts
+                    .external_scoped_methods
+                    .insert(identity.clone(), contract.parameters.clone());
+            }
+        }
         for ty in &metadata.behavior_types {
             lower_external_type(ctx, span, ty);
         }
@@ -67,6 +90,9 @@ pub fn apply_external_signature_input(
                     target: ty,
                     params: parameters.clone(),
                 },
+                _ if ctx.std_registry.lookup_qualified(&item.path).is_some_and(|symbol|
+                    ctx.std_registry.declaration_key(symbol.id).is_some()
+                    && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration) if declaration.runtime_role.is_some())) => SymbolTypeFact::Type { constructor: TypeConstructorId(ty.0) },
                 _ => {
                     let representation = match ctx.interner.store().get(ty) {
                         Some(Type::Nominal(nominal)) => nominal.representation,
@@ -118,7 +144,8 @@ pub fn apply_external_signature_input(
             ) else {
                 continue;
             };
-            let signature = CallableSignature {
+            let mut signature = CallableSignature {
+                parameter_interface: Some(item.parameter_interface.clone()),
                 generic_params,
                 params: item
                     .params
@@ -132,6 +159,38 @@ pub fn apply_external_signature_input(
                     .map(|row| lower_external_effect_row(ctx, span, row)),
                 requested_actions: None,
             };
+            if let Some(definition) = &item.definition {
+                // Each overload keeps the checked public signature, including
+                // source spec identities and its own parameter interface.
+                let callable = etas_code::CallableId::declaration(definition.clone())
+                    .expect("checked external flow definition");
+                // The generated std query carries the bundle's checked
+                // requested-action contract separately from its public row.
+                signature.requested_actions = ctx
+                    .signature_facts
+                    .library_callable_signatures
+                    .get(&callable)
+                    .and_then(|checked| checked.requested_actions.clone());
+                ctx.signature_facts
+                    .library_callable_signatures
+                    .insert(callable, signature.clone());
+            }
+            if let Some(contract) = metadata.scoped_callbacks.iter().find(|contract|
+                matches!(&contract.target, etas_package_metadata::CallableContractTarget::Item(path) if path == &item.path))
+            {
+                if item.param_names.len() == signature.params.len()
+                    && !contract.parameters.is_empty()
+                    && contract.parameters.windows(2).all(|pair| pair[0] < pair[1])
+                    && contract.parameters.iter().all(|slot| signature.params.get(*slot as usize)
+                        .is_some_and(|ty| matches!(ctx.interner.store().get(*ty), Some(Type::Function(_)))))
+                {
+                    scoped.insert((metadata.package, item.path.clone()), crate::facts::concurrency::ScopedCallbackFact {
+                        parameters: contract.parameters.clone(), parameter_names: item.param_names.clone(),
+                    });
+                } else {
+                    incomplete_external_type_facts(ctx, span, "scoped callback contract differs from its imported signature".into());
+                }
+            }
             symbols.insert(
                 (metadata.package, item.path.clone()),
                 SymbolTypeFact::Flow { signature },
@@ -160,6 +219,7 @@ pub fn apply_external_signature_input(
                 .insert(component, Vec::new());
             let default_entry = item.output.as_ref().map(|output| {
                 let signature = CallableSignature {
+                    parameter_interface: metadata.parameter_interfaces.get(&item.path).cloned(),
                     generic_params,
                     params: item
                         .input
@@ -210,6 +270,7 @@ pub fn apply_external_signature_input(
                 continue;
             };
             let signature = CallableSignature {
+                parameter_interface: metadata.parameter_interfaces.get(&item.path).cloned(),
                 generic_params,
                 params: item
                     .input
@@ -246,6 +307,9 @@ pub fn apply_external_signature_input(
             if let Some(signature) =
                 lower_external_action_signature(ctx, span, metadata.package, action)
             {
+                ctx.signature_facts
+                    .qualified_action_signatures
+                    .insert(action.path.join("."), signature.clone());
                 actions.insert((metadata.package, action.path.clone()), signature);
             }
         }
@@ -256,6 +320,32 @@ pub fn apply_external_signature_input(
             .get(&(binding.package, binding.path.clone()))
             .cloned()
         {
+            if let Some(role) = ctx
+                .std_registry
+                .lookup_qualified(&binding.path)
+                .and_then(|symbol| ctx.std_registry.body_binding(symbol.id))
+                .and_then(|body| ctx.std_registry.execution_role(&body.callable))
+            {
+                ctx.signature_facts
+                    .source_execution_roles
+                    .insert(binding.symbol, role);
+            }
+            if let Some(contract) = scoped.get(&(binding.package, binding.path.clone())) {
+                ctx.signature_facts
+                    .scoped_callbacks
+                    .insert(binding.symbol, contract.clone());
+            }
+            if let SymbolTypeFact::Flow { signature } = &fact
+                && let Some(standard) = ctx.std_registry.lookup_qualified(&binding.path)
+                && ctx.std_registry.body_binding(standard.id).is_some()
+            {
+                // The SDK query and imported callable share the same checked
+                // generic/nominal types; retaining a second std-lowered shape
+                // would give returned values incompatible arena identities.
+                ctx.signature_facts
+                    .std_callable_signatures
+                    .insert(standard.id, signature.clone());
+            }
             if matches!(&fact, SymbolTypeFact::Agent { .. }) {
                 ctx.signature_facts.external_agent_reflections.insert(
                     binding.symbol,
@@ -307,6 +397,11 @@ pub fn apply_external_signature_input(
     ctx.signature_facts
         .external_definition_bindings
         .extend(input.definition_bindings.iter().cloned());
+    ctx.signature_facts.external_type_declarations.extend(
+        ctx.external_type_paths
+            .iter()
+            .map(|(path, ty)| (path.clone(), *ty)),
+    );
     for (symbol, reflection) in &input.agent_reflections {
         if let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
             reflection
@@ -371,6 +466,29 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
         };
         methods::apply(ctx, metadata, package_span);
         for implementation in &metadata.spec_impls {
+            let generic_params = if let Some(owner) = &implementation.owner {
+                let Some(parameters) = crate::lower::external::lower_external_scoped_generic_params(
+                    ctx,
+                    package_span,
+                    metadata.package,
+                    "spec implementation",
+                    &implementation.generic_params,
+                    Some(etas_code::descriptor::GenericOwner::Implementation(
+                        owner.clone(),
+                    )),
+                ) else {
+                    continue;
+                };
+                parameters
+            } else {
+                match implementation_methods::owner_parameters(ctx, &implementation.methods) {
+                    Ok(parameters) => parameters,
+                    Err(reason) => {
+                        incomplete_external_type_facts(ctx, package_span, reason);
+                        continue;
+                    }
+                }
+            };
             let spec = match resolve_external_spec(
                 ctx,
                 metadata.package,
@@ -409,14 +527,6 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
             ) {
                 continue;
             }
-            let generic_params =
-                match implementation_methods::owner_parameters(ctx, &implementation.methods) {
-                    Ok(parameters) => parameters,
-                    Err(reason) => {
-                        incomplete_external_type_facts(ctx, span, reason);
-                        continue;
-                    }
-                };
             let spec_symbol = match spec {
                 crate::CheckedSpecRef::Source(symbol) => symbol,
                 crate::CheckedSpecRef::Std(path) => {
@@ -447,6 +557,7 @@ fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &External
                 }
             };
             ctx.signature_facts.spec_impls.push(SpecImplFact {
+                implementation: None,
                 generic_params,
                 self_type,
                 spec_symbol,
@@ -718,6 +829,7 @@ fn lower_external_spec_signature(
                 &callable.generic_params,
             )?;
             Some(CallableSignature {
+                parameter_interface: Some(callable.parameter_interface.clone()),
                 generic_params,
                 params: callable
                     .params
@@ -754,6 +866,7 @@ fn lower_external_spec_methods(
                 &signature.generic_params,
             )?;
             Some(CallableSignature {
+                parameter_interface: Some(signature.parameter_interface.clone()),
                 generic_params,
                 params: signature
                     .params
@@ -781,6 +894,7 @@ fn lower_external_spec_methods(
                 .as_ref()
                 .map(|signature| signature.param_names.clone())
                 .unwrap_or_default(),
+            updating_receiver: method.updating_receiver,
             receiver_param: method.receiver_param,
             signature: callable,
         });

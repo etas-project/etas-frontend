@@ -256,6 +256,7 @@ impl NativeDefinitionStore {
             package,
             arguments,
             signature: CallableSignature {
+                parameter_interface: None,
                 generic_params: Vec::new(),
                 params,
                 output,

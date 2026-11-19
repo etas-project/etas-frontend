@@ -33,6 +33,7 @@ pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, Stri
     )?;
     append(&mut parts, "std-aliases", sorted(&facts.std_spec_aliases))?;
     append(&mut parts, "std-impls", &facts.std_spec_impls)?;
+    append(&mut parts, "checked-impls", &facts.checked_spec_impls)?;
     append(
         &mut parts,
         "impls",
@@ -138,7 +139,7 @@ pub(super) fn fingerprint(facts: &TypeFacts) -> Result<ArtifactFingerprint, Stri
 
 fn sorted<K: Ord, V>(map: &HashMap<K, V>) -> Vec<(&K, &V)> {
     let mut bindings = map.iter().collect::<Vec<_>>();
-    bindings.sort_by(|(left, _), (right, _)| left.cmp(right));
+    bindings.sort_by_key(|(key, _)| *key);
     bindings
 }
 
@@ -172,6 +173,7 @@ mod tests {
                 param_names: vec![],
                 generic_params: vec![],
                 methods: vec![SpecMethodFact {
+                    updating_receiver: false,
                     receiver_param: None,
                     identity: SpecMethodIdentity::External {
                         package: 1,
@@ -180,6 +182,7 @@ mod tests {
                     name: "show".into(),
                     parameter_names: vec!["self".into()],
                     signature: Some(etas_types::CallableSignature {
+                        parameter_interface: None,
                         generic_params: vec![],
                         params: vec![etas_types::TypeId(1)],
                         output: etas_types::TypeId(2),

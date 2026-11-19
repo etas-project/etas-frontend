@@ -42,7 +42,10 @@ impl EffectSemantics<'_> {
             && !self.types.facts.expr_types.get(&expr).is_some_and(|ty| {
                 values.iter().any(|value| {
                     self.latent_sources_for_expr(state, *value)
-                        .is_some_and(|sources| self.symbolic_contract_value(*ty, &sources))
+                        .is_some_and(|sources| {
+                            (sources.is_empty() && self.type_has_parameters(*ty))
+                                || self.symbolic_contract_value(*ty, &sources)
+                        })
                 })
             })
         {

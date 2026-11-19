@@ -1086,6 +1086,10 @@ impl BodySignatureReferenceCollector<'_> {
             return;
         };
         match pat {
+            HirPat::ListCons { head, tail, .. } => {
+                self.visit_pat_type_references(*head);
+                self.visit_pat_type_references(*tail);
+            }
             HirPat::Tuple { elems, .. } => {
                 for elem in elems {
                     self.visit_pat_type_references(*elem);
@@ -1108,6 +1112,7 @@ impl BodySignatureReferenceCollector<'_> {
                 }
             }
             HirPat::Binding { .. }
+            | HirPat::EmptyList { .. }
             | HirPat::Wildcard { .. }
             | HirPat::Literal(_)
             | HirPat::Error { .. } => {}
@@ -1193,6 +1198,7 @@ impl BodySignatureReferenceCollector<'_> {
                     self.visit_type(*elem);
                 }
             }
+            HirType::Array { element, .. } => self.visit_type(*element),
             HirType::Refined {
                 base, predicate, ..
             } => {
@@ -1499,6 +1505,13 @@ fn hir_item_signature_fingerprint_parts(
                         hir_type_signature_part(ty, hir)
                     ));
                 }
+                etas_hir::HirTypeDeclBody::Sequence { element, tail, .. } => {
+                    parts.push(format!(
+                        "sequence:[]|{}::{}",
+                        hir_type_signature_part(element, hir),
+                        hir_type_signature_part(tail, hir)
+                    ));
+                }
             }
         }
         HirItem::Enum(item) => {
@@ -1533,6 +1546,13 @@ fn hir_item_signature_fingerprint_parts(
                 parts.push(format!(
                     "action:{index}:selectors:{:?}",
                     action.selector_params
+                ));
+                parts.push(format!(
+                    "action:{index}:default:{:?}",
+                    action
+                        .default_handler_effects
+                        .as_ref()
+                        .map(|row| hir_effect_row_signature_part(row, hir))
                 ));
                 parts.push(format!(
                     "action:{index}:{}({})->{}",
@@ -1887,6 +1907,9 @@ fn hir_type_signature_part(ty: HirTypeId, hir: &HirProgram) -> String {
                 .collect::<Vec<_>>()
                 .join(",")
         ),
+        HirType::Array { element, .. } => {
+            format!("array<{}>", hir_type_signature_part(*element, hir))
+        }
         HirType::Refined { base, .. } => {
             format!("refined<{}>", hir_type_signature_part(*base, hir))
         }

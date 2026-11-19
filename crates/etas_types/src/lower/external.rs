@@ -9,8 +9,8 @@ pub use package_type::{package_effect_arg_input, package_effect_row_input, packa
 use crate::{
     EffectActionArgKind, EffectActionSignature, EffectArgRef, EffectRef, EffectRowRef, FieldType,
     FlowType, HandlerProducedEffects, HandlerType, NamedTypeRef, NominalTypeRef, PrimitiveType,
-    RecordType, ResourceHandleType, TaskType, TrustWrapper, Type, TypeConstructorId, TypeId,
-    TypeOutput, TypeStore, pipeline::context::TypePipelineContext,
+    RecordType, ResourceHandleType, TaskType, TrustWrapper, Type, TypeId, TypeOutput, TypeStore,
+    pipeline::context::TypePipelineContext,
 };
 
 pub fn lower_external_action_signature(
@@ -39,7 +39,12 @@ pub fn lower_external_action_signature(
         &action.path,
         &action.generic_params,
     )?;
+    let default_handler_effects = action
+        .default_handler_effects
+        .as_ref()
+        .map(|row| lower_external_effect_row(ctx, span, row));
     Some(EffectActionSignature {
+        parameter_interface: Some(action.parameter_interface.clone()),
         generic_params,
         params: action
             .params
@@ -58,7 +63,7 @@ pub fn lower_external_action_signature(
             })
             .collect(),
         returns_never: action.returns_never,
-        default_handler_effects: None,
+        default_handler_effects,
     })
 }
 
@@ -301,6 +306,12 @@ pub fn lower_external_type(
     ty: &crate::ExternalTypeInput,
 ) -> TypeId {
     match ty {
+        crate::ExternalTypeInput::AgentContext(method) => {
+            ctx.interner
+                .intern(Type::AgentContext(crate::AgentContextRef::Portable(
+                    Box::new(method.clone()),
+                )))
+        }
         crate::ExternalTypeInput::Existential { bounds } => {
             let bounds = bounds
                 .iter()
@@ -351,9 +362,24 @@ pub fn lower_external_type(
             ctx.interner.primitive(PrimitiveType::Never)
         }
         crate::ExternalTypeInput::Enum { path, .. } => {
-            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef {
-                name: path.join("."),
-            }));
+            // Reexports name the checked declaration, not a new enum. Use the
+            // bundle's canonical owner so prelude aliases share its layout and
+            // all applied types with the original module.
+            let name = ctx
+                .std_registry
+                .lookup_type_dependency(path)
+                .and_then(|symbol| ctx.std_registry.declaration_key(symbol.id))
+                .map(|identity| {
+                    identity
+                        .module()
+                        .iter()
+                        .chain(identity.declaration())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(".")
+                })
+                .unwrap_or_else(|| path.join("."));
+            let ty = ctx.interner.intern(Type::Enum(crate::EnumTypeRef { name }));
             ctx.external_type_paths.insert(path.clone(), ty);
             ty
         }
@@ -421,10 +447,7 @@ pub fn lower_external_type(
                 .iter()
                 .map(|arg| lower_external_type(ctx, span, arg))
                 .collect();
-            ctx.interner.intern(Type::Applied {
-                constructor: TypeConstructorId(constructor.0),
-                args,
-            })
+            super::type_ref::applied_or_constructor(ctx, constructor, args)
         }
         crate::ExternalTypeInput::Alias { target, .. } => lower_external_type(ctx, span, target),
         crate::ExternalTypeInput::Nominal {
@@ -601,6 +624,38 @@ pub fn lower_external_type_declaration(
     params: &[crate::ExternalCallableGenericParamInput],
     ty: Option<&crate::ExternalTypeInput>,
 ) -> TypeId {
+    let registry = ctx.std_registry.clone();
+    if let Some(symbol) = registry.lookup_type_dependency(path)
+        && registry.declaration_key(symbol.id).is_some()
+        && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
+            if declaration.runtime_role.is_some()
+                || (declaration.code_role.is_some()
+                    && declaration.construction == etas_std::StdTypeConstruction::IntrinsicOnly)
+                || registry.native_record_reference(&path.join(".")).is_some()
+                || registry.native_opaque_reference(&symbol.qualified_path.join(".")).is_some())
+    {
+        let ty = crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol).unwrap();
+        ctx.external_type_paths.insert(path.to_vec(), ty);
+        return ty;
+    }
+    // A source std query supplies constructor identity, not an opaque override
+    // of its checked package metadata. Complete its actual representation,
+    // including private nominal dependencies, using the normal importer. Seed
+    // the same constructor first so readonly CallableDef keeps its identity.
+    if let Some(symbol) = registry.lookup_type_dependency(path)
+        && registry.declaration_key(symbol.id).is_some()
+        && matches!(&symbol.decl, etas_std::StdDecl::Type(declaration)
+            if declaration.construction == etas_std::StdTypeConstruction::Public
+                && declaration.canonical_type.is_none()
+                && !matches!(declaration.kind, etas_std::TypeDeclKind::Primitive | etas_std::TypeDeclKind::Spec))
+    {
+        let constructor = crate::lower::std::lower_std_type_symbol(ctx, &registry, symbol)
+            .expect("checked source std constructor");
+        ctx.external_type_paths.insert(path.to_vec(), constructor);
+        if ty.is_none() {
+            return constructor;
+        }
+    }
     match ty {
         Some(
             ty @ crate::ExternalTypeInput::Enum {
@@ -649,6 +704,9 @@ pub fn lower_external_type_declaration(
             ty
         }
         None => {
+            if let Some(ty) = ctx.external_type_paths.get(path) {
+                return *ty;
+            }
             let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 read_only_erased_view: false,
                 name: path.join("."),
@@ -680,6 +738,27 @@ fn complete_external_nominal(
     }
 }
 
+/// Portable rows use declaration paths. Typed native rows use the verified
+/// registry logical alias for that same identity; foreign names stay qualified.
+pub(super) fn canonical_effect_name(facts: &crate::TypeFacts, path: &[String]) -> String {
+    use etas_code::descriptor::EffectTargetInfo;
+    let qualified = path.join(".");
+    let Some(target) = facts.reflection_effect_targets.get(&qualified) else {
+        return qualified;
+    };
+    let logical = match target {
+        EffectTargetInfo::Effect(effect) => effect.declaration().join("."),
+        EffectTargetInfo::Action { effect, name } => {
+            format!("{}.{}", effect.declaration().join("."), name)
+        }
+    };
+    if facts.reflection_effect_targets.get(&logical) == Some(target) {
+        logical
+    } else {
+        qualified
+    }
+}
+
 pub fn lower_external_effect_row(
     ctx: &mut TypePipelineContext<'_>,
     span: Span,
@@ -690,7 +769,7 @@ pub fn lower_external_effect_row(
             .effects
             .iter()
             .map(|effect| EffectRef {
-                name: effect.path.join("."),
+                name: canonical_effect_name(&ctx.signature_facts, &effect.path),
                 args: effect
                     .args
                     .iter()

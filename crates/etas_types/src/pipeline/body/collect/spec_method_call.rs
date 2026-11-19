@@ -39,6 +39,7 @@ pub fn collect_spec_method_call<E>(
         ctx,
         super::method_call::SelectedMethodCall {
             binding: None,
+            associated_owner: None,
             expr: input.expr,
             receiver: input.receiver,
             method: input.method,

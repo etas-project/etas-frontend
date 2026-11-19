@@ -3,6 +3,17 @@ use crate::{EffectRowRef, TypeId};
 #[derive(
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
+pub struct CheckedLibraryCallFact {
+    pub symbol: etas_std::StdSymbolId,
+    pub overload: usize,
+    pub callable: etas_code::CallableId,
+    pub callable_type: TypeId,
+    pub signature: crate::CallableSignature,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct CheckedStdCallFact {
     pub qualified_path: Vec<String>,
     pub intrinsic: u32,

@@ -21,6 +21,46 @@ impl EffectSemantics<'_> {
         site: CallSite<crate::infer::unit::EffectUnit>,
         mut state: EffectState,
     ) -> EffectState {
+        let metadata = if let Some(selected) = self.types.facts.library_flow_calls.get(&site.call) {
+            match self
+                .external_metadata_for_callable(&selected.callable)
+                .cloned()
+            {
+                Some(metadata) => Some(metadata),
+                None => {
+                    return self.incomplete_at(
+                        site.span,
+                        "selected library overload has no checked effect contract",
+                        state,
+                    );
+                }
+            }
+        } else {
+            self.external_reference_metadata(site.callee_expr).cloned()
+        };
+        if let Some(metadata) = metadata {
+            match self.external_call_summary_from_metadata(&metadata, &site, &mut state, None) {
+                Ok(Some(summary)) => {
+                    if summary.exits.is_some() {
+                        state
+                            .exits
+                            .gaps
+                            .remove(&crate::OutcomeAnalysisGap::ExternalCall(site.call));
+                        self.note_call_outcomes(site.call, None, &summary, &mut state);
+                    }
+                    state.summary.seq_assign(&summary);
+                    return state;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return self.incomplete_at(
+                        site.span,
+                        format!("external call effect selector specialization failed: {error}"),
+                        state,
+                    );
+                }
+            }
+        }
         if self.std_pure_support_call(site.callee_expr) {
             return state;
         }
@@ -127,6 +167,13 @@ impl EffectSemantics<'_> {
         else {
             return false;
         };
+        if decl
+            .intrinsic
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.id.0 == etas_std::intrinsic::runtime::TOOL_INVOKE)
+        {
+            return false;
+        }
         std_decl_is_pure_call_support(&decl.decl)
             || matches!(&decl.decl, StdDecl::Flow(flow)
                 if flow.public_effects.is_empty()
@@ -197,6 +244,15 @@ impl EffectSemantics<'_> {
         mut state: EffectState,
     ) -> EffectState {
         if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&expr).cloned() {
+            if fact.intrinsic == etas_std::intrinsic::runtime::TOOL_INVOKE {
+                return match self.tool_invocation_summary(expr, span, &state) {
+                    Ok(summary) => {
+                        state.summary.seq_assign(&summary);
+                        state
+                    }
+                    Err(error) => self.incomplete_at(span, error, state),
+                };
+            }
             if self
                 .types
                 .facts
@@ -824,6 +880,21 @@ impl EffectSemantics<'_> {
         span: Span,
         state: &EffectState,
     ) -> Option<crate::EffectSummary> {
+        if self
+            .types
+            .facts
+            .std_intrinsic_calls
+            .get(&call)
+            .is_some_and(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_INVOKE)
+        {
+            return Some(match self.tool_invocation_summary(call, span, state) {
+                Ok(summary) => summary,
+                Err(error) => {
+                    self.incomplete_at(span, error, EffectState::default())
+                        .summary
+                }
+            });
+        }
         let selected = self.types.facts.std_intrinsic_calls.get(&call);
         let path = selected
             .map(|fact| fact.qualified_path.clone())

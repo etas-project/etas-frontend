@@ -85,6 +85,10 @@ impl CallableSummaryPlan {
         let mut dependencies = BTreeSet::new();
         let mut calls = Vec::new();
         let mut pending = vec![&plan.template.action_trace];
+        if let Some(exits) = &plan.template.exits {
+            pending.extend(exits.exits.iter().map(|exit| &exit.trace));
+            pending.extend(exits.parameter_exits.iter().map(|exit| &exit.prefix));
+        }
         while let Some(trace) = pending.pop() {
             match trace {
                 ActionTraceDomain::ParameterCall { target, span, .. } => {
@@ -95,10 +99,9 @@ impl CallableSummaryPlan {
                 } => calls.extend(parameter_calls.iter().map(|call| (call.target, call.span))),
                 ActionTraceDomain::Seq(parts)
                 | ActionTraceDomain::Choice(parts)
-                | ActionTraceDomain::Parallel(parts) => {
-                    pending.extend(parts)
-                }
+                | ActionTraceDomain::Parallel(parts) => pending.extend(parts),
                 ActionTraceDomain::Repeat(inner)
+                | ActionTraceDomain::DefaultHandler { body: inner, .. }
                 | ActionTraceDomain::TaskStart { body: inner, .. } => pending.push(inner),
                 ActionTraceDomain::Empty
                 | ActionTraceDomain::Event(_)
@@ -123,9 +126,9 @@ impl CallableSummaryPlan {
                 ),
                 None if plan.own_parameters.contains(&target) => {}
                 _ => {
-                    return Err(invalid(
-                        "captured callable has no checked free-parameter binding",
-                    ));
+                    return Err(invalid(&format!(
+                        "captured callable has no checked free-parameter binding for {target:?}",
+                    )));
                 }
             }
         }

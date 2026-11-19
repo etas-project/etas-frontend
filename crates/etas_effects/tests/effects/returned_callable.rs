@@ -152,7 +152,7 @@ flow main() -> unit {
 }
 
 #[test]
-fn a_known_callback_in_another_field_cannot_hide_an_unknown_callable_payload() {
+fn aggregate_callback_parameters_keep_their_symbolic_call_obligations() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"
 module app;
@@ -171,11 +171,11 @@ flow main(input: Callbacks) -> unit {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(
-        output.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)),
-        "{:?}",
-        output.diagnostics
+        output.facts.item_effects[&flow_item(&hir, "main")]
+            .action_trace
+            .has_parameter_calls()
     );
 }
 
@@ -192,12 +192,12 @@ let action = write;
 type Callbacks = {{ next: (i32) -> i32 ![] }};
 let callbacks = Callbacks {{ next = action }};
 flow factory() -> Callbacks {{ return callbacks; }}
-flow main() -> i32 {} {{
-    let selected = factory();
+flow invoke(selected: Callbacks) -> i32 ![] {{
+    (selected.next)(1);
     let action = selected.next;
-    action(1);
     return action(2);
 }}
+flow main() -> i32 {} {{ return invoke(factory()); }}
 "#,
             if quiet { "~ Quiet" } else { "" }
         );
@@ -538,7 +538,7 @@ flow main() -> unit ~ Quiet { let action = factory(); action("not quiet")?; retu
 }
 
 #[test]
-fn a_returned_unknown_callable_is_not_replaced_by_its_empty_escaping_row() {
+fn a_returned_callback_field_keeps_its_symbolic_invocation() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
         r#"
 module app;
@@ -554,11 +554,11 @@ flow main(unknown: { action: () -> unit ![] }) -> unit {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(
-        output.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)),
-        "{:?}",
-        output.diagnostics
+        output.facts.item_effects[&flow_item(&hir, "main")]
+            .action_trace
+            .has_parameter_calls()
     );
 }
 

@@ -443,7 +443,7 @@ impl EffectSemantics<'_> {
             if callback_row.open.is_some() {
                 return None;
             }
-            requested.union_assign(&callback_row.effects);
+            // Callback requests remain symbolic; this set records concrete handler requests.
             let mut handled = crate::EffectSet::new();
             for scope in handlers {
                 let ParameterHandlerScopeInfo::Handle { arms } = scope;
@@ -541,6 +541,12 @@ impl EffectSemantics<'_> {
                             Type::Primitive(PrimitiveType::Bool),
                             ReturnObservationInfo::Bool(value),
                         ) => ReturnObservation::Bool(*value),
+                        (Type::Result { .. }, ReturnObservationInfo::Result(value)) => {
+                            ReturnObservation::Result(*value)
+                        }
+                        (Type::Option(_), ReturnObservationInfo::Option(value)) => {
+                            ReturnObservation::Option(*value)
+                        }
                         _ => return None,
                     };
                     exits.record(
@@ -912,6 +918,7 @@ mod tests {
                         parameters: vec![ParameterInfo {
                             name: None,
                             ty: TypeInfoRef(0),
+                            default: None,
                         }],
                         output: TypeInfoRef(0),
                         declared_output: None,

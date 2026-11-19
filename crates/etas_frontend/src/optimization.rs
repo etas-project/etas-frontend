@@ -71,14 +71,18 @@ impl OptimizationPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirOptimizationGroup {
     O1,
     O2,
     O3,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct HirOptimizationReport {
     pub requested_level: OptimizationLevel,
     pub effective_level: OptimizationLevel,
@@ -143,7 +147,9 @@ impl HirOptimizationReport {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct HirOptimizationPassReport {
     pub name: String,
     pub group: HirOptimizationGroup,
@@ -173,7 +179,9 @@ impl HirOptimizationPassReport {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct HirPolicyTransformReport {
     pub name: String,
     pub matched: usize,

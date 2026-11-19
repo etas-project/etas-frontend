@@ -14,6 +14,24 @@ fn invalid(reason: &str) -> EffectSpecializationError {
 }
 
 impl EffectSemantics<'_> {
+    pub(super) fn external_method_graph(
+        &self,
+        identity: &etas_code::MethodId,
+    ) -> Result<(&crate::ExternalSpecImplementationMetadata, u32), EffectSpecializationError> {
+        let implementation = self
+            .implementation_identities
+            .get(identity)
+            .and_then(|index| *index)
+            .and_then(|index| self.external_implementations.get(index))
+            .ok_or_else(|| invalid("external method has no unique checked behavior graph"))?;
+        let [CallableValueSource::Value(root)] = implementation.graph.sources.as_slice() else {
+            return Err(invalid(
+                "external implementation does not own its callable root",
+            ));
+        };
+        Ok((implementation, *root))
+    }
+
     pub(super) fn capture_external_spec_implementation(
         &self,
         implementation: &etas_types::method::MethodSignatureFact,
@@ -60,18 +78,8 @@ impl EffectSemantics<'_> {
         owner_bindings: &std::collections::HashMap<etas_types::TypeId, etas_types::TypeId>,
         arguments: super::super::callable_generics::GenericSubstitutions,
     ) -> Result<LatentSource, EffectSpecializationError> {
-        let graph = self
-            .implementation_identities
-            .get(identity)
-            .and_then(|index| *index)
-            .and_then(|index| self.external_implementations.get(index))
-            .ok_or_else(|| invalid("external method has no unique checked behavior graph"))?;
-        let [CallableValueSource::Value(value)] = graph.graph.sources.as_slice() else {
-            return Err(invalid(
-                "external implementation does not own its callable root",
-            ));
-        };
-        let scope = CallableValueScope::Value(*value);
+        let (graph, value) = self.external_method_graph(identity)?;
+        let scope = CallableValueScope::Value(value);
         let mut generics = std::collections::BTreeMap::new();
         for (position, parameter) in graph.owner_params.iter().enumerate() {
             let argument = owner_bindings
@@ -124,9 +132,36 @@ impl EffectSemantics<'_> {
                     crate::ParameterCallTarget::Graph {
                         graph: graph.graph_key,
                         parameter: etas_package_metadata::CallableValueParameter {
+                            projection: None,
                             scope,
                             position: position as u32,
                         },
+                    },
+                    origins.clone(),
+                );
+            }
+        }
+        for parameter in graph.graph.parameter_references() {
+            if parameter.scope != scope || parameter.projection.is_none() {
+                continue;
+            }
+            let path = graph
+                .graph
+                .projection_path(parameter)
+                .map_err(|error| invalid(&error.to_string()))?;
+            let target = self
+                .intern_external_parameter_projection(
+                    crate::ParameterCallTarget::Interface(parameter.position),
+                    path.to_vec(),
+                )
+                .ok_or_else(|| {
+                    invalid("external method argument projection exceeds its checked graph budget")
+                })?;
+            if let Some(origins) = snapshot.parameters.get(&target) {
+                parameters.insert(
+                    crate::ParameterCallTarget::Graph {
+                        graph: graph.graph_key,
+                        parameter,
                     },
                     origins.clone(),
                 );
@@ -153,7 +188,7 @@ impl EffectSemantics<'_> {
         let source = crate::MetadataCallableSource {
             analysis: crate::CallableAnalysisKind::CheckedRevision,
             graph: graph.graph_key,
-            value: *value,
+            value,
             environment: Some(environment),
         };
         self.discovered_external_method_sources

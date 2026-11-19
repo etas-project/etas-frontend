@@ -20,6 +20,16 @@ pub(crate) fn take_obligations(
         let parameters = match ctx.symbol_fact(application.symbol) {
             Some(SymbolTypeFact::Agent { .. }) => Vec::new(),
             Some(SymbolTypeFact::TypeAlias { params, .. }) => params.clone(),
+            Some(SymbolTypeFact::Flow { signature })
+                if ctx.symbols.canonical_symbol(ctx.hir, application.symbol)
+                    .and_then(|symbol| ctx.source_type_role(symbol))
+                    .and_then(|id| ctx.std_registry.symbol(id))
+                    .is_some_and(|symbol| matches!(&symbol.decl,
+                        etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Wrapper)) =>
+            {
+                signature.generic_params.clone()
+            }
+
             Some(
                 SymbolTypeFact::NominalType { constructor, .. }
                 | SymbolTypeFact::Type { constructor },

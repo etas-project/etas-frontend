@@ -2,8 +2,7 @@ use etas_hir::{SymbolDef, SyntheticSymbolReason};
 use etas_std::{StdDecl, StdSymbolKind};
 
 use crate::{
-    SymbolTypeFact,
-    lower::std::{lower_std_effect_action_signature, lower_std_symbol},
+    SymbolTypeFact, lower::std::lower_std_effect_action_signature,
     pipeline::context::TypePipelineContext,
 };
 
@@ -18,7 +17,45 @@ pub fn collect_std_actions(ctx: &mut TypePipelineContext<'_>, state: &mut Signat
         let StdDecl::EffectAction(decl) = &symbol.decl else {
             continue;
         };
-        let signature = lower_std_effect_action_signature(ctx, &registry, decl);
+        let signature = ctx
+            .hir
+            .standard_action_targets
+            .iter()
+            .filter_map(|(source, target)| {
+                (*target == symbol.id
+                    && matches!(
+                        ctx.hir.symbols.get(*source).map(|s| &s.def),
+                        Some(SymbolDef::EffectAction { .. })
+                    ))
+                .then(|| {
+                    state
+                        .action_signatures
+                        .get(source)
+                        .cloned()
+                        .map(|signature| (*source, signature))
+                })
+                .flatten()
+            })
+            .min_by_key(|(symbol, _)| *symbol)
+            .map(|(_, signature)| signature)
+            .or_else(|| {
+                ctx.signature_facts
+                    .qualified_action_signatures
+                    .get(&symbol.qualified_path.join("."))
+                    .cloned()
+            })
+            .unwrap_or_else(|| lower_std_effect_action_signature(ctx, &registry, decl));
+        ctx.signature_facts.std_callable_signatures.insert(
+            symbol.id,
+            crate::CallableSignature {
+                parameter_interface: signature.parameter_interface.clone(),
+                generic_params: signature.generic_params.clone(),
+                params: signature.params.clone(),
+                output: signature.output,
+                effects: None,
+                requested_actions: None,
+            },
+        );
         state
             .qualified_action_signatures
             .insert(format!("{}.{}", decl.owner, decl.name), signature.clone());
@@ -27,27 +64,24 @@ pub fn collect_std_actions(ctx: &mut TypePipelineContext<'_>, state: &mut Signat
             .insert(symbol.qualified_path.join("."), signature);
     }
     for symbol in ctx.hir.symbols.iter() {
-        let SymbolDef::Synthetic {
-            reason: SyntheticSymbolReason::QualifiedEffectAction,
-        } = &symbol.def
+        let std_symbol = match &symbol.def {
+            SymbolDef::ImportAlias { path, .. } => registry.lookup_qualified(path),
+            SymbolDef::Synthetic { reason: SyntheticSymbolReason::QualifiedEffectAction } => {
+                symbol.name.split_once('.').and_then(|(owner, action)| registry.symbols().find(|candidate| {
+                    matches!(&candidate.decl, StdDecl::EffectAction(decl) if decl.owner == owner && decl.name == action)
+                }))
+            }
+            _ => None,
+        };
+        let Some(std_symbol) =
+            std_symbol.filter(|symbol| matches!(symbol.decl, StdDecl::EffectAction(_)))
         else {
             continue;
         };
-        let Some((owner, action)) = symbol.name.split_once('.') else {
-            continue;
+        let fact = SymbolTypeFact::EffectAction {
+            signature: state.qualified_action_signatures[&std_symbol.qualified_path.join(".")]
+                .clone(),
         };
-        let Some(std_symbol) = registry.symbols().find(|candidate| {
-            if candidate.kind != StdSymbolKind::EffectAction {
-                return false;
-            }
-            let StdDecl::EffectAction(decl) = &candidate.decl else {
-                return false;
-            };
-            decl.owner == owner && decl.name == action
-        }) else {
-            continue;
-        };
-        let fact = lower_std_symbol(ctx, &registry, symbol.id, std_symbol);
         if let SymbolTypeFact::EffectAction { signature } = &fact {
             state.action_signatures.insert(symbol.id, signature.clone());
         }

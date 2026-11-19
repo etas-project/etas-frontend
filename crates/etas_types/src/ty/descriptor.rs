@@ -32,6 +32,13 @@ impl Type {
             Self::Schema(ty) => (B::Schema, vec![*ty]),
             Self::Prompt => (B::Prompt, vec![]),
             Self::PromptPart => (B::PromptPart, vec![]),
+            Self::SchedulerHandle => (B::SchedulerHandle, vec![]),
+            Self::Continuation(continuation)
+                if continuation.handled_answer.is_none()
+                    && continuation.residual_effects.is_none() =>
+            {
+                (B::Continuation, vec![continuation.action_output])
+            }
             Self::Message(ty) => (B::Message, vec![*ty]),
             Self::MemorySelection(ty) => (B::MemorySelection, vec![*ty]),
             Self::Store { key, value } => (B::Store, vec![*key, *value]),

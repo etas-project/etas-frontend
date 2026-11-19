@@ -11,6 +11,7 @@ pub(super) struct CapturedProjection {
     pub effect_names: BTreeSet<String>,
     pub owner_type_names: BTreeSet<String>,
     pub types: BTreeMap<String, MetadataType>,
+    pub parameters: BTreeMap<(etas_code::descriptor::GenericOwner, u32), MetadataType>,
     pub rows: BTreeMap<String, MetadataEffectRow>,
 }
 
@@ -29,6 +30,36 @@ impl Builder<'_, '_> {
             .get(&environment)
             .ok_or_else(|| invalid("captured descriptor has no checked environment"))?;
         let mut projection = self.generic_context(Some(snapshot.owner))?;
+        if let Some(method) = self
+            .projection
+            .checked
+            .items
+            .get(owner)
+            .and_then(etas_hir::HirItem::symbol)
+            .and_then(|symbol| self.projection.checked.types.type_impl_methods.get(&symbol))
+        {
+            for (position, parameter) in method.owner_params.iter().enumerate() {
+                let Some(CallableGenericValue::Type(argument)) =
+                    snapshot.generics.get(&CallableGenericParameter::Native {
+                        owner: method.implementation,
+                        position: position as u32,
+                    })
+                else {
+                    return Err(invalid(
+                        "captured method is missing its checked owner argument",
+                    ));
+                };
+                let parameter = self
+                    .identities
+                    .and_then(|identities| identities.implementation_parameter(parameter.subject))
+                    .ok_or_else(|| invalid("captured method owner has no canonical parameter"))?;
+                let mut argument = self.projection.metadata_type(*argument)?;
+                normalize_generic_type(&mut argument, &projection.type_names);
+                projection
+                    .parameters
+                    .insert((parameter.owner.clone(), parameter.position), argument);
+            }
+        }
         for (position, parameter) in parameters.iter().enumerate() {
             let value = snapshot
                 .generics
@@ -173,20 +204,29 @@ impl CapturedProjection {
 
     fn expand_type(&self, ty: &mut MetadataType) -> Result<(), PackageMetadataError> {
         normalize_generic_type(ty, &self.owner_type_names);
-        expansion::validate(ty, &self.types, &self.rows)?;
+        expansion::validate(ty, &self.types, &self.parameters, &self.rows)?;
         let mut pending = vec![Part::Type(ty)];
         while let Some(part) = pending.pop() {
             match part {
                 Part::Type(ty) => {
-                    if ty.kind == MetadataTypeKind::Var
-                        && let Some(argument) = self.types.get(&ty.name)
-                    {
+                    if let Some(argument) = expansion::argument(ty, &self.types, &self.parameters) {
                         // Arguments already use the caller's binder namespace.
                         *ty = argument.clone();
                         continue;
                     }
                     pending.extend(ty.children.iter_mut().map(Part::Type));
-                    pending.extend(ty.fields.iter_mut().map(|field| Part::Type(&mut field.ty)));
+                    pending.extend(
+                        ty.bounds
+                            .iter_mut()
+                            .flat_map(|bound| &mut bound.args)
+                            .map(Part::Type),
+                    );
+                    pending.extend(
+                        ty.fields
+                            .iter_mut()
+                            .chain(&mut ty.projected_fields)
+                            .map(|field| Part::Type(&mut field.ty)),
+                    );
                     pending.extend(
                         ty.effects
                             .iter_mut()

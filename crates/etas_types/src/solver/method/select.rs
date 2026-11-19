@@ -21,6 +21,7 @@ pub(super) fn solve<E>(
         let field = crate::solver::field::solve_field_access(
             input.store,
             input.known_std_types,
+            input.spec_facts,
             args[0],
             call.method,
             resolve_known_substitutions(input.store, report, *call.output),
@@ -181,6 +182,9 @@ pub(super) fn solve<E>(
         let mut signature = candidate.signature.clone();
         if component {
             signature.params.remove(0);
+            if let Some(parameters) = &mut signature.parameter_interface {
+                parameters.remove(0);
+            }
         }
         if call.binding.is_none() {
             signature.output = *call.output;
@@ -199,6 +203,16 @@ pub(super) fn solve<E>(
                 .collect()
         };
         let fact = crate::facts::CheckedMethodCallFact {
+            defaults: selected
+                .defaults
+                .into_iter()
+                .map(|mut default| {
+                    if component {
+                        default.slot -= 1;
+                    }
+                    default
+                })
+                .collect(),
             target: entry.target.clone(),
             receiver: entry.receiver,
             receiver_type: args[0],

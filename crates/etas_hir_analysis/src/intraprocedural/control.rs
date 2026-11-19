@@ -137,6 +137,18 @@ where
         changed
     }
 
+    fn join_owned(&mut self, other: Self) -> bool {
+        let mut changed = false;
+        changed |= join_owned_slot(&mut self.normal, other.normal);
+        changed |= join_owned_slot(&mut self.returned, other.returned);
+        changed |= join_owned_slot(&mut self.broken, other.broken);
+        changed |= join_owned_slot(&mut self.continued, other.continued);
+        changed |= join_owned_slot(&mut self.resumed, other.resumed);
+        changed |= join_owned_slot(&mut self.finished, other.finished);
+        changed |= join_owned_slot(&mut self.errored, other.errored);
+        changed
+    }
+
     pub fn join_normal(&mut self, state: D) -> bool {
         join_state(&mut self.normal, state)
     }
@@ -169,7 +181,7 @@ where
         let Some(normal) = self.normal.take() else {
             return self;
         };
-        self.join_assign(&f(*normal));
+        self.join_owned(f(*normal));
         self
     }
 
@@ -180,7 +192,7 @@ where
         let Some(normal) = self.normal.take() else {
             return Ok(self);
         };
-        self.join_assign(&f(*normal)?);
+        self.join_owned(f(*normal)?);
         Ok(self)
     }
 
@@ -245,6 +257,17 @@ fn join_state<D: Clone + JoinSemiLattice>(slot: &mut Option<Box<D>>, other: D) -
             *slot = Some(Box::new(other));
             true
         }
+    }
+}
+
+fn join_owned_slot<D: JoinSemiLattice>(slot: &mut Option<Box<D>>, other: Option<Box<D>>) -> bool {
+    match (slot.as_mut(), other) {
+        (Some(current), Some(other)) => current.join_assign(&other),
+        (None, Some(other)) => {
+            *slot = Some(other);
+            true
+        }
+        (_, None) => false,
     }
 }
 

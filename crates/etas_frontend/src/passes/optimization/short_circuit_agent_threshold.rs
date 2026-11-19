@@ -64,6 +64,7 @@ impl Pass<ProjectContext> for ShortCircuitAgentThresholdPass {
         if !replacements.is_empty() {
             super::facts::invalidate_replaced_expressions(
                 context,
+                &output.hir,
                 replacements.iter().flat_map(|(root, replacement)| {
                     std::iter::once(*root).chain(replacement.removed.expressions.iter().copied())
                 }),
@@ -178,6 +179,7 @@ fn guard_returns_argument(revision: &HirRevision, callee: HirExprId) -> bool {
         return false;
     };
     match flow.body {
+        HirFlowBody::Decl { .. } | HirFlowBody::Runtime { .. } => false,
         HirFlowBody::Block(block) => {
             let block = &revision.blocks[block];
             let [statement] = block.stmts.as_slice() else {

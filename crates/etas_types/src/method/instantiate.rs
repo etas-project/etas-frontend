@@ -55,6 +55,9 @@ pub(crate) fn signature(
     let mut signature = declaration.signature.clone();
     if declaration.receiver == super::MethodReceiver::Component {
         signature.params.remove(0);
+        if let Some(parameters) = &mut signature.parameter_interface {
+            parameters.remove(0);
+        }
     }
     crate::facts::methods::map_signature(&mut signature, &mut |ty| engine.substitute(ty))
         .map_err(|error| error.to_string())?;

@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::{Deref, DerefMut},
+};
 
 use crate::{
     ConstraintOrigin, Type, TypeId, TypeStore,
@@ -10,6 +13,40 @@ use crate::{
     ty::display_type,
 };
 
+// Native signatures carry binder names without source symbols. Keep the
+// callable's declared binders alongside inferred values so inference does not
+// depend on whether a generic happens to have a one-letter name.
+struct TypeBindings {
+    values: HashMap<String, TypeId>,
+    parameters: HashSet<String>,
+}
+
+impl TypeBindings {
+    fn new(values: HashMap<String, TypeId>, parameters: &[String]) -> Self {
+        Self {
+            values,
+            parameters: parameters.iter().cloned().collect(),
+        }
+    }
+
+    fn is_parameter(&self, name: &crate::NamedTypeRef) -> bool {
+        self.parameters.contains(&name.name) || is_source_or_legacy_parameter(name)
+    }
+}
+
+impl Deref for TypeBindings {
+    type Target = HashMap<String, TypeId>;
+    fn deref(&self) -> &Self::Target {
+        &self.values
+    }
+}
+
+impl DerefMut for TypeBindings {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.values
+    }
+}
+
 pub fn solve_callable(
     store: &TypeStore,
     callee: TypeId,
@@ -20,6 +57,7 @@ pub fn solve_callable(
     solve_callable_with_named_substitutions(
         store,
         CallableSolveInput {
+            argument_slots: None,
             callee,
             generic_param_names: &[],
             explicit_generic_args: &[],
@@ -33,6 +71,7 @@ pub fn solve_callable(
 }
 
 pub struct CallableSolveInput<'a> {
+    pub argument_slots: Option<&'a [u32]>,
     pub callee: TypeId,
     pub generic_param_names: &'a [String],
     pub explicit_generic_args: &'a [TypeId],
@@ -48,6 +87,7 @@ pub fn solve_callable_with_named_substitutions(
     input: CallableSolveInput<'_>,
 ) -> SolverReport {
     let CallableSolveInput {
+        argument_slots,
         callee,
         generic_param_names,
         explicit_generic_args,
@@ -72,7 +112,7 @@ pub fn solve_callable_with_named_substitutions(
         });
         return report;
     };
-    if flow.input.len() != args.len() {
+    if argument_slots.is_none() && flow.input.len() != args.len() {
         report.push(SolverFailure {
             code: etas_core::TypeDiagnosticCode::ArityMismatch,
             span: origin.span,
@@ -84,7 +124,23 @@ pub fn solve_callable_with_named_substitutions(
         });
         return report;
     }
-    let mut type_substitutions = initial_named_substitutions;
+    let inputs = match argument_slots {
+        Some(slots) => slots
+            .iter()
+            .map(|slot| flow.input.get(*slot as usize).copied())
+            .collect::<Option<Vec<_>>>(),
+        None => Some(flow.input.clone()),
+    };
+    let Some(inputs) = inputs.filter(|inputs| inputs.len() == args.len()) else {
+        report.push(SolverFailure {
+            code: etas_core::TypeDiagnosticCode::ArityMismatch,
+            span: origin.span,
+            message: "call arguments differ from their checked parameter positions".into(),
+        });
+        return report;
+    };
+    let mut type_substitutions =
+        TypeBindings::new(initial_named_substitutions, generic_param_names);
     apply_explicit_generic_args(
         store,
         flow,
@@ -92,10 +148,10 @@ pub fn solve_callable_with_named_substitutions(
         explicit_generic_args,
         &mut type_substitutions,
     );
-    for (actual, expected) in args.iter().copied().zip(flow.input.iter().copied()) {
+    for (actual, expected) in args.iter().copied().zip(inputs.iter().copied()) {
         infer_type_substitution(store, expected, actual, &mut type_substitutions);
     }
-    for (actual, expected) in args.iter().copied().zip(flow.input.iter().copied()) {
+    for (actual, expected) in args.iter().copied().zip(inputs.iter().copied()) {
         let mut arg_unifier = TypeUnifier::with_substitution(store, report.substitutions.clone());
         let unified = unify_schematic_type(
             store,
@@ -129,9 +185,9 @@ pub fn solve_callable_with_named_substitutions(
     }) && !unresolved_output_schematics_are_input_bound(
         store,
         flow.output,
-        &flow.input,
+        &inputs,
         &type_substitutions,
-    ) && !inputs_contain_fresh_type_var(store, &flow.input)
+    ) && !inputs_contain_fresh_type_var(store, &inputs)
         && (matches!(store.get(output), Some(Type::Var(_))) || output == flow.output)
     {
         report.push(SolverFailure {
@@ -167,7 +223,7 @@ pub fn solve_callable_with_named_substitutions(
             ),
         });
     }
-    report.named_substitutions = type_substitutions;
+    report.named_substitutions = type_substitutions.values;
     report
 }
 
@@ -175,12 +231,12 @@ fn unify_schematic_type(
     store: &TypeStore,
     schematic: TypeId,
     actual: TypeId,
-    named_substitutions: &HashMap<String, TypeId>,
+    named_substitutions: &TypeBindings,
     unifier: &mut TypeUnifier<'_>,
 ) -> bool {
     if let Some(Type::Named(name)) = store.get(schematic)
         && store.parameter_identity(schematic).is_none()
-        && is_type_variable_name(&name.name)
+        && named_substitutions.is_parameter(name)
     {
         return match named_substitutions.get(&name.name) {
             Some(bound) => unifier.unify(*bound, actual).is_ok(),
@@ -279,6 +335,40 @@ fn unify_schematic_type(
                     })
             })
         }
+        (Some(Type::Task(lhs)), Some(Type::Task(rhs))) => {
+            // The row solver checks the latent row after value-type inference.
+            unify_schematic_type(store, lhs.output, rhs.output, named_substitutions, unifier)
+        }
+        (Some(Type::Handler(lhs)), Some(Type::Handler(rhs))) => {
+            // Effect arguments of source constructors use Handler row types.
+            // Their rows are solved with function/task rows after value types.
+            match (lhs.result, rhs.result) {
+                (Some(lhs), Some(rhs)) => {
+                    unify_schematic_type(store, lhs, rhs, named_substitutions, unifier)
+                }
+                _ => true,
+            }
+        }
+        (Some(Type::Continuation(expected)), Some(Type::Continuation(actual))) => {
+            // Continuation<T> names the action result. The captured answer and
+            // residual row stay on the actual binder; an unspelled formal
+            // context does not replace or manufacture either one.
+            continuation_context_accepts(expected, actual)
+                && unify_schematic_type(
+                    store,
+                    expected.action_output,
+                    actual.action_output,
+                    named_substitutions,
+                    unifier,
+                )
+                && match (expected.handled_answer, actual.handled_answer) {
+                    (Some(expected), Some(actual)) => {
+                        unify_schematic_type(store, expected, actual, named_substitutions, unifier)
+                    }
+                    (None, _) => true,
+                    _ => false,
+                }
+        }
         (Some(Type::Function(lhs)), Some(Type::Function(rhs)))
             if lhs.input.len() == rhs.input.len() =>
         {
@@ -315,11 +405,30 @@ fn unify_schematic_type(
     }
 }
 
+fn continuation_context_accepts(
+    expected: &crate::ContinuationType,
+    actual: &crate::ContinuationType,
+) -> bool {
+    expected.residual_effects.as_ref().is_none_or(|expected| {
+        actual.residual_effects.as_ref().is_some_and(|actual| {
+            expected.tail == actual.tail
+                && expected
+                    .effects
+                    .iter()
+                    .all(|effect| actual.effects.contains(effect))
+                && actual
+                    .effects
+                    .iter()
+                    .all(|effect| expected.effects.contains(effect))
+        })
+    })
+}
+
 fn unresolved_output_schematics_are_input_bound(
     store: &TypeStore,
     output: TypeId,
     inputs: &[TypeId],
-    substitutions: &HashMap<String, TypeId>,
+    substitutions: &TypeBindings,
 ) -> bool {
     let mut output_vars = Vec::new();
     collect_unresolved_schematic_names(store, output, substitutions, &mut output_vars);
@@ -336,12 +445,12 @@ fn unresolved_output_schematics_are_input_bound(
 fn collect_unresolved_schematic_names(
     store: &TypeStore,
     ty: TypeId,
-    substitutions: &HashMap<String, TypeId>,
+    substitutions: &TypeBindings,
     out: &mut Vec<String>,
 ) {
     match store.get(ty) {
         Some(Type::Named(name))
-            if store.parameter_identity(ty).is_none() && is_type_variable_name(&name.name) =>
+            if store.parameter_identity(ty).is_none() && substitutions.is_parameter(name) =>
         {
             if !substitutions.contains_key(&name.name) && !out.contains(&name.name) {
                 out.push(name.name.clone());
@@ -359,6 +468,9 @@ fn collect_unresolved_schematic_names(
         | Some(Type::Range { index: inner })
         | Some(Type::Trust { inner, .. }) => {
             collect_unresolved_schematic_names(store, *inner, substitutions, out);
+        }
+        Some(Type::Task(task)) => {
+            collect_unresolved_schematic_names(store, task.output, substitutions, out)
         }
         Some(Type::Map { key, value }) | Some(Type::Store { key, value }) => {
             collect_unresolved_schematic_names(store, *key, substitutions, out);
@@ -406,6 +518,7 @@ fn contains_schematic_name(store: &TypeStore, ty: TypeId, needle: &str) -> bool 
         | Some(Type::MemoryRegion(inner))
         | Some(Type::Range { index: inner })
         | Some(Type::Trust { inner, .. }) => contains_schematic_name(store, *inner, needle),
+        Some(Type::Task(task)) => contains_schematic_name(store, task.output, needle),
         Some(Type::Map { key, value }) | Some(Type::Store { key, value }) => {
             contains_schematic_name(store, *key, needle)
                 || contains_schematic_name(store, *value, needle)
@@ -472,7 +585,7 @@ fn contains_fresh_type_var(store: &TypeStore, ty: TypeId) -> bool {
 struct NominalConstructorCall {
     target: TypeId,
     representation: TypeId,
-    substitutions: HashMap<String, TypeId>,
+    substitutions: TypeBindings,
 }
 
 fn nominal_constructor_signature(
@@ -508,12 +621,15 @@ fn nominal_constructor_signature(
 fn explicit_nominal_constructor_substitutions(
     params: &[String],
     explicit_generic_args: &[TypeId],
-) -> HashMap<String, TypeId> {
-    params
-        .iter()
-        .cloned()
-        .zip(explicit_generic_args.iter().copied())
-        .collect()
+) -> TypeBindings {
+    TypeBindings::new(
+        params
+            .iter()
+            .cloned()
+            .zip(explicit_generic_args.iter().copied())
+            .collect(),
+        params,
+    )
 }
 
 fn solve_nominal_constructor_call(
@@ -608,7 +724,7 @@ fn apply_explicit_generic_args(
     flow: &crate::FlowType,
     generic_param_names: &[String],
     explicit_generic_args: &[TypeId],
-    substitutions: &mut HashMap<String, TypeId>,
+    substitutions: &mut TypeBindings,
 ) {
     if explicit_generic_args.is_empty() {
         return;
@@ -643,7 +759,7 @@ fn apply_explicit_generic_args(
 fn collect_schematic_type_vars(store: &TypeStore, ty: TypeId, out: &mut Vec<String>) {
     match store.get(ty) {
         Some(Type::Named(name))
-            if store.parameter_identity(ty).is_none() && is_type_variable_name(&name.name) =>
+            if store.parameter_identity(ty).is_none() && is_source_or_legacy_parameter(name) =>
         {
             if !out.contains(&name.name) {
                 out.push(name.name.clone());
@@ -714,12 +830,11 @@ fn infer_type_substitution(
     store: &TypeStore,
     expected: TypeId,
     actual: TypeId,
-    substitutions: &mut HashMap<String, TypeId>,
+    substitutions: &mut TypeBindings,
 ) {
     match store.get(expected) {
         Some(Type::Named(name))
-            if store.parameter_identity(expected).is_none()
-                && is_type_variable_name(&name.name) =>
+            if store.parameter_identity(expected).is_none() && substitutions.is_parameter(name) =>
         {
             if expected == actual {
                 return;
@@ -828,6 +943,33 @@ fn infer_type_substitution(
                 infer_type_substitution(store, *expected_value, *actual_value, substitutions);
             }
         }
+        Some(Type::Task(expected)) => {
+            if let Some(Type::Task(actual)) = store.get(actual) {
+                infer_type_substitution(store, expected.output, actual.output, substitutions);
+            }
+        }
+        Some(Type::Handler(expected)) => {
+            if let Some(Type::Handler(actual)) = store.get(actual)
+                && let (Some(expected), Some(actual)) = (expected.result, actual.result)
+            {
+                infer_type_substitution(store, expected, actual, substitutions);
+            }
+        }
+        Some(Type::Continuation(expected)) => {
+            if let Some(Type::Continuation(actual)) = store.get(actual) {
+                infer_type_substitution(
+                    store,
+                    expected.action_output,
+                    actual.action_output,
+                    substitutions,
+                );
+                if let (Some(expected), Some(actual)) =
+                    (expected.handled_answer, actual.handled_answer)
+                {
+                    infer_type_substitution(store, expected, actual, substitutions);
+                }
+            }
+        }
         Some(Type::Tuple(expected_elements)) => {
             if let Some(Type::Tuple(actual_elements)) = store.get(actual) {
                 for (expected, actual) in expected_elements
@@ -867,7 +1009,7 @@ fn is_assignable_to_schematic(
     store: &TypeStore,
     actual: TypeId,
     expected: TypeId,
-    substitutions: &mut HashMap<String, TypeId>,
+    substitutions: &mut TypeBindings,
     solved: &crate::Substitution,
 ) -> bool {
     if let Some(Type::Var(var)) = store.get(expected)
@@ -889,8 +1031,7 @@ fn is_assignable_to_schematic(
     match store.get(expected) {
         Some(Type::Var(_)) => true,
         Some(Type::Named(name))
-            if store.parameter_identity(expected).is_none()
-                && is_type_variable_name(&name.name) =>
+            if store.parameter_identity(expected).is_none() && substitutions.is_parameter(name) =>
         {
             if expected == actual {
                 return true;
@@ -1069,6 +1210,51 @@ fn is_assignable_to_schematic(
             }
             _ => false,
         },
+        Some(Type::Task(expected)) => match store.get(actual) {
+            Some(Type::Task(actual)) => is_assignable_to_schematic(
+                store,
+                actual.output,
+                expected.output,
+                substitutions,
+                solved,
+            ),
+            Some(Type::Primitive(crate::PrimitiveType::Never)) => true,
+            _ => false,
+        },
+        Some(Type::Handler(expected)) => match store.get(actual) {
+            Some(Type::Handler(actual)) => match (actual.result, expected.result) {
+                (Some(actual), Some(expected)) => {
+                    is_assignable_to_schematic(store, actual, expected, substitutions, solved)
+                }
+                _ => true,
+            },
+            _ => false,
+        },
+        Some(Type::Continuation(expected)) => match store.get(actual) {
+            Some(Type::Continuation(actual)) => {
+                continuation_context_accepts(expected, actual)
+                    && is_assignable_to_schematic(
+                        store,
+                        actual.action_output,
+                        expected.action_output,
+                        substitutions,
+                        solved,
+                    )
+                    && match (expected.handled_answer, actual.handled_answer) {
+                        (Some(expected), Some(actual)) => is_assignable_to_schematic(
+                            store,
+                            actual,
+                            expected,
+                            substitutions,
+                            solved,
+                        ),
+                        (None, _) => true,
+                        _ => false,
+                    }
+            }
+            Some(Type::Primitive(crate::PrimitiveType::Never)) => true,
+            _ => false,
+        },
         Some(Type::Function(expected)) => match store.get(actual) {
             Some(Type::Function(actual)) if expected.input.len() == actual.input.len() => {
                 actual
@@ -1118,7 +1304,7 @@ fn is_schematic_assignable_to(
     store: &TypeStore,
     from: TypeId,
     to: TypeId,
-    substitutions: &mut HashMap<String, TypeId>,
+    substitutions: &mut TypeBindings,
     solver_substitutions: &crate::Substitution,
 ) -> bool {
     match store.get(from) {
@@ -1126,13 +1312,32 @@ fn is_schematic_assignable_to(
             .get(*var)
             .is_some_and(|resolved| resolved != from && is_assignable(store, resolved, to)),
         Some(Type::Named(name))
-            if store.parameter_identity(from).is_none() && is_type_variable_name(&name.name) =>
+            if store.parameter_identity(from).is_none() && substitutions.is_parameter(name) =>
         {
             substitutions
                 .get(&name.name)
                 .copied()
                 .is_some_and(|from| is_assignable(store, from, to))
         }
+        Some(Type::Task(from)) => match store.get(to) {
+            Some(Type::Task(to)) => is_schematic_assignable_to(
+                store,
+                from.output,
+                to.output,
+                substitutions,
+                solver_substitutions,
+            ),
+            _ => false,
+        },
+        Some(Type::Handler(from)) => match store.get(to) {
+            Some(Type::Handler(to)) => match (from.result, to.result) {
+                (Some(from), Some(to)) => {
+                    is_schematic_assignable_to(store, from, to, substitutions, solver_substitutions)
+                }
+                _ => true,
+            },
+            _ => false,
+        },
         Some(Type::Array(from)) => match store.get(to) {
             Some(Type::Array(to)) => {
                 is_schematic_assignable_to(store, *from, *to, substitutions, solver_substitutions)
@@ -1401,8 +1606,11 @@ fn constructors_match(
     unifier.unify(TypeId(lhs.0), TypeId(rhs.0)).is_ok()
 }
 
-fn is_type_variable_name(name: &str) -> bool {
-    let mut chars = name.chars();
+fn is_source_or_legacy_parameter(name: &crate::NamedTypeRef) -> bool {
+    if name.source_parameter.is_some() {
+        return true;
+    }
+    let mut chars = name.name.chars();
     matches!(chars.next(), Some(ch) if ch.is_ascii_uppercase()) && chars.next().is_none()
 }
 
@@ -1427,7 +1635,7 @@ mod canonical_parameter_tests {
             )
             .unwrap();
         let boolean = types.primitive(crate::PrimitiveType::Bool);
-        let mut names = HashMap::new();
+        let mut names = TypeBindings::new(HashMap::new(), &[]);
         infer_type_substitution(types.store(), parameter, boolean, &mut names);
         assert!(names.is_empty());
         let mut unifier = TypeUnifier::new(types.store());
@@ -1435,7 +1643,7 @@ mod canonical_parameter_tests {
             types.store(),
             parameter,
             boolean,
-            &HashMap::from([("T".into(), boolean)]),
+            &TypeBindings::new(HashMap::from([("T".into(), boolean)]), &["T".into()]),
             &mut unifier,
         ));
     }

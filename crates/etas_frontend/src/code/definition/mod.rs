@@ -16,7 +16,7 @@ mod headers;
 mod type_methods;
 pub(crate) use headers::{inherent_method_identities, method_identities_from_input};
 mod method_snapshots;
-pub(crate) use type_methods::type_method_identities;
+pub(crate) use type_methods::{implementation_identity, type_method_identities};
 mod objects;
 pub(crate) use objects::ExternalRestorationReceipt;
 mod relocation;
@@ -43,3 +43,4 @@ pub(crate) use sources::DefinitionSourceCaptureInput;
 pub use sources::{BodyExposure, DefinitionSourceUnit, DefinitionSources};
 
 pub use store::{DefinitionCatalog, StaticReflectionView};
+pub(crate) use tools::declared_tools;

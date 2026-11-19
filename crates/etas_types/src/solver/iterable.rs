@@ -9,73 +9,90 @@ pub(super) fn solve(
     iter: TypeId,
     item: TypeId,
     entry_pair: TypeId,
+    byte_item: TypeId,
     origin: &ConstraintOrigin,
 ) {
     let iter = resolve_known_substitutions(store, report, iter);
     let item = resolve_known_substitutions(store, report, item);
     let mut unifier = TypeUnifier::with_known_substitution(store, &report.substitutions);
-    let item_type = match store.get(iter) {
-        Some(
-            Type::Array(inner)
-            | Type::List(inner)
-            | Type::Set(inner)
-            | Type::Slice(inner)
-            | Type::MemorySelection(inner),
-        ) => *inner,
-        Some(Type::Range { index }) => *index,
-        Some(Type::Applied { constructor, args })
-            if known_std_types
-                .iterables
-                .contains_key(&TypeId(constructor.0)) =>
-        {
-            let fact = &known_std_types.iterables[&TypeId(constructor.0)];
-            let item = if args.len() != fact.arity {
-                None
-            } else {
-                match fact.item {
-                    StdIterableItemFact::Element { parameter } => {
-                        args.get(parameter).map(|ty| Ok(*ty))
-                    }
-                    StdIterableItemFact::Entry { key, value } => {
-                        args.get(key).zip(args.get(value)).map(|(key, value)| {
-                            entry_item(store, &mut unifier, *key, *value, entry_pair, origin)
-                        })
-                    }
-                }
-            };
-            let Some(item) = item else {
-                report.push(SolverFailure {
-                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
-                    span: origin.span,
-                    message: "standard iterable arguments do not match its checked declaration"
-                        .into(),
-                });
-                return;
-            };
-            match item {
-                Ok(item) => item,
-                Err(failure) => {
-                    report.push(failure);
-                    return;
-                }
-            }
-        }
-        Some(Type::Map { key, value }) => {
-            match entry_item(store, &mut unifier, *key, *value, entry_pair, origin) {
-                Ok(item) => item,
-                Err(failure) => {
-                    report.push(failure);
-                    return;
-                }
-            }
-        }
-        _ => {
+    let sequence = match crate::value_representation::sequence_element_in_store(store, iter) {
+        Ok(element) => element,
+        Err(error) => {
             report.push(SolverFailure {
-                code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
                 span: origin.span,
-                message: "for-loop iterator must be an iterable collection or range".into(),
+                message: format!("sequence iteration layout is incomplete: {error}"),
             });
             return;
+        }
+    };
+    let item_type = if let Some(element) = sequence {
+        element
+    } else {
+        match store.get(iter) {
+            Some(Type::Primitive(crate::PrimitiveType::Bytes)) => byte_item,
+            Some(
+                Type::Array(inner)
+                | Type::List(inner)
+                | Type::Set(inner)
+                | Type::Slice(inner)
+                | Type::MemorySelection(inner),
+            ) => *inner,
+            Some(Type::Range { index }) => *index,
+            Some(Type::Applied { constructor, args })
+                if known_std_types
+                    .iterables
+                    .contains_key(&TypeId(constructor.0)) =>
+            {
+                let fact = &known_std_types.iterables[&TypeId(constructor.0)];
+                let item = if args.len() != fact.arity {
+                    None
+                } else {
+                    match fact.item {
+                        StdIterableItemFact::Element { parameter } => {
+                            args.get(parameter).map(|ty| Ok(*ty))
+                        }
+                        StdIterableItemFact::Entry { key, value } => {
+                            args.get(key).zip(args.get(value)).map(|(key, value)| {
+                                entry_item(store, &mut unifier, *key, *value, entry_pair, origin)
+                            })
+                        }
+                    }
+                };
+                let Some(item) = item else {
+                    report.push(SolverFailure {
+                        code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                        span: origin.span,
+                        message: "standard iterable arguments do not match its checked declaration"
+                            .into(),
+                    });
+                    return;
+                };
+                match item {
+                    Ok(item) => item,
+                    Err(failure) => {
+                        report.push(failure);
+                        return;
+                    }
+                }
+            }
+            Some(Type::Map { key, value }) => {
+                match entry_item(store, &mut unifier, *key, *value, entry_pair, origin) {
+                    Ok(item) => item,
+                    Err(failure) => {
+                        report.push(failure);
+                        return;
+                    }
+                }
+            }
+            _ => {
+                report.push(SolverFailure {
+                    code: etas_core::TypeDiagnosticCode::TypeMismatch,
+                    span: origin.span,
+                    message: "for-loop iterator must be an iterable collection or range".into(),
+                });
+                return;
+            }
         }
     };
     if unifier.unify(item_type, item).is_ok() {

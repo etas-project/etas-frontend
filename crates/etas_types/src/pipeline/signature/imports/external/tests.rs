@@ -58,6 +58,9 @@ fn with_binding(
     let package = ExternalPackageKey(7);
     let input = ExternalSignatureInput {
         metadata: vec![crate::ExternalPublicMetadataInput {
+            parameter_interfaces: Default::default(),
+            method_parameter_interfaces: Default::default(),
+            scoped_callbacks: Vec::new(),
             behavior_types: vec![],
             package,
             types: declarations,
@@ -99,10 +102,15 @@ fn imported_spec_alias_reuses_checked_external_method_signature() {
         generic_params: vec![],
         callable: None,
         methods: vec![crate::ExternalSpecMethodInput {
+            updating_receiver: false,
             receiver_param: None,
             name: "render".into(),
             path: method_path.clone(),
             signature: Some(crate::ExternalFlowSignatureInput {
+                definition: None,
+                parameter_interface: crate::call_interface::required_parameters(&[Some(
+                    "self".into(),
+                )]),
                 path: method_path,
                 generic_params: vec![],
                 param_names: vec!["self".into()],
@@ -144,6 +152,7 @@ fn imported_spec_alias_rejects_missing_checked_method_facts() {
         generic_params: vec![],
         callable: None,
         methods: vec![crate::ExternalSpecMethodInput {
+            updating_receiver: false,
             receiver_param: None,
             name: "render".into(),
             path: vec!["dep".into(), "Show".into(), "render".into()],
@@ -189,10 +198,16 @@ fn external_spec_methods_are_checked_without_importing_the_spec_name() {
         generic_params: vec![],
         callable: None,
         methods: vec![crate::ExternalSpecMethodInput {
+            updating_receiver: false,
             receiver_param: None,
             name: "render".into(),
             path: method_path.clone(),
             signature: Some(crate::ExternalFlowSignatureInput {
+                definition: None,
+                parameter_interface: crate::call_interface::required_parameters(&[
+                    Some("self".into()),
+                    Some("value".into()),
+                ]),
                 path: method_path.clone(),
                 param_names: vec!["self".into(), "value".into()],
                 generic_params: vec![

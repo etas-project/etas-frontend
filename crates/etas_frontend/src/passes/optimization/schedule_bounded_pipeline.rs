@@ -64,6 +64,7 @@ impl Pass<ProjectContext> for ScheduleBoundedPipelinePass {
         if !fusions.is_empty() {
             super::facts::invalidate_replaced_expressions(
                 context,
+                &output.hir,
                 fusions.values().flatten().flat_map(|fusion| {
                     expression_tree(output.hir.program(), fusion.second.iterable)
                         .into_iter()

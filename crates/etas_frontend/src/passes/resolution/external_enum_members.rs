@@ -62,3 +62,68 @@ pub(super) fn install(context: &mut ProjectContext, hir: &mut HirProgram) -> Res
     }
     Ok(())
 }
+
+/// Standard enums use the selected registry's checked layout, independently of
+/// external dependency metadata and the source program's own enum declarations.
+pub(super) fn install_std(registry: &etas_std::StdRegistry, hir: &mut HirProgram) {
+    // Lowering can resolve a qualified constructor before import members are
+    // installed. Give those existing aliases the same layout provenance.
+    let constructors = hir
+        .symbols
+        .iter()
+        .filter_map(|symbol| {
+            let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                return None;
+            };
+            if hir.source_import_targets.contains_key(&symbol.id) {
+                return None;
+            }
+            let variant = registry.lookup_qualified(path)?;
+            let owner = variant.enum_owner?;
+            let index = registry
+                .enum_constructors(owner)
+                .position(|candidate| candidate.id == variant.id)?;
+            Some((
+                symbol.id,
+                index.try_into().expect("standard enum layout capacity"),
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (id, variant_index) in constructors {
+        let symbol = hir.symbols.get_mut(id).unwrap();
+        symbol.kind = SymbolKind::EnumVariant;
+        let SymbolDef::ImportAlias { origin, .. } = &mut symbol.def else {
+            unreachable!()
+        };
+        *origin = etas_hir::ImportAliasOrigin::StdEnumVariant { variant_index };
+    }
+    let owners = hir.symbols.iter().filter_map(|owner| {
+        let SymbolDef::ImportAlias { path, origin } = &owner.def else { return None; };
+        if hir.source_import_targets.contains_key(&owner.id)
+            || matches!(origin, etas_hir::ImportAliasOrigin::StdEnumVariant { .. }) { return None; }
+        let declaration = registry.lookup_qualified(path)?;
+        matches!(&declaration.decl, etas_std::StdDecl::Type(ty) if ty.kind == etas_std::TypeDeclKind::Enum)
+            .then(|| (owner.clone(), declaration.id))
+    }).collect::<Vec<_>>();
+    for (owner, id) in owners {
+        for (index, variant) in registry.enum_constructors(id).enumerate() {
+            let symbol = hir.symbols.alloc(SymbolData {
+                name: variant.name.clone(),
+                kind: SymbolKind::EnumVariant,
+                visibility: owner.visibility,
+                defining_module: owner.defining_module,
+                defining_item: None,
+                def: SymbolDef::ImportAlias {
+                    path: variant.qualified_path.clone(),
+                    origin: etas_hir::ImportAliasOrigin::StdEnumVariant {
+                        variant_index: index.try_into().expect("standard enum layout capacity"),
+                    },
+                },
+                declared_type: None,
+                definition_span: owner.definition_span,
+            });
+            hir.symbols
+                .insert_member(owner.id, variant.name.clone(), symbol);
+        }
+    }
+}

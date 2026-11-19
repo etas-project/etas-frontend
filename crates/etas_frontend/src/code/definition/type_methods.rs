@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use etas_code::descriptor::DescriptorLimits;
 use etas_code::{ImplementationHeader, ImplementationKey, ImplementationSpecIdentity, MethodId};
 use etas_hir::{HirImplTarget, HirItem, SymbolId};
-use etas_types::Type;
 
 use crate::code::{
     descriptor::{DefinitionDescriptorProjector, DescriptorInput, ProjectionError},
@@ -22,8 +21,15 @@ pub(crate) fn type_method_identities(
         let implementation = match implementations.get(&method.implementation) {
             Some(identity) => identity,
             None => {
-                let identity =
-                    implementation_identity(checked, identities, origins, limits, method)?;
+                let identity = implementation_identity(
+                    checked,
+                    identities,
+                    origins,
+                    limits,
+                    method.implementation,
+                    method.self_type,
+                    &method.owner_params,
+                )?;
                 implementations
                     .entry(method.implementation)
                     .or_insert(identity)
@@ -37,34 +43,83 @@ pub(crate) fn type_method_identities(
     Ok(methods)
 }
 
-fn implementation_identity(
+pub(crate) fn implementation_identity(
     checked: DescriptorInput<'_>,
     identities: &DefinitionIdentityIndex,
     origins: &DefinitionOrigins,
     limits: DescriptorLimits,
-    method: &etas_types::facts::TypeImplMethodFact,
+    implementation: etas_hir::HirItemId,
+    self_type: etas_types::TypeId,
+    owner_params: &[etas_types::CallableGenericParam],
 ) -> Result<ImplementationKey, ProjectionError> {
-    let (constructor, arguments) = match checked.type_store.get(method.self_type) {
-        Some(Type::Applied { constructor, args }) => {
-            (etas_types::TypeId(constructor.0), args.as_slice())
-        }
-        Some(_) => (method.self_type, &[][..]),
-        None => return Err(ProjectionError::MissingType(method.self_type)),
-    };
-    let subject = identities
-        .types
-        .get(&constructor)
-        .ok_or(ProjectionError::MissingType(constructor))?
-        .identity
-        .clone();
-    let mut projector = DefinitionDescriptorProjector::from_input(checked, identities, limits);
-    let arguments =
-        projector.project_implementation_pattern(&subject, &method.owner_params, arguments)?;
-    let Some(HirItem::Impl(decl)) = checked.items.get(method.implementation) else {
+    let Some(HirItem::Impl(decl)) = checked.items.get(implementation) else {
         return Err(ProjectionError::Invalid(
             "type method has no checked implementation owner".into(),
         ));
     };
+    // Named receivers keep the underlying declaration's identity. Structural
+    // aliases have no nominal constructor, so their authored header owns the
+    // method identity and ordered arguments.
+    let constructor = match checked.type_store.get(self_type) {
+        Some(etas_types::Type::Applied { constructor, .. }) => etas_types::TypeId(constructor.0),
+        _ => self_type,
+    };
+    let named_subject = matches!(
+        checked.type_store.get(constructor),
+        Some(etas_types::Type::Nominal(_) | etas_types::Type::Enum(_))
+    );
+    let authored = match &decl.target {
+        HirImplTarget::Inherent { target, type_args } => Some((target, type_args)),
+        HirImplTarget::SpecSatisfaction { self_type, .. } => {
+            match checked.hir.types.get(*self_type) {
+                Some(etas_hir::HirType::Path { path, args, .. }) => Some((path, args)),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let alias = authored
+        .filter(|_| !named_subject)
+        .and_then(|(path, args)| {
+            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                return None;
+            };
+            let identity = identities.symbol(symbol)?;
+            identities
+                .type_declarations
+                .values()
+                .find(|declaration| {
+                    declaration.alias.is_some() && &declaration.identity == identity
+                })
+                .map(|declaration| (declaration, args))
+        });
+    let (declaration, arguments) = match alias {
+        Some((declaration, args)) => (
+            declaration,
+            args.iter()
+                .map(|ty| {
+                    checked
+                        .types
+                        .type_refs
+                        .get(ty)
+                        .copied()
+                        .ok_or(ProjectionError::MissingTypeReference(*ty))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        None => identities
+            .method_subject(checked.type_store, self_type)
+            .map_err(|error| {
+                ProjectionError::Invalid(format!(
+                    "implementation receiver {:?} ({:?}): {error}",
+                    self_type,
+                    checked.type_store.get(self_type),
+                ))
+            })?,
+    };
+    let subject = declaration.identity.clone();
+    let mut projector = DefinitionDescriptorProjector::from_input(checked, identities, limits);
+    let arguments = projector.project_implementation_pattern(&subject, owner_params, &arguments)?;
     let specs = match &decl.target {
         HirImplTarget::SpecSatisfaction { specs, .. } => specs.as_slice(),
         HirImplTarget::Inherent { .. } => &[],
@@ -99,17 +154,25 @@ fn implementation_identity(
             .collect::<Result<Vec<_>, _>>()?;
         selected.push((
             identity,
-            projector.project_implementation_pattern(&subject, &method.owner_params, &types)?,
+            projector.project_implementation_pattern(&subject, owner_params, &types)?,
         ));
     }
-    let data = checked
-        .symbols
-        .get(method.symbol)
-        .ok_or(ProjectionError::MissingSymbol(method.symbol))?;
+    let module = checked
+        .modules
+        .iter()
+        .copied()
+        .find(|module| {
+            checked.hir.modules_arena[*module]
+                .items
+                .contains(&implementation)
+        })
+        .ok_or_else(|| {
+            ProjectionError::Invalid("implementation has no owning source module".into())
+        })?;
     let origin = origins
         .source_modules
-        .get(&data.defining_module)
-        .ok_or(ProjectionError::MissingPackage(data.defining_module))?;
+        .get(&module)
+        .ok_or(ProjectionError::MissingPackage(module))?;
     let graph = projector.finish()?;
     let arguments = arguments
         .into_iter()

@@ -178,11 +178,9 @@ impl Builder<'_, '_> {
                                 "exported object payload has an unbound root parameter",
                             ));
                         }
+                        let scope = self.object_scope(instance, parameter.scope)?;
                         payload_sources.insert(CallableValueSource::Parameter(
-                            CallableValueParameter {
-                                scope: self.object_scope(instance, parameter.scope)?,
-                                position: parameter.position,
-                            },
+                            self.foreign_parameter(instance.source.graph, *parameter, scope)?,
                         ));
                     }
                 }

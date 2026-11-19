@@ -138,17 +138,11 @@ impl EffectSemantics<'_> {
                     _ => None,
                 }),
         ) {
-            if let Some(returned) = summary
-                .exits
-                .as_ref()
-                .and_then(|exits| exits.callable_return_sources())
-            {
-                for source in returned {
-                    if let CallableReturnSource::Metadata(source) = source {
-                        sources.insert(source);
-                    } else if let CallableReturnSource::MetadataObject(source) = source {
-                        object_sources.insert(source);
-                    }
+            for source in super::descriptor_return_sources(summary) {
+                if let CallableReturnSource::Metadata(source) = source {
+                    sources.insert(source);
+                } else if let CallableReturnSource::MetadataObject(source) = source {
+                    object_sources.insert(source);
                 }
             }
         }
@@ -246,6 +240,14 @@ impl EffectSemantics<'_> {
                 key,
                 environment,
             );
+            for projection in &node.returned_projections {
+                enqueue(
+                    &mut pending,
+                    projection.sources.as_deref().unwrap_or(&[]),
+                    key,
+                    environment,
+                );
+            }
             let analysis = match self.solve_callable_summary_in_mode(
                 LatentSource::Metadata(source),
                 anchor,

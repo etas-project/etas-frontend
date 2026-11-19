@@ -28,8 +28,30 @@ pub fn collect_record<E>(
             "record constructor is not resolved to a type or named enum variant",
         );
     }
+    let primitive = constructor_target.and_then(|ty| {
+        crate::value_representation::checked_primitive_input(
+            ctx.ctx.interner.store(),
+            &ctx.ctx.spec_facts(),
+            ty,
+        )
+    });
+    let primitive_field =
+        primitive.map(|input| (input.name(), input.materialize(&mut ctx.ctx.interner)));
     let field_hint_target = constructor_target.or(expected);
-    let target_fields = field_hint_target.and_then(|ty| record_fields(ctx, ty, record.span));
+    let range = constructor_target
+        .and_then(|ty| crate::value_representation::range_fields(ctx.ctx.interner.store(), ty));
+    let target_fields = if let Some(range) = &range {
+        Some(range.clone())
+    } else if let Some((name, ty)) = primitive_field {
+        Some(RecordType {
+            fields: vec![FieldType {
+                name: name.into(),
+                ty,
+            }],
+        })
+    } else {
+        field_hint_target.and_then(|ty| record_fields(ctx, ty, record.span))
+    };
     let mut seen = HashSet::new();
     let mut fields = Vec::new();
     for field in &record.fields {
@@ -51,6 +73,50 @@ pub fn collect_record<E>(
         });
         let ty = collect_field_value(ctx, field, expected_field)?;
         fields.push(FieldType { name, ty });
+    }
+    if let Some((name, input)) = primitive_field {
+        if let [field] = fields.as_slice()
+            && field.name == name
+        {
+            ctx.emit(TypeConstraint::Assignable {
+                from: field.ty,
+                to: input,
+                origin: ConstraintOrigin { span: record.span },
+                reason: AssignabilityReason::Constructor,
+            });
+        } else {
+            super::enum_variant::invalid(
+                ctx,
+                record.span,
+                format!("primitive representation constructor requires exactly the `{name}` field"),
+            );
+        }
+        return Ok(constructor_target.expect("explicit primitive constructor target"));
+    }
+    if let Some(range) = range {
+        if fields.len() != range.fields.len()
+            || fields.iter().any(|field| {
+                !range
+                    .fields
+                    .iter()
+                    .any(|expected| expected.name == field.name)
+            })
+        {
+            super::enum_variant::invalid(
+                ctx,
+                record.span,
+                "range representation constructor requires start, end, include_start and include_end",
+            );
+        }
+        let actual = ctx.ctx.interner.intern(Type::Record(RecordType { fields }));
+        let expected = ctx.ctx.interner.intern(Type::Record(range));
+        ctx.emit(TypeConstraint::Assignable {
+            from: actual,
+            to: expected,
+            origin: ConstraintOrigin { span: record.span },
+            reason: AssignabilityReason::Constructor,
+        });
+        return Ok(constructor_target.expect("explicit range constructor target"));
     }
     let actual = ctx.ctx.interner.intern(Type::Record(RecordType { fields }));
     let ty = if let Some(expected) = constructor_target {
@@ -93,6 +159,22 @@ fn record_constructor_type<E>(
     let ResolveResult::Resolved(symbol) = path.resolution else {
         return None;
     };
+    let canonical = ctx
+        .ctx
+        .symbols
+        .canonical_symbol(ctx.ctx.hir, symbol)
+        .unwrap_or(symbol);
+    if let Some(parameter) = ctx.ctx.hir.symbols.get(canonical)
+        && matches!(parameter.def, etas_hir::SymbolDef::TypeParam { .. })
+        && generic_args.is_empty()
+    {
+        return Some(ctx.ctx.bound_type_parameter(canonical).unwrap_or_else(|| {
+            ctx.ctx.interner.intern(Type::Named(crate::NamedTypeRef {
+                name: parameter.name.clone(),
+                source_parameter: Some(canonical),
+            }))
+        }));
+    }
     let args = lower_record_generic_args(ctx, generic_args);
     let fact = ctx.ctx.symbol_fact(symbol)?.clone();
     super::nominal_constructor::target(ctx, fact, &args, span)

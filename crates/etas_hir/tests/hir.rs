@@ -2298,3 +2298,50 @@ tool Search() -> unit ~ policy {
         "only the source flow body should remain; obsolete inline policy must not create bodies"
     );
 }
+
+#[test]
+fn execution_declarations_have_no_body_and_receiver_modes_survive_lowering() {
+    let hir = lower(
+        r#"
+module example;
+spec Switchable { flow enable(var self) -> unit; }
+type Switch = { enabled: bool };
+impl Switch {
+    flow enable(var self) -> unit { self = Switch { enabled = true }; }
+    flow snapshot(self) -> bool { return self.enabled; }
+    flow capture() -> Switch;
+}
+flow clock() -> u64;
+flow identity(value: i32) -> i32 { return value; }
+"#,
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let view = HirTreeView::try_new(&hir).expect("declarations have no synthetic body nodes");
+    let mut declarations = 0;
+    let mut updating = 0;
+    let mut value_receivers = 0;
+    for item in view.items() {
+        match item.data() {
+            HirItem::Flow(flow) => {
+                if matches!(flow.body, HirFlowBody::Decl { .. }) {
+                    assert!(flow.body.as_block().is_none());
+                    assert!(item.body().is_none());
+                    declarations += 1;
+                }
+                match flow.receiver_mode {
+                    etas_hir::HirReceiverMode::Updating => updating += 1,
+                    etas_hir::HirReceiverMode::Value => value_receivers += 1,
+                    etas_hir::HirReceiverMode::None => {}
+                }
+            }
+            HirItem::Spec(spec) => {
+                let etas_hir::HirSpecItem::FlowSignature(method) = &spec.items[0] else {
+                    panic!("expected spec method");
+                };
+                assert_eq!(method.receiver_mode, etas_hir::HirReceiverMode::Updating);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((declarations, updating, value_receivers), (2, 1, 1));
+}

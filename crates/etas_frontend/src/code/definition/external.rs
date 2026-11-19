@@ -50,8 +50,10 @@ impl DefinitionCatalog {
         }
         let mut bindings = required.clone();
         for (symbol, fact) in &self.checked.types.symbol_types {
-            if !matches!(fact, SymbolTypeFact::Flow { .. })
-                || self.callable_bindings.contains_key(symbol)
+            if !matches!(
+                fact,
+                SymbolTypeFact::Flow { .. } | SymbolTypeFact::Tool { .. }
+            ) || self.callable_bindings.contains_key(symbol)
             {
                 continue;
             }
@@ -69,11 +71,27 @@ impl DefinitionCatalog {
                 }
             }
         }
-        let pending = bindings.values().collect::<BTreeSet<_>>();
-        for metadata in self.checked.external_definition_origins() {
-            let Some(set) = &metadata.descriptors else {
-                continue;
-            };
+        let mut pending = bindings.values().cloned().collect::<BTreeSet<_>>();
+        pending.extend(self.checked.types.methods.entries().filter_map(
+            |method| match &method.target {
+                etas_types::method::MethodTarget::External { identity } => {
+                    Some(CallableId::method(identity.clone()))
+                }
+                _ => None,
+            },
+        ));
+        let standard = self
+            .checked
+            .standard_library
+            .as_ref()
+            .map(|library| library.descriptors.clone());
+        for set in self
+            .checked
+            .external_definition_origins()
+            .iter()
+            .filter_map(|metadata| metadata.descriptors.as_ref())
+            .chain(standard.as_deref())
+        {
             let Some(headers) = &set.headers else {
                 continue;
             };
@@ -90,7 +108,15 @@ impl DefinitionCatalog {
                 snapshots
                     .flows
                     .iter()
+                    .chain(&snapshots.tools)
                     .map(|snapshot| (&snapshot.identity, snapshot))
+                    .collect::<BTreeMap<_, _>>()
+            });
+            let method_snapshots = headers.snapshots.as_ref().map(|snapshots| {
+                snapshots
+                    .methods
+                    .iter()
+                    .map(|snapshot| (&snapshot.revision.definition, snapshot))
                     .collect::<BTreeMap<_, _>>()
             });
             let bodies = headers.bodies.as_ref().map(|bodies| {
@@ -105,11 +131,16 @@ impl DefinitionCatalog {
                     .as_ref()
                     .and_then(|bodies| bodies.get(&header.id))
                     .map(|body| Arc::new((*body).clone()));
-                let snapshot = header
-                    .id
-                    .as_declaration()
-                    .and_then(|identity| snapshots.as_ref()?.get(identity))
-                    .map(|snapshot| (*snapshot).clone());
+                let snapshot = if let Some(identity) = header.id.as_declaration() {
+                    snapshots
+                        .as_ref()
+                        .and_then(|snapshots| snapshots.get(identity))
+                } else {
+                    method_snapshots
+                        .as_ref()
+                        .and_then(|snapshots| snapshots.get(&header.id))
+                }
+                .map(|snapshot| (*snapshot).clone());
                 if let Some(existing) = self.external_callables.get(&header.id) {
                     if existing.header != *header
                         || existing.graph != graph

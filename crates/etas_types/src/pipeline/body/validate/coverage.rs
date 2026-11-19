@@ -175,6 +175,10 @@ impl Coverage<'_, '_> {
             Type::Primitive(PrimitiveType::Unit) => Some(vec![ctor("tuple", vec![])]),
             Type::Option(inner) => Some(vec![ctor("Some", vec![inner]), ctor("None", vec![])]),
             Type::Result { ok, err } => Some(vec![ctor("Ok", vec![ok]), ctor("Err", vec![err])]),
+            Type::List(inner) => Some(vec![
+                ctor("list.empty", vec![]),
+                ctor("list.cons", vec![inner, ty]),
+            ]),
             Type::Tuple(fields) => Some(vec![ctor("tuple", fields)]),
             Type::Record(record) => Some(vec![Constructor {
                 tag: Tag::Structural("record"),
@@ -192,6 +196,10 @@ impl Coverage<'_, '_> {
                 };
                 // Projection unfolds one representation layer; recursive fields remain identities.
                 match self.ctx.interner.store().get(representation).cloned() {
+                    Some(Type::List(inner)) => Some(vec![
+                        ctor("list.empty", vec![]),
+                        ctor("list.cons", vec![inner, ty]),
+                    ]),
                     Some(Type::Record(record)) => Some(vec![Constructor {
                         tag: Tag::Structural("record"),
                         fields: record.fields.iter().map(|f| f.ty).collect(),
@@ -224,6 +232,10 @@ impl Coverage<'_, '_> {
                 },
                 Vec::new(),
             ),
+            HirPat::EmptyList { .. } => self.positional(Tag::Structural("list.empty"), vec![], ty),
+            HirPat::ListCons { head, tail, .. } => {
+                self.positional(Tag::Structural("list.cons"), vec![head, tail], ty)
+            }
             HirPat::Tuple { elems, .. } => self.positional(Tag::Structural("tuple"), elems, ty),
             HirPat::Variant { path, args, .. } => {
                 let tag = self.variant_tag(&path, ty);
@@ -317,10 +329,59 @@ impl Coverage<'_, '_> {
                     self.ctx.interner.store(),
                     symbol,
                     self.ctx.symbol_type(symbol.id)?,
+                    self.ctx.known_std_types(),
                 )?;
                 let layout = self.ctx.enum_layout(result)?;
+                if self.ctx.known_std_types().option_enum == Some(result)
+                    && matches!(self.ctx.interner.store().get(ty), Some(Type::Option(_)))
+                {
+                    return match layout.variants.get(index)?.name.as_str() {
+                        "Some" => Some(Tag::Structural("Some")),
+                        "None" => Some(Tag::Structural("None")),
+                        _ => None,
+                    };
+                }
+                if self.ctx.known_std_types().result_enum == Some(result)
+                    && matches!(self.ctx.interner.store().get(ty), Some(Type::Result { .. }))
+                {
+                    return match layout.variants.get(index)?.name.as_str() {
+                        "Ok" => Some(Tag::Structural("Ok")),
+                        "Err" => Some(Tag::Structural("Err")),
+                        _ => None,
+                    };
+                }
                 (owner == result && layout.variants.get(index)?.name == symbol.name)
                     .then_some(Tag::Variant { owner, index })
+            }
+            SymbolDef::Item { .. } => {
+                let native = self
+                    .ctx
+                    .source_type_role(symbol.id)
+                    .and_then(|native| self.ctx.std_registry.symbol(native))?;
+                match (
+                    self.ctx.interner.store().get(ty)?,
+                    native.qualified_path.as_slice(),
+                ) {
+                    (Type::Option(_), [std, option, name])
+                        if std == "std" && option == "option" =>
+                    {
+                        match name.as_str() {
+                            "Some" => Some(Tag::Structural("Some")),
+                            "None" => Some(Tag::Structural("None")),
+                            _ => None,
+                        }
+                    }
+                    (Type::Result { .. }, [std, result, name])
+                        if std == "std" && result == "result" =>
+                    {
+                        match name.as_str() {
+                            "Ok" => Some(Tag::Structural("Ok")),
+                            "Err" => Some(Tag::Structural("Err")),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
             }
             SymbolDef::ImportAlias { path, .. } => {
                 let std = self.ctx.std_registry.lookup_qualified(path)?;

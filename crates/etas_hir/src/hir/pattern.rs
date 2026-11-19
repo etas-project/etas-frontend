@@ -4,7 +4,7 @@ use crate::{Arena, HirLiteral, HirPatId, ResolvedPath, SymbolId};
 
 pub type HirPatArena = Arena<HirPatId, HirPat>;
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirPat {
     Binding {
         symbol: SymbolId,
@@ -14,6 +14,14 @@ pub enum HirPat {
         span: Span,
     },
     Literal(HirLiteral),
+    EmptyList {
+        span: Span,
+    },
+    ListCons {
+        head: HirPatId,
+        tail: HirPatId,
+        span: Span,
+    },
     Tuple {
         elems: Vec<HirPatId>,
         span: Span,
@@ -38,6 +46,8 @@ impl HirPat {
         match self {
             Self::Binding { span, .. }
             | Self::Wildcard { span }
+            | Self::EmptyList { span }
+            | Self::ListCons { span, .. }
             | Self::Tuple { span, .. }
             | Self::Record { span, .. }
             | Self::Variant { span, .. }
@@ -47,7 +57,7 @@ impl HirPat {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirRecordPatField {
     pub name: String,
     pub pat: Option<HirPatId>,

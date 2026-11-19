@@ -109,7 +109,7 @@ impl Pass<ProjectContext> for ResolveImportTargetsPass {
                     }
                 }
             }
-            diagnostics.extend(duplicate_explicit_import_diagnostics(&imports));
+            diagnostics.extend(duplicate_explicit_import_diagnostics(&imports, context));
             (imports, wildcard_imports, re_exports, diagnostics)
         };
         for re_export in &re_exports {
@@ -159,7 +159,10 @@ fn materialize_source_re_exports(context: &mut ProjectContext) -> Result<(), Str
             continue;
         };
         for (name, export) in &record.exports.items {
-            let ModuleExportTarget::Source { item, .. } = &export.target else {
+            let ModuleExportTarget::Source {
+                item, member: None, ..
+            } = &export.target
+            else {
                 continue;
             };
             let mut source = originals
@@ -255,6 +258,8 @@ fn apply_re_exports_to_catalog(
     imports: &[ResolvedImport],
     wildcard_imports: &[ResolvedWildcardImport],
 ) -> bool {
+    let source_bootstrap =
+        context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap;
     let Some(catalog) = context.module_catalog.as_mut() else {
         return false;
     };
@@ -309,11 +314,22 @@ fn apply_re_exports_to_catalog(
     let mut changed = false;
     for (from_key, name, export) in explicit_exports.into_iter().chain(wildcard_exports) {
         if let Some(record) = catalog.modules.get_mut(from_key) {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                record.exports.items.entry(name)
-            {
-                entry.insert(export);
-                changed = true;
+            match record.exports.items.entry(name) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(export);
+                    changed = true;
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry)
+                    if source_bootstrap
+                        && matches!(&entry.get().target, ModuleExportTarget::Std { .. })
+                        && matches!(&export.target, ModuleExportTarget::Source { .. }) =>
+                {
+                    // A checked source re-export replaces the bootstrap query
+                    // placeholder, just like a direct source declaration.
+                    entry.insert(export);
+                    changed = true;
+                }
+                _ => {}
             }
         }
     }
@@ -323,9 +339,15 @@ fn apply_re_exports_to_catalog(
 pub(super) fn module_export_target_for_import(target: &ImportTarget) -> Option<ModuleExportTarget> {
     match target {
         ImportTarget::Module(_) => None,
-        ImportTarget::SourceItem { module, item, .. } => Some(ModuleExportTarget::Source {
+        ImportTarget::SourceItem {
+            module,
+            item,
+            member,
+            ..
+        } => Some(ModuleExportTarget::Source {
             module: *module,
             item: item.clone(),
+            member: member.clone(),
         }),
         ImportTarget::StdItem {
             module,
@@ -391,9 +413,14 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         if let Err(error) = install_wildcard_import_aliases(context, hir, wildcard_imports) {
             return PassResult::failed(error);
         }
+        if let Err(error) = install_qualified_source_module_members(context, hir) {
+            return PassResult::failed(error);
+        }
+        install_source_std_prelude_aliases(context, hir);
         if let Err(error) = super::external_enum_members::install(context, hir) {
             return PassResult::failed(error);
         }
+        super::external_enum_members::install_std(&context.std_registry, hir);
         super::source_members::canonicalize_agent_method_owners(hir);
         let resolved = super::source_members::resolve_members(hir);
         install_external_effect_action_refs(context, hir);
@@ -409,6 +436,141 @@ impl Pass<ProjectContext> for ApplyResolvedImportsToHirPass {
         };
         context.hir = Some(crate::HirOutput { hir });
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(HIR_OUTPUT))
+    }
+}
+
+fn install_qualified_source_module_members(
+    context: &mut ProjectContext,
+    hir: &mut etas_hir::HirProgram,
+) -> Result<(), String> {
+    let modules = context.modules.as_ref().expect("checked module index");
+    let catalog = context
+        .module_catalog
+        .as_ref()
+        .expect("checked module catalog");
+    let bindings = context
+        .hir_item_bindings
+        .as_ref()
+        .expect("checked HIR item bindings");
+    let environment = context
+        .validated_external_environment
+        .as_ref()
+        .expect("checked external environment");
+    let symbols_by_item = super::source_members::source_item_symbols(hir);
+    let module_symbols = hir
+        .symbols
+        .iter()
+        .filter_map(|symbol| match symbol.def {
+            etas_hir::SymbolDef::Module { module } => Some((symbol.id, module)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut external_members = Vec::new();
+    for (symbol, module) in module_symbols {
+        let source = hir.modules_arena[module].span.source;
+        let source_module = modules
+            .by_source
+            .get(&source)
+            .ok_or("qualified source module has no module index identity")?;
+        let key = catalog
+            .source_module_key(*source_module)
+            .ok_or("qualified source module has no checked catalog entry")?;
+        let record = &catalog.modules[key];
+        let mut exports = record.exports.clone();
+        // Std overlays and their selected provider share one module namespace.
+        // Source exports retain ownership; the provider supplies its other APIs.
+        if let Some(keys) = catalog.module_keys(&record.path) {
+            for key in keys {
+                let provider = &catalog.modules[*key];
+                if matches!(provider.origin, crate::CatalogModuleOrigin::Std { .. }) {
+                    for (name, export) in &provider.exports.items {
+                        exports
+                            .items
+                            .entry(name.clone())
+                            .or_insert_with(|| export.clone());
+                    }
+                }
+            }
+        }
+        external_members.extend(super::source_members::bind_module_members(
+            hir,
+            symbol,
+            &exports,
+            bindings,
+            &symbols_by_item,
+            &context.std_registry,
+            &environment.environment().external_modules,
+        )?);
+    }
+    context
+        .hir_item_bindings
+        .as_mut()
+        .expect("checked HIR item bindings")
+        .external_import_members
+        .extend(external_members);
+    Ok(())
+}
+
+fn install_source_std_prelude_aliases(context: &ProjectContext, hir: &mut etas_hir::HirProgram) {
+    if context.input.options.standard_library_mode != crate::StandardLibraryMode::SourceBootstrap {
+        return;
+    }
+    let catalog = context
+        .module_catalog
+        .as_ref()
+        .expect("checked module catalog");
+    let bindings = context
+        .hir_item_bindings
+        .as_ref()
+        .expect("checked HIR item bindings");
+    let mut exports = BTreeMap::new();
+    for (_, module) in catalog.modules.iter() {
+        for (name, export) in &module.exports.items {
+            if export.visibility != etas_hir::Visibility::Public {
+                continue;
+            }
+            let ModuleExportTarget::Source { item, member, .. } = &export.target else {
+                continue;
+            };
+            if let Some(item) = bindings.ast_to_hir.get(item) {
+                let mut path = module.path.segments.clone();
+                path.push(name.clone());
+                if let Some(symbol) =
+                    super::source_members::source_member_symbol(hir, *item, member.as_deref())
+                {
+                    exports.insert(path, symbol);
+                }
+            }
+        }
+    }
+    let aliases = hir
+        .symbols
+        .iter()
+        .filter_map(|symbol| {
+            let etas_hir::SymbolDef::ImportAlias {
+                path,
+                origin: etas_hir::ImportAliasOrigin::StdPrelude,
+            } = &symbol.def
+            else {
+                return None;
+            };
+            exports.get(path).map(|item| (symbol.id, *item))
+        })
+        .collect::<Vec<_>>();
+    for (alias, target) in aliases {
+        hir.source_import_targets.insert(alias, target);
+        if let Some(item) = hir
+            .symbols
+            .get(target)
+            .and_then(|symbol| symbol.defining_item)
+        {
+            if !matches!(
+                hir.symbols.get(target).unwrap().kind,
+                etas_hir::SymbolKind::EnumVariant
+            ) {
+                super::source_members::bind_members(hir, alias, item);
+            }
+        }
     }
 }
 
@@ -696,16 +858,20 @@ fn install_wildcard_import_aliases(
                         },
                     );
             }
-            if let ImportTarget::SourceItem { item, .. } = target
+            if let ImportTarget::SourceItem { item, member, .. } = target
                 && let Some(item) = context
                     .hir_item_bindings
                     .as_ref()
                     .and_then(|bindings| bindings.ast_to_hir.get(item))
             {
-                if let Some(target) = hir.items.get(*item).and_then(etas_hir::HirItem::symbol) {
+                if let Some(target) =
+                    super::source_members::source_member_symbol(hir, *item, member.as_deref())
+                {
                     hir.source_import_targets.insert(symbol, target);
                 }
-                super::source_members::bind_members(hir, symbol, *item);
+                if member.is_none() {
+                    super::source_members::bind_members(hir, symbol, *item);
+                }
             }
         }
     }
@@ -793,16 +959,20 @@ fn install_explicit_import_aliases(
                 },
             ));
         }
-        if let ImportTarget::SourceItem { item, .. } = &import.target
+        if let ImportTarget::SourceItem { item, member, .. } = &import.target
             && let Some(item) = context
                 .hir_item_bindings
                 .as_ref()
                 .and_then(|bindings| bindings.ast_to_hir.get(item))
         {
-            if let Some(target) = source_item_symbols.get(item) {
-                hir.source_import_targets.insert(binding_symbol, *target);
+            if let Some(target) =
+                super::source_members::source_member_symbol(hir, *item, member.as_deref())
+            {
+                hir.source_import_targets.insert(binding_symbol, target);
             }
-            super::source_members::bind_members(hir, binding_symbol, *item);
+            if member.is_none() {
+                super::source_members::bind_members(hir, binding_symbol, *item);
+            }
         }
         if let ImportTarget::Module(module) = &import.target {
             let record = catalog

@@ -29,6 +29,345 @@ fn item(checked: &CheckedProgram, name: &str) -> HirItemId {
         .unwrap()
 }
 
+#[test]
+fn suspension_proofs_follow_source_calls_without_treating_empty_effects_as_evidence() {
+    use etas_effects::suspension::SuspensionSummary as S;
+    use etas_frontend::CheckedCallableRoot;
+    let source = r#"
+module app;
+import std.io.println;
+import std.task.start;
+import std.task.run as within;
+import app.CallbackLookup.{Available as Found, Empty as Missing};
+public flow invoke_pair<A, B, effect E>(jobs: (() -> A ![E], () -> B ![E])) -> (A, B) ![E] {
+    let (first, second) = jobs;
+    return (first(), second());
+}
+public flow capture_pair<A, B, effect E>(jobs: (() -> A ![E], () -> B ![E])) -> (() -> (A, B) ![E]) ![] {
+    let (first, second) = jobs;
+    return () => (first(), second());
+}
+public flow invoke_fields<A, B, effect E>(jobs: { first: () -> A ![E], second: () -> B ![E] }) -> (A, B) ![E] {
+    return ((jobs.first)(), (jobs.second)());
+}
+public flow capture_fields<A, B, effect E>(jobs: { first: () -> A ![E], second: () -> B ![E] }) -> (() -> (A, B) ![E]) ![] {
+    return () => ((jobs.first)(), (jobs.second)());
+}
+public flow relay_fields<A, B, effect E>(jobs: { first: () -> A ![E], second: () -> B ![E] }) -> { first: () -> A ![E], second: () -> B ![E] } ![] {
+    return jobs;
+}
+flow prepare_returned_fields() -> (i32, bool) ![] {
+    let jobs = relay_fields({ first= () => 7, second= () => true });
+    return ((jobs.first)(), (jobs.second)());
+}
+
+flow prepare_fields() -> (i32, bool) ![] { return invoke_fields({ first= () => 7, second= () => true }); }
+flow prepare_captured_fields() -> (i32, bool) ![] {
+    let run = capture_fields({ first= () => 7, second= () => true });
+    return run();
+}
+flow prepare_pair() -> (i32, bool) ![] { return invoke_pair((() => 7, () => true)); }
+flow prepare_captured_pair() -> (i32, bool) ![] {
+    let run = capture_pair((() => 7, () => true));
+    return run();
+}
+public flow capture_results<T, X, effect E>(jobs: Array<() -> T ![Error<X>, E]>) -> unit ![E] {
+    return within((scheduler: Scheduler) => {
+    for job in jobs limit Iterations(18446744073709551615) {
+        let task: Task<Result<T, X>, ![E]> = start(() => job()?);
+    }
+    return;
+    });
+}
+public flow plus(value: i32) -> i32 ![] { return value + 1; }
+public flow alias(value: i32) -> i32 ![] { let apply = plus; return apply(value); }
+spec Reading { flow read(self) -> i32 ![]; }
+impl i32 ~ Reading { public flow read(self) -> i32 ![] { return self; } }
+flow generic_read<R ~ Reading>(value: R) -> i32 ![] { return value.read(); }
+type Counter = { value: i32 };
+impl Counter {
+    flow update(var self) -> unit ![] { self.value = generic_read(self.value); }
+    flow update_operation(var self) -> unit ![] {
+        let operation: Operation<i32> = Operation.new();
+        self.value = operation.apply(self.value);
+    }
+}
+type Operation<T> = { run: (T) -> i32 ![] };
+impl Operation<T> {
+    flow new(run: (T) -> i32 ![]) -> Operation<T> ![] {
+        return Operation { run= run };
+    }
+    flow apply(self, value: T) -> i32 ![] { return (self.run)(value); }
+}
+impl<R ~ Reading> Operation<R> {
+    flow new() -> Operation<R> ![] {
+        return Operation { run= (value: R) => value.read() };
+    }
+}
+flow update_concrete() -> i32 ![] {
+    var counter = Counter { value= 42 };
+    counter.update();
+    counter.update_operation();
+    return counter.value;
+}
+flow even(value: i32) -> bool ![] { if value == 0 { return true; } return odd(value - 1); }
+flow odd(value: i32) -> bool ![] { if value == 0 { return false; } return even(value - 1); }
+flow callback(value: () -> i32 ![]) -> i32 ![] { return value(); }
+enum CallbackLookup<T> { Available(T), Empty, }
+alias NativeArray<T> = [T];
+spec OffsetIndex { flow offset(self) -> Option<usize> ![]; }
+impl usize ~ OffsetIndex {
+    public flow offset(self) -> Option<usize> ![] { return Some(self); }
+}
+flow array_callback(values: NativeArray<() -> i32 ![]>) -> i32 ![Error<IndexError>] {
+    let index: usize = 0;
+    return match values.lookup_source(index) {
+        CallbackLookup.Available(callback) => callback(), CallbackLookup.Empty => 0,
+    };
+}
+flow prepare_deferred_callback() -> i32 ![] {
+    let values: NativeArray<() -> i32 ![]> = [() => 7];
+    let load = values.lookup_later();
+    return match load() {
+        CallbackLookup.Available(callback) => callback(), CallbackLookup.Empty => 0,
+    };
+}
+
+impl NativeArray<T> {
+    flow lookup_later(self) -> (() -> CallbackLookup<T> ![]) ![] {
+        return () => {
+            let index: usize = 0;
+            return self.lookup_source(index);
+        };
+    }
+    flow lookup_source<I ~ OffsetIndex>(self, index: I) -> CallbackLookup<T> ![] {
+        return match index.offset() {
+            Some(offset) => {
+                return match self[offset]? { Ok(value) => Found(value), Err(_) => Missing };
+            },
+            None => Missing,
+        };
+    }
+}
+public flow observe() -> unit ![Console.stdout_write] { perform Console.stdout_write("ready"); }
+flow relay() -> unit ![Console.stdout_write] { observe(); }
+flow default_handled() -> unit ![] { println("ready")?; }
+flow factory() -> (() -> unit ![Console.stdout_write]) ![] {
+    return () => { perform Console.stdout_write("later"); };
+}
+"#;
+    let checked = check(source);
+    let mut body_bytes = Vec::new();
+    ciborium::ser::into_writer(checked.effects.as_ref(), &mut body_bytes).unwrap();
+    let replayed_facts: etas_effects::EffectFacts =
+        ciborium::de::from_reader(body_bytes.as_slice()).unwrap();
+    assert_eq!(
+        replayed_facts.source_call_arguments,
+        checked.effects.source_call_arguments
+    );
+    assert!(
+        replayed_facts
+            .source_call_arguments
+            .values()
+            .any(|arguments| arguments
+                .keys()
+                .any(|target| matches!(target, etas_effects::ParameterCallTarget::Projection(_))))
+    );
+    for (unit, summary) in &checked.effects.unit_effects {
+        assert_eq!(
+            replayed_facts.unit_effects[unit]
+                .exits
+                .as_ref()
+                .map(|exits| &exits.value_projections),
+            summary.exits.as_ref().map(|exits| &exits.value_projections)
+        );
+    }
+    let summary = |name| {
+        checked
+            .checked_callable_suspension(CheckedCallableRoot::Item(item(&checked, name)))
+            .unwrap()
+    };
+    for name in [
+        "plus",
+        "alias",
+        "even",
+        "odd",
+        "factory",
+        "update_concrete",
+        "prepare_returned_fields",
+        "prepare_deferred_callback",
+    ] {
+        assert_eq!(summary(name), S::IMMEDIATE, "{name}");
+    }
+    assert_eq!(summary("callback"), S::UNKNOWN);
+    assert_eq!(summary("array_callback"), S::UNKNOWN);
+    assert_eq!(summary("generic_read"), S::UNKNOWN);
+    assert!(summary("observe").may_suspend);
+    assert!(summary("relay").may_suspend);
+    assert!(!summary("default_handled").proven_non_suspending());
+    let lambda = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| {
+            (matches!(expr, etas_hir::HirExpr::Lambda { .. })
+                && checked.hir.index().expr_item.get(&id) == Some(&item(&checked, "factory")))
+            .then_some(id)
+        })
+        .unwrap();
+    assert!(
+        checked
+            .checked_callable_suspension(CheckedCallableRoot::Lambda(lambda))
+            .unwrap()
+            .may_suspend
+    );
+    let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
+        etas_frontend::PackageMetadataBuildInput {
+            definition_origin: Some(PackageKey::from_name_and_version("app", "0.1.0").unwrap()),
+            package_id: "app".into(),
+            package_version: "0.1.0".into(),
+            package_edition: "2026".into(),
+            compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
+            source_payload_hash: etas_package_metadata::blake3_hash(source.as_bytes()),
+            manifest_hash: etas_package_metadata::blake3_hash(b"app manifest"),
+            dependency_lock_hash: etas_package_metadata::blake3_hash(b"app lock"),
+            bins: vec![],
+            dependencies: vec![],
+            tool_bindings: vec![],
+        },
+        &checked,
+    )
+    .unwrap();
+    let (_, replayed) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("projected-callbacks.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    let graph = replayed
+        .public_metadata
+        .effect_summaries
+        .iter()
+        .find(|summary| {
+            summary
+                .item
+                .last()
+                .is_some_and(|name| name == "capture_pair")
+        })
+        .and_then(|summary| summary.returned_callables.as_ref())
+        .unwrap();
+    assert!(graph.parameter_projections.contains(&vec![
+        etas_code::descriptor::ValueProjectionStep::TupleElement(0)
+    ]));
+    assert!(graph.parameter_projections.contains(&vec![
+        etas_code::descriptor::ValueProjectionStep::TupleElement(1)
+    ]));
+    let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
+        std::path::Path::new("app.etasmeta"),
+        &artifact.bytes,
+    )
+    .unwrap();
+    let headers = metadata
+        .public_metadata
+        .definition_descriptors
+        .unwrap()
+        .headers
+        .unwrap();
+    for name in ["plus", "alias", "observe"] {
+        let header = headers
+            .callables
+            .iter()
+            .find(|header| {
+                header
+                    .id
+                    .as_declaration()
+                    .is_some_and(|key| key.declaration() == [name.to_owned()])
+            })
+            .unwrap();
+        let portable = header.analysis.suspension.unwrap();
+        assert_eq!(portable.may_suspend, summary(name).may_suspend);
+        assert_eq!(portable.unknown, summary(name).unknown);
+    }
+
+    // Exercise source cursor analysis directly, before SDK query publication.
+    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+        r#"
+module std.collections;
+public type Iter<Element> = { next: () -> Option<(Element, Iter<Element>)> ![] };
+flow numbers<T>(value: T, start: i32) -> Iter<T> ![] {
+    return Iter { next= () => match start == 0 {
+        true => None,
+        false => Some((value, numbers(value, start - 1))),
+    } };
+}
+type Compared<T> = { value: T, compare: (T, T) -> i32 ![] };
+impl Compared<T> {
+    flow compare_self(self) -> i32 ![] { return (self.compare)(self.value, self.value); }
+}
+flow compared<T>(values: Compared<T>) -> Iter<T> ![] {
+    return Iter { next= () => Some((values.value, numbers(values.value, 0))) };
+}
+flow total() -> i32 ![] {
+    var result: i32 = 0;
+    for value in numbers(7, 4) limit Iterations(4) { result = result + value; }
+    let values = Compared { value= 3, compare= (left: i32, right: i32) => left - right };
+    result = result + values.compare_self();
+    for value in compared(values) limit Iterations(1) { result = result + value; }
+    return result;
+}
+"#,
+    ));
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let mut program = etas_hir::lower_program(&parsed.value);
+    program.source_standard_types = true;
+    let hir = etas_hir::HirRevision::try_new(program).unwrap();
+    let types = etas_types::check_program(&hir);
+    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
+    let registry = etas_std::standard_registry();
+    let effects = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
+        source_snapshots: &[],
+        residual_identity: None,
+        trace_monitor_projector: None,
+        external_implementations: &[],
+        frozen_calls: None,
+        hir: &hir,
+        types: &types,
+        std_registry: &registry,
+        dependency_metadata: None,
+        tool_bindings: &[],
+        external_summaries: &[],
+        external_trace_specs: &[],
+        external_artifact_anchors: &[],
+        reachable_items: None,
+    })
+    .unwrap()
+    .effects;
+    assert!(effects.diagnostics.is_empty(), "{:?}", effects.diagnostics);
+    let total = hir
+        .items
+        .iter()
+        .find_map(|(id, item)| match item {
+            HirItem::Flow(flow) if hir.symbols.get(flow.symbol).unwrap().name == "total" => {
+                Some(id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(!effects.facts.iteration_call_sources.is_empty());
+    assert_eq!(
+        effects.facts.suspension[&etas_effects::EffectUnit::Item(total)],
+        S::IMMEDIATE,
+        "origins={:?}; units={:?}; calls={:?}",
+        effects.facts.iteration_call_sources,
+        effects
+            .facts
+            .unit_effects
+            .iter()
+            .map(|(unit, summary)| (unit, &summary.exits, effects.facts.suspension.get(unit)))
+            .collect::<Vec<_>>(),
+        effects.facts.native_call_targets,
+    );
+}
+
 fn nominal(checked: &CheckedProgram, name: &str) -> TypeId {
     let symbol = checked
         .symbols

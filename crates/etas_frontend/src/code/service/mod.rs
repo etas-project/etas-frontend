@@ -15,4 +15,6 @@ pub use candidate::{
 pub use compiler::CandidateCompileError;
 pub use report::CheckReportError;
 pub(crate) use syntax::validate_retained_source;
-pub use syntax::{NativeBodyLease, NativeCodeSyntaxOperations, NativeSyntaxLimits};
+pub use syntax::{
+    NativeBodyLease, NativeCodeSyntaxOperations, NativeSyntaxLimits, NativeSyntaxTokenObservation,
+};

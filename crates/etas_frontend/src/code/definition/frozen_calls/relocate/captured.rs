@@ -82,17 +82,27 @@ impl Relocation<'_> {
                 .returned_items
                 .get(&source.owner)
                 .ok_or_else(|| invalid("captured environment has no canonical target owner"))?;
+            let generic_scope = self
+                .from
+                .callables
+                .iter()
+                .find(|(_, item)| **item == source.owner)
+                .map(|(id, _)| super::projection::owner(id))
+                .transpose()?;
             let mut parameters = BTreeMap::new();
             for (parameter, origins) in &source.parameters {
                 let parameter = match parameter {
                     ParameterCallTarget::Interface(_) if method_environments.contains(&id) => {
                         *parameter
                     }
-                    _ => self.parameter_target(*parameter)?,
+                    _ => self.parameter_target(*parameter, generic_scope.as_ref())?,
                 };
                 let mut relocated = BTreeSet::new();
                 for origin in origins {
                     let origin = match *origin {
+                        CallableValueOrigin::Projection(id) => {
+                            CallableValueOrigin::Projection(self.parameter_projection(id)?)
+                        }
                         CallableValueOrigin::Existential { pack, environment } => {
                             pending.push(environment);
                             CallableValueOrigin::Existential {
@@ -202,6 +212,11 @@ impl Relocation<'_> {
                         CallableValueOrigin::EnumConstructor(symbol) => {
                             CallableValueOrigin::EnumConstructor(self.variant(symbol)?)
                         }
+                        CallableValueOrigin::DerivedResponseDecoder(_) => {
+                            return Err(invalid(
+                                "captured response decoder requires its checked inference handler",
+                            ));
+                        }
                         CallableValueOrigin::StdReference { value, environment } => {
                             pending.extend(environment);
                             CallableValueOrigin::StdReference {
@@ -231,13 +246,6 @@ impl Relocation<'_> {
                 }
                 parameters.insert(parameter, relocated);
             }
-            let generic_scope = self
-                .from
-                .callables
-                .iter()
-                .find(|(_, item)| **item == source.owner)
-                .map(|(id, _)| super::projection::owner(id))
-                .transpose()?;
             let mut generics = BTreeMap::new();
             for (parameter, value) in source
                 .generics
@@ -295,7 +303,7 @@ impl Relocation<'_> {
                 .copied()
                 .map(EffectUnit::Item),
             EffectUnit::AnonymousFlow { .. } => self.returned_anonymous.get(&unit).copied(),
-            EffectUnit::HandlerArm { .. } => None,
+            EffectUnit::HandlerArm { .. } | EffectUnit::ParameterDefault { .. } => None,
         }
         .ok_or_else(|| invalid("captured callable has no unchanged canonical target unit"))
     }

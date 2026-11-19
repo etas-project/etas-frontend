@@ -9,8 +9,49 @@ impl ProjectMetadataProjection<'_> {
         &self,
         target: ParameterCallTarget,
         labels: &BTreeMap<ParameterCallTarget, String>,
+        type_names: &BTreeSet<String>,
     ) -> Result<CallableRequestTarget, PackageMetadataError> {
         match target {
+            ParameterCallTarget::Projection(id) if !labels.contains_key(&target) => {
+                let projection = self
+                    .checked
+                    .effects
+                    .parameter_projections
+                    .get(&id)
+                    .ok_or_else(|| invalid("call projection has no checked source path"))?;
+                let parameter = labels
+                    .get(&ParameterCallTarget::Native(projection.parameter))
+                    .ok_or_else(|| invalid("call projection has no exported root parameter"))?
+                    .clone();
+                Ok(CallableRequestTarget::ParameterProjection {
+                    parameter,
+                    path: projection.path.clone(),
+                })
+            }
+            ParameterCallTarget::ExternalProjection(id) if !labels.contains_key(&target) => {
+                let projection = self
+                    .checked
+                    .effects
+                    .external_parameter_projections
+                    .get(&id)
+                    .ok_or_else(|| invalid("external call projection has no checked path"))?;
+                match self.callable_request_target(projection.root, labels, type_names)? {
+                    CallableRequestTarget::Parameter(parameter) => {
+                        Ok(CallableRequestTarget::ParameterProjection {
+                            parameter,
+                            path: projection.path.clone(),
+                        })
+                    }
+                    _ => Err(invalid(
+                        "external call projection has no exported root parameter",
+                    )),
+                }
+            }
+            ParameterCallTarget::AgentTools(context) => {
+                let mut context = self.metadata_type(context)?;
+                normalize_generic_type(&mut context, type_names);
+                Ok(CallableRequestTarget::AgentTools(Box::new(context)))
+            }
             ParameterCallTarget::SpecMethod { call, environment } => self
                 .spec_method_invocation(call, environment)
                 .map(|method| CallableRequestTarget::SpecMethod(Box::new(method))),
@@ -123,7 +164,7 @@ impl ProjectMetadataProjection<'_> {
                     })
                 })
                 .collect::<Result<_, PackageMetadataError>>()?,
-            callable_arguments: self.method_callable_arguments(snapshot)?,
+            callable_arguments: self.method_callable_arguments(snapshot, None)?,
         })
     }
 
@@ -257,7 +298,7 @@ impl ProjectMetadataProjection<'_> {
                 }
             });
         }
-        let callable_arguments = self.method_callable_arguments(snapshot)?;
+        let callable_arguments = self.method_callable_arguments(snapshot, Some(call))?;
         Ok(SpecMethodInvocation {
             receiver: captured.metadata_type(self, receiver)?,
             spec,
@@ -273,15 +314,43 @@ impl ProjectMetadataProjection<'_> {
     fn method_callable_arguments(
         &self,
         snapshot: &etas_effects::facts::CallableEnvironment,
+        call: Option<etas_hir::HirExprId>,
     ) -> Result<Vec<etas_package_metadata::SpecMethodCallableArgument>, PackageMetadataError> {
         let mut callable_arguments = Vec::new();
         for (target, origins) in &snapshot.parameters {
+            // Instantiating generic data with a scalar leaves no callable
+            // payload to publish as a method callback argument.
+            if origins.is_empty() {
+                continue;
+            }
             let ParameterCallTarget::Interface(position) = target else {
                 return Err(invalid(
                     "method evidence callback has no checked input position",
                 ));
             };
             let mut builder = Builder::new(self, snapshot.owner);
+            if let Some(parameters) = &self.invocation_parameters {
+                builder
+                    .parameters
+                    .insert(CallableValueScope::Root, parameters.as_ref().clone());
+            } else if let Some(call) = call
+                && self.checked.hir.index().expr_item.get(&call) == Some(&snapshot.owner)
+                && let Some(parameters) = self.method_invocation_lambda_parameters(call)
+                && origins.iter().any(|origin| {
+                    matches!(origin,
+                    etas_effects::facts::CallableValueOrigin::Parameter { symbol, .. }
+                        if parameters.contains(symbol))
+                })
+            {
+                builder.parameters.insert(
+                    CallableValueScope::Root,
+                    parameters
+                        .iter()
+                        .enumerate()
+                        .map(|(position, symbol)| (*symbol, position as u32))
+                        .collect(),
+                );
+            }
             let mut sources = Vec::new();
             for origin in origins {
                 let (source, environment) = builder
@@ -306,5 +375,32 @@ impl ProjectMetadataProjection<'_> {
             });
         }
         Ok(callable_arguments)
+    }
+
+    fn method_invocation_lambda_parameters(
+        &self,
+        call: etas_hir::HirExprId,
+    ) -> Option<&[etas_hir::SymbolId]> {
+        use etas_hir::{HirBodyKind, HirOwner};
+        let index = self.checked.hir.index();
+        let mut owner = *index.expr_owner.get(&call)?;
+        loop {
+            owner = match owner {
+                HirOwner::Body(body) => match body.kind {
+                    HirBodyKind::Lambda(value) => match self.checked.hir.exprs.get(value)? {
+                        etas_hir::HirExpr::Lambda { params, .. } => return Some(params),
+                        _ => return None,
+                    },
+                    HirBodyKind::MatchArm { .. } | HirBodyKind::StageLimit { .. } => {
+                        *index.body_owner.get(&body)?
+                    }
+                    _ => return None,
+                },
+                HirOwner::Expr(expr) => *index.expr_owner.get(&expr)?,
+                HirOwner::Block(block) => *index.block_owner.get(&block)?,
+                HirOwner::Stmt(stmt) => *index.block_owner.get(index.stmt_block.get(&stmt)?)?,
+                _ => return None,
+            };
+        }
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_hir::{HirExprId, HirItemId};
 use etas_types::{CallableGenericParamKind, TypeId, TypeSubstitutionEngine};
@@ -36,12 +36,16 @@ impl EffectSemantics<'_> {
         application: etas_code::CodeFingerprint,
         state: &EffectState,
         generics: super::super::callable_generics::ScopedGenericArguments<'_>,
+        formal_parameters: &mut std::collections::BTreeSet<ParameterCallTarget>,
     ) -> Result<(), EffectSpecializationError> {
         let mut calls = BTreeMap::new();
         summary.action_trace.collect_parameter_calls(&mut calls);
         if let Some(exits) = &summary.exits {
             for exit in &exits.exits {
                 exit.trace.collect_parameter_calls(&mut calls);
+            }
+            for exit in &exits.parameter_exits {
+                exit.prefix.collect_parameter_calls(&mut calls);
             }
         }
         if let crate::RequestInstantiationSummary::Available { parameters, .. } =
@@ -68,6 +72,26 @@ impl EffectSemantics<'_> {
                 environment,
             } = reference.target
             {
+                let definition = self
+                    .method_evidence
+                    .borrow()
+                    .get(&invocation)
+                    .cloned()
+                    .ok_or_else(|| invalid("metadata method has no checked evidence definition"))?;
+                let mut missing = definition
+                    .parameters
+                    .iter()
+                    .map(|(_, parameter)| parameter)
+                    .filter(|parameter| !bindings.contains_key(parameter));
+                if let Some(first) = missing.next()
+                    && formal_parameters.contains(first)
+                    && missing.all(|parameter| formal_parameters.contains(parameter))
+                {
+                    // A first-class callable still owns these formal inputs.
+                    // Its caller binds the method evidence when supplying them.
+                    formal_parameters.insert(reference.target);
+                    continue;
+                }
                 let environment = self.bind_metadata_method_environment(
                     invocation,
                     environment,
@@ -118,18 +142,69 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| invalid("spec invocation has no checked owner"))?;
         let generics = self.lexical_generic_values(owner)?;
         let arguments = self.checked_method_arguments(call)?;
+        let mut required_paths = BTreeMap::<u32, BTreeSet<_>>::new();
+        if let Some(fact) = self.types.facts.checked_method_calls.get(&call)
+            && let etas_types::method::MethodTarget::External { identity } = &fact.target
+        {
+            // A generic implementation can return a projection even when the
+            // caller's instantiation gives it an empty callable payload.
+            let (implementation, root) = self.external_method_graph(identity)?;
+            for parameter in implementation.graph.parameter_references() {
+                if parameter.scope == etas_package_metadata::CallableValueScope::Value(root)
+                    && parameter.projection.is_some()
+                {
+                    let path = implementation
+                        .graph
+                        .projection_path(parameter)
+                        .map_err(|error| invalid(&error.to_string()))?;
+                    required_paths
+                        .entry(parameter.position)
+                        .or_default()
+                        .insert(path.to_vec());
+                }
+            }
+        }
         let mut captures = BTreeMap::new();
         for (position, expr) in arguments.into_iter().enumerate() {
-            if !self.expr_type_contains_flow(expr) {
-                continue;
-            }
-            let sources = self
-                .latent_sources_for_expr(state, expr)
-                .ok_or_else(|| invalid("spec invocation callback has no checked value sources"))?;
+            let position = position as u32;
+            let sources =
+                if self.expr_type_contains_flow(expr) || self.symbolic_contract_expr(state, expr) {
+                    self.latent_sources_for_expr(state, expr).ok_or_else(|| {
+                        invalid("spec invocation callback has no checked value sources")
+                    })?
+                } else {
+                    // A checked scalar supplies an empty callable payload. It is
+                    // still an argument when the method captures a generic input.
+                    Vec::new()
+                };
             captures.insert(
-                ParameterCallTarget::Interface(position as u32),
+                ParameterCallTarget::Interface(position),
                 sources.into_iter().collect(),
             );
+            let mut paths = required_paths.remove(&position).unwrap_or_default();
+            if let Some(payload_paths) = self
+                .types
+                .facts
+                .expr_types
+                .get(&expr)
+                .and_then(|ty| self.value_payload_paths(*ty))
+            {
+                paths.extend(payload_paths);
+            }
+            for path in paths {
+                let sources = self
+                    .projected_sources(expr, &path, state)
+                    .unwrap_or_else(|| [LatentSource::Unavailable { expr }].into());
+                let target = self
+                    .intern_external_parameter_projection(
+                        ParameterCallTarget::Interface(position),
+                        path,
+                    )
+                    .ok_or_else(|| {
+                        invalid("spec argument projection exceeds its checked graph budget")
+                    })?;
+                captures.insert(target, sources);
+            }
         }
         let site = self.callable_environment_site(call)?;
         let environment = CallableEnvironmentId {
@@ -171,9 +246,10 @@ impl EffectSemantics<'_> {
             self.native_environment_type_parameters(lexical_owner, &snapshot.generics)?;
         let names = types.iter().cloned().collect::<HashMap<_, _>>();
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &names)
-            .with_type_parameters(&type_parameters)
-            .with_effect_arguments(&type_rows);
+        let mut substitution =
+            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &names)
+                .with_type_parameters(&type_parameters)
+                .with_effect_arguments(&type_rows);
         let mut arguments = self.call_generic_bindings(call);
         for (_, ty) in &mut arguments.types {
             *ty = substitution.substitute(*ty)?;
@@ -361,9 +437,13 @@ impl EffectSemantics<'_> {
                 .ok_or_else(|| invalid("method evidence receiver binder is invalid"))?;
             bound_bindings.insert(parameter.name.clone(), receiver);
         }
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &bound_bindings)
-            .with_type_parameters(&type_parameters)
-            .with_effect_arguments(&type_rows);
+        let mut substitution = TypeSubstitutionEngine::existing_indexed(
+            &self.types.store,
+            self.type_lookup(),
+            &bound_bindings,
+        )
+        .with_type_parameters(&type_parameters)
+        .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &declaration.effects {
             let row = substitution.substitute_effect_row(row.clone())?;

@@ -4,8 +4,8 @@ mod type_rows;
 pub use callable_values::{
     CallableEnvironment, CallableEnvironmentId, CallableGenericParameter, CallableGenericValue,
     CallableReferenceAnalysis, CallableValueOrigin, CapturedCallableAnalysis, CapturedCallableId,
-    MetadataCallableAnalysis, MetadataCallableGraphFact, MetadataCallableTypeFact,
-    MetadataSpecMethodDefinition,
+    ExternalParameterProjection, MetadataCallableAnalysis, MetadataCallableGraphFact,
+    MetadataCallableTypeFact, MetadataSpecMethodDefinition, NativeParameterProjection,
 };
 pub use type_rows::checked_type_effect_row;
 pub mod effect_facts;

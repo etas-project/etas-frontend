@@ -3,13 +3,16 @@ pub mod effect;
 mod external_trace;
 pub mod facts;
 pub mod infer;
+mod parameter_defaults;
 pub mod pipeline;
 mod pipeline_error;
 pub mod requirement;
 pub mod residual;
 mod residual_identity;
 pub mod substitution;
+pub mod suspension;
 pub mod trace_spec;
+mod updating;
 pub mod validate;
 
 pub use effect::{
@@ -38,29 +41,31 @@ pub use facts::{
 pub use infer::{
     ActionEvent, ActionEventSource, ActionRequestInstance, ActionTraceDomain, CallableAnalysisKind,
     CallableExitSummary, CallableOutcome, CallableReferenceTarget, CallableReturnReference,
-    CallableReturnSource, DefaultHandlerContribution, DefaultHandlerEffects, Determinism,
-    EffectSummary, EffectUnit, ExitTraceFact, FrontendRejectionReason, FrozenSourceLocation,
-    HandlerGapEvidence, HostRequirementKind, HostRequirementSet, InterpreterFeatureKind,
-    InterpreterOrchestrationRequirementSet, InterpreterSupport, MetadataCallableSource,
-    MetadataObjectSource, OutcomeAnalysisGap, ParameterArgumentValue, ParameterCallTarget,
-    ParameterExitArgument, ParameterExitFact, ParameterHandlerScopeRef, ParameterRequest,
+    CallableReturnSource, DefaultBehavior, DefaultHandlerContribution, DefaultHandlerEffects,
+    Determinism, EffectFootprint, EffectSummary, EffectUnit, ExitTraceFact,
+    FrontendRejectionReason, FrozenSourceLocation, HandlerGapEvidence, HostRequirementKind,
+    HostRequirementSet, InterpreterFeatureKind, InterpreterOrchestrationRequirementSet,
+    InterpreterSupport, MetadataCallableSource, MetadataObjectSource, OutcomeAnalysisGap,
+    ParameterArgumentValue, ParameterCallTarget, ParameterExitArgument, ParameterExitFact,
+    ParameterHandlerScopeRef, ParameterRequest, ProjectedReturnSources,
     RequestInstantiationSummary, ResidualCheckSet, ReturnObservation, RuntimeRequirementReason,
 };
 pub use pipeline::{
     AnchoredExternalMetadata, EffectInferencePlan, EffectPipelineArtifacts, EffectPipelineInput,
     EffectPipelineOutput, EffectSourceSnapshot, ExternalActionRequestMetadata,
     ExternalActionTraceMetadata, ExternalArtifactAnchor, ExternalCallableContract,
-    ExternalCallableRequestTarget, ExternalCallableValueMetadata,
+    ExternalCallableRequestTarget, ExternalCallableValueMetadata, ExternalDefaultBehaviorMetadata,
     ExternalDefaultHandlerContributionMetadata, ExternalDefaultHandlerEffectsMetadata,
-    ExternalEffectMetadata, ExternalEffectRowMetadata, ExternalEffectSummaryMetadata,
-    ExternalExistentialMemberMetadata, ExternalExistentialValueMetadata,
-    ExternalLatentFlowSummaryMetadata, ExternalMethodRequirements, ExternalMethodTraceRequirement,
-    ExternalParameterRequestMetadata, ExternalRequestInstantiationMetadata,
-    ExternalSpecImplementationMetadata, ExternalSpecMethodCallableArgument,
-    ExternalSpecMethodGenericArgument, ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind,
-    ExternalTraceSpecClauseMetadata, ExternalTraceSpecEffectMetadata,
-    ExternalTraceSpecEffectRowMetadata, ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry,
-    RunEffectPipeline, TraceSpecPipelineAnalysis,
+    ExternalEffectFootprintMetadata, ExternalEffectMetadata, ExternalEffectRowMetadata,
+    ExternalEffectSummaryMetadata, ExternalExistentialMemberMetadata,
+    ExternalExistentialValueMetadata, ExternalLatentFlowSummaryMetadata,
+    ExternalMethodRequirements, ExternalMethodTraceRequirement, ExternalParameterRequestMetadata,
+    ExternalRequestInstantiationMetadata, ExternalSpecImplementationMetadata,
+    ExternalSpecMethodCallableArgument, ExternalSpecMethodGenericArgument,
+    ExternalSpecMethodInvocation, ExternalTraceSpecClauseKind, ExternalTraceSpecClauseMetadata,
+    ExternalTraceSpecEffectMetadata, ExternalTraceSpecEffectRowMetadata,
+    ExternalTraceSpecSummaryMetadata, PreparedEffectRegistry, RunEffectPipeline,
+    TraceSpecPipelineAnalysis,
 };
 pub use pipeline_error::{EffectPipelineError, EffectStage};
 pub use requirement::{

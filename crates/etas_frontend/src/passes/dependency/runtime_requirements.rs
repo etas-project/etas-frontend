@@ -112,6 +112,13 @@ pub(super) fn compute_reachability(
         .as_ref()
         .ok_or("runtime source planning requires a module index")?;
     let mut planner = RuntimeSourceRequirementPlanner {
+        checked_library: context.standard_library.as_ref().and_then(|library| {
+            environment
+                .external_definition_origins
+                .iter()
+                .find(|origin| origin.origins.package == library.origins.package)
+                .map(|origin| origin.package)
+        }),
         namespaces: &modules.dependency_namespaces,
         packages: environment
             .external_packages
@@ -212,6 +219,7 @@ pub(super) fn compute_reachability(
 }
 
 struct RuntimeSourceRequirementPlanner<'a> {
+    checked_library: Option<ExternalPackageId>,
     namespaces: &'a crate::project::DependencyModuleNamespaces,
     packages: BTreeMap<ExternalPackageId, &'a ProjectExternalPackageInput>,
     metadata: BTreeMap<ExternalPackageId, &'a ProjectExternalPublicMetadataInput>,
@@ -348,6 +356,10 @@ impl RuntimeSourceRequirementPlanner<'_> {
         module: Vec<String>,
         reason: RuntimeSourceReason,
     ) -> Result<(), String> {
+        if self.checked_library == Some(package) {
+            // SDK implementations are linked from the verified checked image.
+            return Ok(());
+        }
         let module_path = self
             .namespaces
             .source_for_namespace(package, &ModulePath { segments: module })?;
@@ -697,6 +709,15 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for ReachableItemVisitor<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
         let expr_id = expr.id();
         self.exprs.insert(expr_id);
+        if let Some(symbol) = self
+            .types
+            .and_then(|types| types.source_flow_calls.get(&expr_id))
+        {
+            match self.hir.symbols.get(*symbol).map(|symbol| &symbol.def) {
+                Some(etas_hir::SymbolDef::Item { item }) => self.pending_items.push(*item),
+                _ => *self.missing_method = true,
+            }
+        }
         if let Some(fact) = self
             .types
             .and_then(|types| types.checked_method_calls.get(&expr_id))
@@ -794,8 +815,14 @@ fn local_item_for_expr_path(
         match &resolution.result {
             HirPathResolution::PartialSymbol {
                 prefix, remaining, ..
-            } if remaining.len() == 1 => {
-                return agent_method_for_binding(hir, *prefix, &remaining[0]);
+            } => {
+                if let SymbolDef::TopLevelLet { item, .. } = hir.symbols.get(*prefix)?.def {
+                    return Some(item);
+                }
+                if remaining.len() == 1 {
+                    return agent_method_for_binding(hir, *prefix, &remaining[0]);
+                }
+                return None;
             }
             HirPathResolution::DirectSymbol(symbol) => match &hir.symbols.get(*symbol)?.def {
                 SymbolDef::Item { item } | SymbolDef::TopLevelLet { item, .. } => {

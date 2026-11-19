@@ -50,6 +50,12 @@ pub fn run_effect_analysis<'a>(
         }
         let mut parameters = (*input.parameter_effects).clone();
         let callable_environments = result.semantics.callable_environments.borrow().clone();
+        let external_parameter_projections = result
+            .semantics
+            .external_parameter_projections
+            .borrow()
+            .clone();
+        let parameter_projections = result.semantics.parameter_projections.borrow().clone();
         let method_evidence = result.semantics.method_evidence.borrow().clone();
         let mut spec_method_targets = (*input.spec_method_targets).clone();
         let mut spec_unit_targets = (*input.spec_unit_targets).clone();
@@ -90,6 +96,8 @@ pub fn run_effect_analysis<'a>(
             && global_values == *input.global_values
             && call_results == *input.call_results
             && callable_environments == input.callable_environments
+            && parameter_projections == input.parameter_projections
+            && external_parameter_projections == input.external_parameter_projections
             && method_evidence == input.method_evidence
             && spec_method_targets == *input.spec_method_targets
             && spec_unit_targets == *input.spec_unit_targets
@@ -106,6 +114,8 @@ pub fn run_effect_analysis<'a>(
         input.global_values = std::sync::Arc::new(global_values);
         input.call_results = std::sync::Arc::new(call_results);
         input.callable_environments = callable_environments;
+        input.parameter_projections = parameter_projections;
+        input.external_parameter_projections = external_parameter_projections;
         input.method_evidence = method_evidence;
         // Witness applications discover body dependencies after substitution.
         input.spec_method_targets = std::sync::Arc::new(spec_method_targets);

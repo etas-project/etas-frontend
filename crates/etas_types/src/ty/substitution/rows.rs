@@ -88,7 +88,12 @@ impl<'a> TypeSubstitutionEngine<'a> {
         if self.is_relocation()
             && let Some(tail) = &row.tail
         {
-            return Err(TypeSubstitutionError::OpenEffectRow(tail.clone()));
+            row.tail = Some(
+                self.relocated_effect_parameters
+                    .and_then(|parameters| parameters.get(tail))
+                    .cloned()
+                    .ok_or_else(|| TypeSubstitutionError::OpenEffectRow(tail.clone()))?,
+            );
         }
         let expanded = match &self.effect_rows {
             Some(EffectRowSubstitution::Arguments(arguments)) => {

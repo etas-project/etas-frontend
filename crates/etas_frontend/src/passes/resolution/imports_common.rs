@@ -154,7 +154,12 @@ fn resolve_single_import(
 ) -> Vec<ImportResolution> {
     let full_path = ModulePath::from_ast(path);
     match resolver.resolve_module(&full_path) {
-        ModuleResolution::Source { key, module } => {
+        ModuleResolution::Source { key, module }
+            if modules
+                .modules
+                .get(module)
+                .is_some_and(|owner| owner.path == full_path) =>
+        {
             return vec![ImportResolution::Explicit(ResolvedImport {
                 from,
                 from_part,
@@ -168,7 +173,7 @@ fn resolve_single_import(
                 span,
             })];
         }
-        ModuleResolution::Missing => {}
+        ModuleResolution::Missing | ModuleResolution::Source { .. } => {}
         ModuleResolution::Ambiguous(_) => {
             diagnostics.push(project_diagnostic(
                 span,
@@ -344,11 +349,13 @@ pub(super) fn import_target_for_export(name: &str, export: ProviderExport) -> Im
             module_key,
             module,
             item,
+            member,
         } => ImportTarget::SourceItem {
             module_key,
             module,
             name: name.to_owned(),
             item,
+            member,
         },
         ProviderExportTarget::Std {
             module_key,
@@ -397,11 +404,49 @@ fn split_module_member_path(
     })
 }
 
-pub(super) fn duplicate_explicit_import_diagnostics(imports: &[ResolvedImport]) -> Vec<Diagnostic> {
-    let mut seen = HashMap::<(ModulePartId, String), Span>::new();
+pub(super) fn duplicate_explicit_import_diagnostics(
+    imports: &[ResolvedImport],
+    context: &crate::ProjectContext,
+) -> Vec<Diagnostic> {
+    let mut seen = HashMap::<(ModulePartId, String, Option<etas_std::StdNamespace>), Span>::new();
     let mut diagnostics = Vec::new();
     for import in imports {
-        let key = (import.from_part, import.local_name.clone());
+        let source_prelude = context.input.options.standard_library_mode
+            == crate::StandardLibraryMode::SourceBootstrap
+            && import.visibility == etas_hir::Visibility::Public
+            && context
+                .modules
+                .as_ref()
+                .expect("source module index")
+                .modules[import.from]
+                .path
+                .segments
+                == ["std", "prelude"];
+        let namespace = source_prelude.then(|| match &import.target {
+            ImportTarget::SourceItem { item, member, .. } => match (item.kind, member) {
+                (crate::AstItemKind::Effect, _) => etas_std::StdNamespace::Effect,
+                (_, Some(_)) => etas_std::StdNamespace::Value,
+                (
+                    crate::AstItemKind::TypeAlias
+                    | crate::AstItemKind::Type
+                    | crate::AstItemKind::Enum
+                    | crate::AstItemKind::Spec
+                    | crate::AstItemKind::Agent
+                    | crate::AstItemKind::Protocol,
+                    None,
+                ) => etas_std::StdNamespace::Type,
+                _ => etas_std::StdNamespace::Value,
+            },
+            ImportTarget::StdItem { symbol, .. } => context
+                .std_registry
+                .symbol(*symbol)
+                .expect("resolved std import")
+                .kind
+                .namespace(),
+            ImportTarget::Module(_) => etas_std::StdNamespace::Module,
+            ImportTarget::ExternalItem { .. } => etas_std::StdNamespace::Value,
+        });
+        let key = (import.from_part, import.local_name.clone(), namespace);
         if let Some(previous) = seen.insert(key, import.span) {
             diagnostics.push(project_diagnostic(
                 import.span,

@@ -60,6 +60,48 @@ flow odd(n: i32) { if n == 0 { return false; } return even(n - 1); }
 }
 
 #[test]
+fn loop_exits_preserve_value_branches_and_nested_loop_ownership() {
+    let output = check(
+        r#"
+flow digits() -> i32 {
+    var total = 0;
+    var position = 0;
+    while position < 4 limit Iterations(4) {
+        position = position + 1;
+        let digit: i32 = if position == 2 { continue; }
+            else if position == 4 { break; }
+            else { position };
+        total = total + digit;
+    }
+    return total;
+}
+flow nested() -> i32 {
+    return match true {
+        true => {
+            while true limit Iterations(2) {
+                while true limit Iterations(1) { break; }
+                return 7;
+            }
+            return 9;
+        },
+        false => 0,
+    };
+}
+flow matched_break() -> i32 {
+    var total = 0;
+    while true limit Iterations(2) {
+        match total { 0 => { total = 1; }, _ => { break; } };
+    }
+    return total;
+}
+"#,
+    );
+    for name in ["digits", "nested", "matched_break"] {
+        assert_output(&output, name, Type::Primitive(PrimitiveType::I32));
+    }
+}
+
+#[test]
 fn lambda_returns_do_not_become_outer_flow_return_candidates() {
     let output = check(
         r#"

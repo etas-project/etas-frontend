@@ -125,6 +125,7 @@ pub enum ModuleExportTarget {
     Source {
         module: ModuleId,
         item: AstItemRef,
+        member: Option<String>,
     },
     Std {
         module: etas_std::StdModuleId,

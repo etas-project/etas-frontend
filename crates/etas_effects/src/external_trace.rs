@@ -71,7 +71,11 @@ pub(crate) fn lower_external_action_trace(
             crate::ExternalCallableRequestTarget::Parameter(name) => {
                 index.get(name.as_str()).copied()
             }
-            crate::ExternalCallableRequestTarget::SpecMethod(_) => None,
+            crate::ExternalCallableRequestTarget::SpecMethod(_)
+            | crate::ExternalCallableRequestTarget::ParameterProjection { .. } => None,
+            crate::ExternalCallableRequestTarget::AgentTools(context) => {
+                Some(ParameterCallTarget::AgentTools(*context))
+            }
         },
         0,
         &mut remaining,
@@ -90,7 +94,11 @@ pub(crate) fn lower_external_action_trace_with_targets(
 
 fn request_label(target: &crate::ExternalCallableRequestTarget) -> &str {
     match target {
-        crate::ExternalCallableRequestTarget::Parameter(name) => name,
+        crate::ExternalCallableRequestTarget::AgentTools(_) => "agent tools",
+        crate::ExternalCallableRequestTarget::Parameter(name)
+        | crate::ExternalCallableRequestTarget::ParameterProjection {
+            parameter: name, ..
+        } => name,
         crate::ExternalCallableRequestTarget::SpecMethod(method) => &method.method,
     }
 }
@@ -118,6 +126,19 @@ fn lower(
     };
     Some(match trace {
         ExternalActionTraceMetadata::Empty => ActionTraceDomain::Empty,
+        ExternalActionTraceMetadata::DefaultHandler { guards, body } => {
+            if guards.is_empty() {
+                return None;
+            }
+            charge(remaining, guards.len())?;
+            ActionTraceDomain::DefaultHandler {
+                guards: guards
+                    .iter()
+                    .map(checked_action)
+                    .collect::<Option<EffectSet>>()?,
+                body: Box::new(lower(body, span, resolve, target, depth + 1, remaining)?),
+            }
+        }
         ExternalActionTraceMetadata::Event { action, source } => {
             ActionTraceDomain::Event(ActionEvent {
                 action: checked_action(action)?,
@@ -214,6 +235,7 @@ mod tests {
             }],
             actions: vec![
                 DependencyEffectAction {
+                    has_default_handler: false,
                     path: vec!["dep".into(), "Gate".into(), "typed".into()],
                     effect_args: vec![EffectActionArgKind::Type],
                     selector_param_names: vec!["T".into()],
@@ -222,6 +244,7 @@ mod tests {
                     runtime_requirement: None,
                 },
                 DependencyEffectAction {
+                    has_default_handler: false,
                     path: vec!["dep".into(), "Gate".into(), "resource".into()],
                     effect_args: vec![EffectActionArgKind::StaticResourcePath {
                         ty: "Path".into(),

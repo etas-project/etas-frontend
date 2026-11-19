@@ -4,15 +4,19 @@ use etas_utils::{
 };
 
 use crate::ProjectContext;
-use crate::passes::artifacts::{SIGNATURE_FACTS, TYPE_ENVIRONMENT, TYPE_OUTPUT};
+use crate::passes::artifacts::{HIR_OUTPUT, SIGNATURE_FACTS, TYPE_ENVIRONMENT, TYPE_OUTPUT};
 
 pub struct FinalizeTypeFactsPass;
 
 impl Pass<ProjectContext> for FinalizeTypeFactsPass {
     fn descriptor(&self) -> PassDescriptor {
         PassDescriptor::new("FinalizeTypeFactsPass", PassKind::Transform)
-            .requires(ArtifactSet::from([SIGNATURE_FACTS, TYPE_ENVIRONMENT]))
-            .produces(ArtifactSet::one(TYPE_OUTPUT))
+            .requires(ArtifactSet::from([
+                HIR_OUTPUT,
+                SIGNATURE_FACTS,
+                TYPE_ENVIRONMENT,
+            ]))
+            .produces(ArtifactSet::from([HIR_OUTPUT, TYPE_OUTPUT]))
     }
 
     fn run(
@@ -49,9 +53,34 @@ impl Pass<ProjectContext> for FinalizeTypeFactsPass {
             None => etas_types::finalize_body_deltas(base, bodies),
         };
         match result {
-            Ok(output) => context.types = Some(output),
+            Ok(mut output) => {
+                if let Err(error) = super::collection_literals::reify(
+                    context.hir.as_mut().expect("type checking has HIR"),
+                    &mut output,
+                ) {
+                    return PassResult::failed(error);
+                }
+                context
+                    .diagnostics
+                    .extend(super::standard_library::execution_role_diagnostics(
+                        &context.hir.as_ref().unwrap().hir,
+                        &context.std_registry,
+                        &output,
+                    ));
+                match super::lexical_capture::escape_diagnostics(
+                    &context.hir.as_ref().unwrap().hir,
+                    &output.facts,
+                ) {
+                    Ok(diagnostics) => context.diagnostics.extend(diagnostics),
+                    Err(reason) => return PassResult::failed(reason),
+                }
+                context.types = Some(output);
+            }
             Err(error) => return PassResult::failed(error),
         }
-        PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(TYPE_OUTPUT))
+        PassResult::changed(
+            PreservedArtifacts::All,
+            ArtifactSet::from([HIR_OUTPUT, TYPE_OUTPUT]),
+        )
     }
 }

@@ -1327,7 +1327,8 @@ mod tests {
         let clause = TraceSpecClause::Limit {
             fact: TraceSpecClauseFact::Limit { count: 1 },
         };
-        let alternatives = vec![vec![clause]; 200];
+        let alternatives =
+            vec![vec![clause]; etas_package_metadata::MAX_METADATA_GRAPH_NODES.isqrt() + 1];
         assert!(conjoin_alternatives(alternatives.clone(), alternatives).is_none());
     }
 }

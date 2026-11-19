@@ -1,8 +1,8 @@
 use etas_core::{Span, TypeDiagnosticCode};
-use etas_hir::{HirArg, HirExprId, HirGenericArg, ResolveResult, ResolvedActionRef};
+use etas_hir::{HirArg, HirExprId, HirGenericArg, ResolvedActionRef};
 
 use crate::{
-    ConstraintOrigin, Type, TypeConstraint, TypeId, ValidationRequest,
+    ConstraintOrigin, TypeConstraint, TypeId, TypeSubstitutionEngine, ValidationRequest,
     pipeline::context::BodyCollectContext,
 };
 
@@ -28,14 +28,24 @@ pub(super) fn collect_inference<E>(
             ctx.fresh_type_var()
         }
     };
-    let prompt_expected = ctx.ctx.interner.intern(Type::Prompt);
+    let Some((action_symbol, signature)) = super::perform::action_signature(ctx, action) else {
+        ctx.validate(ValidationRequest::Diagnostic {
+            code: TypeDiagnosticCode::IncompleteTypeFacts,
+            span,
+            message: "agent inference requires its canonical compiler action binding".into(),
+        });
+        return Ok(output);
+    };
+    let [prompt_expected, schema] = signature.params.as_slice() else {
+        unreachable!("validated agent inference action signature");
+    };
     let mut prompt = None;
     for arg in args {
         let (value, valid_name) = match arg {
             HirArg::Positional(value) => (*value, true),
             HirArg::Named { name, value, .. } => (*value, name == "prompt"),
         };
-        let ty = super::expr::collect_expr(ctx, value, Some(prompt_expected))?;
+        let ty = super::expr::collect_expr(ctx, value, Some(*prompt_expected))?;
         if args.len() == 1 && valid_name {
             prompt = Some((value, ty));
         }
@@ -48,20 +58,31 @@ pub(super) fn collect_inference<E>(
         });
         return Ok(output);
     };
-    let ResolveResult::Resolved(action_symbol) = action.action_symbol else {
-        ctx.state.validations.push(ValidationRequest::Diagnostic {
-            code: TypeDiagnosticCode::IncompleteTypeFacts,
-            span,
-            message: "agent inference requires its canonical compiler action binding".into(),
-        });
-        return Ok(output);
+    let parameters = [(signature.output, output)].into_iter().collect();
+    let schema = match TypeSubstitutionEngine::materializing(
+        &mut ctx.ctx.interner,
+        &Default::default(),
+        None,
+    )
+    .with_type_parameters(&parameters)
+    .substitute(*schema)
+    {
+        Ok(schema) => schema,
+        Err(error) => {
+            ctx.validate(ValidationRequest::Diagnostic {
+                code: TypeDiagnosticCode::IncompleteTypeFacts,
+                span,
+                message: format!("cannot specialize the inference schema: {error}"),
+            });
+            return Ok(output);
+        }
     };
-    let schema = ctx.ctx.interner.intern(Type::Schema(output));
     ctx.emit(TypeConstraint::AgentInference {
         expr,
         owner: ctx.state.item,
         prompt,
         prompt_type,
+        expected_prompt: *prompt_expected,
         output,
         schema,
         action_symbol,

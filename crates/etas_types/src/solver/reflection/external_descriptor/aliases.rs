@@ -123,6 +123,7 @@ impl ExternalDescriptorMatcher<'_> {
             | Ty::Named(_)
             | Ty::Parameter { .. }
             | Ty::Prompt
+            | Ty::AgentContext(_)
             | Ty::PromptPart => {}
         }
         Ok(())
@@ -249,6 +250,7 @@ impl ExternalDescriptorMatcher<'_> {
                 | Ty::Named(_)
                 | Ty::Parameter { .. }
                 | Ty::Prompt
+                | Ty::AgentContext(_)
                 | Ty::PromptPart => {}
             }
         }

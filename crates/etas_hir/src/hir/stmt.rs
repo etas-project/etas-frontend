@@ -5,7 +5,7 @@ use crate::{Arena, HirBlockId, HirExprId, HirPatId, HirStmtId, HirTypeId, ScopeI
 pub type HirStmtArena = Arena<HirStmtId, HirStmt>;
 pub type HirBlockArena = Arena<HirBlockId, HirBlock>;
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct HirBlock {
     pub id: HirBlockId,
     pub stmts: Vec<HirStmtId>,
@@ -14,7 +14,7 @@ pub struct HirBlock {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum HirStmt {
     Let {
         pat: HirPatId,

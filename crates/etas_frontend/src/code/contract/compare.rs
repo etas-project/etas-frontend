@@ -511,18 +511,20 @@ fn residual_requirements(
         }
     }
     if has_latent {
+        // A preserved generic output may carry behavior outside the returned
+        // callable graph. Keep the reachable body's checked obligations even
+        // when that graph describes an empty or partial set of returns.
+        if preserved {
+            let Some(reachable) = reachable_residual_requirements(checked, item) else {
+                return Ok(None);
+            };
+            required.extend(reachable);
+        }
         let Some(graph) =
             crate::package_metadata::checked_callable_graph(checked, item, root, identities)
                 .map_err(|error| ProjectionError::Invalid(error.to_string()))?
         else {
-            return Ok(if preserved {
-                reachable_residual_requirements(checked, item).map(|reachable| {
-                    required.extend(reachable);
-                    required
-                })
-            } else {
-                None
-            });
+            return Ok(preserved.then_some(required));
         };
         let Some(facts) = crate::package_metadata::graph_residual_facts(checked, &graph) else {
             return Ok(None);

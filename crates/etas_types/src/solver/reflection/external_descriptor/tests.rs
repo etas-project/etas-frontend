@@ -32,6 +32,7 @@ fn generic_descriptor_alias_substitutes_the_callable_type() {
                 generics: vec![],
                 parameters: vec![ParameterInfo {
                     name: None,
+                    default: None,
                     ty: TypeInfoRef(1),
                 }],
                 output: TypeInfoRef(1),
@@ -100,6 +101,7 @@ fn external_applied_aliases_expand_with_checked_substitution_and_budget() {
                 generics: vec![],
                 parameters: vec![ParameterInfo {
                     name: None,
+                    default: None,
                     ty: TypeInfoRef(0),
                 }],
                 output: TypeInfoRef(0),
@@ -308,6 +310,7 @@ fn nested_function_effects_use_canonical_action_and_argument_types() {
                 generics: vec![],
                 parameters: vec![ParameterInfo {
                     name: None,
+                    default: None,
                     ty: TypeInfoRef(0),
                 }],
                 output: TypeInfoRef(0),

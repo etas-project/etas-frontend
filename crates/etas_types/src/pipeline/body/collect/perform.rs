@@ -26,6 +26,23 @@ pub fn collect_perform<E>(
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
     if let ResolveResult::Resolved(symbol) = action.action_symbol
+        && let super::handler_request::ActionIdentity::Standard(target) =
+            super::handler_request::action_identity(ctx, symbol)
+        && let Some(etas_std::StdDecl::EffectAction(declaration)) = ctx
+            .ctx
+            .std_registry
+            .symbol(target)
+            .map(|symbol| &symbol.decl)
+        && declaration.compiler_role == Some(etas_std::CompilerActionRole::AgentInference)
+    {
+        ctx.validate(crate::ValidationRequest::Diagnostic {
+            code: etas_core::TypeDiagnosticCode::InvalidEffectArgument,
+            span,
+            message: "perform infer<T>(prompt) constructs the checked Agentic.infer request".into(),
+        });
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(PrimitiveType::Never)));
+    }
+    if let ResolveResult::Resolved(symbol) = action.action_symbol
         && let Some((target, signatures)) = super::action_selector::overload_signatures(ctx, symbol)
     {
         let mut candidates = Vec::new();
@@ -48,6 +65,7 @@ pub fn collect_perform<E>(
                 continue;
             };
             let callable = crate::CallableSignature {
+                parameter_interface: signature.parameter_interface.clone(),
                 generic_params: signature.generic_params,
                 params: signature.params,
                 output: signature.output,
@@ -87,7 +105,7 @@ pub fn collect_perform<E>(
         super::handler_request::record_request(ctx, action, expr);
         return Ok(output);
     }
-    let Some(signature) = action_signature(ctx, action) else {
+    let Some((_, signature)) = action_signature(ctx, action) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::UnknownType,
             span,
@@ -129,7 +147,14 @@ pub fn collect_perform<E>(
         return Ok(ctx.primitive(PrimitiveType::Never));
     };
 
-    if signature.params.len() != args.len() {
+    let argument_binding = super::call::bind_declared_arguments(
+        ctx,
+        expr,
+        signature.parameter_interface.as_deref(),
+        args,
+        span,
+    );
+    if argument_binding.is_none() && signature.params.len() != args.len() {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::WrongArgumentCount,
             span,
@@ -143,7 +168,10 @@ pub fn collect_perform<E>(
 
     let mut arg_types = Vec::with_capacity(args.len());
     for (index, arg) in args.iter().enumerate() {
-        let expected_arg = signature.params.get(index).copied();
+        let slot = argument_binding
+            .as_ref()
+            .map_or(index, |binding| binding.argument_slots[index] as usize);
+        let expected_arg = signature.params.get(slot).copied();
         let actual = collect_arg(ctx, arg, expected_arg)?;
         arg_types.push(actual);
     }
@@ -167,20 +195,22 @@ pub fn collect_perform<E>(
         output: signature.output,
         effects: signature.default_handler_effects.clone(),
     }));
-    let explicit_generic_args = generic_args
+    let selector_bindings = signature
+        .selector_param_names
         .iter()
-        .map(|arg| match arg {
-            HirGenericArg::Type(ty) => crate::lower::type_ref::lower_type_ref(ctx.ctx, *ty)
-                .map(crate::CallableGenericArg::Type),
-            HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
+        .zip(&signature.selector_defaults)
+        .filter_map(|(name, argument)| match argument {
+            Some(crate::EffectArgRef::Type(ty)) => Some((name.clone(), *ty)),
+            _ => None,
         })
-        .collect::<Option<Vec<_>>>()
-        .unwrap_or_default();
+        .collect();
     ctx.emit(TypeConstraint::Callable {
+        argument_slots: argument_binding.map(|binding| binding.argument_slots),
         call: Some(expr),
         callee,
         generic_params: signature.generic_params,
-        generic_args: explicit_generic_args,
+        generic_args: Vec::new(),
+        selector_bindings,
         arg_exprs: args
             .iter()
             .map(|arg| {
@@ -201,14 +231,14 @@ pub fn collect_perform<E>(
     Ok(output)
 }
 
-fn action_signature<E>(
+pub(super) fn action_signature<E>(
     ctx: &BodyCollectContext<'_, '_, E>,
     action: &ResolvedActionRef,
-) -> Option<EffectActionSignature> {
+) -> Option<(etas_hir::SymbolId, EffectActionSignature)> {
     let ResolveResult::Resolved(symbol) = action.action_symbol else {
         return None;
     };
-    let symbol = ctx
+    let canonical = ctx
         .ctx
         .symbols
         .canonical_symbol(ctx.ctx.hir, symbol)
@@ -216,10 +246,10 @@ fn action_signature<E>(
     ctx.state
         .provisional
         .symbol_types
-        .get(&symbol)
-        .or_else(|| ctx.ctx.symbol_fact(symbol))
+        .get(&canonical)
+        .or_else(|| ctx.ctx.symbol_fact(canonical))
         .and_then(|fact| match fact {
-            SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
+            SymbolTypeFact::EffectAction { signature } => Some((symbol, signature.clone())),
             _ => None,
         })
 }

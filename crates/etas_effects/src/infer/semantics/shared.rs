@@ -11,7 +11,6 @@ pub(super) use etas_hir_analysis::interprocedural::{
 pub(super) use etas_hir_analysis::intraprocedural::{
     AnalysisStep, HandleParts, HirAnalysisSemantics,
 };
-pub(super) use etas_std::{RequirementSemantics, StdDecl};
 pub(super) use etas_types::{EffectArgRef, SymbolTypeFact, Type, TypeId};
 
 pub(super) use crate::diagnostic_anchor::DiagnosticAnchor;

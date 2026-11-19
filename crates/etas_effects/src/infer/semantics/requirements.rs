@@ -3,6 +3,21 @@ use super::shared::*;
 
 impl EffectSemantics<'_> {
     pub(crate) fn limit_requirement_from_expr(&self, expr: HirExprId) -> Option<LimitRequirement> {
+        self.checked_limit_requirement(expr, false)
+    }
+
+    pub(super) fn loop_limit_requirement_from_expr(
+        &self,
+        expr: HirExprId,
+    ) -> Option<LimitRequirement> {
+        self.checked_limit_requirement(expr, true)
+    }
+
+    fn checked_limit_requirement(
+        &self,
+        expr: HirExprId,
+        dynamic_iterations: bool,
+    ) -> Option<LimitRequirement> {
         let (callee, args) = match self.hir.exprs.get(expr)? {
             HirExpr::Call { callee, args, .. } => (*callee, args.as_slice()),
             _ => return None,
@@ -13,23 +28,22 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return None;
         };
-        let symbol = self.hir.symbols.get(symbol)?;
-        let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
-            return None;
-        };
-        let std_symbol = self.std_registry.lookup_qualified(path)?;
-        let StdDecl::Requirement(requirement) = &std_symbol.decl else {
-            return None;
-        };
-        let RequirementSemantics::Limit(std_kind) = requirement.semantics else {
-            return None;
-        };
+        let std_kind = etas_types::facts::enums::standard_limit_constructor(
+            self.hir,
+            self.std_registry,
+            symbol,
+        )?;
         let kind = limit_kind_from_std(std_kind);
-        let value = self.limit_value_from_args(kind, args)?;
+        let value = self.limit_value_from_args(kind, args);
+        if value.is_none()
+            && !(dynamic_iterations && kind == LimitKind::Iterations && args.len() == 1)
+        {
+            return None;
+        }
         Some(LimitRequirement {
             kind,
             budget: kind.budget_kind(),
-            value: Some(value),
+            value,
         })
     }
 
@@ -149,33 +163,6 @@ impl EffectSemantics<'_> {
             _ => return None,
         };
         (self.hir.items.get(item)?.symbol() == Some(symbol)).then_some(item)
-    }
-
-    pub(crate) fn item_effect_path(&self, item: HirItemId) -> Option<Vec<String>> {
-        let symbol = match self.hir.items.get(item)? {
-            etas_hir::HirItem::Flow(flow) => flow.symbol,
-            etas_hir::HirItem::Agent(agent) => agent.symbol,
-            etas_hir::HirItem::Tool(tool) => tool.symbol,
-            etas_hir::HirItem::TopLevelLet(value) => value.symbol,
-            _ => return None,
-        };
-        let symbol = self.hir.symbols.get(symbol)?;
-        let mut path = self
-            .hir
-            .modules_arena
-            .get(symbol.defining_module)?
-            .name
-            .as_ref()
-            .map(|module| {
-                module
-                    .segments
-                    .iter()
-                    .map(|segment| segment.name.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        path.push(symbol.name.clone());
-        Some(path)
     }
 
     pub(crate) fn incomplete_summary(

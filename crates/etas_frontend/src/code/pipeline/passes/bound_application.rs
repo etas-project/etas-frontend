@@ -91,7 +91,13 @@ impl Pass<ProjectContext> for PrepareCandidateApplicationPass {
             );
         }
         let control = manager.execution_control().unwrap_or(&Continue);
+        let sources = context
+            .sources
+            .as_ref()
+            .expect("candidate preparation has source snapshots")
+            .to_source_bundle();
         let result = prepare(PreparationInput {
+            sources: &sources,
             application,
             frozen,
             target,
@@ -142,6 +148,7 @@ enum PreparationError {
 }
 
 struct PreparationInput<'a> {
+    sources: &'a crate::SourceBundle,
     application: &'a crate::CheckedCallableApplication,
     frozen: &'a crate::code::definition::FrozenDefinitionEnvironment,
     target: etas_hir::HirItemId,
@@ -165,6 +172,7 @@ struct PreparedCandidateApplication {
 
 fn prepare(input: PreparationInput<'_>) -> Result<PreparedCandidateApplication, PreparationError> {
     let PreparationInput {
+        sources,
         application,
         frozen,
         target,
@@ -185,11 +193,12 @@ fn prepare(input: PreparationInput<'_>) -> Result<PreparedCandidateApplication, 
     let source_input: DescriptorInput<'_> = source.as_ref().into();
     let target_input = DescriptorInput {
         hir,
-        sources: None,
+        sources: Some(sources),
         types: &signatures.facts,
         type_store: &signatures.store,
         std_registry,
         resolved_imports: imports,
+        standard_library_mode: source.compile_options.standard_library_mode,
         module_index: modules,
         effect_registry: registry,
         effects: None,
@@ -258,6 +267,8 @@ fn prepare(input: PreparationInput<'_>) -> Result<PreparedCandidateApplication, 
         crate::code::definition::CheckedTypeAndSpecPlanInput {
             source,
             target: std_registry,
+            target_definitions: None,
+            additional_specs: &[],
             roots: &roots,
             rows: &rows,
             declarations: correspondence.declarations(),

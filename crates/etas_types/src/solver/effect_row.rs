@@ -42,7 +42,7 @@ pub fn infer_bindings_from_types(
     )
 }
 
-pub(super) struct EffectRowParameterScopes<'a> {
+pub(crate) struct EffectRowParameterScopes<'a> {
     pub inferred: &'a [String],
     pub lexical: &'a [String],
 }
@@ -67,7 +67,7 @@ pub(super) fn infer_scoped_bindings_from_types(
     results.remove(0)
 }
 
-pub(super) fn infer_bindings_from_type_pairs(
+pub(crate) fn infer_bindings_from_type_pairs(
     store: &TypeStore,
     pairs: &[(TypeId, TypeId)],
     type_bindings: &HashMap<String, TypeId>,

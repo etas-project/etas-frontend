@@ -42,6 +42,10 @@ pub enum EffectConvergenceStatus {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectMaterializationInputs {
+    pub external_parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::ExternalParameterProjection>,
+    pub parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::NativeParameterProjection>,
     #[serde(default)]
     pub external_descriptor_graphs: BTreeMap<
         etas_code::CodeFingerprint,
@@ -49,6 +53,7 @@ pub struct EffectMaterializationInputs {
     >,
     pub method_evidence:
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
     pub frozen_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, crate::FrozenCallableGraphIdentity>,
@@ -59,29 +64,62 @@ pub struct EffectMaterializationInputs {
     pub metadata_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataCallableGraphFact>>,
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_call_arguments: HashMap<
+        HirExprId,
+        BTreeMap<crate::ParameterCallTarget, BTreeSet<super::CallableValueOrigin>>,
+    >,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub dynamic_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
+    /// The cursor's stored next callable, distinct from the expression which
+    /// constructs the cursor. Its captured environment belongs to that value.
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub iteration_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub metadata_call_targets: HashMap<HirExprId, BTreeSet<crate::MetadataCallableSource>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub generic_effect_rows: HashMap<HirExprId, Vec<(String, EffectRow)>>,
     pub callable_environments: BTreeMap<super::CallableEnvironmentId, super::CallableEnvironment>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handler_action_effects: HashMap<HirHandlerArmId, crate::Effect>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub expr_effects: HashMap<HirExprId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub stmt_effects: HashMap<HirStmtId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub unit_effects: HashMap<EffectUnit, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handler_values: HashMap<HirExprId, HandlerValueFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handle_applications: HashMap<HirExprId, HandleApplicationFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub performed_actions: HashMap<HirExprId, PerformedActionFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub try_captures: HashMap<HirExprId, TryCaptureFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub latent_effects: HashMap<HirExprId, LatentEffectFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_callable_values: HashMap<HirExprId, StdCallableEffectFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_action_calls: HashMap<HirExprId, StdActionCallFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub latent_realizations: HashMap<HirExprId, Vec<HirExprId>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub deferred_first_class_calls: HashMap<EffectUnit, Vec<HirExprId>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub inferred_parameter_effects: HashMap<SymbolId, EffectSummary>,
     pub unresolved_parameter_calls: BTreeMap<EffectUnit, BTreeSet<HirExprId>>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct EffectFacts {
+    pub external_parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::ExternalParameterProjection>,
+    pub parameter_projections:
+        BTreeMap<etas_code::CodeFingerprint, super::NativeParameterProjection>,
+    pub suspension: BTreeMap<EffectUnit, crate::suspension::SuspensionSummary>,
     #[serde(default)]
     pub external_descriptor_graphs: BTreeMap<
         etas_code::CodeFingerprint,
@@ -89,6 +127,7 @@ pub struct EffectFacts {
     >,
     pub method_evidence:
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataSpecMethodDefinition>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handled_body_requests: HashMap<HirExprId, crate::RequestInstantiationSummary>,
     pub frozen_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, crate::FrozenCallableGraphIdentity>,
@@ -99,27 +138,55 @@ pub struct EffectFacts {
     pub metadata_callable_graphs:
         BTreeMap<etas_code::CodeFingerprint, std::sync::Arc<super::MetadataCallableGraphFact>>,
     pub captured_callables: BTreeMap<super::CapturedCallableId, super::CapturedCallableAnalysis>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub native_call_targets: HashMap<HirExprId, BTreeSet<EffectUnit>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub source_call_arguments: HashMap<
+        HirExprId,
+        BTreeMap<crate::ParameterCallTarget, BTreeSet<super::CallableValueOrigin>>,
+    >,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub dynamic_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    pub iteration_call_sources: HashMap<HirExprId, BTreeSet<super::CallableValueOrigin>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub metadata_call_targets: HashMap<HirExprId, BTreeSet<crate::MetadataCallableSource>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub generic_effect_rows: HashMap<HirExprId, Vec<(String, EffectRow)>>,
     pub callable_environments: BTreeMap<super::CallableEnvironmentId, super::CallableEnvironment>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub inferred_parameter_effects: HashMap<SymbolId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handler_action_effects: HashMap<HirHandlerArmId, crate::Effect>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub expr_effects: HashMap<HirExprId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub stmt_effects: HashMap<HirStmtId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub item_effects: HashMap<HirItemId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub unit_effects: HashMap<EffectUnit, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub symbol_effects: HashMap<SymbolId, EffectSummary>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handler_values: HashMap<HirExprId, HandlerValueFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub handle_applications: HashMap<HirExprId, HandleApplicationFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub performed_actions: HashMap<HirExprId, PerformedActionFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub try_captures: HashMap<HirExprId, TryCaptureFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub latent_effects: HashMap<HirExprId, LatentEffectFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_callable_values: HashMap<HirExprId, StdCallableEffectFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_action_calls: HashMap<HirExprId, StdActionCallFact>,
     #[serde(default)]
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub task_calls: HashMap<HirExprId, TaskCallFact>,
     #[serde(default)]
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub continuation_transfers: HashMap<HirExprId, ContinuationTransferFact>,
     pub public_contracts: Vec<PublicEffectContract>,
     pub trace_specs: TraceSpecFacts,
@@ -189,6 +256,7 @@ mod external_scope_tests {
         )
         .unwrap();
         let call = |handlers| ParameterCallInfo {
+            projection: Vec::new(),
             callable: callable.clone(),
             signature: TypeInfoRef(1),
             position: 0,
@@ -203,6 +271,7 @@ mod external_scope_tests {
                     parameters: vec![ParameterInfo {
                         name: Some("callback".into()),
                         ty: TypeInfoRef(2),
+                        default: None,
                     }],
                     output: TypeInfoRef(0),
                     declared_output: None,
@@ -275,10 +344,14 @@ pub struct TraceSpecFacts {
         etas_code::residual::identity::SourceClauseSite,
     >,
     /// Declaration-level OR alternatives; each inner vector is one conjunction.
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub declaration_alternatives:
         HashMap<HirItemId, crate::trace_spec::TraceSpecClauseAlternatives>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub items: HashMap<HirItemId, Vec<TraceSpecClauseFact>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub symbols: HashMap<SymbolId, Vec<TraceSpecClauseFact>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub conformances: HashMap<HirItemId, Vec<TraceSpecConformanceModelFact>>,
 }
 

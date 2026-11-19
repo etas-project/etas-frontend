@@ -27,7 +27,7 @@ impl NativeDefinitionView {
         ChangeReport::compare(old, new).map_err(Into::into)
     }
 
-    fn diff_snapshot(
+    pub fn diff_snapshot(
         &self,
         syntax: &dyn CodeSyntaxOperations,
         max_body_bytes: usize,

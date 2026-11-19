@@ -13,6 +13,9 @@ impl EffectSemantics<'_> {
         if self.is_typed_flow_expr(expr) {
             return false;
         }
+        let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+            return false;
+        };
         if self.checked_enum_constructor(symbol) {
             return matches!(self.type_symbols.symbol_fact(self.hir, &self.types.facts, symbol), Some(SymbolTypeFact::Flow { signature }) if signature.params.is_empty());
         }
@@ -24,7 +27,7 @@ impl EffectSemantics<'_> {
         self.std_registry
             .lookup_qualified(path)
             .is_some_and(|declaration| {
-                declaration.intrinsic.as_ref().is_some_and(|descriptor| {
+                declaration.intrinsic.as_ref().is_none_or(|descriptor| {
                     descriptor.latent_effect == etas_std::IntrinsicLatentEffect::TransparentFirstArg
                 }) && declaration.kind == StdSymbolKind::Constructor
                     && matches!(self.type_symbols.symbol_fact(self.hir, &self.types.facts, symbol), Some(SymbolTypeFact::Flow { signature }) if signature.params.is_empty())
@@ -32,6 +35,9 @@ impl EffectSemantics<'_> {
     }
 
     pub(super) fn checked_enum_constructor(&self, symbol: SymbolId) -> bool {
+        let Some(symbol) = self.type_symbols.canonical_symbol(self.hir, symbol) else {
+            return false;
+        };
         let Some(definition) = self.hir.symbols.get(symbol) else {
             return false;
         };
@@ -39,8 +45,12 @@ impl EffectSemantics<'_> {
             SymbolDef::EnumVariant { enum_item, variant_index } => {
                 matches!(self.hir.items.get(*enum_item), Some(HirItem::Enum(decl)) if decl.variants.get(*variant_index as usize).is_some_and(|variant| variant.symbol == symbol))
             }
+            SymbolDef::ExternalEnumVariant { .. } => self.types.facts
+                .enum_constructor(&self.types.store, definition).is_some(),
             SymbolDef::ImportAlias { path, .. } => self.std_registry.lookup_qualified(path).is_some_and(|symbol| {
-                symbol.enum_owner.is_some() && symbol.intrinsic.is_none()
+                (symbol.enum_owner.is_some()
+                    || (symbol.kind == StdSymbolKind::Constructor && self.std_registry.body_binding(symbol.id).is_some()))
+                    && symbol.intrinsic.is_none()
                     && matches!(&symbol.decl, StdDecl::Flow(flow) if flow.public_effects.is_empty() && flow.requested_actions.is_empty())
             }),
             _ => false,
@@ -63,6 +73,14 @@ impl EffectSemantics<'_> {
             return false;
         }
         let constructor = match self.types.store.get(signature.output) {
+            Some(Type::Option(_)) => match self.types.facts.known_std_types.option_enum {
+                Some(owner) => owner,
+                None => return false,
+            },
+            Some(Type::Result { .. }) => match self.types.facts.known_std_types.result_enum {
+                Some(owner) => owner,
+                None => return false,
+            },
             Some(Type::Enum(_)) => signature.output,
             Some(Type::Applied { constructor, .. })
                 if matches!(

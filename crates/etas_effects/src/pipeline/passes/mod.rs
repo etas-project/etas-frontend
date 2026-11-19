@@ -114,9 +114,9 @@ fn effect_unit_owner_is_reachable(
 ) -> bool {
     match unit {
         EffectUnit::Item(item) => reachable_items.contains(item),
-        EffectUnit::HandlerArm { owner, .. } | EffectUnit::AnonymousFlow { owner, .. } => {
-            reachable_items.contains(owner)
-        }
+        EffectUnit::HandlerArm { owner, .. }
+        | EffectUnit::AnonymousFlow { owner, .. }
+        | EffectUnit::ParameterDefault { owner, .. } => reachable_items.contains(owner),
     }
 }
 

@@ -66,10 +66,14 @@ fn solve_from_latent_units(
             actual
         } else {
             let ty = types.facts.expr_types.get(&obligation.source)?;
-            let row = match types.store.get(*ty)? {
-                etas_types::Type::Task(task) => &task.effects,
-                etas_types::Type::Function(flow) => flow.effects.as_ref()?,
-                _ => return None,
+            let row = if let Some(task) =
+                etas_types::source_execution::task(&types.store, &types.facts.known_std_types, *ty)
+            {
+                task.effects
+            } else if let etas_types::Type::Function(flow) = types.store.get(*ty)? {
+                flow.effects.as_ref()?
+            } else {
+                return None;
             };
             source_row = super::row_from_type_ref(registry, row);
             &source_row

@@ -37,6 +37,10 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
             ty
         }
         HirType::Primitive { kind, .. } => ctx.interner.primitive(PrimitiveType::from_hir(kind)),
+        HirType::Array { element, .. } => {
+            let element = lower_type_ref(ctx, element)?;
+            ctx.interner.intern(Type::Array(element))
+        }
         HirType::Tuple { elems, .. } => {
             let elems = elems
                 .into_iter()
@@ -118,6 +122,70 @@ pub fn lower_type_ref(ctx: &mut TypePipelineContext<'_>, ty: HirTypeId) -> Optio
     Some(lowered)
 }
 
+/// Resolve a language dependency in the selected source std namespace. The
+/// declaration and its signature come from source/compiled metadata, never a
+/// handwritten replacement declaration or a legacy factory.
+pub(crate) fn selected_source_type(
+    ctx: &mut TypePipelineContext<'_>,
+    path: &[&str],
+) -> Option<TypeId> {
+    let path = path
+        .iter()
+        .map(|part| (*part).to_owned())
+        .collect::<Vec<_>>();
+    ctx.symbols
+        .canonical_path(ctx.hir, &path)
+        .and_then(|symbol| ctx.type_fact_as_type_id(symbol))
+        .or_else(|| ctx.external_type_paths.get(&path).copied())
+        .or_else(|| {
+            let registry = ctx.std_registry.clone();
+            let declaration = registry.lookup_qualified(&path)?;
+            crate::lower::std::lower_std_type_symbol(ctx, &registry, declaration)
+        })
+}
+
+/// A constructor sum owns a nominal identity. Its empty/cell storage is a
+/// language value layout, derived from the declaration rather than a std role.
+pub(crate) fn lower_sequence_representation(
+    ctx: &mut TypePipelineContext<'_>,
+    owner: etas_hir::SymbolId,
+    parameters: &[etas_hir::SymbolId],
+    element: HirTypeId,
+    tail: HirTypeId,
+    span: etas_core::Span,
+) -> Option<TypeId> {
+    let canonical = |symbol| {
+        ctx.symbols
+            .canonical_symbol(ctx.hir, symbol)
+            .unwrap_or(symbol)
+    };
+    let recursive_tail = match &ctx.hir.types[tail] {
+        HirType::Path { path, args, .. } => {
+            matches!(path.resolution, ResolveResult::Resolved(symbol)
+                if canonical(symbol) == canonical(owner))
+                && args.len() == parameters.len()
+                && args.iter().zip(parameters).all(|(argument, parameter)| {
+                    matches!(&ctx.hir.types[*argument],
+                        HirType::Path { path, args, .. }
+                        if args.is_empty() && matches!(path.resolution,
+                            ResolveResult::Resolved(symbol)
+                            if canonical(symbol) == canonical(*parameter)))
+                })
+        }
+        _ => false,
+    };
+    if !recursive_tail {
+        ctx.diagnostics.push(Diagnostic::type_check(
+            TypeDiagnosticCode::IncompleteTypeFacts,
+            span,
+            "a cell constructor must end in its owning type with the same type parameters",
+        ));
+        return None;
+    }
+    let element = lower_type_ref(ctx, element)?;
+    Some(ctx.interner.intern(Type::List(element)))
+}
+
 pub fn lower_path_type(
     ctx: &mut TypePipelineContext<'_>,
     path: &etas_hir::ResolvedPath,
@@ -132,7 +200,31 @@ pub fn lower_path_type(
         .join(".");
     let args = args
         .iter()
-        .filter_map(|arg| lower_type_ref(ctx, *arg))
+        .filter_map(|arg| {
+            if let HirType::Path { path, args, .. } = &ctx.hir.types[*arg]
+                && args.is_empty()
+                && let ResolveResult::Resolved(symbol) = path.resolution
+                && let Some(symbol) = ctx
+                    .symbols
+                    .canonical_symbol(ctx.hir, symbol)
+                    .and_then(|id| ctx.hir.symbols.get(id))
+                && symbol.kind == etas_hir::SymbolKind::EffectParam
+            {
+                let row = ctx
+                    .bound_effect_parameter(symbol.id)
+                    .cloned()
+                    .unwrap_or_else(|| crate::EffectRowRef {
+                        effects: vec![],
+                        tail: Some(symbol.name.clone()),
+                    });
+                return Some(ctx.interner.intern(Type::Handler(HandlerType {
+                    handled: row,
+                    produced: HandlerProducedEffects::Infer,
+                    result: None,
+                })));
+            }
+            lower_type_ref(ctx, *arg)
+        })
         .collect::<Vec<_>>();
     lower_named_path(ctx, path, &name, args, span)
 }
@@ -144,6 +236,12 @@ fn lower_named_path(
     args: Vec<TypeId>,
     span: etas_core::Span,
 ) -> TypeId {
+    if let Some(method) = agent_context_ref(ctx, path) {
+        if !args.is_empty() {
+            return ctx.unknown_type(span, "agent method context does not accept type arguments");
+        }
+        return ctx.interner.intern(Type::AgentContext(method));
+    }
     let source_symbol = resolved_source_type_symbol(ctx, path);
     if let Some(symbol) = source_symbol {
         let canonical = ctx
@@ -167,6 +265,7 @@ fn lower_named_path(
                     crate::SymbolTypeFact::TypeAlias { .. }
                         | crate::SymbolTypeFact::NominalType { .. }
                         | crate::SymbolTypeFact::Agent { .. }
+                        | crate::SymbolTypeFact::Type { .. }
                 )
             )
         {
@@ -185,7 +284,9 @@ fn lower_named_path(
             .and_then(|symbol| ctx.hir.symbols.get(symbol))
             .and_then(|symbol| match &symbol.def {
                 SymbolDef::ImportAlias { path, .. } => ctx.std_registry.lookup_qualified(path),
-                _ => None,
+                _ => ctx
+                    .source_type_role(symbol.id)
+                    .and_then(|native| ctx.std_registry.symbol(native)),
             })
             .and_then(|symbol| match &symbol.decl {
                 etas_std::StdDecl::Type(decl) => Some(decl.name.clone()),
@@ -193,6 +294,17 @@ fn lower_named_path(
             }),
         _ => None,
     };
+    let legacy_standard_type = source_symbol
+        .and_then(|symbol| ctx.symbols.canonical_symbol(ctx.hir, symbol))
+        .and_then(|symbol| ctx.hir.symbols.get(symbol))
+        .and_then(|symbol| match &symbol.def {
+            SymbolDef::ImportAlias { path, .. } => ctx.std_registry.lookup_qualified(path),
+            _ => None,
+        })
+        .is_some_and(|symbol| {
+            matches!(symbol.decl, etas_std::StdDecl::Type(_))
+                && ctx.std_registry.declaration_key(symbol.id).is_none()
+        });
     let resolved_declaration = match source_symbol {
         Some(symbol) => {
             matches!(
@@ -203,6 +315,12 @@ fn lower_named_path(
                         | crate::SymbolTypeFact::Agent { .. }
                         | crate::SymbolTypeFact::Spec { .. }
                 )
+            ) || matches!(
+                ctx.symbol_fact(symbol),
+                Some(crate::SymbolTypeFact::Type { constructor })
+                    if ctx.interner.store().nominal_identity(TypeId(constructor.0)).is_some()
+                        || (ctx.hir.source_standard_types
+                            && matches!(ctx.interner.store().get(TypeId(constructor.0)), Some(Type::Enum(_))))
             ) || ctx
                 .symbols
                 .canonical_symbol(ctx.hir, symbol)
@@ -223,7 +341,9 @@ fn lower_named_path(
         _ => false,
     };
     match (standard_name.as_deref().unwrap_or(name), args.as_slice()) {
-        _ if resolved_declaration && standard_name.is_none() => {
+        // A resolved declaration owns its type identity, including source std
+        // declarations whose names also occur in the legacy builtin table.
+        _ if resolved_declaration && !legacy_standard_type => {
             lower_declared_path(ctx, path, name, args, span)
         }
         ("Array", [inner]) => ctx.interner.intern(Type::Array(*inner)),
@@ -259,7 +379,10 @@ fn lower_named_path(
         }),
         ("Prompt", []) => ctx.interner.intern(Type::Prompt),
         ("PromptPart", []) => ctx.interner.intern(Type::PromptPart),
-        ("Message", [inner]) => ctx.interner.intern(Type::Message(*inner)),
+        ("Message", [inner]) => {
+            let registry = ctx.std_registry.clone();
+            super::std::lower_message_type(ctx, &registry, *inner)
+        }
         ("MemorySelection", [inner]) => ctx.interner.intern(Type::MemorySelection(*inner)),
         ("MemoryRegion", [schema]) => ctx.interner.intern(Type::MemoryRegion(*schema)),
         ("Store", [key, value]) => ctx.interner.intern(Type::Store {
@@ -363,12 +486,54 @@ fn lower_declared_path(
     }
 }
 
-fn resolved_source_type_symbol(
+pub(crate) fn agent_context_ref(
+    ctx: &TypePipelineContext<'_>,
+    path: &etas_hir::ResolvedPath,
+) -> Option<crate::AgentContextRef> {
+    if let Some(symbol) = resolved_source_type_symbol(ctx, path)
+        .and_then(|symbol| ctx.symbols.canonical_symbol(ctx.hir, symbol))
+        && ctx.hir.agent_methods.contains_key(&symbol)
+    {
+        return Some(symbol.into());
+    }
+    let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
+        return None;
+    };
+    let [name] = partial.remaining.as_slice() else {
+        return None;
+    };
+    let owner = ctx
+        .symbols
+        .canonical_symbol(ctx.hir, partial.resolved_prefix?)?;
+    if let Some(method) = ctx.hir.agent_method(owner, name) {
+        return Some(method.symbol.into());
+    }
+    let crate::facts::reflection::ExternalAgentReflectionFact::Available { header, .. } =
+        ctx.external_agent_reflection(owner)?
+    else {
+        return None;
+    };
+    let methods = crate::select_external_methods(header).ok()??;
+    let crate::ExternalMethodSelection::Selected(callable) = methods.get(name)? else {
+        return None;
+    };
+    Some(crate::AgentContextRef::Portable(Box::new(
+        callable.as_method()?.clone(),
+    )))
+}
+
+pub(crate) fn resolved_source_type_symbol(
     ctx: &TypePipelineContext<'_>,
     path: &etas_hir::ResolvedPath,
 ) -> Option<etas_hir::SymbolId> {
     match &path.resolution {
         ResolveResult::Resolved(symbol) => Some(*symbol),
+        ResolveResult::PartiallyResolved(partial)
+            if partial.resolved_prefix.is_none()
+                && partial.reason == etas_hir::PartialResolutionReason::PackageResolverRequired =>
+        {
+            ctx.symbols.canonical_path(ctx.hir, &partial.remaining)
+        }
         ResolveResult::PartiallyResolved(partial) => {
             let prefix = partial.resolved_prefix?;
             let symbol = ctx.hir.symbols.get(prefix)?;
@@ -413,8 +578,23 @@ fn apply_alias_type(
     if params.is_empty() {
         return target;
     }
-    let substitutions = params.into_iter().zip(args).collect();
-    match crate::substitute_named_params(&mut ctx.interner, target, &substitutions) {
+    let mut rows = std::collections::HashMap::new();
+    let mut substitutions = std::collections::HashMap::new();
+    for (name, argument) in params.into_iter().zip(args) {
+        if let Some(Type::Handler(HandlerType {
+            handled,
+            produced: HandlerProducedEffects::Infer,
+            result: None,
+        })) = ctx.interner.store().get(argument)
+        {
+            rows.insert(name.clone(), handled.clone());
+        }
+        substitutions.insert(name, argument);
+    }
+    match crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &substitutions, None)
+        .with_effect_arguments(&rows)
+        .substitute(target)
+    {
         Ok(ty) => ty,
         Err(error) => {
             ctx.diagnostics.push(Diagnostic::type_check(
@@ -463,12 +643,10 @@ fn lower_source_declared_alias(
         ));
         return Some(ctx.interner.primitive(PrimitiveType::Never));
     }
-    let item = match ctx.hir.symbols.get(symbol) {
-        Some(symbol_data) => match &symbol_data.def {
-            SymbolDef::Item { item } => *item,
-            _ => symbol_data.defining_item?,
-        },
-        None => return None,
+    let symbol_data = ctx.hir.symbols.get(symbol)?;
+    let item = match &symbol_data.def {
+        SymbolDef::Item { item } => *item,
+        _ => symbol_data.defining_item?,
     };
     let item_data = ctx.hir.items.get(item).cloned()?;
     let HirItem::TypeAlias(decl) = item_data else {
@@ -506,12 +684,10 @@ fn lower_source_declared_type(
         ));
         return Some(ctx.interner.primitive(PrimitiveType::Never));
     }
-    let item = match ctx.hir.symbols.get(symbol) {
-        Some(symbol_data) => match &symbol_data.def {
-            SymbolDef::Item { item } => *item,
-            _ => symbol_data.defining_item?,
-        },
-        None => return None,
+    let symbol_data = ctx.hir.symbols.get(symbol)?;
+    let item = match &symbol_data.def {
+        SymbolDef::Item { item } => *item,
+        _ => symbol_data.defining_item?,
     };
     ctx.lowering_type_stack.push(symbol);
     let Some(item_data) = ctx.hir.items.get(item).cloned() else {
@@ -540,6 +716,18 @@ fn lower_source_declared_type(
             let representation = match decl.body {
                 HirTypeDeclBody::Bodyless => None,
                 HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
+                HirTypeDeclBody::Sequence {
+                    element,
+                    tail,
+                    span,
+                } => lower_sequence_representation(
+                    ctx,
+                    decl.symbol,
+                    &decl.type_params,
+                    element,
+                    tail,
+                    span,
+                ),
             };
             let lowered = Some(ctx.interner.intern(Type::Nominal(NominalTypeRef {
                 read_only_erased_view: false,
@@ -620,11 +808,32 @@ fn known_or_named_path(
     }
 }
 
-fn applied_or_constructor(
+pub(super) fn applied_or_constructor(
     ctx: &mut TypePipelineContext<'_>,
     base: TypeId,
     args: Vec<TypeId>,
 ) -> TypeId {
+    match (ctx.interner.store().get(base).cloned(), args.as_slice()) {
+        (Some(Type::Task(_)), [output, row]) => {
+            if let Some(Type::Handler(HandlerType {
+                handled,
+                produced: HandlerProducedEffects::Infer,
+                result: None,
+            })) = ctx.interner.store().get(*row)
+            {
+                let effects = handled.clone();
+                return ctx.interner.intern(Type::Task(crate::TaskType {
+                    output: *output,
+                    effects,
+                }));
+            }
+        }
+        (Some(Type::Continuation(mut continuation)), [output]) => {
+            continuation.action_output = *output;
+            return ctx.interner.intern(Type::Continuation(continuation));
+        }
+        _ => {}
+    }
     if args.is_empty() {
         base
     } else {

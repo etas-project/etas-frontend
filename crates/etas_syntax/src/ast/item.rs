@@ -161,6 +161,12 @@ pub struct TypeDecl {
 pub enum TypeDeclBody {
     Bodyless,
     Representation(TypeExpr),
+    /// The native empty/cell constructor sum, independent of the type's name.
+    Sequence {
+        element: TypeExpr,
+        tail: TypeExpr,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
@@ -298,6 +304,7 @@ pub struct FlowSignature {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct ImplDecl {
+    pub type_params: Vec<TypeParam>,
     pub target: ImplTarget,
     pub items: Vec<ImplItem>,
     pub span: Span,
@@ -400,20 +407,26 @@ impl EffectBody {
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct EffectActionDecl {
     pub name: Name,
+    /// Static selector binders after the action name.
     pub selector_params: Vec<ActionSelectorParam>,
+    /// Inferred signature binders before the action name.
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub return_type: TypeExpr,
+    /// Present only for `@default_handler`, including an explicitly empty row.
+    pub default_handler_effects: Option<EffectRow>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ActionSelectorParam {
     Type(TypeParam),
+    Value { name: Name, kind: Path },
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub struct FlowDecl {
+    pub annotations: Vec<Annotation>,
     pub visibility: Visibility,
     pub name: Name,
     pub type_params: Vec<TypeParam>,
@@ -428,6 +441,7 @@ pub struct FlowDecl {
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum FlowBody {
+    Decl { semicolon_span: Span },
     Block(Block),
     Expr { expr: Expr, span: Span },
 }
@@ -436,14 +450,17 @@ impl FlowBody {
     pub fn span(&self) -> Span {
         match self {
             Self::Block(block) => block.span,
-            Self::Expr { span, .. } => *span,
+            Self::Decl {
+                semicolon_span: span,
+            }
+            | Self::Expr { span, .. } => *span,
         }
     }
 
     pub fn as_block(&self) -> Option<&Block> {
         match self {
             Self::Block(block) => Some(block),
-            Self::Expr { .. } => None,
+            Self::Decl { .. } | Self::Expr { .. } => None,
         }
     }
 }
@@ -453,7 +470,7 @@ impl std::ops::Deref for FlowBody {
 
     fn deref(&self) -> &Self::Target {
         self.as_block()
-            .expect("expression-bodied flow does not have an AST block body")
+            .expect("flow does not have an AST block body")
     }
 }
 
@@ -537,7 +554,15 @@ pub struct TopLevelLetDecl {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum MemoryAccessKind {
     Read,
@@ -571,13 +596,14 @@ pub struct ProtocolMsg {
 pub struct Param {
     pub name: Name,
     pub ty: ParamType,
+    pub default: Option<Box<Expr>>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]
 pub enum ParamType {
     Explicit(Box<TypeExpr>),
-    SelfReceiver { span: Span },
+    SelfReceiver { updating: bool, span: Span },
 }
 
 #[derive(Clone, Debug, PartialEq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes)]

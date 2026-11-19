@@ -195,10 +195,9 @@ impl EffectSemantics<'_> {
         state: &EffectState,
         expr: HirExprId,
     ) -> Result<Option<EffectSummary>, EffectSpecializationError> {
-        let Some(origin) = self.task_origin(expr, &mut std::collections::HashSet::new()) else {
-            return Ok(None);
-        };
-        let Some(task) = self.types.facts.task_owners.get(&origin) else {
+        let Some((origin, task_row)) =
+            self.task_value_row(expr, &mut std::collections::HashSet::new())
+        else {
             return Ok(None);
         };
         let checked = self.call_generic_bindings(origin);
@@ -212,7 +211,7 @@ impl EffectSemantics<'_> {
             &checked.deferred_effect_rows,
             &existing,
         )?;
-        let mut effects = self.row_from_type_ref(&task.effects);
+        let mut effects = self.row_from_type_ref(task_row);
         if let Some(open) = effects.open
             && let Some(binding) = solved
                 .iter()
@@ -228,30 +227,39 @@ impl EffectSemantics<'_> {
         Ok(Some(summary))
     }
 
-    fn task_origin(
+    fn task_value_row(
         &self,
         expr: HirExprId,
         visited: &mut std::collections::HashSet<HirExprId>,
-    ) -> Option<HirExprId> {
+    ) -> Option<(HirExprId, &etas_types::EffectRowRef)> {
         if !visited.insert(expr) {
             return None;
         }
-        if self.types.facts.task_owners.contains_key(&expr) {
-            return Some(expr);
+        // Follow local values to the call whose checked row arguments produced
+        // the Task. A source forwarding flow has no task_owners entry itself.
+        if let etas_hir::HirExpr::Path(path) = self.hir.exprs.get(expr)?
+            && let etas_hir::ResolveResult::Resolved(symbol) = path.resolution
+        {
+            let initializer = match &self.hir.symbols.get(symbol)?.def {
+                etas_hir::SymbolDef::Local { initializer, .. }
+                | etas_hir::SymbolDef::PatternBinding { initializer, .. } => *initializer,
+                etas_hir::SymbolDef::TopLevelLet { initializer, .. } => Some(*initializer),
+                _ => None,
+            };
+            if let Some(initializer) = initializer {
+                return self.task_value_row(initializer, visited);
+            }
         }
-        let etas_hir::HirExpr::Path(path) = self.hir.exprs.get(expr)? else {
-            return None;
-        };
-        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-            return None;
-        };
-        let initializer = match &self.hir.symbols.get(symbol)?.def {
-            etas_hir::SymbolDef::Local { initializer, .. }
-            | etas_hir::SymbolDef::PatternBinding { initializer, .. } => *initializer,
-            etas_hir::SymbolDef::TopLevelLet { initializer, .. } => Some(*initializer),
-            _ => None,
-        }?;
-        self.task_origin(initializer, visited)
+        if let Some(task) = self.types.facts.task_owners.get(&expr) {
+            return Some((expr, &task.effects));
+        }
+        let ty = self.types.facts.expr_types.get(&expr)?;
+        etas_types::source_execution::task(
+            &self.types.store,
+            &self.types.facts.known_std_types,
+            *ty,
+        )
+        .map(|task| (expr, task.effects))
     }
 
     pub(crate) fn latent_summary_for_origins(
@@ -349,6 +357,7 @@ impl EffectSemantics<'_> {
                 parameters: Some(&type_parameters),
                 rows: &effect_row_bindings,
             },
+            &mut BTreeSet::new(),
         )?;
         self.require_effect_type_bindings(callee, summary, &type_bindings)?;
         self.require_effect_row_bindings(callee, summary, &effect_row_bindings)?;
@@ -387,7 +396,11 @@ impl EffectSemantics<'_> {
             &type_parameters,
             &effect_row_bindings,
             residual_bindings.as_ref(),
+            state
+                .owner
+                .or_else(|| self.hir.index().expr_item.get(&site.call).copied()),
         )?;
+        self.bind_agent_tool_arguments(&specialized, &mut trace_bindings, state)?;
         let param_types = params
             .iter()
             .map(|param| {
@@ -401,9 +414,10 @@ impl EffectSemantics<'_> {
             .collect::<Vec<_>>();
         let inferred_parameters =
             self.inferred_callback_parameters(&param_targets, &param_types)?;
+        let trace = specialized.action_trace.clone();
         self.merge_parameter_call_summaries(
             &mut specialized,
-            &summary.action_trace,
+            &trace,
             &trace_bindings,
             state,
             &inferred_parameters,
@@ -414,14 +428,24 @@ impl EffectSemantics<'_> {
             state,
         )?;
         if let Some(exits) = &mut specialized.exits {
+            for exit in &mut exits.parameter_exits {
+                exit.prefix =
+                    self.specialize_parameter_call_trace(&exit.prefix, &trace_bindings, state)?;
+            }
             for exit in &mut exits.exits {
                 exit.trace =
                     self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
-                if let crate::CallableOutcome::Returned { observation, .. }
-                | crate::CallableOutcome::HandlerFinished { observation, .. }
-                | crate::CallableOutcome::HandlerResumed { observation, .. } = &mut exit.outcome
+                if let crate::CallableOutcome::Returned { ty, observation }
+                | crate::CallableOutcome::HandlerFinished { ty, observation }
+                | crate::CallableOutcome::HandlerResumed { ty, observation } = &mut exit.outcome
                     && let crate::ReturnObservation::CallableSources(parameters) = observation
                 {
+                    // A generic data-origin recipe may instantiate to ordinary
+                    // data. Such a result does not carry a callable contract.
+                    if !self.type_contains_flow(*ty) && !self.type_has_parameters(*ty) {
+                        *observation = crate::ReturnObservation::Any;
+                        continue;
+                    }
                     let sources = self.returned_callable_bindings(
                         parameters,
                         &trace_bindings,
@@ -439,27 +463,6 @@ impl EffectSemantics<'_> {
         self.solve_callback_completion(&mut specialized, &trace_bindings, &type_bindings, state)?;
         self.forward_callback_outcomes(&mut specialized, &trace_bindings, &param_targets, state)?;
         Ok(specialized)
-    }
-
-    pub(crate) fn call_bindings_from_param_names(
-        &self,
-        site: &CallSite<EffectUnit>,
-        param_names: &[String],
-    ) -> Vec<(String, HirExprId)> {
-        let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
-            self.hir.exprs.get(site.call)
-        else {
-            return Vec::new();
-        };
-        param_names
-            .iter()
-            .enumerate()
-            .filter_map(|(index, param)| {
-                args.get(index)
-                    .and_then(arg_expr)
-                    .map(|arg| (param.clone(), arg))
-            })
-            .collect()
     }
 
     pub(crate) fn call_generic_bindings(&self, call: HirExprId) -> CheckedGenericBindings {
@@ -502,6 +505,7 @@ impl EffectSemantics<'_> {
         bindings: &[(String, HirExprId)],
         type_bindings: &[(String, TypeId)],
         effect_row_bindings: &[(String, EffectRow)],
+        owner: Option<etas_hir::HirItemId>,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         self.specialize_summary_with_residual_bindings(
             summary,
@@ -510,6 +514,7 @@ impl EffectSemantics<'_> {
             &std::collections::HashMap::new(),
             effect_row_bindings,
             None,
+            owner,
         )
     }
 
@@ -526,6 +531,7 @@ impl EffectSemantics<'_> {
                 etas_code::residual::identity::GenericArgumentIdentity,
             >,
         >,
+        owner: Option<etas_hir::HirItemId>,
     ) -> Result<EffectSummary, EffectSpecializationError> {
         if bindings.is_empty()
             && type_bindings.is_empty()
@@ -544,14 +550,51 @@ impl EffectSemantics<'_> {
                 rows: effect_row_bindings,
                 residual_bindings,
                 residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
-                types: etas_types::TypeSubstitutionEngine::existing(&self.types.store, &names)
-                    .with_type_parameters(type_parameters),
+                owner,
+                source_memory_place: None,
+                types: etas_types::TypeSubstitutionEngine::existing_indexed(
+                    &self.types.store,
+                    self.type_lookup(),
+                    &names,
+                )
+                .with_type_parameters(type_parameters),
+            },
+            summary,
+        )
+    }
+
+    pub(super) fn specialize_summary_at_memory_place(
+        &self,
+        summary: &EffectSummary,
+        place: &EffectArgRef,
+    ) -> Result<EffectSummary, EffectSpecializationError> {
+        let empty = std::collections::HashMap::new();
+        let empty_names = std::collections::HashMap::new();
+        crate::substitution::map_summary(
+            &mut summary_mapper::CallSummaryMapper {
+                semantics: self,
+                bindings: &[],
+                type_bindings: &[],
+                type_parameters: &empty,
+                rows: &[],
+                residual_bindings: None,
+                residual_work: etas_package_metadata::MAX_METADATA_GRAPH_NODES,
+                owner: None,
+                source_memory_place: Some(place),
+                types: etas_types::TypeSubstitutionEngine::existing_indexed(
+                    &self.types.store,
+                    self.type_lookup(),
+                    &empty_names,
+                ),
             },
             summary,
         )
     }
 
     pub(crate) fn unit_params(&self, unit: EffectUnit) -> Option<Vec<etas_hir::SymbolId>> {
+        if let EffectUnit::ParameterDefault { parameter, .. } = unit {
+            return self.hir.preceding_parameters(parameter).map(<[_]>::to_vec);
+        }
         if let EffectUnit::AnonymousFlow { value, .. } = unit {
             return match self.hir.exprs.get(value)? {
                 HirExpr::Lambda { params, .. } => Some(params.clone()),
@@ -826,10 +869,10 @@ impl EffectSemantics<'_> {
                     }
                 }
             }
-            Effect::Error(ty) => {
-                if etas_types::type_contains_named_param(&self.types.store, *ty, name)? {
-                    return Ok(true);
-                }
+            Effect::Error(ty)
+                if etas_types::type_contains_named_param(&self.types.store, *ty, name)? =>
+            {
+                return Ok(true);
             }
             _ => {}
         }
@@ -855,7 +898,9 @@ impl EffectSemantics<'_> {
                 }
                 Ok(false)
             }
-            ActionTraceDomain::Repeat(item) | ActionTraceDomain::TaskStart { body: item, .. } => {
+            ActionTraceDomain::Repeat(item)
+            | ActionTraceDomain::TaskStart { body: item, .. }
+            | ActionTraceDomain::DefaultHandler { body: item, .. } => {
                 self.action_trace_contains_named_type(item, name)
             }
             ActionTraceDomain::TaskAwait { .. } => Ok(false),

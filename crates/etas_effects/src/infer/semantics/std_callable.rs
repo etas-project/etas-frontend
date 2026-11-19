@@ -42,7 +42,8 @@ impl EffectSemantics<'_> {
             .ok_or_else(|| {
                 invalid("standard callable result has an inconsistent intrinsic identity")
             })?;
-        if descriptor.latent_effect != etas_std::IntrinsicLatentEffect::TransparentFirstArg {
+        let payloads = descriptor.payload_arguments();
+        if payloads.is_empty() {
             return Ok(false);
         }
         let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
@@ -52,14 +53,13 @@ impl EffectSemantics<'_> {
                 "standard callable invocation has no checked argument list",
             ));
         };
-        let argument = args
-            .first()
-            .and_then(super::shared::arg_expr)
-            .ok_or_else(|| {
-                invalid("transparent standard callable requires its checked payload argument")
-            })?;
         let sources = self
-            .latent_sources_for_expr(state, argument)
+            .union_latent_sources(
+                payloads
+                    .iter()
+                    .filter_map(|position| args.get(*position).and_then(super::shared::arg_expr))
+                    .filter_map(|argument| self.latent_payload_sources(state, argument)),
+            )
             .ok_or_else(|| invalid("standard callable payload has no checked latent origins"))?;
         self.record_callable_result_sources(site.call, sources, state)?;
         Ok(true)
@@ -88,6 +88,12 @@ impl EffectSemantics<'_> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return;
         };
+        if let Some(source) = self.hir.canonical_source_symbol(symbol)
+            && source != symbol
+            && matches!(self.hir.symbols.get(source).map(|symbol| &symbol.def), Some(SymbolDef::Item { item }) if matches!(self.hir.items.get(*item), Some(etas_hir::HirItem::Flow(_))))
+        {
+            return;
+        }
         let Some(SymbolDef::ImportAlias { path, .. }) =
             self.hir.symbols.get(symbol).map(|symbol| &symbol.def)
         else {

@@ -8,7 +8,8 @@ use etas_utils::{
 
 use crate::ProjectContext;
 use crate::passes::artifacts::{
-    MODULE_INDEX, MODULE_TOPO_ORDER, PARSED_SOURCE_SET, PREDECLARED_PROJECT_SYMBOLS, UNIT_TREE,
+    MODULE_CATALOG, MODULE_INDEX, MODULE_TOPO_ORDER, PARSED_SOURCE_SET,
+    PREDECLARED_PROJECT_SYMBOLS, RESOLVED_IMPORTS, UNIT_TREE,
 };
 use crate::project::ProjectHirLoweringState;
 
@@ -24,6 +25,8 @@ impl Pass<ProjectContext> for PredeclareProjectSymbolsPass {
                 MODULE_INDEX,
                 UNIT_TREE,
                 MODULE_TOPO_ORDER,
+                MODULE_CATALOG,
+                RESOLVED_IMPORTS,
             ]))
             .produces(ArtifactSet::one(PREDECLARED_PROJECT_SYMBOLS))
     }
@@ -83,11 +86,26 @@ impl Pass<ProjectContext> for PredeclareProjectSymbolsPass {
             });
         }
 
+        let mut lowering = etas_hir::HirProjectLowering::new_with_std_registry(
+            &project_modules,
+            context.std_registry.clone(),
+        )
+        .with_source_standard_types(matches!(
+            context.input.options.standard_library_mode,
+            crate::StandardLibraryMode::SourceBootstrap | crate::StandardLibraryMode::Artifact,
+        ));
+        if context.input.options.standard_library_mode
+            == crate::StandardLibraryMode::SourceBootstrap
+        {
+            lowering = match super::source_prelude::bindings(context)
+                .and_then(|bindings| lowering.with_source_prelude(bindings))
+            {
+                Ok(lowering) => lowering,
+                Err(reason) => return PassResult::failed(reason),
+            };
+        }
         context.hir_lowering = Some(ProjectHirLoweringState {
-            lowering: etas_hir::HirProjectLowering::new_with_std_registry(
-                &project_modules,
-                context.std_registry.clone(),
-            ),
+            lowering,
             module_part_to_module_index,
             normalized_parts: Default::default(),
             lowered_parts: Default::default(),

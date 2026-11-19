@@ -11,6 +11,14 @@ pub(crate) use crate::facts::CallableValueOrigin as LatentSource;
 pub(crate) struct LatentEnv {
     pub(crate) values: BTreeMap<HirExprId, BTreeSet<LatentSource>>,
     pub(crate) symbols: BTreeMap<SymbolId, BTreeSet<LatentSource>>,
+    pub(crate) value_projections: BTreeMap<
+        (HirExprId, Vec<etas_code::descriptor::ValueProjectionStep>),
+        BTreeSet<LatentSource>,
+    >,
+    pub(crate) symbol_projections: BTreeMap<
+        (SymbolId, Vec<etas_code::descriptor::ValueProjectionStep>),
+        BTreeSet<LatentSource>,
+    >,
 }
 
 impl LatentEnv {
@@ -42,6 +50,8 @@ impl LatentEnv {
         sources: impl IntoIterator<Item = LatentSource>,
     ) {
         self.symbols.insert(symbol, sources.into_iter().collect());
+        self.symbol_projections
+            .retain(|(owner, _), _| *owner != symbol);
     }
 
     pub(crate) fn value_sources(&self, value: HirExprId) -> Option<&BTreeSet<LatentSource>> {
@@ -68,12 +78,28 @@ impl LatentEnv {
             entry.extend(sources.iter().copied());
             changed |= entry.len() != old_len;
         }
+        for (position, sources) in &other.value_projections {
+            changed |= !self.value_projections.contains_key(position);
+            let entry = self.value_projections.entry(position.clone()).or_default();
+            let before = entry.len();
+            entry.extend(sources.iter().copied());
+            changed |= before != entry.len();
+        }
+        for (position, sources) in &other.symbol_projections {
+            changed |= !self.symbol_projections.contains_key(position);
+            let entry = self.symbol_projections.entry(position.clone()).or_default();
+            let before = entry.len();
+            entry.extend(sources.iter().copied());
+            changed |= before != entry.len();
+        }
         changed
     }
 
     fn less_equal(&self, other: &Self) -> bool {
         map_set_less_equal(&self.values, &other.values)
             && map_set_less_equal(&self.symbols, &other.symbols)
+            && map_set_less_equal(&self.value_projections, &other.value_projections)
+            && map_set_less_equal(&self.symbol_projections, &other.symbol_projections)
     }
 }
 
@@ -102,6 +128,11 @@ impl EffectState {
 
     pub(crate) fn mark_incomplete(&mut self) {
         self.incomplete = true;
+        self.summary.with_direct_behavior(|summary| {
+            summary.support.join_assign(&InterpreterSupport::Rejected(
+                FrontendRejectionReason::UnresolvedEffect,
+            ));
+        });
         self.summary
             .support
             .join_assign(&InterpreterSupport::Rejected(
@@ -200,6 +231,7 @@ impl EffectUnit {
             Self::Item(item)
             | Self::HandlerArm { owner: item, .. }
             | Self::AnonymousFlow { owner: item, .. } => Some(item),
+            Self::ParameterDefault { owner, .. } => Some(owner),
         }
     }
 }

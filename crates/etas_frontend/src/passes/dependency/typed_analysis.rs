@@ -191,7 +191,11 @@ fn checked_targets(
                 }
             }
             if let etas_hir::HirExpr::Path(path) = expr.data()
-                && let etas_hir::ResolveResult::Resolved(mut symbol) = path.resolution
+                && let Some(mut symbol) = match &path.resolution {
+                    etas_hir::ResolveResult::Resolved(symbol) => Some(*symbol),
+                    etas_hir::ResolveResult::PartiallyResolved(partial) => partial.resolved_prefix,
+                    _ => None,
+                }
             {
                 let mut visited = BTreeSet::new();
                 while let Some(target) = self.hir.source_import_targets.get(&symbol) {
@@ -247,6 +251,14 @@ fn checked_targets(
                     None => self.missing = true,
                 }
             }
+            if let Some(symbol) = self.facts.source_flow_calls.get(&expr.id()) {
+                match self.hir.symbols.get(*symbol).map(|symbol| &symbol.def) {
+                    Some(etas_hir::SymbolDef::Item { item }) => {
+                        self.items.insert(*item);
+                    }
+                    _ => self.missing = true,
+                }
+            }
         }
     }
     let view = hir.view();
@@ -272,6 +284,7 @@ fn checked_targets(
             ),
             control,
             phase: crate::project::instantiation::PreparationPhase::Types,
+            handlers: None,
         },
         &[],
         None,

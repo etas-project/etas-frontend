@@ -1,3 +1,8 @@
+mod compiler;
+mod execution;
+mod message;
+mod source_query;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -70,6 +75,49 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
                 "standard library implementation checking requires finalized type and effect facts",
             );
         };
+
+        context.diagnostics.extend(native_action_diagnostics(
+            &hir.hir,
+            &context.std_registry,
+            types,
+        ));
+        context.diagnostics.extend(native_limit_role_diagnostics(
+            &hir.hir,
+            &context.std_registry,
+            types,
+        ));
+
+        context
+            .diagnostics
+            .extend(native_enum_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+                types,
+            ));
+
+        context
+            .diagnostics
+            .extend(native_opaque_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+                types,
+            ));
+
+        context
+            .diagnostics
+            .extend(native_record_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+                types,
+            ));
+
+        context
+            .diagnostics
+            .extend(native_projection_reference_diagnostics(
+                &hir.hir,
+                &context.std_registry,
+                types,
+            ));
 
         let admitted_by_source = admitted
             .sources
@@ -221,6 +269,22 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
         checked
             .implementations
             .sort_by_key(|implementation| implementation.declaration);
+        if hir.hir.source_standard_types
+            && !context
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+        {
+            context.std_registry =
+                match source_query::complete(&hir.hir, types, &context.std_registry) {
+                    Ok(registry) => Arc::new(registry),
+                    Err(reason) => {
+                        return PassResult::failed(format!(
+                            "checked source execution query is invalid: {reason}"
+                        ));
+                    }
+                };
+        }
         context.checked_std_library_implementations = Some(Arc::new(checked));
         PassResult::changed(
             PreservedArtifacts::All,
@@ -229,12 +293,400 @@ impl Pass<ProjectContext> for CheckStandardLibraryImplementationsPass {
     }
 }
 
+/// Runtime limit payloads use the already checked primitive requirement ABI;
+/// source supplies the enum declaration and may add unrelated variants.
+fn native_limit_role_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (_, item) in hir.items.iter() {
+        let HirItem::Enum(source) = item else {
+            continue;
+        };
+        let Some(etas_types::SymbolTypeFact::Type { constructor }) =
+            types.facts.symbol_types.get(&source.symbol)
+        else {
+            continue;
+        };
+        if !hir.source_standard_types
+            || !matches!(types.store.get(etas_types::TypeId(constructor.0)),
+            Some(etas_types::Type::Enum(declaration)) if declaration.name == "std.runtime.limits.Limit")
+        {
+            continue;
+        }
+        let layout = &types.facts.enum_layouts[&etas_types::TypeId(constructor.0)];
+        for native in registry.symbols() {
+            let etas_std::StdDecl::Requirement(requirement) = &native.decl else {
+                continue;
+            };
+            if !matches!(
+                requirement.semantics,
+                etas_std::RequirementSemantics::Limit(_)
+            ) {
+                continue;
+            }
+            let expected = &types.facts.std_callable_signatures[&native.id];
+            let valid = layout
+                .variants
+                .iter()
+                .find(|variant| variant.name == native.name)
+                .is_some_and(|variant| {
+                    variant.field_names.is_none() && variant.fields == expected.params
+                });
+            if !valid {
+                let span = source
+                    .variants
+                    .iter()
+                    .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == native.name)
+                    .map_or(source.span, |variant| variant.span);
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, span,
+                    format!("runtime Limit requires positional variant `{}` matching its checked primitive payload ABI", native.name),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+fn native_enum_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_enum_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        let source = hir.items.iter().find_map(|(_, item)| {
+            let (symbol, span) = match item {
+                HirItem::Enum(declaration) => (declaration.symbol, declaration.span),
+                HirItem::Type(declaration) => (declaration.symbol, declaration.span),
+                _ => return None,
+            };
+            let symbol = hir.symbols.get(symbol).unwrap();
+            let owner = hir.modules_arena.get(symbol.defining_module).unwrap();
+            (symbol.name == *name
+                && owner.name.as_ref().is_some_and(|path| {
+                    path.segments
+                        .iter()
+                        .map(|segment| &segment.name)
+                        .eq(module.iter())
+                }))
+            .then_some((item, span))
+        });
+        let Some((source, span)) = source else {
+            // Partial compiler library images may leave ABI imports unresolved.
+            // Publishing a complete std provider requires the checked enum.
+            continue;
+        };
+        let error = |span, reason: String| {
+            etas_core::Diagnostic::type_check(
+                etas_core::TypeDiagnosticCode::TypeMismatch,
+                span,
+                reason,
+            )
+        };
+        let HirItem::Enum(declaration) = source else {
+            diagnostics.push(error(
+                span,
+                format!(
+                    "native ABI references `{}` as an enum",
+                    reference.path.join(".")
+                ),
+            ));
+            continue;
+        };
+        if !declaration.type_params.is_empty() {
+            diagnostics.push(error(
+                span,
+                "native enum ABI reference requires no type parameters".into(),
+            ));
+        }
+        let layout =
+            types
+                .facts
+                .symbol_types
+                .get(&declaration.symbol)
+                .and_then(|fact| match fact {
+                    etas_types::SymbolTypeFact::Type { constructor } => types
+                        .facts
+                        .enum_layouts
+                        .get(&etas_types::TypeId(constructor.0)),
+                    _ => None,
+                });
+        for (required, fields) in reference.required_variants() {
+            let variant = declaration
+                .variants
+                .iter()
+                .find(|variant| hir.symbols.get(variant.symbol).unwrap().name == required);
+            let matches = layout
+                .and_then(|layout| {
+                    layout
+                        .variants
+                        .iter()
+                        .find(|variant| variant.name == required)
+                })
+                .is_some_and(|variant| {
+                    variant.fields.len() == fields.len()
+                        && variant.fields.iter().zip(fields).all(|(actual, expected)| {
+                            native_primitive_matches(
+                                &types.store,
+                                *actual,
+                                &etas_std::StdType::Primitive(*expected),
+                            )
+                        })
+                });
+            if !matches {
+                let reason = if fields.is_empty() {
+                    format!("native enum ABI requires unit variant `{required}`")
+                } else {
+                    format!(
+                        "native enum ABI requires variant `{required}` with checked payload {fields:?}"
+                    )
+                };
+                diagnostics.push(error(variant.map_or(span, |variant| variant.span), reason));
+            }
+        }
+    }
+    diagnostics
+}
+
 fn row_is_allowed(actual: &etas_effects::EffectRow, declared: &etas_effects::EffectRow) -> bool {
     actual.open == declared.open
         && actual
             .effects
             .iter()
             .all(|effect| declared.effects.contains(effect))
+}
+
+pub(super) fn execution_role_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = execution::type_layout_diagnostics(hir, types);
+    diagnostics.extend(compiler::type_layout_diagnostics(hir, types));
+    diagnostics.extend(compiler::syntax_layout_diagnostics(hir, types));
+    for (item, declaration) in hir.items.iter() {
+        let HirItem::Flow(etas_hir::HirFlowDecl {
+            body: etas_hir::HirFlowBody::Runtime { role, span },
+            ..
+        }) = declaration
+        else {
+            continue;
+        };
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::MessageContextCapture
+                | etas_std::StdExecutionRole::MessageContextRecord
+                | etas_std::StdExecutionRole::PayloadConvert
+        ) {
+            if !message::signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "message execution requires its private source context, canonical Message<T> fields and closed Effect row"));
+            }
+            continue;
+        }
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::CurrentSession | etas_std::StdExecutionRole::ToolReference
+        ) {
+            if !execution::observation_signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "execution observation requires its checked source session identity or canonical tool reference ABI and closed Effect row"));
+            }
+            continue;
+        }
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::ParseBody
+                | etas_std::StdExecutionRole::AgentWithBody
+                | etas_std::StdExecutionRole::CallableWithBody
+        ) {
+            if !compiler::signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "compiler execution requires its source SyntaxBlock/definition/Result payload, invariant definition subject and closed Effect row"));
+            }
+            continue;
+        }
+        if *role == etas_std::StdExecutionRole::TaskStart {
+            if !execution::start_signature_matches(types, item) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "task start requires its source Task<T, ![E]> result and matching <T, effect E>(() -> T ![E]) -> Task<T, ![E]> ![E] signature",
+                ));
+            }
+            continue;
+        }
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::TaskNextCompletion | etas_std::StdExecutionRole::TaskCancel
+        ) {
+            if !execution::task_control_signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "scheduler completion/cancellation requires its source Scheduler receiver, task/event payload and closed Effect row",
+                ));
+            }
+            continue;
+        }
+        if *role == etas_std::StdExecutionRole::ScopeEnter {
+            if !execution::scope_signature_matches(hir, types, item) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "Scope.enter requires its source Scheduler policy and updating select ABI, Scheduler callback, result type and matching generic Effect row",
+                ));
+            }
+            continue;
+        }
+        if *role == etas_std::StdExecutionRole::CaptureData {
+            if !execution::capture_signature_matches(types, item) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "Data.capture requires its source-owned neutral Data enum, DataError record and <T>(T) -> Result<Data, DataError> ![] ABI",
+                ));
+            }
+            continue;
+        }
+        if matches!(
+            role,
+            etas_std::StdExecutionRole::Requeue | etas_std::StdExecutionRole::Park
+        ) {
+            if !execution::transfer_signature_matches(types, item, *role) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    "scheduler transfer requires its checked Scheduler receiver, matching Task/Continuation result, generic effect row and closed never-returning ABI",
+                ));
+            }
+            continue;
+        }
+        if role.native_contract_path().is_none() {
+            if !execution::context_signature_matches(*role, types, item) {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, *span,
+                    format!("execution role `{}` differs from its checked source owner, snapshot/result layout or closed zero-argument ABI", role.role()),
+                ));
+            }
+            continue;
+        }
+        let native = registry
+            .lookup_qualified(
+                &role
+                    .native_contract_path()
+                    .unwrap()
+                    .split('.')
+                    .collect::<Vec<_>>(),
+            )
+            .expect("compiler execution role contract");
+        let Some(etas_types::ItemSignature::Flow(source)) = types.facts.item_signatures.get(&item)
+        else {
+            continue;
+        };
+        let expected = &types.facts.std_callable_signatures[&native.id];
+        if !native_signatures_match(source, expected, &types.store, &types.facts).unwrap_or(false) {
+            diagnostics.push(etas_core::Diagnostic::type_check(
+                etas_core::TypeDiagnosticCode::TypeMismatch,
+                *span,
+                format!("execution role `{}` differs from its minimum generic, parameter, result or effect ABI", role.role()),
+            ));
+        }
+    }
+    diagnostics
+}
+
+fn native_signatures_match(
+    source: &etas_types::CallableSignature,
+    native: &etas_types::CallableSignature,
+    store: &etas_types::TypeStore,
+    facts: &etas_types::TypeFacts,
+) -> Result<bool, etas_types::TypeSubstitutionError> {
+    use etas_types::{CallableGenericParamKind as Kind, EffectRowRef, TypeSubstitutionEngine};
+    if source.params.len() != native.params.len()
+        || source.generic_params.len() != native.generic_params.len()
+        || source
+            .generic_params
+            .iter()
+            .zip(&native.generic_params)
+            .any(|(left, right)| left.kind != right.kind)
+    {
+        return Ok(false);
+    }
+    let pairs = native
+        .generic_params
+        .iter()
+        .zip(&source.generic_params)
+        .collect::<Vec<_>>();
+    let parameters = pairs
+        .iter()
+        .filter(|(from, _)| from.kind == Kind::Type)
+        .map(|(from, to)| (from.subject, to.subject))
+        .collect();
+    let named = pairs
+        .iter()
+        .filter(|(from, _)| from.kind == Kind::Type)
+        .map(|(from, to)| (from.name.clone(), to.subject))
+        .collect();
+    let rows = pairs
+        .iter()
+        .filter(|(from, _)| from.kind == Kind::Effect)
+        .map(|(from, to)| {
+            (
+                from.name.clone(),
+                EffectRowRef {
+                    effects: vec![],
+                    tail: Some(to.name.clone()),
+                },
+            )
+        })
+        .collect();
+    let mut substitution = TypeSubstitutionEngine::existing(store, &named)
+        .with_type_parameters(&parameters)
+        .with_effect_arguments(&rows);
+    for (from, to) in pairs {
+        let mut bounds = from.bounds.clone();
+        for bound in &mut bounds {
+            bound.args = bound
+                .args
+                .iter()
+                .map(|ty| substitution.substitute(*ty))
+                .collect::<Result<_, _>>()?;
+        }
+        let mut source_bounds = to.bounds.clone();
+        for bound in bounds.iter_mut().chain(source_bounds.iter_mut()) {
+            if let etas_types::CheckedSpecRef::Source(symbol) = &bound.spec
+                && let Some(path) = facts.std_spec_aliases.get(symbol)
+            {
+                bound.spec = etas_types::CheckedSpecRef::Std(path.clone());
+            }
+        }
+        if bounds != source_bounds {
+            return Ok(false);
+        }
+    }
+    for (source, native) in source.params.iter().zip(&native.params) {
+        if !execution::type_abi_matches(store, facts, *source, *native, &mut substitution)? {
+            return Ok(false);
+        }
+    }
+    if !execution::type_abi_matches(
+        store,
+        facts,
+        source.output,
+        native.output,
+        &mut substitution,
+    )? {
+        return Ok(false);
+    }
+    let empty = EffectRowRef {
+        effects: vec![],
+        tail: None,
+    };
+    let effects = substitution
+        .substitute_effect_row(native.effects.clone().unwrap_or_else(|| empty.clone()))?;
+    // Requested actions are derived by the effect pipeline from the bound call.
+    Ok(&effects == source.effects.as_ref().unwrap_or(&empty))
 }
 
 fn signatures_match(
@@ -305,5 +757,327 @@ flow main() -> string { return concat(["a", "b"]); }
             panic!("source implementation");
         };
         assert_eq!(checked.optimized_intrinsic, optimized_intrinsic);
+    }
+}
+
+fn native_opaque_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_opaque_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        for (_, item) in hir.items.iter() {
+            let Some(symbol) = item.symbol().and_then(|symbol| hir.symbols.get(symbol)) else {
+                continue;
+            };
+            let owner = &hir.modules_arena[symbol.defining_module];
+            if symbol.name != *name
+                || !owner.name.as_ref().is_some_and(|path| {
+                    path.segments
+                        .iter()
+                        .map(|part| &part.name)
+                        .eq(module.iter())
+                })
+            {
+                continue;
+            }
+            let valid = match item {
+                HirItem::Type(declaration) if declaration.type_params.is_empty() => {
+                    match (&declaration.body, reference.representation) {
+                        (etas_hir::HirTypeDeclBody::Bodyless, None) => true,
+                        (etas_hir::HirTypeDeclBody::Representation(ty), Some(primitive)) => {
+                            types.facts.type_refs.get(ty).is_some_and(|actual| {
+                                native_primitive_matches(
+                                    &types.store,
+                                    *actual,
+                                    &etas_std::StdType::Primitive(primitive),
+                                )
+                            })
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            };
+            if !valid {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    symbol.definition_span,
+                    format!(
+                        "native ABI references `{}` as a non-generic nominal value with {:?} storage",
+                        reference.path.join("."), reference.representation
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+fn native_primitive_matches(
+    store: &etas_types::TypeStore,
+    actual: etas_types::TypeId,
+    expected: &etas_std::StdType,
+) -> bool {
+    matches!(store.get(actual), Some(etas_types::Type::Primitive(primitive))
+        if etas_std::StdType::parse(primitive.source_name()) == *expected)
+}
+
+fn native_record_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_record_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        for (_, item) in hir.items.iter() {
+            let Some(symbol) = item.symbol().and_then(|symbol| hir.symbols.get(symbol)) else {
+                continue;
+            };
+            if symbol.name != *name
+                || !hir.modules_arena[symbol.defining_module]
+                    .name
+                    .as_ref()
+                    .is_some_and(|path| {
+                        path.segments
+                            .iter()
+                            .map(|part| &part.name)
+                            .eq(module.iter())
+                    })
+            {
+                continue;
+            }
+            let representation = match types.facts.symbol_types.get(&symbol.id) {
+                Some(etas_types::SymbolTypeFact::NominalType { representation, .. }) => {
+                    *representation
+                }
+                _ => None,
+            };
+            let valid = matches!(item, HirItem::Type(declaration) if declaration.type_params.is_empty())
+                && representation.and_then(|ty| types.store.get(ty)).is_some_and(|ty| {
+                    matches!(ty, etas_types::Type::Record(record) if record.fields.len() == reference.fields.len()
+                        && reference.fields.iter().all(|field| record.fields.iter().find(|actual| actual.name == field.name)
+                            .is_some_and(|actual| native_record_field_matches(hir, types, actual.ty, &field.ty))))
+                });
+            if !valid {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    symbol.definition_span,
+                    format!(
+                        "native record ABI requires `{}` with its checked host payload fields",
+                        reference.path.join(".")
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+fn native_record_field_matches(
+    hir: &etas_hir::HirProgram,
+    types: &etas_types::TypeOutput,
+    actual: etas_types::TypeId,
+    expected: &etas_std::StdType,
+) -> bool {
+    use etas_std::StdType;
+    use etas_types::{SymbolTypeFact, Type, TypeId};
+    match (expected, types.store.get(actual)) {
+        (StdType::Primitive(_), _) => native_primitive_matches(&types.store, actual, expected),
+        (StdType::Array(expected), Some(Type::Array(actual)))
+        | (StdType::Option(expected), Some(Type::Option(actual))) => {
+            native_record_field_matches(hir, types, *actual, expected)
+        }
+        (StdType::Named(expected), _) => {
+            let expected = expected.split('.').collect::<Vec<_>>();
+            // Match the checked declaration's TypeId, rather than accepting a
+            // nominal with a similar name or record representation.
+            hir.symbols.iter().any(|symbol| {
+                let canonical = match &symbol.def {
+                    etas_hir::SymbolDef::ImportAlias { path, .. } => {
+                        path.iter().map(String::as_str).eq(expected.iter().copied())
+                    }
+                    _ => hir.modules_arena[symbol.defining_module]
+                        .name
+                        .as_ref()
+                        .is_some_and(|module| {
+                            module
+                                .segments
+                                .iter()
+                                .map(|part| part.name.as_str())
+                                .chain(std::iter::once(symbol.name.as_str()))
+                                .eq(expected.iter().copied())
+                        }),
+                };
+                canonical
+                    && match types.facts.symbol_types.get(&symbol.id) {
+                        Some(
+                            SymbolTypeFact::NominalType { constructor, .. }
+                            | SymbolTypeFact::Type { constructor },
+                        ) => actual == TypeId(constructor.0),
+                        Some(SymbolTypeFact::TypeAlias { target, params }) if params.is_empty() => {
+                            actual == *target
+                        }
+                        _ => false,
+                    }
+            })
+        }
+        _ => false,
+    }
+}
+
+fn native_projection_reference_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for reference in registry.native_projection_references() {
+        let (name, module) = reference.path.split_last().unwrap();
+        for (_, item) in hir.items.iter() {
+            let Some(symbol) = item.symbol().and_then(|symbol| hir.symbols.get(symbol)) else {
+                continue;
+            };
+            if symbol.name != *name
+                || !hir.modules_arena[symbol.defining_module]
+                    .name
+                    .as_ref()
+                    .is_some_and(|path| {
+                        path.segments
+                            .iter()
+                            .map(|part| &part.name)
+                            .eq(module.iter())
+                    })
+            {
+                continue;
+            }
+            let fields = match types.facts.symbol_types.get(&symbol.id) {
+                Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => types
+                    .facts
+                    .known_std_types
+                    .projected_fields
+                    .get(&etas_types::TypeId(constructor.0)),
+                _ => None,
+            };
+            let valid = fields.is_some_and(|fields| {
+                fields.len() == reference.fields.len()
+                    && reference.fields.iter().all(|field| {
+                        fields
+                            .iter()
+                            .find(|actual| actual.name == field.name)
+                            .is_some_and(|actual| {
+                                native_record_field_matches(hir, types, actual.ty, &field.ty)
+                            })
+                    })
+            });
+            if !valid {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch,
+                    symbol.definition_span,
+                    format!(
+                        "native getter ABI requires `{}` with its checked projected fields",
+                        reference.path.join(".")
+                    ),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// Public action signatures belong to source; retained host contracts constrain
+/// the request ABI before an independently built bundle can be published.
+fn native_action_diagnostics(
+    hir: &etas_hir::HirProgram,
+    registry: &etas_std::StdRegistry,
+    types: &etas_types::TypeOutput,
+) -> Vec<etas_core::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (_, item) in hir.items.iter() {
+        let HirItem::Effect(effect) = item else {
+            continue;
+        };
+        for action in effect.body.actions() {
+            let Some(target) = hir.standard_action_targets.get(&action.symbol) else {
+                continue;
+            };
+            let Some(source) = types.facts.action_signatures.get(&action.symbol) else {
+                continue;
+            };
+            let expected = &types.facts.std_callable_signatures[target];
+            let source_callable = etas_types::CallableSignature {
+                parameter_interface: None,
+                generic_params: source.generic_params.clone(),
+                params: source.params.clone(),
+                output: source.output,
+                effects: None,
+                requested_actions: None,
+            };
+            let etas_std::StdDecl::EffectAction(native) = &registry.symbol(*target).unwrap().decl
+            else {
+                unreachable!()
+            };
+            let selector_bindings = |names: &[String],
+                                     parameters: &[etas_types::CallableGenericParam],
+                                     count: usize| {
+                (0..count)
+                    .map(|index| {
+                        names
+                            .get(index)
+                            .and_then(|name| parameters.iter().position(|p| &p.name == name))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let selectors_match =
+                source.effect_args.len() == native.effect_args.len()
+                    && selector_bindings(
+                        &source.selector_param_names,
+                        &source.generic_params,
+                        source.effect_args.len(),
+                    ) == selector_bindings(
+                        &native.selector_param_names,
+                        &expected.generic_params,
+                        native.effect_args.len(),
+                    )
+                    && source.effect_args.iter().zip(&native.effect_args).all(
+                        |(source, native)| native_selector_kind_matches(registry, source, native),
+                    );
+            let signature_matches = compiler::action_signature_matches(types, native, source)
+                .unwrap_or_else(|| {
+                    native_signatures_match(&source_callable, expected, &types.store, &types.facts)
+                        .unwrap_or(false)
+                });
+            if !selectors_match || !signature_matches {
+                diagnostics.push(etas_core::Diagnostic::type_check(
+                    etas_core::TypeDiagnosticCode::TypeMismatch, action.span,
+                    format!("std action ABI differs from `{}`; match its generic bounds, selectors, parameters and result", registry.symbol(*target).unwrap().qualified_path.join(".")),
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+fn native_selector_kind_matches(
+    registry: &etas_std::StdRegistry,
+    source: &etas_types::EffectActionArgKind,
+    native: &etas_std::EffectActionArgKind,
+) -> bool {
+    use etas_std::EffectActionArgKind as N;
+    use etas_types::EffectActionArgKind as S;
+    match (source, native) {
+        (S::Type, N::Type)
+        | (S::MemoryPlace, N::MemoryPlace)
+        | (S::StringPattern, N::StringPattern) => true,
+        (S::StaticResourcePath { ty: source }, N::StaticResourcePath { ty: native }) => {
+            source == native.as_ref()
+                || registry
+                    .native_type_reference(native)
+                    .is_some_and(|reference| reference.path.join(".") == *source)
+        }
+        _ => false,
     }
 }

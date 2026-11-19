@@ -6,9 +6,17 @@ use std::collections::{BTreeSet, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckedCallableRoot {
+    /// An item body, including a checked top-level value initializer.
     Item(HirItemId),
     Lambda(HirExprId),
     StdReference(HirExprId),
+    ParameterDefault(SymbolId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckedExecutionReachability {
+    pub items: BTreeSet<HirItemId>,
+    pub default_expressions: BTreeSet<HirExprId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +34,8 @@ pub enum CheckedReachabilityError {
     InconsistentLambdaFacts(HirExprId),
     MissingResourceFact(SymbolId),
     InvalidStdReference(HirExprId),
+    InvalidParameterDefault(SymbolId),
+    MissingParameterDefaultAnalysis(SymbolId),
 }
 
 impl std::fmt::Display for CheckedReachabilityError {
@@ -36,11 +46,76 @@ impl std::fmt::Display for CheckedReachabilityError {
 impl std::error::Error for CheckedReachabilityError {}
 
 impl crate::CheckedProgramData {
+    pub fn checked_parameter_default(
+        &self,
+        parameter: SymbolId,
+    ) -> Result<crate::code::parameter_defaults::ParameterDefaultUnit, CheckedReachabilityError>
+    {
+        let invalid = || CheckedReachabilityError::InvalidParameterDefault(parameter);
+        let Some(SymbolDef::Param { owner, .. }) =
+            self.symbols.get(parameter).map(|symbol| &symbol.def)
+        else {
+            return Err(invalid());
+        };
+        let expression = *self
+            .hir
+            .parameter_defaults
+            .get(&parameter)
+            .ok_or_else(invalid)?;
+        let Some(etas_types::SymbolTypeFact::Param { ty: output }) =
+            self.types.symbol_types.get(&parameter)
+        else {
+            return Err(invalid());
+        };
+        let scope = self
+            .hir
+            .scopes
+            .iter()
+            .find(|scope| scope.symbols.contains(&parameter))
+            .map(|scope| scope.id)
+            .ok_or_else(invalid)?;
+        let unit = etas_effects::EffectUnit::ParameterDefault {
+            owner: *owner,
+            parameter,
+            expr: expression,
+        };
+        let summary = self.effects.unit_effects.get(&unit).ok_or(
+            CheckedReachabilityError::MissingParameterDefaultAnalysis(parameter),
+        )?;
+        if summary.determinism != etas_effects::Determinism::Deterministic
+            || !summary.escaping_effects.is_empty()
+            || !summary.requested_actions.is_empty()
+            || !summary.default_actions.is_empty()
+            || !summary.handled_actions.is_empty()
+            || matches!(
+                summary.support,
+                etas_effects::InterpreterSupport::Rejected(_)
+            )
+            || !self
+                .effects
+                .suspension
+                .get(&unit)
+                .is_some_and(|fact| fact.proven_non_suspending())
+        {
+            return Err(invalid());
+        }
+        Ok(crate::code::parameter_defaults::ParameterDefaultUnit {
+            parameter,
+            owner: *owner,
+            expression,
+            scope,
+            output: *output,
+        })
+    }
+
     pub fn checked_callable_owner(
         &self,
         root: CheckedCallableRoot,
     ) -> Result<HirItemId, CheckedReachabilityError> {
         match root {
+            CheckedCallableRoot::ParameterDefault(parameter) => self
+                .checked_parameter_default(parameter)
+                .map(|unit| unit.owner),
             CheckedCallableRoot::StdReference(expr) => {
                 let invalid = || CheckedReachabilityError::InvalidStdReference(expr);
                 let fact = self
@@ -87,6 +162,9 @@ impl crate::CheckedProgramData {
                         etas_types::ItemSignature::Flow(_) | etas_types::ItemSignature::Tool(_),
                     ) => true,
                     Some(etas_types::ItemSignature::Agent(agent)) => agent.callable().is_some(),
+                    Some(etas_types::ItemSignature::TopLevelLet(_)) => {
+                        matches!(self.hir.items.get(item), Some(HirItem::TopLevelLet(_)))
+                    }
                     _ => false,
                 };
                 if !callable {
@@ -135,12 +213,41 @@ impl crate::CheckedProgramData {
         }
     }
 
+    pub fn checked_callable_expression(
+        &self,
+        root: CheckedCallableRoot,
+    ) -> Result<Option<HirExprId>, CheckedReachabilityError> {
+        self.checked_callable_owner(root)?;
+        Ok(match root {
+            CheckedCallableRoot::Item(_) => None,
+            CheckedCallableRoot::Lambda(expr) | CheckedCallableRoot::StdReference(expr) => {
+                Some(expr)
+            }
+            CheckedCallableRoot::ParameterDefault(parameter) => {
+                Some(self.checked_parameter_default(parameter)?.expression)
+            }
+        })
+    }
+
     pub fn checked_callable_effects(
         &self,
         root: CheckedCallableRoot,
     ) -> Result<&etas_effects::EffectSummary, CheckedReachabilityError> {
         let owner = self.checked_callable_owner(root)?;
         match root {
+            CheckedCallableRoot::ParameterDefault(parameter) => {
+                let expr = self.checked_parameter_default(parameter)?.expression;
+                self.effects
+                    .unit_effects
+                    .get(&etas_effects::EffectUnit::ParameterDefault {
+                        owner,
+                        parameter,
+                        expr,
+                    })
+                    .ok_or(CheckedReachabilityError::MissingParameterDefaultAnalysis(
+                        parameter,
+                    ))
+            }
             CheckedCallableRoot::StdReference(expr) => self
                 .effects
                 .std_callable_values
@@ -161,6 +268,46 @@ impl crate::CheckedProgramData {
         }
     }
 
+    /// Returns execution suspension facts independently of escaping effects.
+    /// Missing imported/primitive evidence is unknown, not a non-suspension proof.
+    pub fn checked_callable_suspension(
+        &self,
+        root: CheckedCallableRoot,
+    ) -> Result<etas_effects::suspension::SuspensionSummary, CheckedReachabilityError> {
+        let owner = self.checked_callable_owner(root)?;
+        self.checked_callable_effects(root)?;
+        let unit = match root {
+            CheckedCallableRoot::ParameterDefault(parameter) => {
+                etas_effects::EffectUnit::ParameterDefault {
+                    owner,
+                    parameter,
+                    expr: self.checked_parameter_default(parameter)?.expression,
+                }
+            }
+            CheckedCallableRoot::Item(item) => etas_effects::EffectUnit::Item(item),
+            CheckedCallableRoot::Lambda(value) => {
+                let body = match self.effects.latent_effects[&value].body {
+                    etas_effects::LatentEffectBodyRef::Expr(expr) => {
+                        etas_effects::infer::unit::EffectAnonymousFlowBody::Expr(expr)
+                    }
+                    etas_effects::LatentEffectBodyRef::Block(block) => {
+                        etas_effects::infer::unit::EffectAnonymousFlowBody::Block(block)
+                    }
+                };
+                etas_effects::EffectUnit::AnonymousFlow { owner, value, body }
+            }
+            CheckedCallableRoot::StdReference(_) => {
+                return Ok(etas_effects::suspension::SuspensionSummary::UNKNOWN);
+            }
+        };
+        Ok(self
+            .effects
+            .suspension
+            .get(&unit)
+            .copied()
+            .unwrap_or(etas_effects::suspension::SuspensionSummary::UNKNOWN))
+    }
+
     /// Selects the local executable closure within the same checked snapshot.
     /// Frozen Agent calls are boundaries owned by their source execution plan.
     /// This neither changes the project entry nor supplies missing facts.
@@ -175,17 +322,39 @@ impl crate::CheckedProgramData {
         &self,
         root: CheckedCallableRoot,
     ) -> Result<BTreeSet<HirItemId>, CheckedReachabilityError> {
+        self.checked_execution_reachability(root)
+            .map(|closure| closure.items)
+    }
+
+    pub fn checked_execution_reachability(
+        &self,
+        root: CheckedCallableRoot,
+    ) -> Result<CheckedExecutionReachability, CheckedReachabilityError> {
         self.checked_callable_effects(root)?;
         let view = self.hir.view();
         let mut visited = BTreeSet::new();
         let mut pending = Vec::new();
+        let mut defaults_seen = HashSet::new();
         match root {
             CheckedCallableRoot::Item(item) => pending.push(item),
-            CheckedCallableRoot::Lambda(expr) | CheckedCallableRoot::StdReference(expr) => {
+            CheckedCallableRoot::Lambda(_)
+            | CheckedCallableRoot::StdReference(_)
+            | CheckedCallableRoot::ParameterDefault(_) => {
+                let expr = match root {
+                    CheckedCallableRoot::Lambda(expr) | CheckedCallableRoot::StdReference(expr) => {
+                        expr
+                    }
+                    CheckedCallableRoot::ParameterDefault(parameter) => {
+                        defaults_seen.insert(parameter);
+                        self.checked_parameter_default(parameter)?.expression
+                    }
+                    _ => unreachable!(),
+                };
                 let mut visitor = References {
                     checked: self,
                     pending: &mut pending,
                     error: None,
+                    defaults_seen: &mut defaults_seen,
                 };
                 walk_expr_tree(&view, expr, &mut visitor);
                 if let Some(error) = visitor.error {
@@ -240,6 +409,7 @@ impl crate::CheckedProgramData {
                 checked: self,
                 pending: &mut pending,
                 error: None,
+                defaults_seen: &mut defaults_seen,
             };
             walk_item(&view, item, &mut visitor);
             for annotation in self.hir.item_annotations.get(&item).into_iter().flatten() {
@@ -255,7 +425,13 @@ impl crate::CheckedProgramData {
                 return Err(error);
             }
         }
-        Ok(visited)
+        Ok(CheckedExecutionReachability {
+            items: visited,
+            default_expressions: defaults_seen
+                .iter()
+                .map(|parameter| self.hir.parameter_defaults[parameter])
+                .collect(),
+        })
     }
 }
 
@@ -263,6 +439,7 @@ struct References<'a> {
     checked: &'a crate::CheckedProgramData,
     pending: &'a mut Vec<HirItemId>,
     error: Option<CheckedReachabilityError>,
+    defaults_seen: &'a mut HashSet<SymbolId>,
 }
 
 impl References<'_> {
@@ -305,6 +482,41 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for References<'_> {
     fn enter_expr(&mut self, expression: ExprView<'view, 'hir>) {
         if self.error.is_some() {
             return;
+        }
+        let checked = self.checked;
+        let defaults = checked
+            .types
+            .checked_method_calls
+            .get(&expression.id())
+            .map(|method| method.defaults.as_slice())
+            .or_else(|| {
+                self.checked
+                    .types
+                    .declared_call_arguments
+                    .get(&expression.id())
+                    .map(|call| call.defaults.as_slice())
+            })
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|default| match &default.source {
+                etas_types::ParameterDefaultRef::Source { parameter } => Some(*parameter),
+                etas_types::ParameterDefaultRef::External { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        for parameter in defaults {
+            if !self.defaults_seen.insert(parameter) {
+                continue;
+            }
+            match checked.checked_parameter_default(parameter) {
+                Ok(unit) => walk_expr_tree(&checked.hir.view(), unit.expression, self),
+                Err(error) => {
+                    self.error = Some(error);
+                    return;
+                }
+            }
+            if self.error.is_some() {
+                return;
+            }
         }
         if let Some(pack) = self.checked.types.existential_packs.get(&expression.id()) {
             for witness in &pack.witnesses {

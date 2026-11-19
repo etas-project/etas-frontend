@@ -42,6 +42,9 @@ impl DefaultHandlerEffects {
 
 impl EffectSummary {
     pub fn direct_escaping_effects(&self) -> &EffectRow {
+        if let Some(behavior) = &self.default_behavior {
+            return &behavior.direct.escaping_effects;
+        }
         self.default_handler_effects
             .as_ref()
             .map_or(&self.escaping_effects, |effects| &effects.direct)
@@ -54,6 +57,11 @@ impl EffectSummary {
     ) -> Result<(), &'static str> {
         if !action.is_action() {
             return Err("default handler contribution must identify a checked action");
+        }
+        if let Some(behavior) = &mut self.default_behavior {
+            let mut footprint = super::EffectFootprint::from_summary(&EffectSummary::local());
+            footprint.escaping_effects = produced.clone();
+            behavior.union_guarded(EffectSet::one(action.clone()), &footprint);
         }
         let effects = self
             .default_handler_effects
@@ -88,13 +96,36 @@ impl EffectSummary {
         changed
     }
 
-    pub fn subtract_handled_effects(&mut self, coverage: &EffectCoverage<'_>, handled: &EffectRow) {
-        self.handler_requests.subtract_handled(coverage, handled);
+    pub fn subtract_handled_effects(
+        &mut self,
+        coverage: &EffectCoverage<'_>,
+        handled: &EffectRow,
+    ) -> Result<(), String> {
+        self.apply_handler_coverage(coverage, handled, handled)
+    }
+
+    pub(crate) fn apply_handler_coverage(
+        &mut self,
+        coverage: &EffectCoverage<'_>,
+        handled: &EffectRow,
+        intercepted: &EffectRow,
+    ) -> Result<(), String> {
+        self.action_trace = super::default_behavior::subtract_default_trace(
+            &self.action_trace,
+            coverage,
+            intercepted,
+        )?;
+        if let Some(behavior) = &mut self.default_behavior {
+            behavior.subtract_handled(coverage, handled, intercepted);
+        }
+        self.refresh_default_behavior();
+        self.handler_requests
+            .subtract_handled(coverage, intercepted);
         if let Some(effects) = &mut self.default_handler_effects {
             effects.direct = coverage.subtract_handled(&effects.direct, handled);
             effects.handlers.retain_mut(|handler| {
                 let request = EffectRow::closed(EffectSet::one(handler.action.clone()));
-                if coverage.subtract_handled(&request, handled).is_empty() {
+                if coverage.subtract_handled(&request, intercepted).is_empty() {
                     return false;
                 }
                 handler.produced = coverage.subtract_handled(&handler.produced, handled);
@@ -103,15 +134,23 @@ impl EffectSummary {
             if effects.handlers.is_empty() {
                 self.escaping_effects = effects.direct.clone();
                 self.default_handler_effects = None;
-                return;
+                self.refresh_default_behavior();
+                return Ok(());
             }
             self.refresh_escaping_effects();
         } else {
             self.escaping_effects = coverage.subtract_handled(&self.escaping_effects, handled);
         }
+        Ok(())
     }
 
     pub(crate) fn remove_escaping_effect(&mut self, effect: &Effect) {
+        if let Some(behavior) = &mut self.default_behavior {
+            behavior.direct.escaping_effects.remove_effect(effect);
+            for footprint in behavior.guarded.values_mut() {
+                footprint.escaping_effects.remove_effect(effect);
+            }
+        }
         if let Some(effects) = &mut self.default_handler_effects {
             effects.direct.remove_effect(effect);
             for handler in &mut effects.handlers {
@@ -124,6 +163,10 @@ impl EffectSummary {
     }
 
     pub fn refresh_escaping_effects(&mut self) {
+        if let Some(behavior) = &self.default_behavior {
+            self.escaping_effects = behavior.escaping_effects();
+            return;
+        }
         if let Some(effects) = &self.default_handler_effects {
             let mut row = effects.direct.clone();
             for handler in &effects.handlers {

@@ -5,16 +5,18 @@ use etas_syntax::ast;
 
 use crate::{ExternalModuleId, ExternalPackageId, ModuleId, ModulePartId, ModulePath};
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ModuleIndex {
     pub(crate) dependency_namespaces: std::sync::Arc<super::DependencyModuleNamespaces>,
     pub modules: Arena<ModuleId, ModuleInfo>,
     pub parts: Arena<ModulePartId, ModulePart>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub by_path: HashMap<ModulePath, ModuleId>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::sources")]
     pub by_source: HashMap<SourceId, ModuleId>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ModuleInfo {
     pub id: ModuleId,
     pub path: ModulePath,
@@ -24,7 +26,7 @@ pub struct ModuleInfo {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub enum ModuleOrigin {
     Source,
     DependencySourceOverlay {
@@ -41,13 +43,14 @@ pub enum ModuleOrigin {
     },
 }
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ExportTable {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub items: HashMap<String, ExportedItem>,
     pub re_exports: Vec<ReExport>,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ExportedItem {
     pub name: String,
     pub module: ModuleId,
@@ -57,14 +60,14 @@ pub struct ExportedItem {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ReExport {
     pub import: AstImportRef,
     pub target: ModulePath,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ModulePart {
     pub id: ModulePartId,
     pub module: ModuleId,
@@ -74,7 +77,9 @@ pub struct ModulePart {
     pub items: Vec<AstItemRef>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct AstItemRef {
     pub source: SourceId,
     pub module_part: Option<ModulePartId>,
@@ -128,7 +133,9 @@ impl AstItemKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct AstImportRef {
     pub source: SourceId,
     pub module_part: Option<ModulePartId>,
@@ -136,7 +143,9 @@ pub struct AstImportRef {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct AstBodyRef {
     pub source: SourceId,
     pub item: AstItemRef,

@@ -4,11 +4,20 @@ use crate::TypeId;
 
 #[derive(Clone, Debug)]
 pub enum ValidationRequest {
+    AgentContext {
+        ty: TypeId,
+        active: Option<TypeId>,
+        span: Span,
+    },
     LambdaParameter {
         ty: TypeId,
         span: Span,
     },
     EmptySequence {
+        ty: TypeId,
+        span: Span,
+    },
+    SequenceElement {
         ty: TypeId,
         span: Span,
     },
@@ -18,6 +27,11 @@ pub enum ValidationRequest {
     },
     HandlerNeverCompletion {
         ty: TypeId,
+        span: Span,
+    },
+    EqualityOperands {
+        left: TypeId,
+        right: TypeId,
         span: Span,
     },
     WritablePlace {

@@ -413,6 +413,7 @@ impl HirBuilder {
             .into_iter()
             .map(|body| {
                 self.program.items.alloc(HirItem::Flow(HirFlowDecl {
+                    receiver_mode: etas_hir::HirReceiverMode::None,
                     symbol: SymbolId(0),
                     type_params: Vec::new(),
                     params: Vec::new(),

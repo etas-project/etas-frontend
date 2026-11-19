@@ -84,6 +84,7 @@ impl Pass<ProjectContext> for BindMethodOriginsPass {
                 hir: &hir.hir,
                 types: signatures,
                 std_registry: &context.std_registry,
+                standard_library_mode: context.input.options.standard_library_mode,
                 imports,
                 modules,
                 sources,

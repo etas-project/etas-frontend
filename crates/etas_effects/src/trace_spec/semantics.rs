@@ -528,8 +528,17 @@ impl InterproceduralSemantics for TraceSpecSemantics<'_> {
                 CallTarget::External
             };
         };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return CallTarget::Incomplete;
+        let symbol = match &path.resolution {
+            ResolveResult::Resolved(symbol) => *symbol,
+            ResolveResult::PartiallyResolved(partial)
+                if partial
+                    .resolved_prefix
+                    .is_some_and(|symbol| self.types.facts.symbol_types.contains_key(&symbol))
+                    && self.is_typed_flow_expr(callee) =>
+            {
+                return CallTarget::Dynamic;
+            }
+            _ => return CallTarget::Incomplete,
         };
         let Some(symbol) = self.hir.canonical_source_symbol(symbol) else {
             return CallTarget::Incomplete;

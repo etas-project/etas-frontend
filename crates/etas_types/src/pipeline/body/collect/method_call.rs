@@ -16,6 +16,8 @@ pub(super) struct SelectedMethodCall<'a> {
     pub selection: MethodSelection,
     pub expected: Option<TypeId>,
     pub binding: Option<(TypeId, crate::facts::BoundMethodReceiver)>,
+    /// A contextual literal has a type subject but no evaluated receiver node.
+    pub associated_owner: Option<TypeId>,
 }
 
 pub fn collect_method_call<E>(
@@ -28,17 +30,19 @@ pub fn collect_method_call<E>(
     expected: Option<TypeId>,
 ) -> Result<TypeId, E> {
     let associated = match &ctx.ctx.hir.exprs[receiver] {
-        etas_hir::HirExpr::Path(path) => match path.resolution {
-            etas_hir::ResolveResult::Resolved(symbol) => matches!(
+        etas_hir::HirExpr::Path(path) => crate::lower::type_ref::resolved_source_type_symbol(
+            ctx.ctx, path,
+        )
+        .is_some_and(|symbol| {
+            matches!(
                 ctx.ctx.symbol_fact(symbol),
                 Some(
                     crate::SymbolTypeFact::Type { .. }
                         | crate::SymbolTypeFact::NominalType { .. }
                         | crate::SymbolTypeFact::TypeAlias { .. }
                 )
-            ),
-            _ => false,
-        },
+            )
+        }),
         _ => false,
     };
     collect_selected(
@@ -56,6 +60,7 @@ pub fn collect_method_call<E>(
             },
             expected,
             binding: None,
+            associated_owner: None,
         },
     )
 }
@@ -92,6 +97,7 @@ pub(super) fn collect_bound_method<E>(
             selection: MethodSelection::Unqualified,
             expected,
             binding: Some((receiver_type, receiver)),
+            associated_owner: None,
         },
     )
     .unwrap_or_else(|_| unreachable!("binding an already typed receiver is infallible"))
@@ -110,6 +116,7 @@ pub(super) fn collect_selected<E>(
         selection,
         expected,
         binding,
+        associated_owner,
     } = call;
     if binding.is_none() {
         ctx.checkpoint()?;
@@ -132,14 +139,14 @@ pub(super) fn collect_selected<E>(
             HirArg::Named { name, .. } => Some(name.clone()),
         }))
         .collect::<Vec<_>>();
-    let associated_receiver = if matches!(selection, MethodSelection::Associated) {
+    let associated_receiver = if associated_owner.is_some() {
+        associated_owner
+    } else if matches!(selection, MethodSelection::Associated) {
         let etas_hir::HirExpr::Path(path) = &ctx.ctx.hir.exprs[receiver] else {
             unreachable!("associated method receiver is a type path")
         };
-        let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
-            unreachable!("associated method has a resolved owner")
-        };
-        ctx.ctx.type_fact_as_type_id(symbol)
+        crate::lower::type_ref::resolved_source_type_symbol(ctx.ctx, path)
+            .and_then(|symbol| ctx.ctx.type_fact_as_type_id(symbol))
     } else {
         None
     };
@@ -175,6 +182,15 @@ pub(super) fn collect_selected<E>(
                 0,
                 associated_receiver.expect("associated owner has a checked type fact"),
             );
+            if let Some(parameters) = &mut signature.parameter_interface {
+                parameters.insert(
+                    0,
+                    crate::ParameterInterface {
+                        name: None,
+                        default: None,
+                    },
+                );
+            }
         }
         let original_parameters = signature.generic_params.clone();
         let Some(mut signature) =
@@ -294,14 +310,21 @@ pub(super) fn collect_selected<E>(
             names.insert(0, None);
         }
         candidate_hints.push(
-            crate::method::arguments::slots(&names, &argument_names)
-                .ok()
-                .and_then(|slots| {
-                    slots
-                        .into_iter()
-                        .map(|slot| inputs.get(slot as usize).copied())
-                        .collect()
-                }),
+            crate::ArgumentBinding::bind(
+                &signature
+                    .parameter_interface
+                    .clone()
+                    .unwrap_or_else(|| crate::call_interface::required_parameters(&names)),
+                &argument_names,
+            )
+            .ok()
+            .and_then(|binding| {
+                binding
+                    .argument_slots
+                    .into_iter()
+                    .map(|slot| inputs.get(slot as usize).copied())
+                    .collect()
+            }),
         );
         candidates.push(CallableCandidate {
             ty,
@@ -316,6 +339,7 @@ pub(super) fn collect_selected<E>(
     }
     let hints = common_inputs(&candidate_hints);
     let receiver_ty = match associated_receiver {
+        Some(ty) if associated_owner.is_some() => ty,
         Some(ty) => ctx.record_expr_type(receiver, ty),
         None if binding.is_some() => binding.as_ref().unwrap().0,
         None => super::expr::collect_expr(
@@ -354,7 +378,7 @@ pub(super) fn collect_selected<E>(
         access_module: ctx.ctx.hir.item_module(ctx.state.item),
         candidates,
         generic_args: checked_generic_args,
-        arg_exprs: std::iter::once(Some(receiver))
+        arg_exprs: std::iter::once(associated_owner.is_none().then_some(receiver))
             .chain(args.iter().map(|arg| {
                 Some(match arg {
                     HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,

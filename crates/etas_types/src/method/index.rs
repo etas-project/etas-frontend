@@ -6,12 +6,18 @@ use super::{MethodEvidence, MethodSignatureFact, MethodTarget};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct MethodIndex {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub(super) source_origins: HashMap<etas_hir::SymbolId, etas_code::MethodId>,
     entries: Vec<MethodSignatureFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     members: HashMap<String, Vec<u32>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::nested_map")]
     nominal: HashMap<TypeId, HashMap<String, Vec<u32>>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::nested_map")]
     families: HashMap<u8, HashMap<String, Vec<u32>>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::nested_map")]
     witness_patterns: HashMap<ReceiverHead, HashMap<crate::SpecMethodIdentity, Vec<u32>>>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     targets: HashMap<TargetKey, Vec<u32>>,
 }
 
@@ -72,6 +78,16 @@ impl MethodIndex {
             }
             result.entries.push(entry);
         }
+        result
+    }
+
+    pub fn with_additional_declarations(
+        &self,
+        store: &TypeStore,
+        entries: impl IntoIterator<Item = MethodSignatureFact>,
+    ) -> Self {
+        let mut result = Self::build(store, self.entries.iter().cloned().chain(entries).collect());
+        result.source_origins = self.source_origins.clone();
         result
     }
 
@@ -232,7 +248,16 @@ impl MethodIndex {
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 enum TargetKey {
     Source(etas_hir::SymbolId),
@@ -280,6 +305,8 @@ fn same_evidence(left: &MethodEvidence, right: &MethodEvidence) -> bool {
     Debug,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
     Hash,
     serde::Serialize,
     serde::Deserialize,
@@ -331,6 +358,7 @@ fn receiver_head(store: &TypeStore, ty: TypeId) -> ReceiverHead {
         Type::Task(_) => 25,
         Type::SchedulerHandle => 26,
         Type::Continuation(_) => 27,
+        Type::AgentContext(_) => 28,
         Type::Refined { base, .. } => return receiver_head(store, *base),
     };
     ReceiverHead::Family(family)

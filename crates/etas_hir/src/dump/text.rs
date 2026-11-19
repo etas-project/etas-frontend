@@ -356,6 +356,10 @@ impl<'a> Dump<'a> {
                         HirTypeDeclBody::Representation(ty) => {
                             this.type_id("Representation", ty);
                         }
+                        HirTypeDeclBody::Sequence { element, tail, .. } => {
+                            this.type_id("CellElement", element);
+                            this.type_id("CellTail", tail);
+                        }
                     },
                 );
             }
@@ -633,7 +637,13 @@ impl<'a> Dump<'a> {
                                 Some(row.span),
                             );
                         }
-                        this.block_id("Body", item.body.block());
+                        if let Some(block) = item.body.as_block() {
+                            this.block_id("Body", block);
+                        } else if let crate::HirFlowBody::Decl { span } = item.body {
+                            this.line("FlowDeclBody", Some(span));
+                        } else if let crate::HirFlowBody::Runtime { role, span } = item.body {
+                            this.line(&format!("RuntimePrimitive {role:?}"), Some(span));
+                        }
                     },
                 );
             }
@@ -1092,6 +1102,15 @@ impl<'a> Dump<'a> {
                 &format!("{label} p{} Literal {:?}", id.0, literal),
                 Some(literal.span()),
             ),
+            HirPat::EmptyList { span } => {
+                self.line(&format!("{label} p{} EmptyList", id.0), Some(*span))
+            }
+            HirPat::ListCons { head, tail, span } => {
+                self.node(&format!("{label} p{} ListCons", id.0), *span, |this| {
+                    this.pat_id("Head", *head);
+                    this.pat_id("Tail", *tail);
+                })
+            }
             HirPat::Tuple { elems, span } => {
                 self.node(&format!("{label} p{} Tuple", id.0), *span, |this| {
                     for elem in elems {
@@ -1224,6 +1243,7 @@ impl<'a> Dump<'a> {
                     self.type_id("Elem", *elem);
                 }
             }
+            HirType::Array { element, .. } => self.type_id("ArrayElement", *element),
             HirType::Refined {
                 base, predicate, ..
             } => {

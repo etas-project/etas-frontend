@@ -255,6 +255,13 @@ impl Iterator for HirTreeChildren<'_> {
 }
 
 pub(super) fn body_scope(program: &HirProgram, body: HirBodyRef) -> Option<ScopeId> {
+    if let HirBodyKind::ParameterDefault { parameter } = body.kind {
+        return program
+            .scopes
+            .iter()
+            .find(|scope| scope.symbols.contains(&parameter))
+            .map(|scope| scope.id);
+    }
     match program.items.get(body.item)? {
         HirItem::Flow(flow) if body.kind == HirBodyKind::Flow => Some(flow.scope),
         HirItem::Tool(tool) if body.kind == HirBodyKind::Tool => Some(tool.scope),
@@ -307,11 +314,8 @@ pub(super) fn stmt_span(program: &HirProgram, stmt: &HirStmt) -> Option<Span> {
     }
 }
 
-pub(super) fn for_each_stmt_child(
-    program: &HirProgram,
-    stmt: HirStmtId,
-    mut f: impl FnMut(HirTreeChild),
-) {
+/// Visit direct statement children without building a whole-program index.
+pub fn for_each_stmt_child(program: &HirProgram, stmt: HirStmtId, mut f: impl FnMut(HirTreeChild)) {
     for child in stmt_children(program, stmt) {
         f(child);
     }
@@ -388,11 +392,8 @@ pub(super) fn stmt_children(program: &HirProgram, stmt: HirStmtId) -> HirTreeChi
     }
 }
 
-pub(super) fn for_each_expr_child(
-    program: &HirProgram,
-    expr: HirExprId,
-    mut f: impl FnMut(HirTreeChild),
-) {
+/// Visit direct expression children using the same edges as HirTreeView.
+pub fn for_each_expr_child(program: &HirProgram, expr: HirExprId, mut f: impl FnMut(HirTreeChild)) {
     for child in expr_children(program, expr) {
         f(child);
     }
@@ -570,6 +571,12 @@ pub(super) fn for_each_pat_child(pat: &HirPat, mut f: impl FnMut(HirTreeChild)) 
 
 pub(super) fn pat_children(pat: &HirPat) -> HirTreeChildren<'_> {
     match pat {
+        HirPat::ListCons { head, tail, .. } => HirTreeChildren::fixed([
+            Some(HirTreeChild::Pattern(*head)),
+            Some(HirTreeChild::Pattern(*tail)),
+            None,
+            None,
+        ]),
         HirPat::Tuple { elems, .. } => HirTreeChildren {
             state: HirTreeChildIterState::PatSlice {
                 pats: elems,
@@ -587,6 +594,7 @@ pub(super) fn pat_children(pat: &HirPat) -> HirTreeChildren<'_> {
         },
         HirPat::Binding { .. }
         | HirPat::Wildcard { .. }
+        | HirPat::EmptyList { .. }
         | HirPat::Literal(_)
         | HirPat::Error { .. } => HirTreeChildren::empty(),
     }

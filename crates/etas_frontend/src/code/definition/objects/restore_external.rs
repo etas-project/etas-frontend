@@ -112,6 +112,8 @@ impl NativeDefinitionStore {
             crate::code::definition::CheckedTypeAndSpecPlanInput {
                 source: application.program(),
                 target: &producer_program.std_registry,
+                target_definitions: Some(&producer.catalog),
+                additional_specs: &[],
                 roots: &type_roots,
                 rows: &row_roots,
                 declarations: correspondence.declarations(),
@@ -160,6 +162,7 @@ impl NativeDefinitionStore {
                 &evidence.catalog,
                 &identities,
                 &declarations,
+                &producer.catalog,
                 interner.store(),
                 control,
             )

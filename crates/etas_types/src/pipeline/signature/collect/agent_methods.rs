@@ -79,6 +79,9 @@ pub fn collect_agent_methods(
         state.agent_methods.insert(
             method.symbol,
             crate::facts::signatures::AgentMethodSignature {
+                context_type: ctx
+                    .interner
+                    .intern(Type::AgentContext(method.symbol.into())),
                 private_to: (symbol.visibility == etas_hir::Visibility::Private)
                     .then_some(symbol.defining_module),
                 inherent: ctx.hir.agent_method_is_inherent(&method),
@@ -224,6 +227,7 @@ pub fn collect_agent_spec_satisfactions(
                     continue;
                 };
                 state.spec_impls.push(crate::SpecImplFact {
+                    implementation: Some(implementation),
                     generic_params: Vec::new(),
                     self_type,
                     spec_symbol: symbol,

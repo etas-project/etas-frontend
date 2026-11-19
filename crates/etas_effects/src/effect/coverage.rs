@@ -114,6 +114,22 @@ impl EffectCoverage<'_> {
             })
     }
 
+    pub fn covers_requested_action(
+        &self,
+        action: &Effect,
+        handled: &EffectRow,
+        defaults: &EffectRow,
+    ) -> bool {
+        action.is_action()
+            && [handled, defaults].into_iter().any(|row| {
+                row.open.is_some()
+                    || row
+                        .effects
+                        .iter()
+                        .any(|candidate| self.covers(candidate, action))
+            })
+    }
+
     pub fn row_covers(&self, allowed: &EffectRow, actual: &EffectRow) -> bool {
         if allowed.open.is_some() {
             return true;

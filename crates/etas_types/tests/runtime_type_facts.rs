@@ -112,8 +112,8 @@ flow ordinary(value: Command) -> unit { return; }
     let output = check_program(&hir);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let known = &output.facts.known_std_types;
-    assert_eq!(known.runtime_types.len(), 22);
-    for role in [Role::Task, Role::Scheduler, Role::Continuation] {
+    assert_eq!(known.runtime_types.len(), 23);
+    for role in [Role::Task, Role::Scheduler, Role::Continuation, Role::Money] {
         assert!(known.runtime_type(role).is_some());
     }
     let signature = output

@@ -86,7 +86,12 @@ fn collect_call_inner<E>(
         }
     }
     let checked_generic_args = lower_callable_generic_args(ctx, generic_args);
-    if let Some(candidates) = super::std_member::std_overload_candidates(ctx, callee) {
+    if let Some(candidates) = source_overload_candidates(ctx, callee, args)
+        .or_else(|| super::std_member::std_call_candidates(ctx, callee, args))
+    {
+        for candidate in &candidates {
+            super::agent_context::constrain(ctx, candidate, span);
+        }
         let arg_tys = collect_call_args(ctx, args, None)?;
         let output = select_call_output(ctx, None, expected, span);
         let callee_type = ctx.fresh_type_var();
@@ -121,6 +126,19 @@ fn collect_call_inner<E>(
             HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
         })
         .collect::<Vec<_>>();
+    if let [HirArg::Positional(value)] = args
+        && matches!(
+            ctx.ctx.hir.exprs[*value],
+            HirExpr::Literal(etas_hir::HirLiteral::String { .. })
+        )
+        && type_generic_args.len() == generic_args.len()
+        && let Some(result) = super::literal::trusted_constructor(ctx, callee, &type_generic_args)
+    {
+        collect_expr(ctx, *value, None)?;
+        ctx.record_expr_type(callee, result);
+        ctx.state.provisional.trusted_literals.insert(call);
+        return Ok(result);
+    }
     if let Some(output) = collect_std_qualified_call(
         ctx,
         call,
@@ -165,6 +183,9 @@ fn collect_call_inner<E>(
         return Ok(output);
     }
     let callable_candidate = collect_callable_callee(ctx, callee, callable_signature.is_some())?;
+    if let Some(candidate) = &callable_candidate {
+        super::agent_context::constrain(ctx, candidate, span);
+    }
     let intrinsic_candidate = callable_candidate.as_ref().and_then(|candidate| {
         matches!(
             candidate.operation,
@@ -206,23 +227,43 @@ fn collect_call_inner<E>(
         &checked_generic_args,
         span,
     );
-    let arg_tys = collect_call_args(
+    let argument_binding = if intrinsic_candidate.is_none() {
+        bind_declared_arguments(
+            ctx,
+            call,
+            callable_signature
+                .as_ref()
+                .and_then(|signature| signature.parameter_interface.as_deref()),
+            args,
+            span,
+        )
+    } else {
+        None
+    };
+    let arg_tys = collect_call_args_for_binding(
         ctx,
         args,
         signature_hint.as_ref().map(|flow| flow.input.as_slice()),
+        argument_binding.as_ref(),
     )?;
     let hinted_callee = signature_hint
         .map(|flow| ctx.ctx.interner.intern(Type::Function(flow)))
         .unwrap_or(callee_ty);
-    let inferred = infer_imported_std_call_output_from_args(ctx, callee, &arg_tys)
-        .or_else(|| callable_output_for_expression(ctx, hinted_callee));
+    let inferred = if argument_binding.is_some() {
+        callable_output_for_expression(ctx, hinted_callee)
+    } else {
+        infer_imported_std_call_output_from_args(ctx, callee, &arg_tys)
+            .or_else(|| callable_output_for_expression(ctx, hinted_callee))
+    };
     let inferred = expected.filter(|_| !generic_params.is_empty()).or(inferred);
     let output = select_call_output(ctx, inferred, expected, span);
-    ctx.validate(crate::ValidationRequest::CallableArity {
-        callee_ty,
-        arg_count: arg_tys.len(),
-        span,
-    });
+    if argument_binding.is_none() {
+        ctx.validate(crate::ValidationRequest::CallableArity {
+            callee_ty,
+            arg_count: arg_tys.len(),
+            span,
+        });
+    }
     if let Some(candidate) = intrinsic_candidate {
         let probe = ctx.fresh_type_var();
         ctx.emit(TypeConstraint::OverloadedCall {
@@ -238,10 +279,12 @@ fn collect_call_inner<E>(
         });
     } else {
         ctx.emit(TypeConstraint::Callable {
+            argument_slots: argument_binding.map(|binding| binding.argument_slots),
             call: Some(call),
             callee: callee_ty,
             generic_params,
             generic_args: checked_generic_args,
+            selector_bindings: Vec::new(),
             arg_exprs: call_arg_exprs(args),
             args: arg_tys,
             output,
@@ -249,6 +292,45 @@ fn collect_call_inner<E>(
         });
     }
     Ok(output)
+}
+
+fn source_overload_candidates<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    callee: etas_hir::HirExprId,
+    args: &[HirArg],
+) -> Option<Vec<crate::CallableCandidate>> {
+    let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
+        return None;
+    };
+    let ResolveResult::Resolved(symbol) = path.resolution else {
+        return None;
+    };
+    let group = ctx.ctx.hir.flow_overload_group(symbol)?.to_vec();
+    let names = args
+        .iter()
+        .map(|argument| match argument {
+            HirArg::Positional(_) => None,
+            HirArg::Named { name, .. } => Some(name.clone()),
+        })
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for symbol in group {
+        let fact = ctx.ctx.symbol_fact(symbol)?.clone();
+        let Some(mut candidate) = callable_candidate_from_fact(ctx, fact, true) else {
+            continue;
+        };
+        let interface = candidate
+            .signature
+            .parameter_interface
+            .as_ref()
+            .expect("source flow parameter interface");
+        let Ok(arguments) = crate::ArgumentBinding::bind(interface, &names) else {
+            continue;
+        };
+        candidate.operation = crate::CallableCandidateOperation::SourceFlow { symbol, arguments };
+        candidates.push(candidate);
+    }
+    Some(candidates)
 }
 
 fn collect_std_qualified_call<E>(
@@ -273,6 +355,31 @@ fn collect_std_qualified_call<E>(
         return Ok(None);
     };
     let candidate = std_qualified_path_callable_candidate(ctx, path, true);
+    if let Some(candidate) = &candidate {
+        super::agent_context::constrain(ctx, candidate, span);
+    }
+    let intrinsic_candidate = candidate
+        .as_ref()
+        .filter(|candidate| {
+            matches!(
+                candidate.operation,
+                crate::CallableCandidateOperation::StdIntrinsic { .. }
+            )
+        })
+        .cloned();
+    let argument_binding = if intrinsic_candidate.is_none() && candidate.is_some() {
+        bind_declared_arguments(
+            ctx,
+            call,
+            candidate
+                .as_ref()
+                .and_then(|candidate| candidate.signature.parameter_interface.as_deref()),
+            args,
+            span,
+        )
+    } else {
+        None
+    };
     let (callee_ty, generic_params) = if let Some(candidate) = candidate {
         (candidate.ty, candidate.signature.generic_params)
     } else {
@@ -286,6 +393,7 @@ fn collect_std_qualified_call<E>(
         };
         (ty, Vec::new())
     };
+    ctx.record_expr_type(callee, callee_ty);
     let expected_inputs = super::callable_instantiation::argument_hints(
         ctx,
         callee_ty,
@@ -293,29 +401,63 @@ fn collect_std_qualified_call<E>(
         checked_generic_args,
         span,
     );
-    let arg_tys = collect_call_args(ctx, args, expected_inputs.as_deref())?;
-    let inferred = infer_std_call_output_from_args(ctx, path, &arg_tys)
-        .or_else(|| {
-            specialized_callable_output_for_args(ctx, callee_ty, type_generic_args, &arg_tys, span)
-        })
-        .or_else(|| callable_output_for_expression(ctx, callee_ty));
+    let arg_tys = collect_call_args_for_binding(
+        ctx,
+        args,
+        expected_inputs.as_deref(),
+        argument_binding.as_ref(),
+    )?;
+    let inferred = if argument_binding.is_some() {
+        callable_output_for_expression(ctx, callee_ty)
+    } else {
+        infer_std_call_output_from_args(ctx, path, &arg_tys)
+            .or_else(|| {
+                specialized_callable_output_for_args(
+                    ctx,
+                    callee_ty,
+                    type_generic_args,
+                    &arg_tys,
+                    span,
+                )
+            })
+            .or_else(|| callable_output_for_expression(ctx, callee_ty))
+    };
     let inferred = expected.filter(|_| !generic_params.is_empty()).or(inferred);
     let output = select_call_output(ctx, inferred, expected, span);
-    ctx.validate(crate::ValidationRequest::CallableArity {
-        callee_ty,
-        arg_count: arg_tys.len(),
-        span,
-    });
-    ctx.emit(TypeConstraint::Callable {
-        call: Some(call),
-        callee: callee_ty,
-        generic_params,
-        generic_args: checked_generic_args.to_vec(),
-        arg_exprs: call_arg_exprs(args),
-        args: arg_tys,
-        output,
-        origin: ConstraintOrigin { span },
-    });
+    if argument_binding.is_none() {
+        ctx.validate(crate::ValidationRequest::CallableArity {
+            callee_ty,
+            arg_count: arg_tys.len(),
+            span,
+        });
+    }
+    if let Some(candidate) = intrinsic_candidate {
+        let probe = ctx.fresh_type_var();
+        ctx.emit(TypeConstraint::OverloadedCall {
+            expr: call,
+            callee: callee_ty,
+            candidates: vec![candidate],
+            probes: vec![probe],
+            generic_args: checked_generic_args.to_vec(),
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+    } else {
+        ctx.emit(TypeConstraint::Callable {
+            argument_slots: argument_binding.map(|binding| binding.argument_slots),
+            call: Some(call),
+            callee: callee_ty,
+            generic_params,
+            generic_args: checked_generic_args.to_vec(),
+            selector_bindings: Vec::new(),
+            arg_exprs: call_arg_exprs(args),
+            args: arg_tys,
+            output,
+            origin: ConstraintOrigin { span },
+        });
+    }
     Ok(Some(output))
 }
 
@@ -575,10 +717,12 @@ fn collect_partially_resolved_method_call<E>(
             span,
         });
         ctx.emit(TypeConstraint::Callable {
+            argument_slots: None,
             call: Some(call),
             callee: callee_ty,
             generic_params,
             generic_args: checked_generic_args.to_vec(),
+            selector_bindings: Vec::new(),
             arg_exprs: call_arg_exprs(args),
             args: arg_tys,
             output,
@@ -938,7 +1082,8 @@ fn apply_type_var_substitution<E>(
         | Type::SchedulerHandle
         | Type::Prompt
         | Type::PromptPart
-        | Type::MemoryPlace(MemoryPlaceType { .. }) => ty,
+        | Type::MemoryPlace(MemoryPlaceType { .. })
+        | Type::AgentContext(_) => ty,
     }
 }
 
@@ -957,10 +1102,45 @@ fn collect_standard_variant_constructor_call<E>(
     if super::enum_variant::declaration(ctx, path).is_some() {
         return Ok(None);
     }
-    let Some(name) = path.segments.last().map(|segment| segment.name.as_str()) else {
+    let qualified = match path.resolution {
+        ResolveResult::Resolved(symbol) => {
+            let Some(symbol) = ctx
+                .ctx
+                .symbols
+                .canonical_symbol(ctx.ctx.hir, symbol)
+                .and_then(|symbol| ctx.ctx.hir.symbols.get(symbol))
+            else {
+                return Ok(None);
+            };
+            let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                return Ok(None);
+            };
+            path.clone()
+        }
+        _ if path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.name == "std") =>
+        {
+            path.segments
+                .iter()
+                .map(|segment| segment.name.clone())
+                .collect()
+        }
+        _ => return Ok(None),
+    };
+    let Some(native) = ctx.ctx.std_registry.lookup_qualified(&qualified) else {
         return Ok(None);
     };
-    Ok(match name {
+    // Checked source constructor flows use ordinary callable instantiation.
+    // Only legacy native constructors need the contextual payload shortcut.
+    if native.kind != etas_std::StdSymbolKind::Constructor
+        || !matches!(native.decl, etas_std::StdDecl::Type(_))
+        || native.intrinsic.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(match native.name.as_str() {
         "Ok" => Some(collect_result_constructor_call(
             ctx,
             "Ok",
@@ -1237,17 +1417,67 @@ pub(super) fn collect_call_args<E>(
     args: &[HirArg],
     expected: Option<&[TypeId]>,
 ) -> Result<Vec<TypeId>, E> {
+    collect_call_args_for_binding(ctx, args, expected, None)
+}
+
+pub(super) fn collect_call_args_for_binding<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    args: &[HirArg],
+    expected: Option<&[TypeId]>,
+    binding: Option<&crate::ArgumentBinding>,
+) -> Result<Vec<TypeId>, E> {
     ctx.checkpoint()?;
     args.iter()
         .enumerate()
         .map(|(index, arg)| {
-            let expected = expected.and_then(|expected| expected.get(index).copied());
+            let slot = binding.map_or(index, |binding| binding.argument_slots[index] as usize);
+            let expected = expected.and_then(|expected| expected.get(slot).copied());
             match arg {
                 HirArg::Positional(expr) => collect_expr(ctx, *expr, expected),
                 HirArg::Named { value, .. } => collect_expr(ctx, *value, expected),
             }
         })
         .collect()
+}
+
+pub(super) fn bind_declared_arguments<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    call: etas_hir::HirExprId,
+    parameters: Option<&[crate::ParameterInterface]>,
+    args: &[HirArg],
+    span: etas_core::Span,
+) -> Option<crate::ArgumentBinding> {
+    let names = args
+        .iter()
+        .map(|arg| match arg {
+            HirArg::Positional(_) => None,
+            HirArg::Named { name, .. } => Some(name.clone()),
+        })
+        .collect::<Vec<_>>();
+    let result = match parameters {
+        Some(parameters) => crate::ArgumentBinding::bind(parameters, &names),
+        None if names.iter().any(Option::is_some) => {
+            Err("named arguments require a resolved declaration's call interface".into())
+        }
+        None => return None,
+    };
+    match result {
+        Ok(binding) => {
+            ctx.state
+                .provisional
+                .declared_call_arguments
+                .insert(call, binding.clone());
+            Some(binding)
+        }
+        Err(message) => {
+            ctx.validate(crate::ValidationRequest::Diagnostic {
+                code: etas_core::TypeDiagnosticCode::ArityMismatch,
+                span,
+                message,
+            });
+            None
+        }
+    }
 }
 
 pub(super) fn call_arg_exprs(args: &[HirArg]) -> Vec<Option<etas_hir::HirExprId>> {

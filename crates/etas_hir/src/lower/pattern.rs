@@ -17,20 +17,7 @@ impl LowerCtx {
             };
             let path = self.resolve_path(&syntax_path, scope, false);
             let constructor = match path.resolution {
-                ResolveResult::Resolved(symbol) => self.symbols.get(symbol).is_some_and(|symbol| {
-                    symbol.kind == SymbolKind::EnumVariant
-                        || match &symbol.def {
-                            SymbolDef::ImportAlias { path, .. } => self
-                                .std_registry
-                                .lookup_qualified(path)
-                                .is_some_and(|symbol| {
-                                    symbol.enum_owner.is_some()
-                                        || symbol.kind == etas_std::StdSymbolKind::Constructor
-                                        || matches!(symbol.decl, etas_std::StdDecl::Value(_))
-                                }),
-                            _ => false,
-                        }
-                }),
+                ResolveResult::Resolved(symbol) => self.pattern_constructor(symbol, scope, span),
                 _ => false,
             };
             if constructor {
@@ -105,6 +92,12 @@ impl LowerCtx {
             Pattern::Ident(_) => unreachable!("identifier patterns return early"),
             Pattern::Wildcard(span) => HirPat::Wildcard { span: *span },
             Pattern::Literal(literal) => HirPat::Literal(lower_pattern_literal(literal)),
+            Pattern::EmptyList { span } => HirPat::EmptyList { span: *span },
+            Pattern::ListCons { head, tail, span } => HirPat::ListCons {
+                head: self.lower_pattern(head, scope, item_id),
+                tail: self.lower_pattern(tail, scope, item_id),
+                span: *span,
+            },
             Pattern::Tuple { elems, span } => HirPat::Tuple {
                 elems: elems
                     .iter()
@@ -151,6 +144,52 @@ impl LowerCtx {
         let id = self.hir.pats.alloc(hir_pat);
         self.source_map.map_pat(id, span);
         id
+    }
+
+    fn pattern_constructor(
+        &mut self,
+        mut symbol: SymbolId,
+        scope: ScopeId,
+        span: etas_core::Span,
+    ) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(symbol) {
+            let Some(data) = self.symbols.get(symbol).cloned() else {
+                return false;
+            };
+            if data.kind == SymbolKind::EnumVariant {
+                return true;
+            }
+            let SymbolDef::ImportAlias { path, .. } = data.def else {
+                return false;
+            };
+            let syntax = etas_syntax::ast::Path {
+                segments: path
+                    .iter()
+                    .map(|text| etas_syntax::ast::Name {
+                        text: text.clone(),
+                        span,
+                    })
+                    .collect(),
+                span,
+            };
+            if let ResolveResult::Resolved(target) =
+                self.resolve_path(&syntax, scope, false).resolution
+                && target != symbol
+            {
+                symbol = target;
+                continue;
+            }
+            return self
+                .std_registry
+                .lookup_qualified(&path)
+                .is_some_and(|symbol| {
+                    symbol.enum_owner.is_some()
+                        || symbol.kind == etas_std::StdSymbolKind::Constructor
+                        || matches!(symbol.decl, etas_std::StdDecl::Value(_))
+                });
+        }
+        false
     }
 }
 

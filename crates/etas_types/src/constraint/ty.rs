@@ -76,6 +76,7 @@ pub enum TypeConstraint {
         owner: etas_hir::HirItemId,
         prompt: etas_hir::HirExprId,
         prompt_type: TypeId,
+        expected_prompt: TypeId,
         output: TypeId,
         schema: TypeId,
         action_symbol: etas_hir::SymbolId,
@@ -88,6 +89,12 @@ pub enum TypeConstraint {
         callable_descriptor: Option<TypeId>,
         members: Vec<String>,
         output: TypeId,
+        origin: ConstraintOrigin,
+    },
+    /// A generic arithmetic or ordering operand needs checked Number evidence.
+    /// Solved after substitutions, with the complete body generic bounds.
+    NumericFamilyOperation {
+        operand: TypeId,
         origin: ConstraintOrigin,
     },
     NumericLiteral {
@@ -115,10 +122,13 @@ pub enum TypeConstraint {
         reason: AssignabilityReason,
     },
     Callable {
+        argument_slots: Option<Vec<u32>>,
         call: Option<etas_hir::HirExprId>,
         callee: TypeId,
         generic_params: Vec<CallableGenericParam>,
         generic_args: Vec<CallableGenericArg>,
+        /// Checked action selectors bind a subset of signature parameters.
+        selector_bindings: Vec<(String, TypeId)>,
         arg_exprs: Vec<Option<etas_hir::HirExprId>>,
         args: Vec<TypeId>,
         output: TypeId,
@@ -185,6 +195,7 @@ pub enum TypeConstraint {
         item: TypeId,
         // A fresh (key, value) shape for entry iterables; solved, not guessed by collect.
         entry_pair: TypeId,
+        byte_item: TypeId,
         origin: ConstraintOrigin,
     },
     Unary {
@@ -213,6 +224,16 @@ pub struct CallableCandidate {
 pub enum CallableCandidateOperation {
     #[default]
     Call,
+    SourceFlow {
+        symbol: etas_hir::SymbolId,
+        arguments: crate::ArgumentBinding,
+    },
+    LibraryFlow {
+        symbol: etas_std::StdSymbolId,
+        overload: usize,
+        callable: etas_code::CallableId,
+        arguments: crate::ArgumentBinding,
+    },
     Method {
         index: u32,
         owner_params: Vec<CallableGenericParam>,

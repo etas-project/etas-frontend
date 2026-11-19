@@ -2,12 +2,16 @@ use crate::{CallableSignature, TypeId};
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecFacts {
+    pub checked_impls: Vec<CheckedSpecImplementationFact>,
     #[serde(default)]
     pub canonical: CanonicalSpecFacts,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub external_signatures:
         std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub external_impls: Vec<ExternalSpecImplFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub external_aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<etas_hir::SymbolId, SpecSignature>,
     pub impls: Vec<SpecImplFact>,
     pub type_satisfactions: Vec<TypeSpecSatisfactionFact>,
@@ -15,8 +19,10 @@ pub struct SpecFacts {
     pub trace_conformances: Vec<TraceSpecConformanceFact>,
     pub external_callable_satisfactions: Vec<ExternalCallableSpecSatisfactionFact>,
     pub external_trace_conformances: Vec<ExternalTraceSpecConformanceFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub type_param_bounds: std::collections::HashMap<etas_hir::SymbolId, Vec<TypeParamBoundFact>>,
     pub std_impls: Vec<CheckedStdSpecImplFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub std_spec_aliases: std::collections::HashMap<etas_hir::SymbolId, Vec<String>>,
 }
 
@@ -41,6 +47,7 @@ pub enum CheckedSpecRef {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct CanonicalSpecFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<etas_code::DefinitionKey, CanonicalSpecSignatureFact>,
     pub impls: Vec<CanonicalSpecImplFact>,
 }
@@ -70,6 +77,17 @@ pub struct CanonicalSpecImplFact {
 pub struct RelocatedSpecFacts {
     pub canonical: CanonicalSpecFacts,
     pub std_impls: Vec<CheckedStdSpecImplFact>,
+    pub checked_impls: Vec<CheckedSpecImplementationFact>,
+}
+
+/// Implementation evidence whose declaration is already owned by the target
+/// checked program. It introduces no HIR implementation or lexical names.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct CheckedSpecImplementationFact {
+    pub generic_params: Vec<crate::CallableGenericParam>,
+    pub self_type: TypeId,
+    pub spec: CheckedSpecRef,
+    pub args: Vec<TypeId>,
 }
 
 #[derive(Debug)]
@@ -147,13 +165,19 @@ impl RelocatedSpecFacts {
             .canonical
             .impls
             .iter()
-            .map(|implementation| &implementation.generic_params)
+            .map(|implementation| (&implementation.generic_params, false))
             .chain(
                 self.std_impls
                     .iter()
-                    .map(|implementation| &implementation.generic_params),
+                    .map(|implementation| (&implementation.generic_params, false)),
+            )
+            .chain(
+                self.checked_impls
+                    .iter()
+                    .map(|implementation| (&implementation.generic_params, true)),
             )
         {
+            let (parameters, native_owner) = parameters;
             let mut subjects = std::collections::HashSet::new();
             for parameter in parameters {
                 checkpoint()?;
@@ -180,6 +204,20 @@ impl RelocatedSpecFacts {
                             }
                         }
                         CheckedSpecRef::Std(_) => {}
+                        CheckedSpecRef::Source(symbol) if native_owner => {
+                            // Checked implementations belong to this target
+                            // program. Their bounds may name its real source
+                            // declarations, unlike portable canonical facts.
+                            if existing.spec_signatures.get(symbol).is_none_or(|target| {
+                                target.kind != SpecKind::TypeSpec
+                                    || target.param_names.len() != bound.args.len()
+                            }) {
+                                return Err(
+                                    "relocated owner bound has no matching checked target spec"
+                                        .into(),
+                                );
+                            }
+                        }
                         CheckedSpecRef::Source(_) | CheckedSpecRef::External(_) => {
                             return Err(
                                 "relocated owner bound contains a source-local reference".into()
@@ -221,6 +259,27 @@ impl RelocatedSpecFacts {
                 }
             }
         }
+        for implementation in &self.checked_impls {
+            checkpoint()?;
+            let CheckedSpecRef::Source(symbol) = implementation.spec else {
+                return Err(
+                    "imported checked implementation must name a target source spec".into(),
+                );
+            };
+            let Some(declaration) = existing.spec_signatures.get(&symbol) else {
+                return Err("imported checked implementation has no target declaration".into());
+            };
+            if declaration.kind != SpecKind::TypeSpec
+                || declaration.params.len() != implementation.args.len()
+                || store.get(implementation.self_type).is_none()
+                || implementation
+                    .args
+                    .iter()
+                    .any(|ty| store.get(*ty).is_none())
+            {
+                return Err("imported checked implementation has invalid types or arity".into());
+            }
+        }
         Ok(())
     }
 
@@ -254,6 +313,17 @@ impl RelocatedSpecFacts {
             checkpoint()?;
             if standard.insert((item.self_type, item.spec.clone(), item.args.clone())) {
                 facts.std_spec_impls.push(item);
+            }
+        }
+        let mut checked = std::collections::HashSet::new();
+        for item in &facts.checked_spec_impls {
+            checkpoint()?;
+            checked.insert((item.self_type, item.spec.clone(), item.args.clone()));
+        }
+        for item in self.checked_impls {
+            checkpoint()?;
+            if checked.insert((item.self_type, item.spec.clone(), item.args.clone())) {
+                facts.checked_spec_impls.push(item);
             }
         }
         Ok(())
@@ -296,8 +366,10 @@ pub struct ExternalSpecImplFact {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecFacts {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub signatures: std::collections::HashMap<ExternalSpecIdentity, ExternalSpecSignatureFact>,
     pub impls: Vec<ExternalSpecImplFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     pub aliases: std::collections::HashMap<etas_hir::SymbolId, ExternalSpecIdentity>,
 }
 
@@ -354,6 +426,7 @@ pub enum SpecKind {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct SpecImplFact {
+    pub implementation: Option<etas_hir::HirItemId>,
     pub generic_params: Vec<crate::CallableGenericParam>,
     pub self_type: TypeId,
     pub spec_symbol: etas_hir::SymbolId,
@@ -431,12 +504,22 @@ pub struct SpecMethodFact {
     pub name: String,
     pub parameter_names: Vec<String>,
     pub receiver_param: Option<u32>,
+    pub updating_receiver: bool,
     #[serde(default)]
     pub signature: Option<CallableSignature>,
 }
 
 #[derive(
-    Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
 )]
 pub enum SpecMethodIdentity {
     Source(etas_hir::SymbolId),

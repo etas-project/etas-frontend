@@ -71,7 +71,10 @@ pub(in crate::passes::analysis) fn signature_input_for_environment(
                 )
             })?;
             standard_effects.insert(effect.name.clone(), key.clone());
-            effect_targets.insert(effect.name.clone(), EffectTargetInfo::Effect(key.clone()));
+            standard_effects.insert(symbol.qualified_path.join("."), key.clone());
+            if effect.stable_id.is_some() {
+                effect_targets.insert(effect.name.clone(), EffectTargetInfo::Effect(key.clone()));
+            }
         }
     }
     for symbol in registry.symbols() {
@@ -93,7 +96,9 @@ pub(in crate::passes::analysis) fn signature_input_for_environment(
                 .collect::<Vec<_>>()
                 .join(".");
             effect_targets.insert(path, target.clone());
-            effect_targets.insert(format!("{}.{}", action.owner, action.name), target);
+            if action.stable_id.is_some() {
+                effect_targets.insert(format!("{}.{}", action.owner, action.name), target);
+            }
         }
     }
     if let Some(environment) = environment {

@@ -527,6 +527,7 @@ mod tests {
             },
         );
         let mut metadata = vec![ProjectExternalPublicMetadataInput {
+            scoped_callbacks: Vec::new(),
             package: ExternalPackageId(1),
             types: vec![],
             values: vec![],
@@ -724,6 +725,7 @@ mod tests {
         let mut behavioral_metadata = metadata.clone();
         behavioral_metadata[0].spec_signatures[1].methods.push(
             crate::ProjectExternalSpecMethodInput {
+                updating_receiver: false,
                 receiver_param: None,
                 name: "method".into(),
                 path: vec!["dep".into(), "Family".into(), "method".into()],
@@ -738,6 +740,7 @@ mod tests {
             .unwrap()
             .methods
             .push(etas_types::SpecMethodFact {
+                updating_receiver: false,
                 receiver_param: None,
                 identity: etas_types::SpecMethodIdentity::External {
                     package: 1,

@@ -151,9 +151,14 @@ impl TypeSymbolIndex {
             let Some(symbol_data) = hir.symbols.get(current) else {
                 return Some(current);
             };
-            let SymbolDef::ImportAlias { path, .. } = &symbol_data.def else {
+            let SymbolDef::ImportAlias { path, origin } = &symbol_data.def else {
                 return Some(current);
             };
+            // A binding names the host primitive, even when the source wrapper
+            // has the same public path. Its requested actions belong to that ABI.
+            if *origin == etas_hir::ImportAliasOrigin::NativeBinding {
+                return Some(current);
+            }
             let Some(target) = self.canonical_paths.get(path).copied() else {
                 return Some(current);
             };

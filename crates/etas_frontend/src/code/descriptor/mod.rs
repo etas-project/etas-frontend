@@ -23,6 +23,7 @@ pub use residual::{
     TraceTemplateProjectionError, TraceTemplateSource,
 };
 pub(crate) use specs::AttachedSpecIndex;
+pub(crate) use standard::primitive_info as standard_primitive_info;
 
 #[derive(Debug)]
 pub enum ProjectionError {

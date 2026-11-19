@@ -48,6 +48,8 @@ pub enum ReturnObservation {
     Any,
     Unit,
     Bool(bool),
+    Result(bool),
+    Option(bool),
     Variant(etas_hir::SymbolId),
     // Callable values may be returned directly or inside an aggregate payload.
     CallableSources(std::collections::BTreeSet<CallableReturnSource>),
@@ -65,6 +67,7 @@ pub enum ReturnObservation {
     etas_core::RetainedSize,
 )]
 pub enum CallableReturnSource {
+    Projection(etas_code::CodeFingerprint),
     Existential {
         pack: HirExprId,
         environment: crate::facts::CallableEnvironmentId,
@@ -386,10 +389,25 @@ pub enum OutcomeAnalysisGap {
 pub struct CallableExitSummary {
     pub exits: Vec<ExitTraceFact>,
     pub gaps: std::collections::BTreeSet<OutcomeAnalysisGap>,
+    /// Checked callable origins at positions in a returned value. Positions
+    /// stay separate until a caller selects them and substitutes its arguments.
+    #[serde(default)]
+    pub value_projections: std::collections::BTreeMap<
+        Vec<etas_code::descriptor::ValueProjectionStep>,
+        ProjectedReturnSources,
+    >,
     #[serde(default)]
     pub parameter_exits: Vec<ParameterExitFact>,
     #[serde(default)]
     pub handler_gaps: std::collections::BTreeSet<HandlerGapEvidence>,
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+pub enum ProjectedReturnSources {
+    Known(std::collections::BTreeSet<CallableReturnSource>),
+    Unavailable,
 }
 
 impl CallableExitSummary {
@@ -467,8 +485,9 @@ impl CallableExitSummary {
 
     /// Value-origin evidence is independent of whether a preceding call returns,
     /// raises or diverges. Keep all control gaps on this summary; they are not a
-    /// certificate of purity or totality. Every successful return still needs a
-    /// checked, nonempty source observation.
+    /// certificate of purity or totality. Successful returns need checked
+    /// source observations. A proved empty payload is Some(empty), distinct
+    /// from missing evidence and from a function with no observed return.
     pub fn callable_return_sources(
         &self,
     ) -> Option<std::collections::BTreeSet<CallableReturnSource>> {
@@ -482,17 +501,25 @@ impl CallableExitSummary {
             return None;
         }
         let mut sources = std::collections::BTreeSet::new();
+        let mut has_return = false;
         for exit in &self.exits {
             match &exit.outcome {
                 CallableOutcome::Returned {
                     observation: ReturnObservation::CallableSources(found),
                     ..
-                } if !found.is_empty() => sources.extend(found.iter().cloned()),
+                } => {
+                    has_return = true;
+                    sources.extend(found.iter().cloned());
+                }
+                CallableOutcome::Returned {
+                    observation: ReturnObservation::Option(false),
+                    ..
+                } => has_return = true,
                 CallableOutcome::Returned { .. } => return None,
                 _ => {}
             }
         }
-        (!sources.is_empty()).then_some(sources)
+        has_return.then_some(sources)
     }
 }
 
@@ -522,6 +549,31 @@ impl CallableExitSummary {
 
     pub fn join_assign(&mut self, other: &Self) -> bool {
         let mut changed = false;
+        for (path, incoming) in &other.value_projections {
+            match self.value_projections.entry(path.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(incoming.clone());
+                    changed = true;
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    match (entry.get_mut(), incoming) {
+                        (ProjectedReturnSources::Unavailable, _) => {}
+                        (current, ProjectedReturnSources::Unavailable) => {
+                            *current = ProjectedReturnSources::Unavailable;
+                            changed = true;
+                        }
+                        (
+                            ProjectedReturnSources::Known(current),
+                            ProjectedReturnSources::Known(found),
+                        ) => {
+                            let before = current.len();
+                            current.extend(found.iter().cloned());
+                            changed |= current.len() != before;
+                        }
+                    }
+                }
+            }
+        }
         for exit in &other.exits {
             changed |= self.record(exit.outcome.clone(), exit.trace.clone());
         }

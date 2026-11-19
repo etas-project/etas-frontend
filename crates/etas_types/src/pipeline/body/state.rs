@@ -16,11 +16,13 @@ pub struct BodyPipelineState {
     pub constraints: Vec<TypeConstraint>,
     pub spec_obligations: Vec<SpecObligation>,
     pub validations: Vec<ValidationRequest>,
+    pub(in crate::pipeline) deferred_collection_literals: Vec<DeferredCollectionLiteral>,
     pub solver_report: SolverReport,
     pub handler_resume_stack: Vec<TypeId>,
     pub handler_finish_stack: Vec<Option<TypeId>>,
     pub handler_finish_candidates: Vec<Vec<(TypeId, crate::ConstraintOrigin)>>,
     pub handler_depth: usize,
+    pub(in crate::pipeline) agent_contexts: Vec<TypeId>,
     pub(in crate::pipeline) action_requests: Vec<super::collect::handler_request::ActionRequest>,
     pub(in crate::pipeline) request_scope_depth: usize,
 }
@@ -36,19 +38,35 @@ impl BodyPipelineState {
             constraints: Vec::new(),
             spec_obligations: Vec::new(),
             validations: Vec::new(),
+            deferred_collection_literals: Vec::new(),
             solver_report: SolverReport::default(),
             handler_resume_stack: Vec::new(),
             handler_finish_stack: Vec::new(),
             handler_finish_candidates: Vec::new(),
             handler_depth: 0,
+            agent_contexts: Vec::new(),
             action_requests: Vec::new(),
             request_scope_depth: 0,
         }
     }
 }
 
+pub(in crate::pipeline) struct DeferredCollectionLiteral {
+    pub expr: HirExprId,
+    pub ty: TypeId,
+    pub span: etas_core::Span,
+    pub kind: EmptyCollectionKind,
+}
+
+pub(in crate::pipeline) enum EmptyCollectionKind {
+    Sequence,
+    RecordOrMap,
+}
+
 #[derive(Default)]
 pub struct ProvisionalFacts {
+    pub trusted_literals: std::collections::BTreeSet<HirExprId>,
+    pub declared_call_arguments: HashMap<HirExprId, crate::ArgumentBinding>,
     pub agent_method_calls: HashMap<HirExprId, SymbolId>,
     pub handler_actions: HashMap<etas_hir::HirHandlerArmId, crate::CheckedHandlerActionFact>,
     pub continuation_bindings: HashMap<SymbolId, crate::ContinuationBindingFact>,

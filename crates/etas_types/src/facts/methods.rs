@@ -41,6 +41,8 @@ pub struct ExternalMethodImplementationFact {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct CheckedMethodCallFact {
+    #[serde(default)]
+    pub defaults: Vec<crate::DefaultArgument>,
     pub target: MethodTarget,
     pub receiver: MethodReceiver,
     pub receiver_type: TypeId,

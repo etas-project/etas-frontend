@@ -38,6 +38,45 @@ pub(super) fn validate(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipel
                 .symbols
                 .get(provided.symbol)
                 .map_or(implementation.span, |symbol| symbol.definition_span);
+            if let Some(flow) = state
+                .type_impl_methods
+                .get(&provided.symbol)
+                .and_then(|method| ctx.hir.items.get(method.body))
+                .and_then(|item| match item {
+                    etas_hir::HirItem::Flow(flow) => Some(flow),
+                    _ => None,
+                })
+            {
+                for parameter in &flow.params {
+                    if let Some(expr) = ctx.hir.parameter_defaults.get(parameter) {
+                        ctx.diagnostics.push(Diagnostic::type_check(TypeDiagnosticCode::TypeMismatch,
+                            ctx.hir.exprs[*expr].span(&ctx.hir.blocks),
+                            "a spec implementation inherits parameter defaults from its spec and cannot declare or replace them"));
+                    }
+                }
+            }
+            let actual_receiver = state
+                .type_impl_methods
+                .get(&provided.symbol)
+                .and_then(|method| ctx.hir.items.get(method.body))
+                .and_then(|item| match item {
+                    etas_hir::HirItem::Flow(flow) => Some(flow.receiver_mode),
+                    _ => None,
+                });
+            if actual_receiver.is_none_or(|mode| {
+                method.updating_receiver != (mode == etas_hir::HirReceiverMode::Updating)
+                    || (method.receiver_param.is_some() && mode == etas_hir::HirReceiverMode::None)
+            }) {
+                ctx.diagnostics.push(Diagnostic::type_check(
+                    TypeDiagnosticCode::TypeMismatch,
+                    span,
+                    format!(
+                        "method `{}` receiver mode differs from its spec",
+                        method.name
+                    ),
+                ));
+                continue;
+            }
             let expected = method
                 .signature
                 .as_ref()

@@ -59,7 +59,11 @@ pub(super) fn validate_target(
         .validate_resources()
         .map_err(|error| error.to_string())?;
     let method = match target {
-        CallableRequestTarget::Parameter(parameter) => {
+        CallableRequestTarget::AgentTools(context) => {
+            return validate_metadata_type(context, scope);
+        }
+        CallableRequestTarget::Parameter(parameter)
+        | CallableRequestTarget::ParameterProjection { parameter, .. } => {
             return if parameters.contains(parameter) {
                 Ok(())
             } else {
@@ -93,7 +97,7 @@ pub(super) fn validate_target(
     Ok(())
 }
 
-fn validate_metadata_type(
+pub(super) fn validate_metadata_type(
     ty: &etas_package_metadata::Type,
     scope: &GenericScope,
 ) -> Result<(), String> {
@@ -107,7 +111,12 @@ fn validate_metadata_type(
             ));
         }
         pending.extend(&ty.children);
-        pending.extend(ty.fields.iter().map(|field| &field.ty));
+        pending.extend(
+            ty.fields
+                .iter()
+                .chain(&ty.projected_fields)
+                .map(|field| &field.ty),
+        );
         for row in ty.effects.iter().chain(&ty.produced_effects) {
             validate_metadata_row(row, scope)?;
         }
@@ -115,7 +124,7 @@ fn validate_metadata_type(
     Ok(())
 }
 
-fn validate_metadata_row(
+pub(super) fn validate_metadata_row(
     row: &etas_package_metadata::EffectRow,
     scope: &GenericScope,
 ) -> Result<(), String> {

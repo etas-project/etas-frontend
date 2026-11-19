@@ -80,6 +80,7 @@ where
     projects: HashMap<ProjectSessionId, FrontendProjectState<S>>,
     new_store: Box<dyn Fn() -> Result<S, FrontendSessionError>>,
     std_registry: Arc<etas_std::StdRegistry>,
+    standard_library: Option<Arc<crate::StandardLibrary>>,
     memory_probe: Option<FrontendMemoryProbe>,
 }
 
@@ -100,6 +101,7 @@ impl FrontendSession<MemoryArtifactStore> {
             projects: HashMap::new(),
             new_store: Box::new(|| Ok(MemoryArtifactStore::new())),
             std_registry,
+            standard_library: None,
             memory_probe: None,
         }
     }
@@ -107,6 +109,13 @@ impl FrontendSession<MemoryArtifactStore> {
 
 impl FrontendSession<FrontendSessionStore> {
     pub fn with_options(options: FrontendSessionOptions) -> Result<Self, FrontendSessionError> {
+        Self::with_options_and_std_registry(options, Arc::new(etas_std::standard_registry()))
+    }
+
+    pub fn with_options_and_std_registry(
+        options: FrontendSessionOptions,
+        std_registry: Arc<etas_std::StdRegistry>,
+    ) -> Result<Self, FrontendSessionError> {
         FrontendSessionStore::from_options(&options).map_err(cache_error)?;
         Ok(Self {
             next_project: 0,
@@ -114,7 +123,8 @@ impl FrontendSession<FrontendSessionStore> {
             new_store: Box::new(move || {
                 FrontendSessionStore::from_options(&options).map_err(cache_error)
             }),
-            std_registry: Arc::new(etas_std::standard_registry()),
+            std_registry,
+            standard_library: None,
             memory_probe: None,
         })
     }
@@ -124,12 +134,18 @@ impl<S> FrontendSession<S>
 where
     S: FrontendArtifactStore + 'static,
 {
+    pub fn with_standard_library(mut self, library: Arc<crate::StandardLibrary>) -> Self {
+        self.standard_library = Some(library);
+        self
+    }
+
     pub fn with_store_factory(new_store: fn() -> S) -> Self {
         Self {
             next_project: 0,
             projects: HashMap::new(),
             new_store: Box::new(move || Ok(new_store())),
             std_registry: Arc::new(etas_std::standard_registry()),
+            standard_library: None,
             memory_probe: None,
         }
     }
@@ -152,7 +168,12 @@ where
         self.next_project += 1;
         self.projects.insert(
             id,
-            FrontendProjectState::new(input, store, self.std_registry.clone()),
+            FrontendProjectState::new(
+                input,
+                store,
+                self.std_registry.clone(),
+                self.standard_library.clone(),
+            ),
         );
         id
     }

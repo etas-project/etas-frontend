@@ -43,6 +43,15 @@ impl Parser<'_> {
         if self.cursor.at_punct(Punct::LParen) && self.looks_like_lambda_param_list() {
             let start = self.cursor.peek().span;
             let params = self.param_list();
+            for param in &params {
+                if let Some(default) = &param.default {
+                    self.diagnostics.push(Diagnostic::syntax(
+                        SyntaxDiagnosticCode::InvalidItem,
+                        default.span(),
+                        "anonymous flow parameters cannot have defaults",
+                    ));
+                }
+            }
             self.expect_punct(Punct::FatArrow, "expected `=>` after lambda parameters");
             let body = self.lambda_body();
             let span = start.cover(lambda_body_span(&body));
@@ -340,7 +349,9 @@ impl Parser<'_> {
     }
 
     pub(crate) fn brace_literal_expr(&mut self) -> Expr {
-        if self.looks_like_map_expr_body() {
+        // A named record field fixes the literal's kind before a lambda in its
+        // value can contribute an unrelated `=>` at the same brace depth.
+        if !self.looks_like_record_expr_body() && self.looks_like_map_expr_body() {
             return self.map_expr();
         }
         self.record_expr(None, Vec::new())
@@ -636,7 +647,16 @@ impl Parser<'_> {
         let condition = self.expr_before_block();
         let then_branch = self.block();
         self.expect_keyword(Keyword::Else, "expected `else` in if expression");
-        let else_branch = self.block();
+        let else_branch = if self.cursor.at_keyword(Keyword::If) {
+            let nested = self.with_body_recursion(Expr::Error, Self::if_expr);
+            Block {
+                span: nested.span(),
+                stmts: Vec::new(),
+                final_expr: Some(Box::new(nested)),
+            }
+        } else {
+            self.block()
+        };
         Expr::If(IfExpr {
             span: start.cover(else_branch.span),
             condition: Box::new(condition),
@@ -973,6 +993,13 @@ pub(super) fn unquote_string(text: &str) -> String {
             Some('n') => decoded.push('\n'),
             Some('r') => decoded.push('\r'),
             Some('t') => decoded.push('\t'),
+            Some('u') => match unicode_scalar_escape(chars.as_str()) {
+                Some((scalar, rest)) => {
+                    decoded.push(scalar);
+                    chars = rest.chars();
+                }
+                None => decoded.push_str("\\u"),
+            },
             Some(other) => {
                 decoded.push('\\');
                 decoded.push(other);
@@ -985,6 +1012,10 @@ pub(super) fn unquote_string(text: &str) -> String {
 
 pub(super) fn unquote_char(text: &str) -> Option<char> {
     let inner = text.strip_prefix('\'')?.strip_suffix('\'')?;
+    if let Some(escape) = inner.strip_prefix("\\u") {
+        let (scalar, rest) = unicode_scalar_escape(escape)?;
+        return rest.is_empty().then_some(scalar);
+    }
     match inner {
         "\\n" => Some('\n'),
         "\\r" => Some('\r'),
@@ -997,4 +1028,17 @@ pub(super) fn unquote_char(text: &str) -> Option<char> {
             chars.next().is_none().then_some(value)
         }
     }
+}
+
+fn unicode_scalar_escape(input: &str) -> Option<(char, &str)> {
+    let digits = input.strip_prefix('{')?;
+    let width = digits
+        .bytes()
+        .take(6)
+        .take_while(u8::is_ascii_hexdigit)
+        .count();
+    let (hex, suffix) = digits.split_at(width);
+    let rest = suffix.strip_prefix('}')?;
+    let scalar = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+    Some((scalar, rest))
 }

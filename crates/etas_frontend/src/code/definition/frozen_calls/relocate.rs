@@ -12,6 +12,9 @@ mod methods;
 
 fn unit_parameters(hir: &etas_hir::HirRevision, unit: EffectUnit) -> &[etas_hir::SymbolId] {
     match unit {
+        EffectUnit::ParameterDefault { parameter, .. } => {
+            hir.preceding_parameters(parameter).unwrap_or_default()
+        }
         EffectUnit::Item(item) => match hir.items.get(item) {
             Some(etas_hir::HirItem::Flow(flow)) => &flow.params,
             Some(etas_hir::HirItem::Tool(tool)) => &tool.params,
@@ -43,6 +46,12 @@ fn relocate_handler_scopes(
 }
 
 pub(super) struct Relocation<'a> {
+    pub external_parameter_projections: std::cell::RefCell<
+        BTreeMap<CodeFingerprint, etas_effects::facts::ExternalParameterProjection>,
+    >,
+    pub parameter_projections: std::cell::RefCell<
+        BTreeMap<CodeFingerprint, etas_effects::facts::NativeParameterProjection>,
+    >,
     original: &'a crate::CheckedProgram,
     target: DescriptorInput<'a>,
     target_output: &'a etas_types::TypeOutput,
@@ -126,10 +135,11 @@ impl<'a> Relocation<'a> {
             let scope = projection::owner(id)?;
             let mappings = types.entry(scope).or_default();
             for (ty, declaration) in &from.identities.types {
-                if declaration.standard.is_some() {
-                    let target = standard_targets.get(&declaration.identity).ok_or_else(|| {
-                        invalid("standard summary type has no checked target declaration")
-                    })?;
+                // Unused source-only std instantiations need not be lowered in
+                // the candidate. A referenced, unmapped type still fails in ty().
+                if declaration.standard.is_some()
+                    && let Some(target) = standard_targets.get(&declaration.identity)
+                {
                     mappings.insert(*ty, *target);
                 }
             }
@@ -270,6 +280,8 @@ impl<'a> Relocation<'a> {
             }
         }
         Ok(Self {
+            external_parameter_projections: Default::default(),
+            parameter_projections: Default::default(),
             native_exprs: captured::expression_bindings(original, target, &returned_items, overlay),
             original,
             target,
@@ -487,6 +499,7 @@ impl<'a> Relocation<'a> {
             Choice(usize),
             Parallel(usize),
             TaskStart(etas_hir::HirExprId),
+            DefaultHandler(etas_effects::EffectSet),
             Repeat,
         }
         let mut work = vec![Work::Visit(root)];
@@ -494,6 +507,15 @@ impl<'a> Relocation<'a> {
         while let Some(task) = work.pop() {
             match task {
                 Work::Visit(trace) => match trace {
+                    ActionTraceDomain::DefaultHandler { guards, body } => {
+                        work.push(Work::DefaultHandler(
+                            guards
+                                .iter()
+                                .map(|guard| self.effect(guard, scope))
+                                .collect::<Result<_, _>>()?,
+                        ));
+                        work.push(Work::Visit(body));
+                    }
                     ActionTraceDomain::Empty => values.push(ActionTraceDomain::Empty),
                     ActionTraceDomain::Event(event) => {
                         values.push(ActionTraceDomain::Event(ActionEvent {
@@ -507,7 +529,7 @@ impl<'a> Relocation<'a> {
                         parameter,
                         span,
                     } => values.push(ActionTraceDomain::ParameterCall {
-                        target: self.parameter_target(*target)?,
+                        target: self.parameter_target(*target, Some(scope))?,
                         parameter: parameter.clone(),
                         span: *span,
                     }),
@@ -555,7 +577,7 @@ impl<'a> Relocation<'a> {
                             .iter()
                             .map(|call| {
                                 Ok(etas_effects::infer::domain::ParameterCallRef {
-                                    target: self.parameter_target(call.target)?,
+                                    target: self.parameter_target(call.target, Some(scope))?,
                                     parameter: call.parameter.clone(),
                                     span: call.span,
                                 })
@@ -591,6 +613,15 @@ impl<'a> Relocation<'a> {
                         body: Box::new(body),
                     });
                 }
+                Work::DefaultHandler(guards) => {
+                    let body = values
+                        .pop()
+                        .ok_or_else(|| invalid("frozen default handler trace lost its body"))?;
+                    values.push(ActionTraceDomain::DefaultHandler {
+                        guards,
+                        body: Box::new(body),
+                    });
+                }
             }
         }
         if values.len() != 1 {
@@ -604,8 +635,39 @@ impl<'a> Relocation<'a> {
     fn parameter_target(
         &self,
         target: ParameterCallTarget,
+        scope: Option<&GenericOwner>,
     ) -> Result<ParameterCallTarget, ProjectionError> {
         match target {
+            ParameterCallTarget::ExternalProjection(id) => {
+                let source = self
+                    .original
+                    .effects
+                    .external_parameter_projections
+                    .get(&id)
+                    .ok_or_else(|| {
+                        invalid("frozen external projection has no checked source selector")
+                    })?;
+                let root = self.parameter_target(source.root, scope)?;
+                let projection = etas_effects::facts::ExternalParameterProjection {
+                    root,
+                    path: source.path.clone(),
+                };
+                let key = projection.identity().map_err(|_| {
+                    invalid("frozen external projection identity could not be encoded")
+                })?;
+                self.external_parameter_projections
+                    .borrow_mut()
+                    .insert(key, projection);
+                Ok(ParameterCallTarget::ExternalProjection(key))
+            }
+            ParameterCallTarget::Projection(id) => Ok(ParameterCallTarget::Projection(
+                self.parameter_projection(id)?,
+            )),
+            ParameterCallTarget::AgentTools(context) => {
+                let scope = scope
+                    .ok_or_else(|| invalid("agent tool context has no checked relocation scope"))?;
+                Ok(ParameterCallTarget::AgentTools(self.ty(scope, context)?))
+            }
             ParameterCallTarget::Native(symbol) => self
                 .parameters
                 .get(&symbol)
@@ -740,6 +802,127 @@ impl<'a> Relocation<'a> {
             .collect()
     }
 
+    fn parameter_projection(
+        &self,
+        id: CodeFingerprint,
+    ) -> Result<CodeFingerprint, ProjectionError> {
+        let source = self
+            .original
+            .effects
+            .parameter_projections
+            .get(&id)
+            .ok_or_else(|| invalid("frozen value projection has no checked source contract"))?;
+        let parameter = *self
+            .parameters
+            .get(&source.parameter)
+            .ok_or_else(|| invalid("frozen value projection has no checked target parameter"))?;
+        let Some(etas_hir::SymbolDef::Param { owner, .. }) =
+            self.target.hir.symbols.get(parameter).map(|data| &data.def)
+        else {
+            return Err(invalid(
+                "frozen value projection target is not a source parameter",
+            ));
+        };
+        let Some(etas_types::SymbolTypeFact::Param { ty }) =
+            self.target.types.symbol_types.get(&parameter)
+        else {
+            return Err(invalid(
+                "frozen value projection target has no checked type",
+            ));
+        };
+        let ty = etas_types::value_projection::project(
+            self.target.type_store,
+            self.target.types,
+            *ty,
+            &source.path,
+        )
+        .map_err(|_| invalid("frozen value projection cannot be rebound to the target type"))?
+        .ok_or_else(|| invalid("frozen value projection is absent from the target type"))?;
+        let projection = etas_effects::facts::NativeParameterProjection {
+            owner: *owner,
+            parameter,
+            path: source.path.clone(),
+            ty,
+        };
+        let target = projection
+            .identity()
+            .map_err(|_| invalid("frozen value projection identity could not be encoded"))?;
+        self.parameter_projections
+            .borrow_mut()
+            .insert(target, projection);
+        Ok(target)
+    }
+
+    fn returned_source(
+        &self,
+        source: &CallableReturnSource,
+        scope: &GenericOwner,
+    ) -> Result<CallableReturnSource, ProjectionError> {
+        Ok(match source {
+            CallableReturnSource::Projection(id) => {
+                CallableReturnSource::Projection(self.parameter_projection(*id)?)
+            }
+            CallableReturnSource::Existential { pack, environment } => {
+                CallableReturnSource::Existential {
+                    pack: self.captured_expr(*pack)?,
+                    environment: *environment,
+                }
+            }
+            CallableReturnSource::ExternalFrozen { reflection } => {
+                let target = *self.native_exprs.get(reflection).ok_or_else(|| {
+                    invalid("returned external reflection has no checked target binding")
+                })?;
+                let original = self
+                    .original
+                    .types
+                    .reflections
+                    .get(reflection)
+                    .ok_or_else(|| invalid("returned external reflection has no source fact"))?;
+                let relocated =
+                    self.target.types.reflections.get(&target).ok_or_else(|| {
+                        invalid("returned external reflection has no target fact")
+                    })?;
+                if original.target != relocated.target {
+                    return Err(invalid("returned external reflection target changed"));
+                }
+                CallableReturnSource::ExternalFrozen { reflection: target }
+            }
+            CallableReturnSource::ExternalReference { .. } => {
+                return Err(invalid(
+                    "returned external reference has no checked relocation facts",
+                ));
+            }
+            CallableReturnSource::Captured { unit, environment } => {
+                CallableReturnSource::Captured {
+                    unit: self.captured_unit(*unit)?,
+                    environment: *environment,
+                }
+            }
+            CallableReturnSource::Parameter(symbol) => {
+                CallableReturnSource::Parameter(self.parameters.get(symbol).copied().ok_or_else(
+                    || invalid("frozen returned parameter has no checked target identity"),
+                )?)
+            }
+            CallableReturnSource::SourceItem(item) => CallableReturnSource::SourceItem(
+                *self
+                    .returned_items
+                    .get(item)
+                    .ok_or_else(|| invalid("returned callable has no canonical target binding"))?,
+            ),
+            CallableReturnSource::Reference(reference) => {
+                CallableReturnSource::Reference(self.returned_reference(reference, scope)?)
+            }
+            CallableReturnSource::AnonymousFlow(unit) => CallableReturnSource::AnonymousFlow(
+                *self.returned_anonymous.get(unit).ok_or_else(|| {
+                    invalid(
+                        "frozen anonymous return source has no unchanged canonical body binding",
+                    )
+                })?,
+            ),
+            other => other.clone(),
+        })
+    }
+
     pub fn summary(
         &self,
         source: &EffectSummary,
@@ -771,6 +954,13 @@ impl<'a> Relocation<'a> {
             .as_ref()
             .map(|exits| {
                 Ok::<_, ProjectionError>(CallableExitSummary {
+                    value_projections: exits.value_projections.iter().map(|(path, sources)| {
+                        let sources = match sources {
+                            ProjectedReturnSources::Known(sources) => ProjectedReturnSources::Known(sources.iter().map(|source| self.returned_source(source, scope)).collect::<Result<_, ProjectionError>>()?),
+                            ProjectedReturnSources::Unavailable => ProjectedReturnSources::Unavailable,
+                        };
+                        Ok((path.clone(), sources))
+                    }).collect::<Result<_, ProjectionError>>()?,
                     handler_gaps: exits.handler_gaps.iter().map(|evidence| {
                         Ok(etas_effects::HandlerGapEvidence {
                             source: evidence.source.clone(),
@@ -781,7 +971,7 @@ impl<'a> Relocation<'a> {
                     }).collect::<Result<_, ProjectionError>>()?,
                     parameter_exits: exits.parameter_exits.iter().map(|exit| {
                         Ok(etas_effects::ParameterExitFact {
-                            target: self.parameter_target(exit.target)?,
+                            target: self.parameter_target(exit.target, Some(scope))?,
                             output: self.ty(scope, exit.output)?,
                             source: exit.source.clone(),
                             handler_free: exit.handler_free,
@@ -812,33 +1002,7 @@ impl<'a> Relocation<'a> {
                                                     if let Some(returned) = returned {
                                                         ReturnObservation::CallableSources(returned.clone())
                                                     } else {
-                                                    ReturnObservation::CallableSources(sources.iter().map(|source| {
-                                                        Ok(match source {
-                                                            CallableReturnSource::Existential { pack, environment } => CallableReturnSource::Existential { pack: self.captured_expr(*pack)?, environment: *environment },
-                                                            CallableReturnSource::ExternalFrozen { reflection } => {
-                                                                let target = *self.native_exprs.get(reflection).ok_or_else(|| invalid("returned external reflection has no checked target binding"))?;
-                                                                let original = self.original.types.reflections.get(reflection).ok_or_else(|| invalid("returned external reflection has no source fact"))?;
-                                                                let relocated = self.target.types.reflections.get(&target).ok_or_else(|| invalid("returned external reflection has no target fact"))?;
-                                                                if original.target != relocated.target {
-                                                                    return Err(invalid("returned external reflection target changed"));
-                                                                }
-                                                                CallableReturnSource::ExternalFrozen { reflection: target }
-                                                            },
-                                                            CallableReturnSource::ExternalReference { .. } => return Err(invalid("returned external reference has no checked relocation facts")),
-                                                            CallableReturnSource::Captured { unit, environment } => CallableReturnSource::Captured { unit: self.captured_unit(*unit)?, environment: *environment },
-                                                            CallableReturnSource::Parameter(symbol) => CallableReturnSource::Parameter(
-                                                                self.parameters.get(symbol).copied().ok_or_else(|| invalid("frozen returned parameter has no checked target identity"))?
-                                                            ),
-                                                            CallableReturnSource::SourceItem(item) => CallableReturnSource::SourceItem(
-                                                                *self.returned_items.get(item).ok_or_else(|| invalid("returned callable has no canonical target binding"))?
-                                                            ),
-                                                            CallableReturnSource::Reference(reference) => CallableReturnSource::Reference(self.returned_reference(reference, scope)?),
-                                                            CallableReturnSource::AnonymousFlow(unit) => CallableReturnSource::AnonymousFlow(
-                                                                *self.returned_anonymous.get(unit).ok_or_else(|| invalid("frozen anonymous return source has no unchanged canonical body binding"))?
-                                                            ),
-                                                            other => other.clone(),
-                                                        })
-                                                    }).collect::<Result<_, ProjectionError>>()?)
+                                                    ReturnObservation::CallableSources(sources.iter().map(|source| self.returned_source(source, scope)).collect::<Result<_, ProjectionError>>()?)
                                                     }
                                                 }
                                                 other => other.clone(),
@@ -870,7 +1034,7 @@ impl<'a> Relocation<'a> {
                         exits.gaps.iter().map(|gap| {
                             Ok(match gap {
                                 OutcomeAnalysisGap::ParameterCall { target, output, source } => OutcomeAnalysisGap::ParameterCall {
-                                    target: self.parameter_target(*target)?, output: self.ty(scope, *output)?, source: source.clone(),
+                                    target: self.parameter_target(*target, Some(scope))?, output: self.ty(scope, *output)?, source: source.clone(),
                                 },
                                 OutcomeAnalysisGap::Handler(source) => OutcomeAnalysisGap::Handler(source.clone()),
                                 _ => OutcomeAnalysisGap::FrozenCallee(span.into()),
@@ -881,6 +1045,40 @@ impl<'a> Relocation<'a> {
             })
             .transpose()?;
         Ok(EffectSummary {
+            default_behavior: source
+                .default_behavior
+                .as_ref()
+                .map(|behavior| {
+                    let direct = etas_effects::EffectFootprint::from_summary(&self.summary(
+                        &behavior.direct.clone().into_summary(),
+                        scope,
+                        source_owner,
+                        None,
+                    )?);
+                    let guarded = behavior
+                        .guarded
+                        .iter()
+                        .map(|(guards, footprint)| {
+                            Ok((
+                                guards
+                                    .iter()
+                                    .map(|guard| self.effect(guard, scope))
+                                    .collect::<Result<_, _>>()?,
+                                etas_effects::EffectFootprint::from_summary(&self.summary(
+                                    &footprint.clone().into_summary(),
+                                    scope,
+                                    source_owner,
+                                    None,
+                                )?),
+                            ))
+                        })
+                        .collect::<Result<_, ProjectionError>>()?;
+                    Ok::<_, ProjectionError>(Box::new(etas_effects::DefaultBehavior {
+                        direct,
+                        guarded,
+                    }))
+                })
+                .transpose()?,
             handler_requests: match &source.handler_requests {
                 RequestInstantiationSummary::Unavailable => {
                     RequestInstantiationSummary::Unavailable
@@ -929,7 +1127,7 @@ impl<'a> Relocation<'a> {
                         .iter()
                         .map(|parameter| {
                             Ok(ParameterRequest {
-                                target: self.parameter_target(parameter.target)?,
+                                target: self.parameter_target(parameter.target, Some(scope))?,
                                 parameter: parameter.parameter.clone(),
                                 span: parameter.span,
                                 excluded: parameter

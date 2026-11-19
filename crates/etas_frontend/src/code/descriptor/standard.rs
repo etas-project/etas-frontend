@@ -84,6 +84,7 @@ impl DefinitionDescriptorProjector<'_> {
                     .into_iter()
                     .map(|ty| {
                         Ok(ParameterInfo {
+                            default: None,
                             name: None,
                             ty: self.standard_ref(ty, scope, module)?,
                         })
@@ -103,6 +104,32 @@ impl DefinitionDescriptorProjector<'_> {
                 let output = self.standard_ref(*output, scope, module)?;
                 let effects = self.project_standard_row(effects, scope, module)?;
                 return Ok(TypeInfo::Task { output, effects });
+            }
+            StdType::Handler {
+                handled,
+                produced,
+                result,
+            } => {
+                return Ok(TypeInfo::Handler {
+                    handled: self.project_standard_row(handled, scope, module)?,
+                    produced: produced
+                        .map(|row| self.project_standard_row(row, scope, module))
+                        .transpose()?,
+                    result: result
+                        .map(|ty| self.standard_ref(*ty, scope, module))
+                        .transpose()?,
+                });
+            }
+            StdType::Existential { bounds } => {
+                let mut bounds = self.project_bounds(
+                    bounds
+                        .into_iter()
+                        .map(crate::code::identity::BoundDeclaration::Standard)
+                        .collect(),
+                    scope,
+                )?;
+                bounds.sort_by(|left, right| left.definition.cmp(&right.definition));
+                return Ok(TypeInfo::Existential { bounds });
             }
             StdType::NamedApplied { name, args } => {
                 let declaration = self.standard_declaration(&name, module)?;
@@ -214,14 +241,7 @@ impl DefinitionDescriptorProjector<'_> {
                     etas_std::StdStaticArg::Path(path) => {
                         match self.identities.callable_path(&path)? {
                             Some(id) => StaticEffectArgInfo::Callable(id.clone()),
-                            None => StaticEffectArgInfo::Resource(
-                                self.identities
-                                    .path(&path)
-                                    .ok_or_else(|| {
-                                        ProjectionError::MissingIdentity(path.join("."))
-                                    })?
-                                    .clone(),
-                            ),
+                            None => self.identities.resource_path(&self.checked, &path)?,
                         }
                     }
                     etas_std::StdStaticArg::String(text) => {
@@ -251,6 +271,20 @@ impl DefinitionDescriptorProjector<'_> {
         scope: usize,
     ) -> Result<TypeInfo, ProjectionError> {
         let parameters = self.scopes[scope].own_binders.clone();
+        if declaration.kind == TypeDeclKind::Primitive
+            && let etas_std::StdType::Primitive(primitive) =
+                etas_std::StdType::parse(&declaration.name)
+        {
+            return Ok(TypeInfo::Alias {
+                definition: identity.clone(),
+                parameters,
+                target: self.standard_ref(
+                    StdType::Primitive(primitive),
+                    scope,
+                    identity.module(),
+                )?,
+            });
+        }
         if declaration.kind == TypeDeclKind::Enum {
             let mut path = identity.module().to_vec();
             path.extend_from_slice(identity.declaration());
@@ -283,7 +317,17 @@ impl DefinitionDescriptorProjector<'_> {
                     .into_iter()
                     .map(|ty| self.standard_ref(ty, scope, identity.module()))
                     .collect::<Result<Vec<_>, _>>()?;
-                let payload = if types.is_empty() {
+                let names = self.checked.std_registry.enum_field_names(constructor.id);
+                let payload = if let Some(names) = names {
+                    VariantPayloadInfo::Named(
+                        names
+                            .iter()
+                            .cloned()
+                            .zip(types)
+                            .map(|(name, ty)| etas_code::descriptor::FieldInfo { name, ty })
+                            .collect(),
+                    )
+                } else if types.is_empty() {
                     VariantPayloadInfo::None
                 } else {
                     VariantPayloadInfo::Positional(types)
@@ -319,7 +363,7 @@ impl DefinitionDescriptorProjector<'_> {
     }
 }
 
-fn primitive_info(primitive: etas_std::StdPrimitiveType) -> PrimitiveInfo {
+pub(crate) fn primitive_info(primitive: etas_std::StdPrimitiveType) -> PrimitiveInfo {
     use etas_std::StdPrimitiveType as P;
     match primitive {
         P::Unit => PrimitiveInfo::Unit,

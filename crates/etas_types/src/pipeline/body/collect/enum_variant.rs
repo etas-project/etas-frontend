@@ -18,9 +18,10 @@ pub(super) fn declaration<E>(
         ctx.ctx.interner.store(),
         symbol,
         ctx.ctx.symbol_type(symbol.id)?,
+        ctx.ctx.known_std_types(),
     )?;
     let variant = ctx.ctx.enum_layout(owner)?.variants.get(variant_index)?;
-    (variant.name == symbol.name).then(|| variant.clone())
+    (variant.name == crate::facts::enums::constructor_name(symbol)).then(|| variant.clone())
 }
 
 pub(super) fn signature<E>(
@@ -87,10 +88,12 @@ fn emit_constructor<E>(
             effects: signature.effects,
         }));
     ctx.emit(TypeConstraint::Callable {
+        argument_slots: None,
         call: None,
         callee,
         generic_params: signature.generic_params,
         generic_args: Vec::new(),
+        selector_bindings: Vec::new(),
         arg_exprs: Vec::new(),
         args,
         output: signature.output,

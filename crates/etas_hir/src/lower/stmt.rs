@@ -107,6 +107,20 @@ impl LowerCtx {
         if let Stmt::For(stmt) = stmt {
             let id = self.hir.stmts.alloc(HirStmt::Error { span: stmt.span });
             let iter = self.lower_expr(&stmt.iter, scope, item_id);
+            let iter = if self.hir.source_standard_types {
+                self.alloc_expr(
+                    HirExpr::MethodCall {
+                        receiver: iter,
+                        method: "iter".to_owned(),
+                        generic_args: Vec::new(),
+                        args: Vec::new(),
+                        span: stmt.iter.span(),
+                    },
+                    stmt.iter.span(),
+                )
+            } else {
+                iter
+            };
             let limits = stmt
                 .limits
                 .iter()

@@ -8,19 +8,34 @@ module api;
 public spec Encoder {
     flow encode(self) -> i32;
     flow encode_with(self, amount: i32) -> i32;
+    flow update(var self, amount: i32) -> unit ![];
 }
 public flow encode<T ~ Encoder>(value: T) -> i32 { return value::Encoder.encode(); }
 public flow captured<T ~ Encoder>(value: T) -> (() -> i32 ![]) ![] {
     return () => value::Encoder.encode();
 }
+public flow choose(value: i32) -> i32 ![] { return value; }
+public flow choose(first: i32, second: i32) -> i32 ![] { return first + second; }
 flow main() -> unit { return; }
 "#,
     )));
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let checked = output.checked.expect("checked producer");
+    let update = checked
+        .types
+        .methods
+        .entries()
+        .find(|method| method.name == "update")
+        .unwrap();
+    assert_eq!(
+        update.receiver,
+        etas_types::method::MethodReceiver::Updating { slot: 0 }
+    );
     let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
         etas_frontend::PackageMetadataBuildInput {
-            definition_origin: None,
+            definition_origin: Some(etas_code::PackageKey::from_canonical_fingerprint(
+                etas_code::CodeFingerprint::of_bytes("spec-evidence-producer", b"source"),
+            )),
             package_id: "spec-evidence-producer".into(), package_version: "0.1.0".into(),
             package_edition: "2026".into(), compiler_version: etas_frontend::FRONTEND_COMPILER_VERSION.into(),
             source_payload_hash: "blake3:source".into(), manifest_hash: "blake3:manifest".into(),
@@ -32,19 +47,50 @@ flow main() -> unit { return; }
         &artifact.bytes,
     )
     .expect("binary evidence replay");
+    let overloads = metadata
+        .public_metadata
+        .flows
+        .iter()
+        .filter(|flow| flow.path == ["api", "choose"])
+        .collect::<Vec<_>>();
+    assert_eq!(overloads.len(), 2);
+    for flow in overloads {
+        let definition = flow
+            .definition
+            .as_ref()
+            .expect("canonical overload identity");
+        assert_eq!(
+            metadata
+                .public_metadata
+                .effect_summaries
+                .iter()
+                .filter(|summary| {
+                    summary.item == flow.path && summary.definition.as_ref() == Some(definition)
+                })
+                .count(),
+            1,
+            "every overload must publish its own checked effect contract"
+        );
+    }
     let declaration = &metadata.public_metadata.spec_signatures[0];
+    let update = declaration
+        .methods
+        .iter()
+        .find(|method| method.name == "update")
+        .unwrap();
+    assert!(update.updating_receiver);
+    assert_eq!(update.receiver_param, Some(0));
     for (name, parameters) in [
         ("encode", vec!["self"]),
         ("encode_with", vec!["self", "amount"]),
     ] {
-        let signature = declaration
+        let method = declaration
             .methods
             .iter()
             .find(|method| method.name == name)
-            .unwrap()
-            .signature
-            .as_ref()
             .unwrap();
+        assert!(!method.updating_receiver);
+        let signature = method.signature.as_ref().unwrap();
         assert_eq!(signature.param_names, parameters);
     }
     let summary = metadata
@@ -75,6 +121,7 @@ flow main() -> unit { return; }
         method.callable_arguments[0].sources.sources,
         [etas_package_metadata::CallableValueSource::Parameter(
             etas_package_metadata::CallableValueParameter {
+                projection: None,
                 scope: etas_package_metadata::CallableValueScope::Root,
                 position: 0,
             },
@@ -104,6 +151,7 @@ flow main() -> unit { return; }
                 .iter()
                 .any(|binding| binding.parameter
                     == etas_package_metadata::CallableValueParameter {
+                        projection: None,
                         scope: etas_package_metadata::CallableValueScope::Root,
                         position: 0,
                     })),

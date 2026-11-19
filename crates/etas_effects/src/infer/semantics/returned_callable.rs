@@ -15,6 +15,25 @@ impl EffectSemantics<'_> {
         let mut sources = BTreeSet::new();
         for source in returned {
             let parameter = match source {
+                crate::CallableReturnSource::Projection(id) => {
+                    let binding = self.trace_argument(
+                        crate::ParameterCallTarget::Projection(*id),
+                        "returned value projection",
+                        bindings,
+                        state,
+                    )?;
+                    if let Some(binding) = binding {
+                        sources.extend(self.trace_argument_origins_at(
+                            &binding,
+                            state,
+                            application,
+                        )?);
+                    } else {
+                        sources.insert(LatentSource::Projection(*id));
+                    }
+                    continue;
+                }
+
                 crate::CallableReturnSource::MetadataObject(source) => {
                     let mut source = *source;
                     if let Some(environment) = source.environment {
@@ -198,7 +217,7 @@ impl EffectSemantics<'_> {
                     continue;
                 }
             };
-            sources.extend(self.trace_argument_origins(argument, state)?);
+            sources.extend(self.trace_argument_origins_at(argument, state, application)?);
         }
         Ok(sources.into_iter().collect())
     }
@@ -211,12 +230,16 @@ impl EffectSemantics<'_> {
         state: &mut EffectState,
         environment: Option<crate::facts::CallableEnvironmentId>,
     ) -> Result<bool, EffectSpecializationError> {
+        if !self.expr_type_contains_flow(site.call) && !self.expr_type_has_parameters(site.call) {
+            return Ok(false);
+        }
         let Some(exits) = &summary.exits else {
             return Ok(false);
         };
-        let Some(parameters) = exits.callable_return_sources() else {
+        let parameters = exits.callable_return_sources();
+        if parameters.is_none() && exits.value_projections.is_empty() {
             return Ok(false);
-        };
+        }
         let params = self
             .invocation_params(callee, environment)?
             .ok_or(EffectSpecializationError::InvalidCallableReturnSources)?;
@@ -229,10 +252,90 @@ impl EffectSemantics<'_> {
             .transpose()?
             .unwrap_or_default();
         bindings.extend(self.call_trace_bindings(site, &targets)?);
-        let sources =
-            self.returned_callable_bindings(&parameters, &bindings, state, site.call, environment)?;
-        self.record_callable_result_sources(site.call, sources, state)?;
-        Ok(true)
+        let mut paths = exits
+            .value_projections
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Some(ty) = self.types.facts.expr_types.get(&site.call)
+            && let Some(actual_paths) = self.value_payload_paths(*ty)
+        {
+            paths.extend(actual_paths);
+        }
+        for path in paths {
+            let selected = exits
+                .value_projections
+                .iter()
+                .filter(|(prefix, _)| path.starts_with(prefix))
+                .max_by_key(|(prefix, _)| prefix.len());
+            let found = match selected {
+                Some((prefix, crate::ProjectedReturnSources::Known(returned))) => self
+                    .projected_return_bindings(
+                        returned,
+                        &path[prefix.len()..],
+                        &bindings,
+                        state,
+                        site.call,
+                        environment,
+                    ),
+                Some((_, crate::ProjectedReturnSources::Unavailable)) => None,
+                None => parameters.as_ref().and_then(|returned| {
+                    self.projected_return_bindings(
+                        returned,
+                        &path,
+                        &bindings,
+                        state,
+                        site.call,
+                        environment,
+                    )
+                }),
+            };
+            let sources = found
+                .unwrap_or_else(|| [LatentSource::Unavailable { expr: site.call }].into())
+                .into_iter()
+                .collect::<Vec<_>>();
+            let key = (site.call, path.clone());
+            state
+                .local_latent_values
+                .value_projections
+                .entry(key.clone())
+                .or_default()
+                .extend(sources.iter().copied());
+            if !sources
+                .iter()
+                .any(|source| matches!(source, LatentSource::Unavailable { .. }))
+            {
+                self.discovered_call_results
+                    .borrow_mut()
+                    .value_projections
+                    .entry(key)
+                    .or_default()
+                    .extend(sources);
+            }
+        }
+        let projected_nodes = self
+            .discovered_call_results
+            .borrow()
+            .value_projections
+            .iter()
+            .map(|((_, path), sources)| 1 + path.len() + sources.len())
+            .sum::<usize>();
+        if projected_nodes > etas_package_metadata::MAX_METADATA_GRAPH_NODES {
+            return Err(EffectSpecializationError::InvalidCallableReturnSources);
+        }
+        if let Some(parameters) = parameters {
+            let sources = self.returned_callable_bindings(
+                &parameters,
+                &bindings,
+                state,
+                site.call,
+                environment,
+            )?;
+            self.record_callable_result_sources(site.call, sources, state)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     pub(super) fn record_callable_result_sources(

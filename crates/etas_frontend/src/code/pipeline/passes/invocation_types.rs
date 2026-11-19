@@ -147,6 +147,8 @@ fn materialize(
             store: Arc::new(interner.into_store()),
             plan: target.native_instantiations.clone(),
             method_bodies: Default::default(),
+            foreign_methods: Vec::new(),
+            foreign_flows: Vec::new(),
         });
     }
     let source_catalog = DefinitionCatalog::build(

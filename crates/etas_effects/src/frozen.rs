@@ -30,6 +30,14 @@ impl FrozenCallableSummary {
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize)]
 pub struct FrozenCallableEnvironment {
+    pub external_parameter_projections: std::collections::BTreeMap<
+        etas_code::CodeFingerprint,
+        crate::facts::ExternalParameterProjection,
+    >,
+    pub parameter_projections: std::collections::BTreeMap<
+        etas_code::CodeFingerprint,
+        crate::facts::NativeParameterProjection,
+    >,
     pub method_evidence: std::collections::BTreeMap<
         etas_code::CodeFingerprint,
         std::sync::Arc<crate::facts::MetadataSpecMethodDefinition>,

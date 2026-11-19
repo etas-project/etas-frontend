@@ -16,13 +16,10 @@ pub(super) fn project(
     type_names: &BTreeSet<String>,
     effect_names: &BTreeSet<String>,
     labels: &BTreeMap<etas_effects::ParameterCallTarget, String>,
-    requirements_published: bool,
 ) -> Result<Option<ProjectedSummary>, PackageMetadataError> {
-    if !summary.residual_checks.is_empty()
-        || (!requirements_published
-            && (summary.requirements.iter().next().is_some()
-                || summary.trace_spec_obligations.iter().next().is_some()))
-    {
+    // The canonical default-behavior footprint publishes each node's execution
+    // requirements, including nested returned closures and named helpers.
+    if !summary.residual_checks.is_empty() {
         return Ok(None);
     }
     let Some(behavior) = behavior(summary) else {
@@ -51,6 +48,12 @@ pub(super) fn project(
             effect_names,
         )?,
         default_handler_effects: etas_package_metadata::DefaultHandlerEffects {
+            behavior: projection.default_behavior_metadata(
+                summary,
+                type_names,
+                effect_names,
+                labels,
+            )?,
             direct_effects: projection.effect_row_metadata(
                 summary.direct_escaping_effects(),
                 type_names,
@@ -65,6 +68,7 @@ pub(super) fn project(
                 .default_handler_effects
                 .iter()
                 .flat_map(|effects| &effects.handlers)
+                .filter(|handler| summary.default_actions.effects.contains(&handler.action))
                 .map(|handler| {
                     Ok(etas_package_metadata::DefaultHandlerContribution {
                         action: projection

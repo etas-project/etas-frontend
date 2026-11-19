@@ -57,10 +57,14 @@ pub struct DefinitionCatalog {
     pub(super) callable_bindings: HashMap<SymbolId, CallableId>,
     pub(super) agent_bindings: HashMap<SymbolId, DefinitionKey>,
     pub(super) selected_bindings: HashMap<(SymbolId, DefinitionKey), CallableId>,
+    pub(super) parameter_defaults: BTreeMap<
+        etas_code::descriptor::ParameterDefaultInfo,
+        crate::code::parameter_defaults::ParameterDefaultUnit,
+    >,
 }
 
 impl DefinitionCatalog {
-    pub(crate) fn exported_descriptors(
+    pub fn exported_descriptors(
         checked: CheckedProgram,
         origins: &DefinitionOrigins,
         identities: DefinitionIdentityIndex,
@@ -71,6 +75,22 @@ impl DefinitionCatalog {
     }
     pub fn checked_program(&self) -> &crate::CheckedProgram {
         &self.checked
+    }
+    pub fn parameter_default(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Option<&crate::code::parameter_defaults::ParameterDefaultUnit> {
+        self.parameter_defaults.get(reference)
+    }
+    pub fn parameter_defaults(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &etas_code::descriptor::ParameterDefaultInfo,
+            &crate::code::parameter_defaults::ParameterDefaultUnit,
+        ),
+    > {
+        self.parameter_defaults.iter()
     }
     pub(crate) fn identity_index(&self) -> &DefinitionIdentityIndex {
         &self.identities
@@ -214,7 +234,7 @@ impl DefinitionCatalog {
         self.freeze_contract(contract, item, None)
     }
 
-    fn freeze_contract(
+    pub(super) fn freeze_contract(
         &self,
         contract: Arc<super::FrozenDefinitionContract>,
         declaration: HirItemId,
@@ -228,6 +248,7 @@ impl DefinitionCatalog {
                 })
             })
             .transpose()?;
+        let body = body.filter(|item| !self.is_declared_primitive(*item));
         let callable_owners = contract
             .callables()
             .map(|(id, _)| {
@@ -239,6 +260,7 @@ impl DefinitionCatalog {
             .collect::<Result<std::collections::BTreeMap<_, _>, ProjectionError>>()?;
         let callable_slots = callable_owners
             .iter()
+            .filter(|(_, item)| !self.is_declared_primitive(**item))
             .map(|(id, item)| {
                 let slot = self
                     .checked
@@ -432,6 +454,48 @@ impl DefinitionCatalog {
 
     pub fn native_type_origins(&self) -> &[crate::code::descriptor::NativeTypeOrigin] {
         &self.type_origins
+    }
+
+    /// Only unambiguous checked binders have an identity outside their scope.
+    /// Legacy anonymous templates may reuse one TypeId across declarations.
+    pub(crate) fn native_type_parameters(
+        &self,
+    ) -> BTreeMap<etas_types::TypeId, etas_types::ty::CanonicalTypeParameterIdentity> {
+        use etas_code::descriptor::TypeInfo;
+        use etas_types::ty::CanonicalTypeParameterIdentity;
+        let mut parameters =
+            BTreeMap::<etas_types::TypeId, Option<CanonicalTypeParameterIdentity>>::new();
+        for origin in &self.type_origins {
+            let TypeInfo::Parameter(reference) =
+                &self.graph.data().types[origin.descriptor.0 as usize]
+            else {
+                continue;
+            };
+            let parameter = &self.graph.data().binders[reference.0 as usize];
+            let Ok(identity) = CanonicalTypeParameterIdentity::new_scoped(
+                parameter.owner.clone(),
+                parameter.position,
+            ) else {
+                continue;
+            };
+            parameters
+                .entry(origin.local)
+                .and_modify(|previous| {
+                    if previous.as_ref() != Some(&identity) {
+                        *previous = None;
+                    }
+                })
+                .or_insert(Some(identity));
+        }
+        for (ty, _) in self.checked.type_store.iter() {
+            if let Some(identity) = self.checked.type_store.parameter_identity(ty) {
+                parameters.insert(ty, Some(identity.clone()));
+            }
+        }
+        parameters
+            .into_iter()
+            .filter_map(|(ty, identity)| identity.map(|identity| (ty, identity)))
+            .collect()
     }
 
     pub fn native_type_declarations(
@@ -876,6 +940,27 @@ impl DefinitionCatalog {
             )
             .map(|identity| identity.content())
             .map_err(ProjectionError::Syntax)
+    }
+
+    pub(super) fn is_declared_host_tool(&self, item: HirItemId) -> bool {
+        matches!(self.checked.items.get(item), Some(etas_hir::HirItem::Tool(tool)) if matches!(tool.body, etas_hir::HirToolBody::Decl { .. }))
+    }
+
+    pub(super) fn declared_execution_role(
+        &self,
+        item: HirItemId,
+    ) -> Option<etas_std::StdExecutionRole> {
+        match self.checked.items.get(item) {
+            Some(etas_hir::HirItem::Flow(flow)) => match flow.body {
+                etas_hir::HirFlowBody::Runtime { role, .. } => Some(role),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn is_declared_primitive(&self, item: HirItemId) -> bool {
+        self.is_declared_host_tool(item) || self.declared_execution_role(item).is_some()
     }
 
     pub(super) fn add_selected_views(&mut self) -> Result<(), ProjectionError> {

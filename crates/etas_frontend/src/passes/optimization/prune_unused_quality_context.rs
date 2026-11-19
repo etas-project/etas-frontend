@@ -51,6 +51,7 @@ impl Pass<ProjectContext> for PruneUnusedQualityContextPass {
         if !removals.is_empty() {
             super::facts::invalidate_replaced_expressions(
                 context,
+                &output.hir,
                 removals
                     .values()
                     .flat_map(|removal| removal.expressions.iter().copied()),

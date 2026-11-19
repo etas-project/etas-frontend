@@ -74,8 +74,8 @@ impl LowerCtx {
                             name: field.name.text.clone(),
                             kind: SymbolKind::Field,
                             visibility: match field.visibility {
-                                Some(ast::Visibility::Public) => crate::HirVisibility::Public,
-                                _ => crate::HirVisibility::Private,
+                                Some(ast::Visibility::Private) => crate::HirVisibility::Private,
+                                _ => crate::HirVisibility::Public,
                             },
                             defining_module: self.current_module,
                             defining_item: Some(item_id),
@@ -90,12 +90,16 @@ impl LowerCtx {
                         HirFieldDecl {
                             symbol,
                             ty,
-                            visibility: field.visibility.unwrap_or(ast::Visibility::Private),
+                            visibility: field.visibility.unwrap_or(ast::Visibility::Public),
                             span: field.span,
                         }
                     })
                     .collect(),
                 span: record.span,
+            },
+            TypeExpr::Array { element, span } => HirType::Array {
+                element: self.lower_type(element, scope, item_id),
+                span: *span,
             },
             TypeExpr::Tuple { elems, span } => HirType::Tuple {
                 elems: elems

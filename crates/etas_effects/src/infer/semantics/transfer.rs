@@ -87,6 +87,8 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     }
 
     fn before_expr(&mut self, expr: HirExprId, state: Self::Domain) -> Self::Domain {
+        self.inputs.source_call_arguments.remove(&expr);
+        self.inputs.dynamic_call_sources.remove(&expr);
         if let Some(unit) = state.unit {
             self.call_completion_exits.remove(&(unit, expr));
         }
@@ -102,9 +104,12 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
     ) -> Self::Domain {
         match self.latent_sources_for_expr(&state, scrutinee) {
             Some(sources) => {
-                if let Err(reason) =
-                    self.record_latent_sources_for_pat(&mut state, pattern, sources)
-                {
+                if let Err(reason) = self.record_latent_sources_for_pat(
+                    &mut state,
+                    pattern,
+                    sources,
+                    Some(scrutinee),
+                ) {
                     let span = self.hir.exprs[expr].span(&self.hir.blocks);
                     return self.incomplete_at(span, reason, state);
                 }
@@ -136,7 +141,8 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                     state,
                 );
             };
-            let Some((invocation, summary)) = self.agent_infer_summary(fact, action, span) else {
+            let Some((invocation, summary)) = self.agent_infer_summary(expr, fact, action, span)
+            else {
                 return self.incomplete_at(
                     span,
                     "agent inference requires its canonical action descriptor and solved model-tool summaries",
@@ -248,12 +254,47 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         pattern: HirPatId,
         mut state: Self::Domain,
     ) -> Self::Domain {
+        use etas_code::descriptor::ValueProjectionStep as Step;
         let span = self.hir.exprs[iterable].span(&self.hir.blocks);
-        match self.latent_sources_for_expr(&state, iterable) {
+        let cursor = self.types.facts.expr_types.get(&iterable).and_then(|ty| {
+            etas_types::source_iteration::checked_cursor_indexed(
+                &self.types.store,
+                &self.types.facts,
+                self.type_lookup(),
+                *ty,
+            )
+            .ok()
+            .flatten()
+        });
+        if cursor.is_some() {
+            let next = self.projected_sources(iterable, &[Step::Field("next".into())], &state);
+            if let Some(next) = &next {
+                self.inputs
+                    .iteration_call_sources
+                    .insert(iterable, next.clone());
+            }
+            let next = next.unwrap_or_default().into_iter().collect::<Vec<_>>();
+            if let Err(reason) =
+                self.record_iteration_pattern_sources(pattern, &next, iterable, &mut state)
+            {
+                return self.incomplete_at(span, reason, state);
+            }
+            return state;
+        }
+        let sources = self
+            .projected_sources(iterable, &[Step::SequenceElement], &state)
+            .or_else(|| {
+                self.latent_sources_for_expr(&state, iterable)
+                    .map(|sources| sources.into_iter().collect())
+            });
+        match sources {
             Some(sources) => {
-                if let Err(reason) =
-                    self.record_latent_sources_for_pat(&mut state, pattern, sources)
-                {
+                if let Err(reason) = self.record_latent_sources_for_pat(
+                    &mut state,
+                    pattern,
+                    sources.into_iter().collect(),
+                    None,
+                ) {
                     return self.incomplete_at(span, reason, state);
                 }
             }
@@ -269,12 +310,9 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
-    fn begin_handler_arm(
-        &mut self,
-        _arm: HirHandlerArmId,
-        mut state: Self::Domain,
-    ) -> Self::Domain {
+    fn begin_handler_arm(&mut self, arm: HirHandlerArmId, mut state: Self::Domain) -> Self::Domain {
         state.handler_depth += 1;
+        self.bind_inference_decoder(arm, &mut state);
         state
     }
 
@@ -289,17 +327,31 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 span,
             } if self.is_typed_flow_expr(target)
                 || self.expr_type_contains_flow(target)
+                || self.expr_type_has_parameters(target)
                 || self.symbolic_contract_expr(&state, value) =>
             {
                 if let Err(message) = self.record_callable_assignment(&mut state, target, value) {
                     state = self.incomplete_at(span, message, state);
                 }
             }
-            HirStmt::For { .. } => {
+            HirStmt::For { limits, span, .. } => {
                 state
                     .exits
                     .gaps
                     .insert(crate::OutcomeAnalysisGap::Loop(stmt));
+                for limit in limits {
+                    let Some(requirement) = self.loop_limit_requirement_from_expr(limit) else {
+                        return self.incomplete_at(
+                            span,
+                            "for-loop limit requires a checked standard limit constructor",
+                            state,
+                        );
+                    };
+                    state
+                        .summary
+                        .requirements
+                        .insert(RequirementFact::Limit(requirement));
+                }
             }
             HirStmt::Let { pat, value, .. } | HirStmt::Var { pat, value, .. } => {
                 if self.flow_container_missing_latent_sources(&state, value) {
@@ -312,7 +364,7 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 }
                 if let Some(sources) = self.latent_sources_for_expr(&state, value) {
                     if let Err(reason) =
-                        self.record_latent_sources_for_pat(&mut state, pat, sources)
+                        self.record_latent_sources_for_pat(&mut state, pat, sources, Some(value))
                     {
                         let span = self.hir.exprs[value].span(&self.hir.blocks);
                         state = self.incomplete_at(span, reason, state);
@@ -359,7 +411,13 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
                 }
                 let mut parsed = RequirementSet::new();
                 for limit in limits {
-                    let Some(requirement) = self.limit_requirement_from_expr(limit) else {
+                    let requirement =
+                        if matches!(self.hir.stmts.get(stmt), Some(HirStmt::While { .. })) {
+                            self.loop_limit_requirement_from_expr(limit)
+                        } else {
+                            self.limit_requirement_from_expr(limit)
+                        };
+                    let Some(requirement) = requirement else {
                         self.diagnostics.push(Diagnostic::effect_check(
                             EffectDiagnosticCode::MissingOrInvalidLimit,
                             span,
@@ -439,7 +497,10 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         match self.spec_method_call_evidence(expr, &state) {
             Ok(super::spec_methods::MethodEvidence::Resolved(
                 source @ LatentSource::Metadata(_),
-            )) => match self.latent_source_summary(source, span) {
+            )) => match self
+                .latent_source_summary(source, span)
+                .and_then(|summary| self.specialize_source_memory_method(expr, summary))
+            {
                 Ok(summary) => {
                     if let LatentSource::Metadata(source) = source {
                         if let Err(error) =
@@ -813,6 +874,7 @@ impl EffectSemantics<'_> {
                     | Type::MemoryPlace(_)
                     | Type::ResourceHandle(_),
                 )
+                | Some(Type::AgentContext(_))
                 | None => return false,
             }
         }

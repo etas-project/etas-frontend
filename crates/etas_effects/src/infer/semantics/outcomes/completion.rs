@@ -220,6 +220,9 @@ impl EffectSemantics<'_> {
     }
 
     fn checked_limit_constructor(&self, expr: HirExprId) -> bool {
+        if self.limit_requirement_from_expr(expr).is_some() {
+            return true;
+        }
         let Some(HirExpr::Call {
             callee,
             generic_args,

@@ -25,6 +25,11 @@ pub fn apply(ctx: &mut TypePipelineContext<'_>, input: &crate::api::ReflectionSi
         }
     }
     for (path, identity) in &input.declarations {
+        // An alias owns a declaration, not a second nominal identity for its
+        // target. The target's declaration binds that checked type.
+        if ctx.external_type_aliases.contains_key(path) {
+            continue;
+        }
         if !matches!(
             identity.kind(),
             etas_code::DefinitionKind::Type | etas_code::DefinitionKind::Agent

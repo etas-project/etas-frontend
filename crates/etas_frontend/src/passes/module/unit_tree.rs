@@ -115,8 +115,33 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                         .push(item_unit);
                     by_target.insert(UnitTarget::AstItem(item.clone()), item_unit);
 
+                    let ast = &context
+                        .parsed_sources
+                        .iter()
+                        .find(|parsed| parsed.source == item.source)
+                        .expect("module item has parsed source")
+                        .parse
+                        .value
+                        .items[item.index]
+                        .item;
+                    let has_body = match ast {
+                        etas_syntax::ast::Item::Flow(flow) => {
+                            !matches!(flow.body, etas_syntax::ast::FlowBody::Decl { .. }) || flow.params.iter().any(|param| param.default.is_some())
+                        }
+                        etas_syntax::ast::Item::Agent(agent) => {
+                            matches!(agent.body, etas_syntax::ast::AgentBody::Source(_)) || agent.params.iter().any(|param| param.default.is_some())
+                        }
+                        etas_syntax::ast::Item::Tool(tool) => {
+                            matches!(tool.body, etas_syntax::ast::ToolBody::Source(_)) || tool.params.iter().any(|param| param.default.is_some())
+                        }
+                        etas_syntax::ast::Item::Effect(effect) => effect.body.actions().iter().any(|action| action.params.iter().any(|param| param.default.is_some())),
+                        etas_syntax::ast::Item::Spec(spec) => spec.items.iter().any(|member| matches!(member, etas_syntax::ast::SpecItem::FlowSignature(signature) if signature.params.iter().any(|param| param.default.is_some()))),
+                        etas_syntax::ast::Item::Impl(decl) => decl.items.iter().any(|member| matches!(member,
+                            etas_syntax::ast::ImplItem::Action(action) if action.params.iter().any(|param| param.default.is_some()))),
+                        _ => false,
+                    };
                     let mut bodies = Vec::new();
-                    if item_has_body(item.kind) {
+                    if has_body {
                         let body = AstBodyRef {
                             source: item.source,
                             item: item.clone(),
@@ -124,7 +149,8 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                             span: item.span,
                         };
                         bodies.push(body);
-                    } else if item.kind == AstItemKind::Impl {
+                    }
+                    if item.kind == AstItemKind::Impl {
                         let Some(parsed) = context
                             .parsed_sources
                             .iter()
@@ -143,6 +169,11 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
                         };
                         for (index, member) in decl.items.iter().enumerate() {
                             if let etas_syntax::ast::ImplItem::Flow(flow) = member {
+                                if matches!(flow.body, etas_syntax::ast::FlowBody::Decl { .. })
+                                    && flow.params.iter().all(|param| param.default.is_none())
+                                {
+                                    continue;
+                                }
                                 bodies.push(AstBodyRef {
                                     source: item.source,
                                     item: item.clone(),
@@ -180,11 +211,4 @@ impl Pass<ProjectContext> for BuildUnitTreePass {
         }));
         PassResult::changed(PreservedArtifacts::All, ArtifactSet::one(UNIT_TREE))
     }
-}
-
-fn item_has_body(kind: AstItemKind) -> bool {
-    matches!(
-        kind,
-        AstItemKind::Flow | AstItemKind::Agent | AstItemKind::Tool
-    )
 }

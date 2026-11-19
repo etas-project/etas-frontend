@@ -23,6 +23,10 @@ pub enum TypeExpr {
         span: Span,
     },
     Record(RecordType),
+    Array {
+        element: Box<TypeExpr>,
+        span: Span,
+    },
     Tuple {
         elems: Vec<TypeExpr>,
         span: Span,
@@ -43,6 +47,7 @@ impl TypeExpr {
             | Self::Existential { span, .. }
             | Self::Primitive { span, .. }
             | Self::Path { span, .. }
+            | Self::Array { span, .. }
             | Self::Tuple { span, .. }
             | Self::Refined { span, .. }
             | Self::Error(span) => *span,
@@ -83,7 +88,15 @@ pub enum HandlerProducedEffects {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum PrimitiveType {
     Bool,
@@ -109,6 +122,31 @@ pub enum PrimitiveType {
 }
 
 impl PrimitiveType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::I128 => "i128",
+            Self::Isize => "isize",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::U128 => "u128",
+            Self::Usize => "usize",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::Char => "char",
+            Self::String => "string",
+            Self::Bytes => "bytes",
+            Self::Unit => "unit",
+            Self::Never => "never",
+        }
+    }
+
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "bool" => Self::Bool,
@@ -151,7 +189,15 @@ pub struct FieldDecl {
 }
 
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, etas_syntax_derive::SpanNodes,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    etas_core::RetainedSize,
+    etas_syntax_derive::SpanNodes,
+    serde::Serialize,
+    serde::Deserialize,
 )]
 pub enum Visibility {
     Private,

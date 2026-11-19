@@ -6,6 +6,7 @@ fn empty_external_trace_choice_is_not_treated_as_empty_trace() {
         &ProjectExternalActionTraceInput::Choice(Vec::new()),
         &GenericScope::default(),
         &[],
+        &[],
         0,
     )
     .unwrap_err();
@@ -14,6 +15,7 @@ fn empty_external_trace_choice_is_not_treated_as_empty_trace() {
         validate_action_trace(
             &ProjectExternalActionTraceInput::Empty,
             &GenericScope::default(),
+            &[],
             &[],
             0,
         )
@@ -172,6 +174,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         tail: None,
     };
     let node = metadata::CallableValueNode {
+        returned_projections: Vec::new(),
         residual_checks: Vec::new(),
         handler_requests: Some(Default::default()),
         behavior: metadata::CallableValueBehavior {
@@ -216,6 +219,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         returned_sources: None,
     };
     let mut input = ProjectExternalPublicMetadataInput {
+        scoped_callbacks: Vec::new(),
         package: ExternalPackageId(0),
         types: vec![],
         values: vec![],
@@ -236,6 +240,8 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
         trace_spec_summaries: vec![],
         re_exports: vec![],
         flows: vec![crate::ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: vec![],
             path: path.clone(),
             generic_params: vec![
                 ProjectExternalCallableGenericParamInput {
@@ -263,6 +269,7 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             visibility: "public".into(),
         }],
         effect_summaries: vec![crate::ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -274,6 +281,8 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             latent_flows: vec![],
             action_trace: ProjectExternalActionTraceInput::Empty,
             returned_callables: Some(metadata::CallableValueGraph {
+                source_projections: Vec::new(),
+                parameter_projections: Vec::new(),
                 objects: Vec::new(),
                 sources: vec![metadata::CallableValueSource::Value(0)],
                 values: vec![node],

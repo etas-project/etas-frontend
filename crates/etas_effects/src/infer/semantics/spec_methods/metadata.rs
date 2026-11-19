@@ -132,7 +132,12 @@ impl EffectSemantics<'_> {
                         .find(|(parameter, _)| parameter == name)
                         .map(|(_, ty)| ty)
                         .ok_or_else(|| {
-                            invalid(format!("metadata method type binding `{name}` is missing"))
+                            invalid(format!(
+                                "metadata method {}.{} type binding `{name}` is missing; available types {types:?}; interface {:?}",
+                                definition.invocation.spec.path.join("."),
+                                definition.invocation.method,
+                                definition.parameters,
+                            ))
                         })?,
                 ),
                 CallableGenericParamKind::Effect => CallableGenericValue::EffectRow(
@@ -215,10 +220,12 @@ impl EffectSemantics<'_> {
                 value.clone(),
             );
         }
-        for (_, parameter) in &definition.parameters {
+        for (binding_position, (_, parameter)) in definition.parameters.iter().enumerate() {
             let position = match parameter {
                 ParameterCallTarget::Interface(position) => *position,
-                ParameterCallTarget::Graph { parameter, .. } => parameter.position,
+                // Node evidence includes both captured and own parameters.
+                // Its callback graph indexes this ordered binding interface.
+                ParameterCallTarget::Graph { .. } => binding_position as u32,
                 ParameterCallTarget::Native(symbol) => {
                     match self.hir.symbols.get(*symbol).map(|symbol| &symbol.def) {
                         Some(etas_hir::SymbolDef::Param { param_index, .. }) => *param_index,
@@ -240,6 +247,7 @@ impl EffectSemantics<'_> {
                     ParameterCallTarget::Graph {
                         graph,
                         parameter: CallableValueParameter {
+                            projection: None,
                             scope: CallableValueScope::Root,
                             position,
                         },
@@ -279,7 +287,11 @@ impl EffectSemantics<'_> {
                         })
                         .ok_or_else(|| {
                             invalid(format!(
-                                "metadata method callback has no checked argument binding for {parameter:?}"
+                                "metadata method callback {}.{} has no checked argument binding for {parameter:?}; interface {:?}; bound inputs {:?}",
+                                definition.invocation.spec.path.join("."),
+                                definition.invocation.method,
+                                definition.parameters,
+                                bindings.keys().collect::<Vec<_>>(),
                             ))
                         })?;
                     origins.extend(values);
@@ -341,8 +353,9 @@ impl EffectSemantics<'_> {
             }
         }
         let type_rows = self.type_row_arguments(&rows, Some(snapshot.owner))?;
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &types)
-            .with_effect_arguments(&type_rows);
+        let mut substitution =
+            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &types)
+                .with_effect_arguments(&type_rows);
         let method = &definition.invocation;
         let receiver = substitution.substitute(method.receiver)?;
         let spec_args = method
@@ -468,8 +481,9 @@ impl EffectSemantics<'_> {
                 .ok_or_else(|| invalid("metadata method receiver binder is invalid"))?;
             types.insert(parameter.name.clone(), receiver);
         }
-        let mut substitution = TypeSubstitutionEngine::existing(&self.types.store, &types)
-            .with_effect_arguments(&type_rows);
+        let mut substitution =
+            TypeSubstitutionEngine::existing_indexed(&self.types.store, self.type_lookup(), &types)
+                .with_effect_arguments(&type_rows);
         let mut summary = EffectSummary::local();
         if let Some(row) = &signature.effects {
             summary.record_escaping_effect_row(

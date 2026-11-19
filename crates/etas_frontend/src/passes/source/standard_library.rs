@@ -58,7 +58,14 @@ impl Pass<ProjectContext> for AdmitStandardLibrarySourcesPass {
                 ));
             }
             let asset = etas_std::standard_library_source(library_source);
-            let text: Arc<str> = Arc::from(asset.source);
+            // The maintained source declares its public std module. Legacy
+            // implementation assets live in separate private virtual modules,
+            // including during AST/HIR symbol predeclaration.
+            let (_, body) = asset
+                .source
+                .split_once('\n')
+                .expect("std source module header");
+            let text: Arc<str> = format!("module {};\n{body}", asset.module_path.join(".")).into();
             source_set.files.push(SourceFile {
                 id: source,
                 path: Some(PathBuf::from(asset.virtual_path)),
@@ -83,6 +90,9 @@ impl Pass<ProjectContext> for AdmitStandardLibrarySourcesPass {
 }
 
 fn select_sources(context: &ProjectContext) -> Vec<StdLibrarySourceId> {
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+        return Vec::new();
+    }
     let implementations = context
         .std_registry
         .symbols()
@@ -284,6 +294,15 @@ fn seed_item_work<'a>(item: &'a ast::Item, work: &mut Vec<AstWork<'a>>) {
 }
 
 fn seed_flow_work<'a>(flow: &'a ast::FlowDecl, work: &mut Vec<AstWork<'a>>) {
+    for annotation in &flow.annotations {
+        for argument in &annotation.args {
+            work.push(AstWork::Expr(match argument {
+                ast::AnnotationArg::Positional(value) | ast::AnnotationArg::Named { value, .. } => {
+                    value
+                }
+            }));
+        }
+    }
     seed_flow_body_work(&flow.body, work);
     if let Some(handler) = &flow.trailing_handler {
         work.push(AstWork::Handler(handler));
@@ -292,6 +311,7 @@ fn seed_flow_work<'a>(flow: &'a ast::FlowDecl, work: &mut Vec<AstWork<'a>>) {
 
 fn seed_flow_body_work<'a>(body: &'a ast::FlowBody, work: &mut Vec<AstWork<'a>>) {
     match body {
+        ast::FlowBody::Decl { .. } => {}
         ast::FlowBody::Block(block) => work.push(AstWork::Block(block)),
         ast::FlowBody::Expr { expr, .. } => work.push(AstWork::Expr(expr)),
     }

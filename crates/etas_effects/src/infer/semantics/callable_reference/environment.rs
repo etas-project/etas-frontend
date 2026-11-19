@@ -180,8 +180,9 @@ impl EffectSemantics<'_> {
                             .1
                     };
                     V::Type(
-                        etas_types::TypeSubstitutionEngine::existing(
+                        etas_types::TypeSubstitutionEngine::existing_indexed(
                             &self.types.store,
+                            self.type_lookup(),
                             &substitutions,
                         )
                         .with_type_parameters(&type_parameters)

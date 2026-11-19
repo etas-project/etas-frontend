@@ -24,6 +24,9 @@ impl EffectSemantics<'_> {
         if matches!(target, CallTarget::Dynamic)
             && let Some(sources) = self.latent_sources_for_expr(state, callee)
         {
+            self.inputs
+                .dynamic_call_sources
+                .insert(call, sources.iter().copied().collect());
             for source in sources {
                 match source {
                     super::state::LatentSource::FrozenContract { unit, .. }
@@ -58,6 +61,15 @@ impl EffectSemantics<'_> {
         callee: HirExprId,
         state: &EffectState,
     ) -> CallTarget<EffectUnit> {
+        if self.types.facts.library_flow_calls.contains_key(&call) {
+            return CallTarget::External;
+        }
+        if let Some(symbol) = self.types.facts.source_flow_calls.get(&call) {
+            return match self.hir.symbols.get(*symbol).map(|symbol| &symbol.def) {
+                Some(SymbolDef::Item { item }) => CallTarget::Direct(EffectUnit::Item(*item)),
+                _ => CallTarget::Incomplete,
+            };
+        }
         if let Some(symbol) = self.types.facts.agent_method_calls.get(&call) {
             if let Some(HirExpr::Path(path)) = self.hir.exprs.get(callee) {
                 let resolved = match &path.resolution {
@@ -92,8 +104,20 @@ impl EffectSemantics<'_> {
             };
         };
 
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return CallTarget::Incomplete;
+        let symbol = match &path.resolution {
+            ResolveResult::Resolved(symbol) => *symbol,
+            ResolveResult::PartiallyResolved(partial)
+                if partial
+                    .resolved_prefix
+                    .is_some_and(|symbol| self.types.facts.symbol_types.contains_key(&symbol))
+                    && self.is_typed_flow_expr(callee) =>
+            {
+                // A checked value path may end in a callable field rather than
+                // a declaration symbol. Its behavior still comes from the
+                // latent origins, exactly as for HirExpr::Field.
+                return CallTarget::Dynamic;
+            }
+            _ => return CallTarget::Incomplete,
         };
         let local_symbol = symbol;
         let Some(symbol) = self.hir.canonical_source_symbol(symbol) else {

@@ -4,6 +4,8 @@ pub mod descriptor;
 pub(crate) mod diagnostic;
 pub mod draft;
 pub mod identity;
+pub mod lexical_exits;
+pub mod parameter_defaults;
 pub(crate) mod pipeline;
 pub(crate) mod reflection;
 pub mod service;

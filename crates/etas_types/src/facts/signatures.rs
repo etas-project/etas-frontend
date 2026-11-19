@@ -27,6 +27,7 @@ pub struct AgentEntrySignature {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct AgentMethodSignature {
+    pub context_type: TypeId,
     pub private_to: Option<etas_hir::HirModuleId>,
     pub inherent: bool,
     pub agent: HirItemId,
@@ -59,6 +60,8 @@ pub enum ItemSignature {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct CallableSignature {
+    #[serde(default)]
+    pub parameter_interface: Option<Vec<crate::ParameterInterface>>,
     #[serde(default)]
     pub generic_params: Vec<CallableGenericParam>,
     pub params: Vec<TypeId>,

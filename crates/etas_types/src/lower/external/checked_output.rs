@@ -126,7 +126,7 @@ impl<'a> CheckedExternalTypeResolver<'a> {
                 .iter()
                 .map(|effect| {
                     Ok(EffectRef {
-                        name: effect.path.join("."),
+                        name: super::canonical_effect_name(&self.types.facts, &effect.path),
                         args: effect
                             .args
                             .iter()
@@ -188,7 +188,8 @@ impl<'a> CheckedExternalTypeResolver<'a> {
                 let bindings = parameters.iter().cloned().zip(args.iter().map(|arg| self.type_id(arg)).collect::<Result<Vec<_>, _>>()?).collect();
                 return crate::substitute_named_params_in_store(&self.types.store, *target, &bindings).map_err(|error| ExternalMetadataLoweringError { message: format!("external alias `{}` has no checked instantiation: {error}", path.join(".")) });
             }
-            let Some(id) = external_type_by_path(&self.types.store, path) else {
+            let Some(id) = self.types.facts.external_type_declarations.get(path).copied()
+                .or_else(|| external_type_by_path(&self.types.store, path)) else {
                 return Err(ExternalMetadataLoweringError {
                     message: format!(
                         "external effect metadata references missing checked type `{}`",
@@ -223,6 +224,9 @@ impl<'a> CheckedExternalTypeResolver<'a> {
         ty: &crate::ExternalTypeInput,
     ) -> Result<Type, ExternalMetadataLoweringError> {
         match ty {
+            crate::ExternalTypeInput::AgentContext(method) => Ok(Type::AgentContext(
+                crate::AgentContextRef::Portable(Box::new(method.clone())),
+            )),
             crate::ExternalTypeInput::Existential { bounds } => Ok(Type::Existential {
                 bounds: bounds
                     .iter()

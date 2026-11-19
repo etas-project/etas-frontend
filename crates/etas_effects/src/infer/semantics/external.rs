@@ -4,13 +4,15 @@ use crate::{external_trace::parameter_target, pipeline::ExternalActionTraceMetad
 
 fn request_label(target: &crate::ExternalCallableRequestTarget) -> &str {
     match target {
+        crate::ExternalCallableRequestTarget::AgentTools(_) => "agent tools",
         crate::ExternalCallableRequestTarget::Parameter(parameter) => parameter,
+        crate::ExternalCallableRequestTarget::ParameterProjection { parameter, .. } => parameter,
         crate::ExternalCallableRequestTarget::SpecMethod(method) => &method.method,
     }
 }
 
 impl EffectSemantics<'_> {
-    fn external_request_target(
+    pub(super) fn external_request_target(
         &self,
         target: &crate::ExternalCallableRequestTarget,
         parameters: &[(String, crate::ParameterCallTarget)],
@@ -18,6 +20,14 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<crate::ParameterCallTarget> {
         match target {
+            crate::ExternalCallableRequestTarget::ParameterProjection { parameter, path } => self
+                .intern_external_parameter_projection(
+                    parameter_target(parameters, parameter)?,
+                    path.clone(),
+                ),
+            crate::ExternalCallableRequestTarget::AgentTools(context) => {
+                Some(crate::ParameterCallTarget::AgentTools(*context))
+            }
             crate::ExternalCallableRequestTarget::Parameter(label) => {
                 parameter_target(parameters, label)
             }
@@ -29,7 +39,7 @@ impl EffectSemantics<'_> {
 }
 
 impl EffectSemantics<'_> {
-    fn external_metadata_for_callable(
+    pub(super) fn external_metadata_for_callable(
         &self,
         callable: &etas_code::CallableId,
     ) -> Option<&crate::AnchoredExternalMetadata<crate::ExternalEffectSummaryMetadata>> {
@@ -40,7 +50,14 @@ impl EffectSemantics<'_> {
                 .is_some_and(|contract| &contract.header.id == callable)
         });
         let matched = matches.next()?;
-        matches.next().is_none().then_some(matched)
+        for alias in matches {
+            let mut metadata = alias.metadata.clone();
+            metadata.item = matched.item.clone();
+            if metadata != matched.metadata {
+                return None;
+            }
+        }
+        Some(matched)
     }
 
     pub(super) fn external_reference_metadata(
@@ -54,7 +71,26 @@ impl EffectSemantics<'_> {
             return None;
         };
         let symbol = self.type_symbols.canonical_symbol(self.hir, symbol)?;
-        let definition = self.types.facts.external_definition_bindings.get(&symbol)?;
+        let definition = self.types.facts.external_definition_bindings.get(&symbol);
+        let standard;
+        let definition = match definition {
+            Some(definition) => definition,
+            None => {
+                let etas_hir::SymbolDef::ImportAlias { path, .. } =
+                    &self.hir.symbols.get(symbol)?.def
+                else {
+                    return None;
+                };
+                standard = self
+                    .std_registry
+                    .lookup_qualified(path)
+                    .and_then(|symbol| self.std_registry.body_binding(symbol.id))?
+                    .callable
+                    .as_declaration()?
+                    .clone();
+                &standard
+            }
+        };
         if definition.kind() != etas_code::DefinitionKind::Flow {
             return None;
         }
@@ -137,7 +173,13 @@ impl EffectSemantics<'_> {
             &checked.types,
             &metadata.generic_params,
         )?;
-        self.specialize_summary_with_bindings(&summary, &[], &checked.types, &rows)
+        self.specialize_summary_with_bindings(
+            &summary,
+            &[],
+            &checked.types,
+            &rows,
+            self.hir.index().expr_item.get(&instantiation).copied(),
+        )
     }
 
     fn separate_symbolic_parameter_requests(
@@ -320,9 +362,22 @@ impl EffectSemantics<'_> {
         generic_source: Option<HirExprId>,
     ) -> Result<Option<EffectSummary>, super::specialize::EffectSpecializationError> {
         let Some(mut summary) = self.external_summary_from_metadata(metadata, site.span) else {
-            return Ok(None);
+            return Err(
+                super::specialize::EffectSpecializationError::InvalidCallableEnvironment {
+                    reason: format!(
+                        "cannot reconstruct the checked effect contract for `{}`",
+                        metadata.item.join(".")
+                    ),
+                },
+            );
         };
-        let bindings = self.call_bindings_from_param_names(site, &metadata.param_names);
+        let arguments = self.call_argument_slots(site, metadata.param_names.len())?;
+        let bindings = metadata
+            .param_names
+            .iter()
+            .zip(&arguments)
+            .filter_map(|(name, argument)| Some((name.clone(), (*argument)?)))
+            .collect::<Vec<_>>();
         let parameter_targets = (0..metadata.param_names.len())
             .map(|position| crate::ParameterCallTarget::Interface(position as u32))
             .collect::<Vec<_>>();
@@ -363,6 +418,7 @@ impl EffectSemantics<'_> {
                 &type_bindings,
                 &effect_row_bindings,
             ),
+            &mut BTreeSet::new(),
         )?;
         self.require_named_effect_type_bindings(
             &metadata.type_param_names,
@@ -374,13 +430,15 @@ impl EffectSemantics<'_> {
             &summary,
             &effect_row_bindings,
         )?;
-        let parameter_trace = summary.action_trace.clone();
         summary = self.specialize_summary_with_bindings(
             &summary,
             &bindings,
             &type_bindings,
             &effect_row_bindings,
+            state.owner,
         )?;
+        self.bind_agent_tool_arguments(&summary, &mut trace_bindings, state)?;
+        let parameter_trace = summary.action_trace.clone();
         let inferred_parameters =
             self.inferred_callback_parameters(&parameter_targets, &signature.input)?;
         self.merge_parameter_call_summaries(
@@ -393,6 +451,10 @@ impl EffectSemantics<'_> {
         summary.action_trace =
             self.specialize_parameter_call_trace(&summary.action_trace, &trace_bindings, state)?;
         if let Some(exits) = &mut summary.exits {
+            for exit in &mut exits.parameter_exits {
+                exit.prefix =
+                    self.specialize_parameter_call_trace(&exit.prefix, &trace_bindings, state)?;
+            }
             for exit in &mut exits.exits {
                 exit.trace =
                     self.specialize_parameter_call_trace(&exit.trace, &trace_bindings, state)?;
@@ -401,7 +463,20 @@ impl EffectSemantics<'_> {
         self.solve_callback_completion(&mut summary, &trace_bindings, &type_bindings, state)?;
         self.forward_callback_outcomes(&mut summary, &trace_bindings, &parameter_targets, state)?;
         if let Some(graph) = &metadata.returned_callables {
-            let arguments = self.call_arguments(site, metadata.param_names.len())?;
+            self.record_metadata_projections(
+                super::metadata_callable::MetadataCallBindings {
+                    key: metadata.callable_graph_key,
+                    scope: etas_package_metadata::CallableValueScope::Root,
+                    environment: None,
+                    arguments: &arguments,
+                    generics: &metadata.generic_params,
+                    type_bindings: &type_bindings,
+                    effect_row_bindings: &effect_row_bindings,
+                },
+                &graph.source_projections,
+                state,
+                site.call,
+            )?;
             self.record_metadata_sources(
                 super::metadata_callable::MetadataCallBindings {
                     key: metadata.callable_graph_key,
@@ -643,10 +718,47 @@ impl EffectSemantics<'_> {
             return None;
         }
         summary.handler_requests = handler_requests;
+        if let Some(input) = metadata
+            .default_handler_effects
+            .and_then(|effects| effects.behavior.as_ref())
+        {
+            let behavior = self.external_default_behavior(
+                input,
+                metadata.parameter_targets,
+                metadata.generic_params,
+                span,
+            )?;
+            let aggregate = behavior.aggregate();
+            // The public row contains requested actions covered by a handler.
+            // The footprint also records handlers for an entire effect, even
+            // when a callback has not yet supplied a matching request.
+            let handled_requests = aggregate.requested_actions.effects.iter().filter(|action| {
+                coverage.covers_requested_action(
+                    action,
+                    &aggregate.handled_actions,
+                    &aggregate.default_actions,
+                )
+            });
+            let handled_tail = aggregate
+                .handled_actions
+                .open
+                .or(aggregate.default_actions.open);
+            if aggregate.escaping_effects != summary.escaping_effects
+                || aggregate.requested_actions != summary.requested_actions
+                || aggregate.default_actions != summary.default_actions
+                || handled_requests.ne(handled_effects.iter())
+                || handled_tail != summary.handled_actions.open
+                || aggregate.handler_requests != summary.handler_requests
+            {
+                return None;
+            }
+            aggregate.apply(&mut summary);
+            summary.default_behavior = Some(Box::new(behavior));
+        }
         Some(summary)
     }
 
-    fn external_effect_row_from_metadata(
+    pub(super) fn external_effect_row_from_metadata(
         &self,
         row: &crate::ExternalEffectRowMetadata,
     ) -> Option<EffectRow> {

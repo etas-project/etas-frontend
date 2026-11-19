@@ -507,6 +507,12 @@ fn builtin(ty: &Type) -> Option<(B, Vec<TypeId>)> {
         Type::Schema(ty) => (B::Schema, vec![*ty]),
         Type::Prompt => (B::Prompt, vec![]),
         Type::PromptPart => (B::PromptPart, vec![]),
+        Type::SchedulerHandle => (B::SchedulerHandle, vec![]),
+        Type::Continuation(continuation)
+            if continuation.handled_answer.is_none() && continuation.residual_effects.is_none() =>
+        {
+            (B::Continuation, vec![continuation.action_output])
+        }
         Type::Message(ty) => (B::Message, vec![*ty]),
         Type::MemorySelection(ty) => (B::MemorySelection, vec![*ty]),
         Type::Store { key, value } => (B::Store, vec![*key, *value]),

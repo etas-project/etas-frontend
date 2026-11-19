@@ -55,6 +55,17 @@ impl DefinitionDescriptorProjector<'_> {
         self.ensure_edges(width)?;
         let data = data.clone();
         let (constructor, arguments) = match data {
+            Type::AgentContext(context) => {
+                let method = match context {
+                    etas_types::AgentContextRef::Portable(method) => *method,
+                    etas_types::AgentContextRef::Source(symbol) => self
+                        .identities
+                        .method(symbol)
+                        .ok_or(ProjectionError::MissingCallable(symbol))?
+                        .clone(),
+                };
+                return Ok(TypeInfo::AgentContext(method));
+            }
             Type::Existential { bounds } => {
                 let mut bounds = self.project_bounds(
                     bounds
@@ -133,6 +144,7 @@ impl DefinitionDescriptorProjector<'_> {
                     .into_iter()
                     .map(|ty| {
                         Ok(ParameterInfo {
+                            default: None,
                             name: None,
                             ty: self.type_ref(ty, scope)?,
                         })
@@ -181,6 +193,8 @@ impl DefinitionDescriptorProjector<'_> {
             | Type::Schema(_)
             | Type::Prompt
             | Type::PromptPart
+            | Type::SchedulerHandle
+            | Type::Continuation(_)
             | Type::Message(_)
             | Type::MemorySelection(_)
             | Type::Store { .. }
@@ -199,8 +213,6 @@ impl DefinitionDescriptorProjector<'_> {
             Type::IntegerLiteral { .. }
             | Type::Var(_)
             | Type::Refined { .. }
-            | Type::SchedulerHandle
-            | Type::Continuation(_)
             | Type::MemoryPlace(_)
             | Type::ResourceHandle(ResourceHandleType::Other { .. }) => {
                 return Err(ProjectionError::UnresolvedType(source));
@@ -221,7 +233,17 @@ impl DefinitionDescriptorProjector<'_> {
         declaration: TypeDeclaration,
         scope: usize,
     ) -> Result<TypeInfo, ProjectionError> {
-        if let Some(standard) = declaration.standard {
+        let source = source.or(declaration.checked_type);
+        let source_enum_role = declaration.standard.is_some_and(|native| {
+            self.checked
+                .types
+                .source_type_roles
+                .values()
+                .any(|bound| *bound == native)
+        }) && source.is_some_and(|source| {
+            matches!(self.checked.type_store.get(source), Some(Type::Enum(_)))
+        });
+        if let Some(standard) = declaration.standard.filter(|_| !source_enum_role) {
             let Some(etas_std::StdDecl::Type(standard)) = self
                 .checked
                 .std_registry

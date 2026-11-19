@@ -19,7 +19,9 @@ pub(super) struct CallSummaryMapper<'a, 'hir> {
         >,
     >,
     pub(super) residual_work: usize,
+    pub(super) owner: Option<etas_hir::HirItemId>,
     pub(super) types: TypeSubstitutionEngine<'a>,
+    pub(super) source_memory_place: Option<&'a etas_types::EffectArgRef>,
 }
 
 impl SummaryMapper for CallSummaryMapper<'_, '_> {
@@ -67,12 +69,38 @@ impl SummaryMapper for CallSummaryMapper<'_, '_> {
     fn ty(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
         self.types.substitute(ty).map_err(Into::into)
     }
+    fn request_type(&mut self, ty: TypeId) -> Result<TypeId, Self::Error> {
+        // Captured callable sources retain their own row environment. A request
+        // ABI applies the invocation's row arguments before crossing a handler.
+        let rows = self.semantics.type_row_arguments(self.rows, self.owner)?;
+        let names = self.type_bindings.iter().cloned().collect();
+        etas_types::TypeSubstitutionEngine::existing_indexed(
+            &self.semantics.types.store,
+            self.semantics.type_lookup(),
+            &names,
+        )
+        .with_type_parameters(self.type_parameters)
+        .with_effect_arguments(&rows)
+        .substitute(ty)
+        .map_err(|error| {
+            if let etas_types::TypeSubstitutionError::UnmaterializedType(ty) = &error {
+                self.semantics.requested_types.borrow_mut().push(ty.clone());
+            }
+            error.into()
+        })
+    }
     fn effect(&mut self, effect: Effect) -> Result<Effect, Self::Error> {
         let mut effect = self
             .semantics
             .specialize_effect(effect, self.bindings, &[])?;
         match &mut effect {
             Effect::AppliedAction(action) => {
+                if let Some(place) = self.source_memory_place
+                    && action.action.tag == crate::MEMORY_TAG
+                    && action.args == [etas_types::EffectArgRef::Wildcard]
+                {
+                    action.args[0] = place.clone();
+                }
                 for arg in &mut action.args {
                     if let etas_types::EffectArgRef::Type(ty) = arg {
                         *ty = self.ty(*ty)?;
@@ -149,7 +177,7 @@ mod tests {
         assert!(summary.residual_checks.insert(reference(4)));
         let args = [("value".to_owned(), HirExprId(0))];
         let mapped = semantics
-            .specialize_summary_with_bindings(&summary, &args, &[], &[])
+            .specialize_summary_with_bindings(&summary, &args, &[], &[], None)
             .unwrap();
         assert_eq!(mapped.residual_checks, summary.residual_checks);
         assert_eq!(mapped.residual_checks.iter().count(), 2);
@@ -158,7 +186,8 @@ mod tests {
                 &summary,
                 &args,
                 &[("T".into(), TypeId(0))],
-                &[]
+                &[],
+                None,
             ),
             Err(EffectSpecializationError::UnsupportedResidualSubstitution)
         ));
@@ -174,7 +203,8 @@ mod tests {
                 &summary,
                 &args,
                 &[("T".into(), TypeId(0))],
-                &[]
+                &[],
+                None,
             ),
             Err(EffectSpecializationError::UnsupportedResidualSubstitution)
         ));
@@ -183,7 +213,8 @@ mod tests {
                 &summary,
                 &args,
                 &[],
-                &[("E".into(), EffectRow::empty())]
+                &[("E".into(), EffectRow::empty())],
+                None,
             ),
             Err(EffectSpecializationError::UnsupportedResidualSubstitution)
         ));

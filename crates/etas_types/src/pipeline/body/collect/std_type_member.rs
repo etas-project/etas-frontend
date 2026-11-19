@@ -28,6 +28,9 @@ pub(super) fn collect<E>(
         span,
         expected,
     } = call;
+    for candidate in &candidates {
+        super::agent_context::constrain(ctx, candidate, span);
+    }
     let arity_matches = candidates.iter().filter(|candidate| {
         matches!(ctx.ctx.interner.store().get(candidate.ty), Some(Type::Function(flow)) if flow.input.len() == args.len())
     }).collect::<Vec<_>>();

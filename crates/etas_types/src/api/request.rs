@@ -73,6 +73,7 @@ pub struct SourceSymbolBindingInput {
 #[derive(Clone, Debug, Default)]
 pub struct StdSignatureInput {
     pub symbol_bindings: Vec<StdSymbolBindingInput>,
+    pub role_bindings: Vec<StdSymbolBindingInput>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +117,12 @@ pub struct ExternalActionBindingInput {
 
 #[derive(Clone, Debug)]
 pub struct ExternalPublicMetadataInput {
+    /// Declaration calling interfaces reconstructed from validated descriptors.
+    pub parameter_interfaces:
+        std::collections::BTreeMap<Vec<String>, Vec<crate::ParameterInterface>>,
+    pub method_parameter_interfaces:
+        std::collections::BTreeMap<etas_code::MethodId, Vec<crate::ParameterInterface>>,
+    pub scoped_callbacks: Vec<etas_package_metadata::ScopedCallbackContract>,
     pub package: ExternalPackageKey,
     pub behavior_types: Vec<ExternalTypeInput>,
     pub types: Vec<ExternalNamedSignatureInput>,
@@ -144,6 +151,8 @@ pub struct ExternalNamedSignatureInput {
 
 #[derive(Clone, Debug)]
 pub struct ExternalFlowSignatureInput {
+    pub definition: Option<etas_code::DefinitionKey>,
+    pub parameter_interface: Vec<crate::ParameterInterface>,
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub param_names: Vec<String>,
@@ -172,6 +181,7 @@ pub struct ExternalToolSignatureInput {
 
 #[derive(Clone, Debug)]
 pub struct ExternalActionSignatureInput {
+    pub parameter_interface: Vec<crate::ParameterInterface>,
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalActionGenericParamInput>,
     pub params: Vec<ExternalTypeInput>,
@@ -180,6 +190,7 @@ pub struct ExternalActionSignatureInput {
     pub selector_defaults: Vec<Option<ExternalEffectArgInput>>,
     pub output: ExternalTypeInput,
     pub returns_never: bool,
+    pub default_handler_effects: Option<ExternalEffectRowInput>,
 }
 
 #[derive(Clone, Debug)]
@@ -221,9 +232,10 @@ pub struct ExternalSpecMethodInput {
     pub path: Vec<String>,
     pub signature: Option<ExternalFlowSignatureInput>,
     pub receiver_param: Option<u32>,
+    pub updating_receiver: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalSpecBoundInput {
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
@@ -231,6 +243,8 @@ pub struct ExternalSpecBoundInput {
 
 #[derive(Clone, Debug)]
 pub struct ExternalSpecImplInput {
+    pub owner: Option<etas_code::ImplementationKey>,
+    pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub self_type: ExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
@@ -288,19 +302,19 @@ pub enum ExternalActionArgKindInput {
     StringPattern,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalEffectRowInput {
     pub effects: Vec<ExternalEffectRefInput>,
     pub tail: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalEffectRefInput {
     pub path: Vec<String>,
     pub args: Vec<ExternalEffectArgInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalEffectArgInput {
     Type(ExternalTypeInput),
     Path(Vec<String>),
@@ -309,14 +323,15 @@ pub enum ExternalEffectArgInput {
     Wildcard,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExternalRecordFieldInput {
     pub name: String,
     pub ty: ExternalTypeInput,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExternalTypeInput {
+    AgentContext(etas_code::MethodId),
     Existential {
         bounds: Vec<ExternalSpecBoundInput>,
     },

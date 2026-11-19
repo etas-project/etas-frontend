@@ -6,6 +6,7 @@ pub mod ids;
 pub mod lower;
 pub mod resolve;
 pub mod scope;
+mod serde_ordered;
 pub mod source_map;
 pub mod symbol;
 pub mod view;
@@ -16,8 +17,8 @@ pub use dump::{HirDumpOptions, dump_hir};
 pub use hir::*;
 pub use ids::*;
 pub use lower::{
-    HirProjectLowering, HirProjectModule, HirProjectNamespace, lower_program, lower_project,
-    lower_source,
+    HirProjectLowering, HirProjectModule, HirProjectNamespace, HirSourcePreludeBinding,
+    HirSourcePreludeTarget, lower_program, lower_project, lower_source,
 };
 pub use resolve::*;
 pub use scope::*;

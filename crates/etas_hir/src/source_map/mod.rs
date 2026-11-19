@@ -8,22 +8,66 @@ use crate::{
 
 etas_core::id_type!(SyntaxNodeId);
 
-#[derive(Clone, Debug, Default, etas_core::RetainedSize)]
+#[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct SourceMap {
+    #[serde(serialize_with = "crate::serde_ordered::sources")]
     pub lexical_sources: HashMap<SourceId, SourceId>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub item_sources: HashMap<HirItemId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub expr_sources: HashMap<HirExprId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub handler_arm_sources: HashMap<HirHandlerArmId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub stmt_sources: HashMap<HirStmtId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub pat_sources: HashMap<HirPatId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub type_sources: HashMap<HirTypeId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub block_sources: HashMap<HirBlockId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub symbol_sources: HashMap<SymbolId, HirOrigin>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub syntax_nodes: HashMap<SyntaxNodeId, SyntaxNodeRef>,
+    #[serde(serialize_with = "crate::serde_ordered::map")]
     pub syntax_to_hir: HashMap<SyntaxNodeId, Vec<HirNodeRef>>,
 }
 
 impl SourceMap {
+    pub fn is_collection_literal(&self, expr: HirExprId) -> bool {
+        matches!(
+            self.expr_sources.get(&expr),
+            Some(
+                HirOrigin::Desugared {
+                    desugaring: DesugaringKind::CollectionLiteral,
+                    ..
+                } | HirOrigin::Synthetic {
+                    reason: SyntheticOriginReason::CollectionLiteral,
+                    ..
+                }
+            )
+        )
+    }
+
+    pub fn mark_collection_literal(&mut self, expr: HirExprId, span: Span) {
+        let origin = match self
+            .expr_sources
+            .get(&expr)
+            .and_then(HirOrigin::primary_syntax)
+        {
+            Some(primary) => HirOrigin::Desugared {
+                primary,
+                related: Vec::new(),
+                desugaring: DesugaringKind::CollectionLiteral,
+            },
+            None => HirOrigin::Synthetic {
+                span,
+                reason: SyntheticOriginReason::CollectionLiteral,
+            },
+        };
+        self.expr_sources.insert(expr, origin);
+    }
     /// Generated body locations retain their own diagnostic source while name
     /// lookup uses the definition's original module-part environment.
     pub fn lexical_source(&self, source: SourceId) -> SourceId {
@@ -31,7 +75,9 @@ impl SourceMap {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub struct SyntaxNodeRef {
     pub id: SyntaxNodeId,
     pub span: Span,
@@ -40,7 +86,17 @@ pub struct SyntaxNodeRef {
     pub child_index: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    etas_core::RetainedSize,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum SyntaxNodeKind {
     Item,
     Expr,
@@ -52,7 +108,9 @@ pub enum SyntaxNodeKind {
     Symbol,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirOrigin {
     Direct(SyntaxNodeRef),
     Desugared {
@@ -87,18 +145,26 @@ impl HirOrigin {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum DesugaringKind {
     MatchStatementExpr,
+    CollectionLiteral,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SyntheticOriginReason {
     LoweringGenerated,
+    CollectionLiteral,
     Recovery,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum HirNodeRef {
     Item(HirItemId),
     Expr(HirExprId),
@@ -117,6 +183,9 @@ pub struct SourceMapBuilder {
 }
 
 impl SourceMapBuilder {
+    pub fn mark_collection_literal(&mut self, expr: HirExprId, span: Span) {
+        self.source_map.mark_collection_literal(expr, span);
+    }
     pub fn bind_lexical_source(&mut self, generated: SourceId, definition: SourceId) -> bool {
         if generated == definition {
             return true;

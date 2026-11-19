@@ -361,9 +361,12 @@ impl EffectSemantics<'_> {
         } = arguments;
         let substitution = types.iter().cloned().collect();
         let row_arguments = self.type_row_arguments(rows, owner)?;
-        let mut engine =
-            etas_types::TypeSubstitutionEngine::existing(&self.types.store, &substitution)
-                .with_effect_arguments(&row_arguments);
+        let mut engine = etas_types::TypeSubstitutionEngine::existing_indexed(
+            &self.types.store,
+            self.type_lookup(),
+            &substitution,
+        )
+        .with_effect_arguments(&row_arguments);
         if let Some(parameters) = parameters {
             engine = engine.with_type_parameters(parameters);
         }

@@ -96,6 +96,14 @@ pub(super) fn analyze(
             HirLambdaBody::Block(body) => walk_block(&view, *body, &mut reads),
         }
         let rejection = rejection(summary).or_else(|| {
+            if layout.captures.iter().any(|symbol| {
+                matches!(
+                    types.facts.symbol_types.get(symbol),
+                    Some(SymbolTypeFact::Local { mutable: true, .. })
+                )
+            }) {
+                return Some(CpuParallelRejection::NonFreezableCapture);
+            }
             if reads.has_boundary {
                 return Some(CpuParallelRejection::MutableRuntimeResource);
             }

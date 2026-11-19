@@ -2,9 +2,7 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 use etas_hir::{HirActionSelectorParam, HirEffectActionDecl, HirImplItem, HirItem, SymbolKind};
 
 use crate::{
-    CallableGenericParam, CallableGenericParamKind, CheckedSpecBound, CheckedSpecRef,
-    EffectActionArgKind, EffectActionSignature, EffectArgRef, NamedTypeRef, PrimitiveType,
-    SymbolTypeFact, Type,
+    EffectActionArgKind, EffectActionSignature, EffectArgRef, PrimitiveType, SymbolTypeFact, Type,
     lower::type_ref::lower_type_ref,
     pipeline::{context::TypePipelineContext, signature::state::SignaturePipelineState},
 };
@@ -69,35 +67,18 @@ fn collect_action(
     );
     let (effect_args, selector_param_names, selector_defaults) =
         action_effect_selector_signature(ctx, action);
+    let generic_params = super::callables::callable_generic_params(ctx, state, &action.type_params);
+    let default_handler_effects = action
+        .default_handler_effects
+        .as_ref()
+        .map(|row| crate::lower::effect_row::lower_effect_row(ctx, row));
     let signature = EffectActionSignature {
-        default_handler_effects: None,
-        generic_params: action
-            .type_params
-            .iter()
-            .filter_map(|param| {
-                let name = ctx.hir.symbols.get(*param)?.name.clone();
-                let bounds = state
-                    .type_param_bounds
-                    .get(param)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|bound| CheckedSpecBound {
-                        spec: CheckedSpecRef::Source(bound.spec_symbol),
-                        args: bound.args,
-                    })
-                    .collect();
-                Some(CallableGenericParam {
-                    kind: CallableGenericParamKind::Type,
-                    subject: ctx.interner.intern(Type::Named(NamedTypeRef {
-                        source_parameter: Some(*param),
-                        name: name.clone(),
-                    })),
-                    name,
-                    bounds,
-                })
-            })
-            .collect(),
+        parameter_interface: Some(crate::call_interface::source_parameters(
+            ctx.hir,
+            &action.params,
+        )),
+        default_handler_effects,
+        generic_params,
         params,
         output,
         effect_args,
@@ -126,6 +107,17 @@ fn action_effect_selector_signature(
     let mut defaults = Vec::new();
     for selector in &action.selector_params {
         match selector {
+            HirActionSelectorParam::Value { name, kind, .. } => {
+                let kind = kind.join(".");
+                kinds.push(match kind.as_str() {
+                    "MemoryPlace" | "std.memory.MemoryPlace" => EffectActionArgKind::MemoryPlace,
+                    "string" | "std.core.string" => EffectActionArgKind::StringPattern,
+                    _ => EffectActionArgKind::StaticResourcePath { ty: kind },
+                });
+                // Value selectors do not substitute an inferred type binder.
+                names.push(name.clone());
+                defaults.push(None);
+            }
             HirActionSelectorParam::Type { symbol } => {
                 let Some(symbol_data) = ctx.hir.symbols.get(*symbol) else {
                     continue;

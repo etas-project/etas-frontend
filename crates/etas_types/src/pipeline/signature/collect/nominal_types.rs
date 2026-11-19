@@ -62,6 +62,26 @@ fn collect_type_decl(
     _id: HirItemId,
     decl: etas_hir::HirTypeDecl,
 ) {
+    if ctx
+        .signature_facts
+        .source_type_roles
+        .contains_key(&decl.symbol)
+    {
+        if ctx
+            .signature_facts
+            .source_type_roles
+            .get(&decl.symbol)
+            .and_then(|native| ctx.std_registry.symbol(*native))
+            .and_then(|symbol| etas_std::StdSourceRole::from_path(&symbol.qualified_path.join(".")))
+            .is_some_and(etas_std::StdSourceRole::is_represented_type)
+        {
+            state.symbol_types.insert(
+                decl.symbol,
+                ctx.signature_facts.symbol_types[&decl.symbol].clone(),
+            );
+        }
+        return;
+    }
     let name = canonical_source_type_name(ctx, decl.symbol)
         .unwrap_or_else(|| format!("type{}", decl.symbol.0));
     let representation = None;
@@ -75,12 +95,29 @@ fn collect_type_decl(
                 .map(|symbol| symbol.name.clone())
         })
         .collect::<Vec<_>>();
-    let ty = ctx.interner.intern(Type::Nominal(NominalTypeRef {
-        read_only_erased_view: false,
-        name,
-        params: params.clone(),
-        representation,
-    }));
+    // Source overlays complete the already imported declaration in place.
+    let path = name.split('.').map(str::to_owned).collect::<Vec<_>>();
+    let read_only_erased_view = ctx
+        .std_registry
+        .lookup_qualified(&path)
+        .and_then(|symbol| match &symbol.decl {
+            etas_std::StdDecl::Type(declaration) => declaration.code_role,
+            _ => None,
+        })
+        .is_some_and(etas_std::CodeTypeRole::has_read_only_erased_view);
+    let imported = ctx
+        .external_type_paths
+        .get(&path)
+        .copied()
+        .filter(|ty| matches!(ctx.interner.store().get(*ty), Some(Type::Nominal(_))));
+    let ty = imported.unwrap_or_else(|| {
+        ctx.interner.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view,
+            name,
+            params: params.clone(),
+            representation,
+        }))
+    });
     state.symbol_types.insert(
         decl.symbol,
         SymbolTypeFact::NominalType {
@@ -96,6 +133,17 @@ fn collect_enum_decl(
     state: &mut SignaturePipelineState,
     decl: etas_hir::HirEnumDecl,
 ) {
+    if ctx
+        .signature_facts
+        .source_type_roles
+        .contains_key(&decl.symbol)
+    {
+        state.symbol_types.insert(
+            decl.symbol,
+            ctx.signature_facts.symbol_types[&decl.symbol].clone(),
+        );
+        return;
+    }
     let name = canonical_source_type_name(ctx, decl.symbol)
         .unwrap_or_else(|| format!("enum{}", decl.symbol.0));
     let ty = ctx.interner.intern(Type::Enum(EnumTypeRef { name }));
@@ -124,7 +172,47 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 let representation = match decl.body {
                     HirTypeDeclBody::Bodyless => None,
                     HirTypeDeclBody::Representation(ty) => lower_type_ref(ctx, ty),
+                    HirTypeDeclBody::Sequence {
+                        element,
+                        tail,
+                        span,
+                    } => crate::lower::type_ref::lower_sequence_representation(
+                        ctx,
+                        decl.symbol,
+                        &decl.type_params,
+                        element,
+                        tail,
+                        span,
+                    ),
                 };
+                if ctx
+                    .signature_facts
+                    .source_type_roles
+                    .get(&decl.symbol)
+                    .and_then(|id| ctx.std_registry.symbol(*id))
+                    .and_then(|symbol| {
+                        etas_std::StdSourceRole::from_path(&symbol.qualified_path.join("."))
+                    })
+                    .is_some_and(etas_std::StdSourceRole::is_projected_type)
+                {
+                    if let (
+                        Some(Type::Record(record)),
+                        Some(SymbolTypeFact::NominalType { constructor, .. }),
+                    ) = (
+                        representation.and_then(|ty| ctx.interner.store().get(ty)),
+                        ctx.signature_facts.symbol_types.get(&decl.symbol),
+                    ) {
+                        let constructor = crate::TypeId(constructor.0);
+                        ctx.signature_facts
+                            .known_std_types
+                            .projected_fields
+                            .insert(constructor, record.fields.clone());
+                        ctx.signature_facts
+                            .type_generics
+                            .insert(constructor, generics);
+                    }
+                    continue;
+                }
                 if let Some(SymbolTypeFact::NominalType {
                     constructor,
                     representation: slot,
@@ -149,7 +237,20 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                 ctx.signature_facts
                     .type_generics
                     .insert(base, generic_params.clone());
-                let output = if generic_params.is_empty() {
+                let enum_role = ctx
+                    .signature_facts
+                    .source_type_roles
+                    .get(&decl.symbol)
+                    .and_then(|native| ctx.std_registry.symbol(*native))
+                    .map(|native| native.qualified_path.as_slice());
+                let output = if enum_role.is_some_and(|path| path == ["std", "result", "Result"]) {
+                    ctx.interner.intern(Type::Result {
+                        ok: generic_params[0].subject,
+                        err: generic_params[1].subject,
+                    })
+                } else if enum_role.is_some_and(|path| path == ["std", "option", "Option"]) {
+                    ctx.interner.intern(Type::Option(generic_params[0].subject))
+                } else if generic_params.is_empty() {
                     base
                 } else {
                     ctx.interner.intern(Type::Applied {
@@ -189,6 +290,7 @@ pub fn collect_members(ctx: &mut TypePipelineContext<'_>, state: &mut SignatureP
                         variant.symbol,
                         SymbolTypeFact::Flow {
                             signature: CallableSignature {
+                                parameter_interface: None,
                                 generic_params: generic_params.clone(),
                                 params: fields.clone(),
                                 output,

@@ -119,11 +119,121 @@ public type First = { value: i32 };
 public type Second = { value: i32 };
 impl First ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
 impl Second ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
+public alias Sequence<T> = [T];
+public type Cursor<T> = { next: () -> Option<(T, Cursor<T>)> ![] };
+impl Cursor<T> {
+    public flow mapped<U>(self, transform: (T) -> U ![]) -> Cursor<U> ![] {
+        return Cursor { next= () => match (self.next)() {
+            Some((value, remaining)) => Some((transform(value), remaining.mapped(transform))),
+            None => None,
+        } };
+    }
+}
+enum Tree<K, V> { Empty, Branch(Node<K, V>), }
+type Node<K, V> = { key: K, value: V, left: Tree<K, V>, right: Tree<K, V> };
+impl Tree<K, V> {
+    flow walk(self, pending: List<Node<K, V>>) -> Cursor<(K, V)> ![] {
+        return Cursor { next= () => {
+            var tree = self;
+            var stack = pending;
+            while true limit Iterations(18446744073709551615) {
+                match tree {
+                    Tree.Empty => { break; },
+                    Tree.Branch(node) => { stack = node :: stack; tree = node.left; },
+                };
+            }
+            return match stack {
+                [] => None,
+                node :: tail => Some(((node.key, node.value), node.right.walk(tail))),
+            };
+        } };
+    }
+}
+public type SortedMap<K, V> = { private tree: Tree<K, V> };
+impl SortedMap<K, V> {
+    public flow cursor(self) -> Cursor<(K, V)> ![] {
+        return Cursor { next= () => {
+            var tree = self.tree;
+            var stack: List<Node<K, V>> = [];
+            while true limit Iterations(18446744073709551615) {
+                match tree {
+                    Tree.Empty => { break; },
+                    Tree.Branch(node) => { stack = node :: stack; tree = node.left; },
+                };
+            }
+            return match stack {
+                [] => None,
+                node :: tail => Some(((node.key, node.value), node.right.walk(tail))),
+            };
+        } };
+    }
+}
+public type SortedSet<T> = { private tree: Tree<T, unit> };
+impl SortedSet<T> {
+    public flow cursor(self) -> Cursor<T> ![] {
+        return Cursor { next= () => {
+            var tree = self.tree;
+            var stack: List<Node<T, unit>> = [];
+            while true limit Iterations(18446744073709551615) {
+                match tree {
+                    Tree.Empty => { break; },
+                    Tree.Branch(node) => { stack = node :: stack; tree = node.left; },
+                };
+            }
+            return match stack {
+                [] => None,
+                node :: tail => Some((node.key, node.right.walk(tail).mapped((entry: (T, unit)) => {
+                    let (key, _) = entry;
+                    return key;
+                }))),
+            };
+        } };
+    }
+}
+public spec SourceIndex { flow to_usize(self) -> Option<usize> ![]; }
+impl Sequence<T> {
+    public flow fallback(self, value: T) -> T ![] { return value; }
+    public flow indexed<I ~ SourceIndex>(self, index: I) -> Option<T> ![] {
+        let offset = index.to_usize();
+        return None;
+    }
+    public flow lookup(self, index: usize) -> Option<T> ![] {
+        var iterations = 0;
+        while iterations < 1 limit Iterations(1) { iterations = iterations + 1; }
+        return match self[index]? {
+            Ok(value) => Some(value),
+            Err(_) => None,
+        };
+    }
+    public flow cursor(self) -> Cursor<T> ![] {
+        return Cursor { next= () => match self.lookup(0) {
+            Some(value) => Some((value, self.cursor_from(1))),
+            None => None,
+        } };
+    }
+    public flow cursor_from(self, index: usize) -> Cursor<T> ![] {
+        return Cursor { next= () => match self.lookup(index) {
+            Some(value) => Some((value, self.cursor_from(index + 1))),
+            None => None,
+        } };
+    }
+}
+impl string { public flow singleton(self) -> Array<string> ![] { return [self]; } }
+flow wrap(callback: () -> i32 ![]) -> (() -> i32 ![]) ![] {
+    return () => callback();
+}
+impl First {
+    public flow delayed(self, callback: () -> i32 ![]) -> (() -> i32 ![]) ![] {
+        return wrap(callback);
+    }
+}
 "#;
-    let expected = all_methods(source)
+    let mut expected = all_methods(source)
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(expected.len(), 2);
+    assert_eq!(expected.len(), 13);
+    expected.retain(|method| method.name() != "walk");
+    let checked = checked(source);
     let artifact = etas_frontend::build_package_metadata_artifact_from_checked(
         etas_frontend::PackageMetadataBuildInput {
             definition_origin: Some(package()),
@@ -138,7 +248,7 @@ impl Second ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
             dependencies: vec![],
             tool_bindings: vec![],
         },
-        &checked(source),
+        &checked,
     )
     .expect("public impl method descriptors");
     let (_, metadata) = etas_package_metadata::package_metadata_from_artifact(
@@ -146,6 +256,38 @@ impl Second ~ Encoder { flow encode(self) -> i32 ![] { return self.value; } }
         &artifact.bytes,
     )
     .unwrap();
+    assert_eq!(metadata.public_metadata.methods.len(), 12);
+    let cursor = metadata
+        .public_metadata
+        .methods
+        .iter()
+        .find(|method| {
+            method.identity.name() == "cursor"
+                && method
+                    .identity
+                    .implementation()
+                    .subject()
+                    .declaration()
+                    .last()
+                    .map(String::as_str)
+                    == Some("Sequence")
+        })
+        .unwrap();
+    assert!(
+        cursor.callable.values.iter().skip(1).any(|node| {
+            node.default_handler_effects
+                .behavior
+                .as_ref()
+                .is_some_and(|behavior| {
+                    behavior.direct.requirements.limits.iter().any(|limit| {
+                        limit.kind == etas_package_metadata::MethodLimitKind::Iterations
+                            && limit.value
+                                == Some(etas_package_metadata::MethodLimitValue::Count(1))
+                    })
+                })
+        }),
+        "returned cursor must retain its nested iteration budget"
+    );
     let headers = metadata
         .public_metadata
         .definition_descriptors
@@ -188,7 +330,7 @@ fn binary_method_table_preserves_inherent_associated_and_spec_receiver_abi() {
     let methods = &metadata.public_metadata.methods;
     assert_eq!(
         methods.len(),
-        3,
+        4,
         "private methods are not exported: {methods:?}"
     );
     let constructor = methods
@@ -199,6 +341,15 @@ fn binary_method_table_preserves_inherent_associated_and_spec_receiver_abi() {
         constructor.receiver,
         etas_package_metadata::MethodReceiver::Associated
     );
+    let copy = methods
+        .iter()
+        .find(|method| method.identity.name() == "copy")
+        .unwrap();
+    assert_eq!(
+        copy.receiver,
+        etas_package_metadata::MethodReceiver::Associated
+    );
+    assert_eq!(copy.root().unwrap().param_names, ["source"]);
     let convert = methods
         .iter()
         .find(|method| method.identity.name() == "convert")

@@ -80,6 +80,9 @@ fn type_satisfies_spec(
     args: &[TypeId],
     visited: &mut HashSet<(TypeId, etas_hir::SymbolId)>,
 ) -> bool {
+    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Source(spec_symbol)) {
+        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    }
     if let Some(identity) = facts.external_aliases.get(&spec_symbol) {
         return external::type_satisfies(store, facts, ty, identity, args);
     }
@@ -117,6 +120,9 @@ pub(crate) fn std_type_satisfies_spec(
     spec: &[String],
     args: &[TypeId],
 ) -> bool {
+    if crate::numeric_family::is_number_spec(facts, &CheckedSpecRef::Std(spec.to_vec())) {
+        return args.is_empty() && crate::numeric_family::supports(store, facts, ty);
+    }
     if std_type_param_bound_satisfies_spec(store, facts, ty, spec, args) {
         return true;
     }

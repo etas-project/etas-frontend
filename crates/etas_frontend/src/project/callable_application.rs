@@ -19,6 +19,7 @@ pub struct CheckedCallableApplication {
     program: CheckedProgram,
     owner: HirItemId,
     arguments: Vec<CallableGenericArg>,
+    owner_bindings: Vec<(TypeId, TypeId)>,
     signature: CallableSignature,
     presented_type: Option<TypeId>,
 }
@@ -79,6 +80,9 @@ impl CheckedCallableApplication {
     }
     pub fn arguments(&self) -> &[CallableGenericArg] {
         &self.arguments
+    }
+    pub fn owner_bindings(&self) -> &[(TypeId, TypeId)] {
+        &self.owner_bindings
     }
     pub fn signature(&self) -> &CallableSignature {
         &self.signature
@@ -181,10 +185,11 @@ impl CheckedProgramData {
             let (types, rows) = instance
                 .bindings(Some(template))
                 .map_err(CallableApplicationError::InvalidPreparedPlan)?;
-            applications.push(self.checked_callable_application(
+            applications.push(self.checked_callable_application_with_owner_bindings(
                 owner,
                 &types.into_iter().collect::<Vec<_>>(),
                 &rows.into_iter().collect::<Vec<_>>(),
+                &instance.owner_bindings,
             )?);
         }
         if let Some(control) = control {
@@ -200,6 +205,33 @@ impl CheckedProgramData {
         owner: HirItemId,
         type_bindings: &[(String, TypeId)],
         effect_row_bindings: &[(String, EffectRowRef)],
+    ) -> Result<CheckedCallableApplication, CallableApplicationError> {
+        self.callable_application(owner, type_bindings, effect_row_bindings, None)
+    }
+
+    /// Select a prepared method application by both method arguments and the
+    /// canonical generic subjects of its enclosing impl.
+    pub fn checked_callable_application_with_owner_bindings(
+        self: &Arc<Self>,
+        owner: HirItemId,
+        type_bindings: &[(String, TypeId)],
+        effect_row_bindings: &[(String, EffectRowRef)],
+        owner_bindings: &[(TypeId, TypeId)],
+    ) -> Result<CheckedCallableApplication, CallableApplicationError> {
+        self.callable_application(
+            owner,
+            type_bindings,
+            effect_row_bindings,
+            Some(owner_bindings),
+        )
+    }
+
+    fn callable_application(
+        self: &Arc<Self>,
+        owner: HirItemId,
+        type_bindings: &[(String, TypeId)],
+        effect_row_bindings: &[(String, EffectRowRef)],
+        owner_bindings: Option<&[(TypeId, TypeId)]>,
     ) -> Result<CheckedCallableApplication, CallableApplicationError> {
         let invalid = |reason: &str| CallableApplicationError::InvalidBinding(reason.into());
         let inconsistent =
@@ -272,10 +304,13 @@ impl CheckedProgramData {
                 }
             }
         }
-        if !arguments.is_empty() {
+        let owner_parameters =
+            super::instantiation::owner_parameters(&self.hir, &self.types, owner);
+        let mut checked_owner_bindings = Vec::new();
+        if !arguments.is_empty() || !owner_parameters.is_empty() {
             let prepared = self
                 .native_instantiations
-                .checked_instance(owner, &arguments)
+                .checked_instance_with_owner_bindings(owner, &arguments, owner_bindings)
                 .map_err(CallableApplicationError::InvalidPreparedPlan)?
                 .ok_or(CallableApplicationError::UnpreparedApplication(owner))?;
             // The row set has been proved equal. Preserve the prepared spelling
@@ -284,11 +319,17 @@ impl CheckedProgramData {
                 .bindings(Some(template))
                 .map_err(CallableApplicationError::InvalidPreparedPlan)?
                 .1;
+            checked_owner_bindings = prepared.owner_bindings.clone();
+        } else if owner_bindings.is_some_and(|bindings| !bindings.is_empty()) {
+            return Err(invalid("callable has no implementation owner parameters"));
         }
+        let owner_types = checked_owner_bindings.iter().copied().collect();
         let mut engine = TypeSubstitutionEngine::existing(&self.type_store, &names)
+            .with_type_parameters(&owner_types)
             .with_source_parameters(&source_parameters)
             .with_effect_arguments(&rows);
         let signature = CallableSignature {
+            parameter_interface: None,
             generic_params: Vec::new(),
             params: template
                 .params
@@ -319,6 +360,7 @@ impl CheckedProgramData {
             program: self.clone(),
             owner,
             arguments,
+            owner_bindings: checked_owner_bindings,
             signature,
             presented_type: None,
         })

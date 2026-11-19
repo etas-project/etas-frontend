@@ -50,8 +50,20 @@ pub(super) fn solve<E>(
             "try operand value does not match Result ok type",
         );
 
-        // This is type information from a checked invocation, not a second
+        // This is type information from a checked operation, not a second
         // effect inference pass. Effects still proves the actual unique escape.
+        if let Some(captured) = report.checked_index_errors.get(source).copied() {
+            let target = resolve_known_substitutions(store, report, *error);
+            unify(
+                store,
+                report,
+                captured,
+                target,
+                *origin,
+                "captured IndexError type does not match Result error type",
+            );
+            continue;
+        }
         let Some(row) = report.invocation_effects.get(source).cloned() else {
             continue;
         };

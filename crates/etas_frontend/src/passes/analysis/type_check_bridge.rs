@@ -4,6 +4,7 @@ use etas_core::{Diagnostic, TypeDiagnosticCode};
 
 mod behavior_types;
 mod impl_methods;
+mod parameter_interfaces;
 pub(super) mod reflection;
 
 use crate::{
@@ -65,7 +66,19 @@ fn external_signature_input(
     let catalog = context.module_catalog.as_ref().ok_or_else(|| {
         crate::code::descriptor::ProjectionError::MissingIdentity("module catalog".into())
     })?;
-    let anchors = crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
+    let mut anchors =
+        crate::project::ExternalImportAnchorIndex::build(imports, environment, catalog);
+    let standard = context.standard_library.as_ref().map(|library| {
+        environment
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == library.package.import_root)
+            .expect("validated standard package")
+            .id
+    });
+    if let Some(package) = standard {
+        anchors.add_standard_library(package, hir, &context.std_registry);
+    }
     let mut input = etas_types::ExternalSignatureInput {
         package_anchors: environment
             .external_packages
@@ -80,7 +93,7 @@ fn external_signature_input(
             .external_public_metadata
             .iter()
             .filter(|metadata| anchors.package_span(metadata.package).is_some())
-            .map(convert_external_metadata)
+            .map(|metadata| convert_external_metadata(metadata, environment))
             .collect::<Result<_, _>>()?,
         symbol_bindings: Vec::new(),
         source_spec_bindings: Vec::new(),
@@ -201,6 +214,28 @@ fn external_signature_input(
                     span: member.span,
                 }
             }));
+    }
+    if let Some(package) = standard {
+        for symbol in hir.symbols.iter() {
+            let etas_hir::SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                continue;
+            };
+            let Some(declaration) = context.std_registry.lookup_qualified(path) else {
+                continue;
+            };
+            let Some(key) = context.std_registry.declaration_key(declaration.id) else {
+                continue;
+            };
+            input
+                .symbol_bindings
+                .push(etas_types::ExternalSymbolBindingInput {
+                    symbol: symbol.id,
+                    package: external_package_key(package),
+                    path: declaration.qualified_path.clone(),
+                    span: symbol.definition_span,
+                });
+            input.definition_bindings.push((symbol.id, key.clone()));
+        }
     }
     reflection::apply(context, &mut input, diagnostics);
     reflection::canonicalize_re_exports(context, &mut input, diagnostics);
@@ -359,8 +394,14 @@ fn external_effect_action_path(
 
 fn convert_external_metadata(
     metadata: &ProjectExternalPublicMetadataInput,
+    environment: &crate::ProjectEnvironmentInput,
 ) -> Result<etas_types::ExternalPublicMetadataInput, crate::code::descriptor::ProjectionError> {
+    let (parameter_interfaces, method_parameter_interfaces) =
+        parameter_interfaces::collect(environment, metadata)?;
     Ok(etas_types::ExternalPublicMetadataInput {
+        parameter_interfaces,
+        method_parameter_interfaces,
+        scoped_callbacks: metadata.scoped_callbacks.clone(),
         package: external_package_key(metadata.package),
         behavior_types: behavior_types::collect(metadata)?,
         types: metadata
@@ -458,6 +499,7 @@ fn convert_external_spec_signature(
             .iter()
             .map(|method| etas_types::ExternalSpecMethodInput {
                 name: method.name.clone(),
+                updating_receiver: method.updating_receiver,
                 receiver_param: method.receiver_param,
                 path: method.path.clone(),
                 signature: method
@@ -491,6 +533,8 @@ fn convert_external_spec_impl(
     implementation: &crate::ProjectExternalSpecImplInput,
 ) -> Result<etas_types::ExternalSpecImplInput, crate::code::descriptor::ProjectionError> {
     Ok(etas_types::ExternalSpecImplInput {
+        owner: implementation.owner.clone(),
+        generic_params: convert_external_generic_params(&implementation.generic_params),
         self_type: convert_external_type(&implementation.self_type),
         spec: implementation.spec.clone(),
         args: implementation
@@ -558,6 +602,12 @@ fn convert_external_flow_signature(
     signature: &ProjectExternalFlowSignatureInput,
 ) -> etas_types::ExternalFlowSignatureInput {
     etas_types::ExternalFlowSignatureInput {
+        definition: signature.definition.clone(),
+        parameter_interface: parameter_interfaces::from_declaration(
+            &signature.param_names,
+            signature.params.len(),
+            &signature.parameter_defaults,
+        ),
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
         param_names: signature.param_names.clone(),
@@ -595,6 +645,11 @@ fn convert_external_action_signature(
     signature: &ProjectExternalActionSignatureInput,
 ) -> etas_types::ExternalActionSignatureInput {
     etas_types::ExternalActionSignatureInput {
+        parameter_interface: parameter_interfaces::from_declaration(
+            &signature.param_names,
+            signature.params.len(),
+            &signature.parameter_defaults,
+        ),
         path: signature.path.clone(),
         generic_params: convert_external_generic_params(&signature.generic_params),
         params: signature.params.iter().map(convert_external_type).collect(),
@@ -611,6 +666,10 @@ fn convert_external_action_signature(
             .collect(),
         output: convert_external_type(&signature.output),
         returns_never: signature.returns_never,
+        default_handler_effects: signature
+            .default_handler_effects
+            .as_ref()
+            .map(convert_external_effect_row),
     }
 }
 
@@ -708,6 +767,9 @@ pub(super) fn convert_external_type(
     ty: &ProjectExternalTypeInput,
 ) -> etas_types::ExternalTypeInput {
     match ty {
+        ProjectExternalTypeInput::AgentContext(method) => {
+            etas_types::ExternalTypeInput::AgentContext(method.clone())
+        }
         ProjectExternalTypeInput::Existential { bounds } => {
             etas_types::ExternalTypeInput::Existential {
                 bounds: bounds
@@ -860,6 +922,13 @@ fn std_signature_input(
 ) -> etas_types::StdSignatureInput {
     let registry = context.std_registry.as_ref();
     let mut input = etas_types::StdSignatureInput::default();
+    if context.input.options.standard_library_mode == crate::StandardLibraryMode::SourceBootstrap {
+        input.role_bindings = super::super::hir::native_role::bindings(
+            hir,
+            context.input.options.standard_library_mode,
+        )
+        .0;
+    }
 
     if let Some(resolved_imports) = context.resolved_imports.as_ref() {
         for resolved in &resolved_imports.imports {
@@ -923,10 +992,17 @@ fn std_signature_input(
     }
 
     for symbol in hir.symbols.iter() {
+        if hir.source_import_targets.contains_key(&symbol.id) {
+            continue;
+        }
         let etas_hir::SymbolDef::ImportAlias { path, origin } = &symbol.def else {
             continue;
         };
-        if *origin != etas_hir::ImportAliasOrigin::StdPrelude {
+        if !matches!(
+            origin,
+            etas_hir::ImportAliasOrigin::StdPrelude
+                | etas_hir::ImportAliasOrigin::StdEnumVariant { .. }
+        ) {
             continue;
         }
         let Some(std_symbol) = registry.lookup_qualified(path) else {
@@ -940,6 +1016,13 @@ fn std_signature_input(
             });
     }
 
+    if context.standard_library.is_some() {
+        input.symbol_bindings.retain(|binding| {
+            registry
+                .lookup_qualified(&binding.qualified_path)
+                .is_none_or(|symbol| registry.declaration_key(symbol.id).is_none())
+        });
+    }
     input
 }
 

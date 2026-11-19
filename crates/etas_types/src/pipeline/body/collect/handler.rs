@@ -115,13 +115,31 @@ pub(super) fn collect_handler_for_requests<E>(
                 } else {
                     symbol.name.clone()
                 };
-                if let ResolveResult::Resolved(owner) = arm.action.effect.path.resolution
-                    && let Some(SymbolDef::ImportAlias { path, .. }) =
-                        ctx.ctx.hir.symbols.get(owner).map(|symbol| &symbol.def)
-                    && matches!(ctx.ctx.std_registry.lookup_qualified(path).map(|symbol| &symbol.decl),
+                if let ResolveResult::Resolved(owner) = arm.action.effect.path.resolution {
+                    let source = ctx
+                        .ctx
+                        .hir
+                        .source_import_targets
+                        .get(&owner)
+                        .copied()
+                        .unwrap_or(owner);
+                    let declaration = ctx
+                        .ctx
+                        .source_type_role(source)
+                        .and_then(|id| ctx.ctx.std_registry.symbol(id))
+                        .or_else(|| {
+                            match ctx.ctx.hir.symbols.get(owner).map(|symbol| &symbol.def) {
+                                Some(SymbolDef::ImportAlias { path, .. }) => {
+                                    ctx.ctx.std_registry.lookup_qualified(path)
+                                }
+                                _ => None,
+                            }
+                        });
+                    if matches!(declaration.map(|symbol| &symbol.decl),
                         Some(etas_std::StdDecl::Effect(effect)) if effect.core && effect.name == "Error")
-                {
-                    name = "Error".into();
+                    {
+                        name = "Error".into();
+                    }
                 }
                 handled.push(EffectRef {
                     name,
@@ -176,14 +194,23 @@ pub(super) fn collect_handler_for_requests<E>(
                 HandlerProducedEffects::Infer => None,
                 HandlerProducedEffects::Explicit(row) => Some(row.clone()),
             };
-            let continuation_ty = ctx
-                .ctx
-                .interner
-                .intern(Type::Continuation(ContinuationType {
-                    action_output: resume_ty,
-                    handled_answer: expected_result,
-                    residual_effects: residual_effects.clone(),
-                }));
+            let continuation_ty = if ctx.ctx.hir.source_standard_types {
+                match ctx.ctx.known_std_types().execution.continuation {
+                    Some(owner) => ctx.ctx.interner.intern(Type::Applied {
+                        constructor: crate::TypeConstructorId(owner.0),
+                        args: vec![resume_ty],
+                    }),
+                    None => ctx.ctx.unknown_type(arm.span, "continuation binding requires the selected std.task.Continuation declaration"),
+                }
+            } else {
+                ctx.ctx
+                    .interner
+                    .intern(Type::Continuation(ContinuationType {
+                        action_output: resume_ty,
+                        handled_answer: expected_result,
+                        residual_effects: residual_effects.clone(),
+                    }))
+            };
             collect_pattern(ctx, continuation, continuation_ty)?;
             if action_signature.as_ref().is_some_and(|signature| {
                 matches!(
@@ -215,7 +242,14 @@ pub(super) fn collect_handler_for_requests<E>(
         ctx.state.handler_finish_stack.push(expected_result);
         ctx.state.handler_finish_candidates.push(Vec::new());
         ctx.state.handler_depth += 1;
+        let agent_context = super::agent_context::handler_context(ctx, &arm);
+        if let Some(context) = agent_context {
+            ctx.state.agent_contexts.push(context);
+        }
         let collected = collect_block(ctx, arm.body, None);
+        if agent_context.is_some() {
+            ctx.state.agent_contexts.pop();
+        }
         ctx.state.handler_depth -= 1;
         if let Some(candidates) = ctx.state.handler_finish_candidates.pop() {
             finishes.extend(candidates);

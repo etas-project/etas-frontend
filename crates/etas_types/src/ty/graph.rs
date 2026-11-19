@@ -177,7 +177,8 @@ pub fn checked_type_graph(
             | Type::SchedulerHandle
             | Type::Prompt
             | Type::PromptPart
-            | Type::MemoryPlace(_) => {}
+            | Type::MemoryPlace(_)
+            | Type::AgentContext(_) => {}
         }
     }
     Ok(walker.visited)

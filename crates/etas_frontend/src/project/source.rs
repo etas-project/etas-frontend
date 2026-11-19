@@ -119,7 +119,9 @@ impl SourceFile {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
+)]
 pub enum SourceKind {
     SourceProjectFile,
     DependencySourceOverlay {

@@ -504,6 +504,26 @@ impl Parser<'_> {
     }
 
     fn pattern_inner(&mut self) -> Pattern {
+        let head = self.pattern_atom();
+        if self.cursor.eat_punct(Punct::ColonColon).is_some() {
+            let tail = self.pattern();
+            Pattern::ListCons {
+                span: head.span().cover(tail.span()),
+                head: Box::new(head),
+                tail: Box::new(tail),
+            }
+        } else {
+            head
+        }
+    }
+
+    fn pattern_atom(&mut self) -> Pattern {
+        if let Some(open) = self.eat_open_punct(Punct::LBracket) {
+            let end = self.expect_punct(Punct::RBracket, "expected `]` for empty List pattern");
+            return Pattern::EmptyList {
+                span: open.span.cover(end),
+            };
+        }
         if let Some(token) = self.eat_open_punct(Punct::LParen) {
             let elems = self.comma_list(Punct::RParen, |this| this.pattern());
             let end = self.expect_punct(Punct::RParen, "expected `)` after tuple pattern");

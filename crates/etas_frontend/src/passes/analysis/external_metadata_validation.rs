@@ -23,9 +23,11 @@ mod scope_tests;
 #[cfg(test)]
 mod source_origin_tests;
 
+mod default_behavior;
 mod dependencies;
 mod method_table;
 mod origins;
+mod parameter_defaults;
 mod requests;
 mod specs;
 mod trace_aliases;
@@ -50,7 +52,10 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _pass_context: &PassContext<ProjectContext>,
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
-        let environment = context.input.environment.clone();
+        let mut environment = context.input.environment.clone();
+        if let Some(library) = &context.standard_library {
+            library.append_environment(&mut environment);
+        }
         let Some(sources) = context.sources.as_ref() else {
             return PassResult::failed("source package validation requires the source set");
         };
@@ -510,9 +515,10 @@ fn validate_external_environment(
         &exported_paths,
         std_registry,
     )?;
+    parameter_defaults::validate(environment)?;
     validate_trace_spec_identities(environment, &packages)?;
+    method_table::validate(environment, std_registry)?;
     specs::validate(environment)?;
-    method_table::validate(environment)?;
     validate_dependency_effect_metadata(environment, &packages, &effect_paths, &action_paths)?;
     validate_tool_bindings(environment, &packages, &tool_paths)?;
     if let Some(metadata) = environment
@@ -595,7 +601,7 @@ fn validate_trace_spec_identities(
             if let Some(previous) = summaries.insert(&summary.definition, &summary.alternatives) {
                 if !comparator
                     .alternatives(previous, &summary.alternatives)
-                    .map_err(&fail)?
+                    .map_err(fail)?
                 {
                     return Err(fail(
                         "conflicting metadata for trace spec definition identity".into(),
@@ -862,8 +868,55 @@ pub(super) fn validate_external_metadata(
     metadata: &ProjectExternalPublicMetadataInput,
     std_registry: &etas_std::StdRegistry,
 ) -> Result<(), String> {
-    let mut callable_scopes = HashMap::<Vec<String>, GenericScope>::new();
+    let mut callable_scopes = HashMap::new();
     let mut declaration_paths = HashSet::new();
+    let mut flow_groups =
+        HashMap::<Vec<String>, Vec<&crate::ProjectExternalFlowSignatureInput>>::new();
+    let mut scoped_targets = BTreeSet::new();
+    for contract in &metadata.scoped_callbacks {
+        if contract.parameters.is_empty()
+            || contract
+                .parameters
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || !scoped_targets.insert(&contract.target)
+        {
+            return Err(
+                "scoped callback contract has empty, repeated or unordered parameter slots".into(),
+            );
+        }
+        let valid = match &contract.target {
+            etas_package_metadata::CallableContractTarget::Item(path) => metadata
+                .flows
+                .iter()
+                .find(|flow| &flow.path == path)
+                .is_some_and(|flow| {
+                    flow.param_names.len() == flow.params.len()
+                        && contract.parameters.iter().all(|slot| {
+                            matches!(
+                                flow.params.get(*slot as usize),
+                                Some(ProjectExternalTypeInput::Function { .. })
+                            )
+                        })
+                }),
+            etas_package_metadata::CallableContractTarget::Method(identity) => {
+                let method = metadata
+                    .methods
+                    .iter()
+                    .find(|method| &method.identity == identity)
+                    .ok_or("scoped callback contract has no published method")?;
+                let root = method.root().map_err(|error| error.to_string())?;
+                contract.parameters.iter().all(|slot| {
+                    root.params
+                        .get(*slot as usize)
+                        .is_some_and(|ty| ty.kind == etas_package_metadata::TypeKind::Function)
+                })
+            }
+        };
+        if !valid {
+            return Err("scoped callback contract differs from its callable signature".into());
+        }
+    }
     for declaration in &metadata.enums {
         if !matches!(&declaration.ty, Some(ProjectExternalTypeInput::Enum { path, .. }) if *path == declaration.path)
         {
@@ -896,7 +949,20 @@ pub(super) fn validate_external_metadata(
     }
     for flow in &metadata.flows {
         validate_visibility(&flow.visibility)?;
-        register_declaration(&mut declaration_paths, &flow.path)?;
+        let group = flow_groups.entry(flow.path.clone()).or_default();
+        if group.is_empty() {
+            register_declaration(&mut declaration_paths, &flow.path)?;
+        } else if flow.definition.is_none()
+            || group.iter().any(|previous| {
+                previous.definition.is_none() || previous.definition == flow.definition
+            })
+        {
+            return Err(format!(
+                "flow overload `{}` has no distinct checked definition",
+                flow.path.join(".")
+            ));
+        }
+        group.push(flow);
         let scope = validate_callable(
             &flow.path,
             &flow.generic_params,
@@ -904,7 +970,7 @@ pub(super) fn validate_external_metadata(
             &flow.output,
             flow.effects.as_ref(),
         )?;
-        callable_scopes.insert(flow.path.clone(), scope);
+        callable_scopes.insert((flow.path.clone(), flow.definition.clone()), scope);
     }
     for agent in &metadata.agents {
         validate_visibility(&agent.visibility)?;
@@ -929,7 +995,7 @@ pub(super) fn validate_external_metadata(
             output,
             agent.effects.as_ref(),
         )?;
-        callable_scopes.insert(agent.path.clone(), scope);
+        callable_scopes.insert((agent.path.clone(), None), scope);
     }
     for tool in &metadata.tools {
         validate_visibility(&tool.visibility)?;
@@ -941,7 +1007,7 @@ pub(super) fn validate_external_metadata(
             &tool.output,
             tool.effects.as_ref(),
         )?;
-        callable_scopes.insert(tool.path.clone(), scope);
+        callable_scopes.insert((tool.path.clone(), None), scope);
     }
     for schema in &metadata.tool_schemas {
         validate_path(&schema.path, "tool schema path")?;
@@ -954,15 +1020,28 @@ pub(super) fn validate_external_metadata(
         serde_json::from_str::<serde_json::Value>(&schema.schema_json)
             .map_err(|error| format!("tool schema is not valid JSON: {error}"))?;
     }
+    let mut action_groups =
+        HashMap::<Vec<String>, Vec<&crate::ProjectExternalActionSignatureInput>>::new();
     for action in &metadata.actions {
         validate_visibility(&action.visibility)?;
-        register_declaration(&mut declaration_paths, &action.path)?;
+        let group = action_groups.entry(action.path.clone()).or_default();
+        if group.is_empty() {
+            register_declaration(&mut declaration_paths, &action.path)?;
+        } else if group.iter().any(|previous| {
+            previous.generic_params == action.generic_params && previous.params == action.params
+        }) {
+            return Err(format!(
+                "action overload `{}` repeats its input signature",
+                action.path.join(".")
+            ));
+        }
+        group.push(action);
         let scope = validate_callable(
             &action.path,
             &action.generic_params,
             &action.params,
             &action.output,
-            None,
+            action.default_handler_effects.as_ref(),
         )?;
         if action.effect_args.len() != action.selector_param_names.len()
             || action.effect_args.len() != action.selector_defaults.len()
@@ -1003,7 +1082,9 @@ pub(super) fn validate_external_metadata(
         }
     }
     for value in &metadata.values {
-        callable_scopes.entry(value.path.clone()).or_default();
+        callable_scopes
+            .entry((value.path.clone(), None))
+            .or_default();
     }
     validate_spec_facts(metadata)?;
     validate_effect_summaries(metadata, &callable_scopes, std_registry)?;
@@ -1414,6 +1495,9 @@ fn validate_spec_facts(metadata: &ProjectExternalPublicMetadataInput) -> Result<
             if method.name.is_empty() {
                 return Err("spec method name must not be empty".to_owned());
             }
+            if method.updating_receiver && method.receiver_param.is_none() {
+                return Err("updating spec method requires an implicit receiver".into());
+            }
             if let Some(index) = method.receiver_param {
                 let callable = method
                     .signature
@@ -1625,7 +1709,7 @@ fn trace_callable_parameter(
 
 fn validate_effect_summaries(
     metadata: &ProjectExternalPublicMetadataInput,
-    callable_scopes: &HashMap<Vec<String>, GenericScope>,
+    callable_scopes: &HashMap<(Vec<String>, Option<etas_code::DefinitionKey>), GenericScope>,
     std_registry: &etas_std::StdRegistry,
 ) -> Result<(), String> {
     let mut seen = HashSet::new();
@@ -1641,13 +1725,14 @@ fn validate_effect_summaries(
             );
         }
         validate_path(&summary.item, "effect summary item path")?;
-        if !seen.insert(summary.item.clone()) {
+        if !seen.insert((summary.item.clone(), summary.definition.clone())) {
             return Err(format!(
                 "external callable `{}` has duplicate solved effect summaries",
                 summary.item.join(".")
             ));
         }
-        let Some(scope) = callable_scopes.get(&summary.item) else {
+        let Some(scope) = callable_scopes.get(&(summary.item.clone(), summary.definition.clone()))
+        else {
             return Err(format!(
                 "effect summary `{}` has no matching callable or exported value signature",
                 summary.item.join(".")
@@ -1675,7 +1760,9 @@ fn validate_effect_summaries(
         let (parameter_names, parameter_types) = metadata
             .flows
             .iter()
-            .find(|callable| callable.path == summary.item)
+            .find(|callable| {
+                callable.path == summary.item && callable.definition == summary.definition
+            })
             .map(|callable| (callable.param_names.as_slice(), callable.params.as_slice()))
             .or_else(|| {
                 metadata
@@ -1700,10 +1787,18 @@ fn validate_effect_summaries(
                     .then_some(name.clone())
             })
             .collect::<Vec<_>>();
+        if let Some(behavior) = summary
+            .default_handler_effects
+            .as_ref()
+            .and_then(|defaults| defaults.behavior.as_ref())
+        {
+            default_behavior::validate(behavior, scope, parameter_names)?;
+        }
         validate_action_trace(
             &summary.action_trace,
             scope,
             &callable_parameters,
+            parameter_names,
             parameter_names.len(),
         )?;
         if let Some(behavior) = &summary.behavior {
@@ -1753,12 +1848,18 @@ fn validate_effect_summaries(
                         .into(),
                 );
             }
-            etas_package_metadata::validate_callable_value_graph(graph)
-                .map_err(|error| error.to_string())?;
+            etas_package_metadata::validate_callable_value_graph(graph).map_err(|error| {
+                format!(
+                    "returned callable graph for `{}`: {error}",
+                    summary.item.join(".")
+                )
+            })?;
             let generics = metadata
                 .flows
                 .iter()
-                .find(|callable| callable.path == summary.item)
+                .find(|callable| {
+                    callable.path == summary.item && callable.definition == summary.definition
+                })
                 .map(|callable| &callable.generic_params)
                 .or_else(|| {
                     metadata
@@ -1788,34 +1889,44 @@ fn validate_effect_summaries(
                 .collect::<Vec<_>>();
             graph
                 .validate_references(Some((parameter_types.len(), &generic_params)))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    format!(
+                        "returned callable graph for `{}`: {error}",
+                        summary.item.join(".")
+                    )
+                })?;
         }
     }
     let required = metadata
         .flows
         .iter()
-        .map(|callable| &callable.path)
+        .map(|callable| (callable.path.clone(), callable.definition.clone()))
         .chain(
             metadata
                 .agents
                 .iter()
                 .filter(|agent| agent.output.is_some())
-                .map(|callable| &callable.path),
+                .map(|callable| (callable.path.clone(), None)),
         )
-        .chain(metadata.tools.iter().map(|callable| &callable.path))
+        .chain(
+            metadata
+                .tools
+                .iter()
+                .map(|callable| (callable.path.clone(), None)),
+        )
         .chain(metadata.values.iter().filter_map(|value| {
             matches!(
                 value.ty.as_ref(),
                 Some(ProjectExternalTypeInput::Function { .. })
                     | Some(ProjectExternalTypeInput::Handler { .. })
             )
-            .then_some(&value.path)
+            .then_some((value.path.clone(), None))
         }));
     for item in required {
-        if !seen.contains(item) {
+        if !seen.contains(&item) {
             return Err(format!(
                 "external callable `{}` does not provide a solved effect summary",
-                item.join(".")
+                item.0.join(".")
             ));
         }
     }
@@ -1826,23 +1937,52 @@ fn validate_action_trace(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
+    projection_roots: &[String],
     root_parameter_count: usize,
 ) -> Result<(), String> {
     validate_action_trace_resource_bounds(trace)?;
-    validate_action_trace_semantics(trace, scope, parameter_names, root_parameter_count)
+    validate_action_trace_semantics(
+        trace,
+        scope,
+        parameter_names,
+        projection_roots,
+        root_parameter_count,
+    )
 }
 
 fn validate_action_trace_semantics(
     trace: &ProjectExternalActionTraceInput,
     scope: &GenericScope,
     parameter_names: &[String],
+    projection_roots: &[String],
     root_parameter_count: usize,
 ) -> Result<(), String> {
     match trace {
+        ProjectExternalActionTraceInput::DefaultHandler { guards, body } => {
+            if guards.is_empty() {
+                return Err("external default-handler trace has no guard".into());
+            }
+            for guard in guards {
+                validate_effect_ref(guard, scope)?;
+            }
+            validate_action_trace_semantics(
+                body,
+                scope,
+                parameter_names,
+                projection_roots,
+                root_parameter_count,
+            )
+        }
         ProjectExternalActionTraceInput::Empty => Ok(()),
         ProjectExternalActionTraceInput::Event { action, .. } => validate_effect_ref(action, scope),
         ProjectExternalActionTraceInput::ParameterCall { parameter } => {
-            requests::validate_target(parameter, scope, parameter_names, root_parameter_count)
+            let roots = match parameter {
+                etas_package_metadata::CallableRequestTarget::ParameterProjection { .. } => {
+                    projection_roots
+                }
+                _ => parameter_names,
+            };
+            requests::validate_target(parameter, scope, roots, root_parameter_count)
         }
         ProjectExternalActionTraceInput::Seq(children) => {
             for child in children {
@@ -1850,6 +1990,7 @@ fn validate_action_trace_semantics(
                     child,
                     scope,
                     parameter_names,
+                    projection_roots,
                     root_parameter_count,
                 )?;
             }
@@ -1864,14 +2005,19 @@ fn validate_action_trace_semantics(
                     child,
                     scope,
                     parameter_names,
+                    projection_roots,
                     root_parameter_count,
                 )?;
             }
             Ok(())
         }
-        ProjectExternalActionTraceInput::Repeat(child) => {
-            validate_action_trace_semantics(child, scope, parameter_names, root_parameter_count)
-        }
+        ProjectExternalActionTraceInput::Repeat(child) => validate_action_trace_semantics(
+            child,
+            scope,
+            parameter_names,
+            projection_roots,
+            root_parameter_count,
+        ),
         ProjectExternalActionTraceInput::UnknownOrder(actions) => {
             for action in actions {
                 validate_effect_ref(action, scope)?;
@@ -1886,7 +2032,13 @@ fn validate_action_trace_semantics(
                 validate_effect_ref(action, scope)?;
             }
             for parameter in parameter_calls {
-                requests::validate_target(parameter, scope, parameter_names, root_parameter_count)?;
+                let roots = match parameter {
+                    etas_package_metadata::CallableRequestTarget::ParameterProjection {
+                        ..
+                    } => projection_roots,
+                    _ => parameter_names,
+                };
+                requests::validate_target(parameter, scope, roots, root_parameter_count)?;
             }
             Ok(())
         }
@@ -2127,6 +2279,7 @@ fn validate_type_semantics(
             validate_type_semantics(inner, scope, allow_unbound_vars)
         }
         ProjectExternalTypeInput::Prompt | ProjectExternalTypeInput::PromptPart => Ok(()),
+        ProjectExternalTypeInput::AgentContext(_) => Ok(()),
         ProjectExternalTypeInput::ResourceHandle { name, args } => {
             validate_name(name, "resource handle name")?;
             validate_types_semantics(args, scope, allow_unbound_vars)
@@ -2201,7 +2354,7 @@ fn validate_effect_arg(
 }
 
 const MAX_EXTERNAL_METADATA_GRAPH_DEPTH: usize = 64;
-const MAX_EXTERNAL_METADATA_GRAPH_NODES: usize = 100_000;
+const MAX_EXTERNAL_METADATA_GRAPH_NODES: usize = etas_package_metadata::MAX_METADATA_GRAPH_NODES;
 
 enum TypeGraphNode<'a> {
     Type(&'a ProjectExternalTypeInput),
@@ -2381,7 +2534,8 @@ fn validate_type_resource_bounds_with_budget(
                 ProjectExternalTypeInput::Trust { inner, .. } => {
                     push_type_graph_node(&mut stack, TypeGraphNode::Type(inner), next, *nodes)?;
                 }
-                ProjectExternalTypeInput::Primitive(_)
+                ProjectExternalTypeInput::AgentContext(_)
+                | ProjectExternalTypeInput::Primitive(_)
                 | ProjectExternalTypeInput::Var(_)
                 | ProjectExternalTypeInput::Parameter { .. }
                 | ProjectExternalTypeInput::Named(_)
@@ -2433,7 +2587,10 @@ fn validate_action_trace_resource_bounds(
             | ProjectExternalActionTraceInput::Choice(children) => {
                 stack.extend(children.iter().map(|child| (child, next)));
             }
-            ProjectExternalActionTraceInput::Repeat(child) => stack.push((child, next)),
+            ProjectExternalActionTraceInput::Repeat(child)
+            | ProjectExternalActionTraceInput::DefaultHandler { body: child, .. } => {
+                stack.push((child, next))
+            }
             ProjectExternalActionTraceInput::Empty
             | ProjectExternalActionTraceInput::Event { .. }
             | ProjectExternalActionTraceInput::ParameterCall { .. }

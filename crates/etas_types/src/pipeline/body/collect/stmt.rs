@@ -144,18 +144,85 @@ pub fn collect_stmt<E>(
             for limit in limits {
                 collect_expr(ctx, limit, None)?;
             }
-            let elem = ctx.fresh_type_var();
+            if ctx.ctx.hir.source_standard_types {
+                let element = ctx.fresh_type_var();
+                let cursor = ctx
+                    .ctx
+                    .signature_base
+                    .map_or(&ctx.ctx.signature_facts, |base| {
+                        base.signature_facts().as_ref()
+                    })
+                    .known_std_types
+                    .source_iterator
+                    .or_else(|| {
+                        crate::lower::type_ref::selected_source_type(
+                            ctx.ctx,
+                            &["std", "collections", "Iter"],
+                        )
+                    });
+                if let Some(constructor) = cursor {
+                    let expected = ctx.ctx.interner.intern(crate::Type::Applied {
+                        constructor: crate::TypeConstructorId(constructor.0),
+                        args: vec![element],
+                    });
+                    let layout = crate::applied_representation(&mut ctx.ctx.interner, expected);
+                    let facts = ctx
+                        .ctx
+                        .signature_base
+                        .map_or(&ctx.ctx.signature_facts, |base| {
+                            base.signature_facts().as_ref()
+                        });
+                    match layout.and_then(|_| {
+                        crate::source_iteration::checked_cursor(
+                            ctx.ctx.interner.store(),
+                            facts,
+                            expected,
+                        )
+                    }) {
+                        Ok(Some(_)) => {}
+                        result => ctx.validate(crate::ValidationRequest::Diagnostic {
+                            code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                            span,
+                            message: format!(
+                                "source for-loop cursor declaration is incomplete: {result:?}"
+                            ),
+                        }),
+                    }
+                    let actual = collect_expr(ctx, iter, Some(expected))?;
+                    ctx.emit(TypeConstraint::Assignable {
+                        from: actual,
+                        to: expected,
+                        origin: ConstraintOrigin { span },
+                        reason: AssignabilityReason::Other,
+                    });
+                    collect_pattern(ctx, pat, element)?;
+                    collect_block(ctx, body, Some(unit))?;
+                    return Ok(ctx.record_stmt_type(stmt, unit));
+                }
+                ctx.validate(crate::ValidationRequest::Diagnostic {
+                    code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,
+                    span,
+                    message:
+                        "source for-loop requires the selected std.collections.Iter declaration"
+                            .into(),
+                });
+                return Ok(ctx.record_stmt_type(stmt, unit));
+            }
             let iter_ty = collect_expr(ctx, iter, None)?;
+            let elem = super::expr::sequence_element(ctx, iter_ty, span)
+                .unwrap_or_else(|| ctx.fresh_type_var());
             let key = ctx.fresh_type_var();
             let value = ctx.fresh_type_var();
             let entry_pair = ctx
                 .ctx
                 .interner
                 .intern(crate::Type::Tuple(vec![key, value]));
+            let byte_item = ctx.primitive(PrimitiveType::U8);
             ctx.emit(TypeConstraint::Iterable {
                 iter: iter_ty,
                 item: elem,
                 entry_pair,
+                byte_item,
                 origin: ConstraintOrigin { span },
             });
             collect_pattern(ctx, pat, elem)?;
@@ -214,7 +281,7 @@ pub fn collect_stmt<E>(
                     reason: AssignabilityReason::HandlerResume,
                 });
             }
-            unit
+            ctx.primitive(PrimitiveType::Never)
         }
         HirStmt::Finish { value, span } => {
             let expected = ctx.state.handler_finish_stack.last().copied().flatten();
@@ -240,7 +307,7 @@ pub fn collect_stmt<E>(
             }
             ctx.primitive(PrimitiveType::Never)
         }
-        HirStmt::Break { .. } | HirStmt::Continue { .. } => unit,
+        HirStmt::Break { .. } | HirStmt::Continue { .. } => ctx.primitive(PrimitiveType::Never),
         HirStmt::Error { span } => {
             ctx.validate(crate::ValidationRequest::Diagnostic {
                 code: etas_core::TypeDiagnosticCode::IncompleteTypeFacts,

@@ -50,6 +50,8 @@ pub(crate) struct PreparedInstantiations {
     pub store: Arc<TypeStore>,
     pub plan: Arc<NativeInstantiationPlan>,
     pub method_bodies: BTreeSet<HirItemId>,
+    pub foreign_methods: Vec<super::witness::ForeignMethodInstantiation>,
+    pub foreign_flows: Vec<super::witness::ForeignFlowInstantiation>,
 }
 
 pub(crate) struct PreparationInput<'a> {
@@ -73,6 +75,7 @@ pub(crate) struct InvocationInput<'a> {
     pub limits: etas_code::descriptor::DescriptorLimits,
     pub control: Option<&'a dyn PipelineExecutionControl>,
     pub phase: PreparationPhase,
+    pub handlers: Option<&'a super::HandlerContexts>,
 }
 
 pub(crate) fn prepare(
@@ -95,6 +98,7 @@ pub(crate) fn prepare(
             (!items.is_empty()).then_some((*site, items))
         })
         .collect();
+    let handlers = super::HandlerContexts::new(input.types, input.effects);
     prepare_from_targets(
         InvocationInput {
             hir: input.hir,
@@ -103,6 +107,7 @@ pub(crate) fn prepare(
             limits: input.limits,
             control: input.control,
             phase: PreparationPhase::Effects,
+            handlers: Some(&handlers),
         },
         seeds,
         interner,
@@ -121,7 +126,10 @@ pub(crate) fn prepare_from_targets(
         limits,
         control,
         phase,
+        handlers,
     } = input;
+    let empty_handlers = super::HandlerContexts::default();
+    let handlers = handlers.unwrap_or(&empty_handlers);
     if types.facts.generic_instantiations.is_empty()
         && types.facts.checked_method_calls.is_empty()
         && types.facts.bound_method_values.is_empty()
@@ -132,6 +140,8 @@ pub(crate) fn prepare_from_targets(
             store: types.store.clone(),
             plan: Arc::default(),
             method_bodies: BTreeSet::new(),
+            foreign_methods: Vec::new(),
+            foreign_flows: Vec::new(),
         });
     }
     let index = hir.index();
@@ -169,9 +179,11 @@ pub(crate) fn prepare_from_targets(
             store: types.store.clone(),
             plan: Arc::default(),
             method_bodies: BTreeSet::new(),
+            foreign_methods: Vec::new(),
+            foreign_flows: Vec::new(),
         });
     }
-    let mut roots = BTreeMap::<HirItemId, Vec<TypeId>>::new();
+    let mut roots = BTreeMap::<HirItemId, Vec<(HirExprId, TypeId)>>::new();
     for (expr, ty) in &types.facts.expr_types {
         if hir.program().is_expr_optimized_out(*expr) {
             continue;
@@ -180,7 +192,7 @@ pub(crate) fn prepare_from_targets(
             .expr_item
             .get(expr)
             .ok_or("checked expression type has no body owner".to_owned())?;
-        roots.entry(*owner).or_default().push(*ty);
+        roots.entry(*owner).or_default().push((*expr, *ty));
     }
     for (expr, method) in &types.facts.std_intrinsic_calls {
         if hir.program().is_expr_optimized_out(*expr) {
@@ -190,7 +202,10 @@ pub(crate) fn prepare_from_targets(
             .expr_item
             .get(expr)
             .ok_or("checked intrinsic has no body owner".to_owned())?;
-        roots.entry(*owner).or_default().push(method.callable_type);
+        roots
+            .entry(*owner)
+            .or_default()
+            .push((*expr, method.callable_type));
     }
     for roots in roots.values_mut() {
         roots.sort();
@@ -214,6 +229,10 @@ pub(crate) fn prepare_from_targets(
     let mut plan = NativeInstantiationPlan::default();
     let witnesses = super::witness::WitnessResolver::new(types);
     let mut method_bodies = BTreeSet::new();
+    let mut foreign_methods = Vec::new();
+    let mut foreign_seen = HashSet::new();
+    let mut foreign_flows = Vec::new();
+    let mut flows_seen = HashSet::new();
     let mut interner = interner.unwrap_or_else(|| TypeInterner::from_store((*types.store).clone()));
     let mut materialized = Vec::new();
     let mut representations =
@@ -289,91 +308,180 @@ pub(crate) fn prepare_from_targets(
                     );
                 }
             }
-            for ty in roots.get(&instance.owner).into_iter().flatten() {
-                materialized.push(
-                    substitution
-                        .substitute(*ty)
-                        .map_err(InstantiationError::from)?,
-                );
-            }
-            for call in calls.get(&instance.owner).into_iter().flatten() {
-                if let Some(signature) = super::targets::external_signature(hir, types, *call)
-                    && let Some(fact) = types.facts.generic_instantiations.get(call)
-                {
-                    let dictionary = witnesses.bound_bodies(signature, fact, &mut substitution)?;
-                    method_bodies.extend(dictionary.bodies);
-                    pending.extend(dictionary.applications);
+            let mut request_outputs = Vec::new();
+            for (site, ty) in roots.get(&instance.owner).into_iter().flatten() {
+                let output = substitution.substitute(*ty)?;
+                materialized.push(output);
+                if matches!(hir.exprs.get(*site), Some(etas_hir::HirExpr::Perform { .. })) {
+                    request_outputs.push(output);
                 }
-                if let Some(method) = types.facts.selected_method(*call)
-                    && matches!(
-                        method.target,
-                        etas_types::method::MethodTarget::BoundSpec { .. }
-                    )
-                {
-                    if let Some(application) =
-                        witnesses.method_application(method, &mut substitution)?
-                    {
-                        method_bodies.insert(application.body);
-                        match application.instance {
-                            Some(instance) => pending.push_back(instance),
-                            None if phase == PreparationPhase::Types => {}
-                            None => {
-                                return Err(
-                                    "native invocation has unmaterialized deferred effect rows"
-                                        .into(),
-                                );
-                            }
-                        }
+            }
+            drop(substitution);
+            for (site, ty) in roots.get(&instance.owner).into_iter().flatten() {
+                for context in handlers.at(hir, *site, limits.max_nodes)? {
+                    if context.types.is_empty() && context.rows.is_empty() {
                         continue;
                     }
-                }
-                if let Some(pack) = types.facts.existential_packs.get(call) {
-                    let pack = witnesses.pack_bodies(pack, &mut substitution)?;
-                    method_bodies.extend(pack.bodies);
-                    pending.extend(pack.applications);
-                }
-                let fact = match types.facts.selected_method(*call) {
-                    Some(method) => &method.instantiation,
-                    None => match types.facts.generic_instantiations.get(call) {
-                        Some(fact) => fact,
-                        None => continue,
-                    },
-                };
-                if !fact.deferred_effect_row_obligations.is_empty()
-                    && phase == PreparationPhase::Types
-                {
-                    continue;
-                }
-                for item in targets.get(call).into_iter().flatten() {
-                    let target_signature = signature(&types.facts, *item)
-                        .ok_or("native generic target has no checked signature".to_owned())?;
-                    let method_fact =
-                        match types.facts.selected_method(*call).map(|fact| &fact.target) {
-                            Some(etas_types::method::MethodTarget::BoundSpec {
-                                member, ..
-                            }) => Some(witnesses.instantiation(member, target_signature, fact)?),
-                            _ => None,
-                        };
-                    let arguments = bind_call(
-                        &mut substitution,
-                        target_signature,
-                        method_fact.as_ref().unwrap_or(fact),
+                    let (parameters, rows) = context.apply(
+                        &mut interner, &type_bindings, &parameters, &row_bindings,
+                        limits.max_expansion_depth, control,
                     )?;
-                    pending.push_back(NativeInstantiation {
-                        owner: *item,
-                        arguments,
-                        owner_bindings: types
-                            .facts
-                            .selected_method(*call)
-                            .into_iter()
-                            .flat_map(|fact| &fact.owner_bindings)
+                    let mut substitution = TypeSubstitutionEngine::materializing(&mut interner, &type_bindings, None)
+                        .with_type_parameters(&parameters)
+                        .with_effect_arguments(&rows)
+                        .with_expansion_depth(limits.max_expansion_depth)
+                        .with_execution_control(control);
+                    let output = substitution.substitute(*ty)?;
+                    materialized.push(output);
+                    if matches!(hir.exprs.get(*site), Some(etas_hir::HirExpr::Perform { .. })) {
+                        request_outputs.push(output);
+                    }
+                }
+            }
+            for call in calls.get(&instance.owner).into_iter().flatten() {
+                for context in handlers.at(hir, *call, limits.max_nodes)? {
+                    let (parameters, rows) = context.apply(
+                        &mut interner, &type_bindings, &parameters, &row_bindings,
+                        limits.max_expansion_depth, control,
+                    )?;
+                    let mut substitution = TypeSubstitutionEngine::materializing(&mut interner, &type_bindings, None)
+                        .with_type_parameters(&parameters)
+                        .with_effect_arguments(&rows)
+                        .with_expansion_depth(limits.max_expansion_depth)
+                        .with_execution_control(control);
+                    if let Some(signature) = super::targets::external_signature(hir, types, *call)
+                        && let Some(fact) = types.facts.generic_instantiations.get(call)
+                    {
+                        let dictionary = witnesses.bound_bodies(signature, fact, &mut substitution)?;
+                        method_bodies.extend(dictionary.bodies);
+                        pending.extend(dictionary.applications);
+                        if fact.deferred_effect_row_obligations.is_empty()
+                            && let Some(symbol) = super::targets::external_symbol(hir, *call)
+                        {
+                            let application = super::witness::ForeignFlowInstantiation {
+                                symbol,
+                                site: *call,
+                                arguments: bind_call(&mut substitution, signature, fact)?,
+                            };
+                            if flows_seen.insert(application.clone()) {
+                                foreign_flows.push(application);
+                            }
+                        }
+                    }
+                    if let Some(method) = types.facts.selected_method(*call)
+                        && let etas_types::method::MethodTarget::External { identity } = &method.target
+                        && method
+                            .instantiation
+                            .deferred_effect_row_obligations
+                            .is_empty()
+                    {
+                        let owner_bindings = method
+                            .owner_bindings
+                            .iter()
                             .map(|(parameter, argument)| {
                                 Ok((*parameter, substitution.substitute(*argument)?))
                             })
-                            .collect::<Result<_, etas_types::TypeSubstitutionError>>()?,
-                    });
-                    if types.facts.selected_method(*call).is_some() {
-                        method_bodies.insert(*item);
+                            .collect::<Result<Vec<_>, etas_types::TypeSubstitutionError>>()?;
+                        let application = super::witness::ForeignMethodInstantiation {
+                            identity: identity.clone(),
+                            arguments: bind_call(
+                                &mut substitution,
+                                &method.signature,
+                                &method.instantiation,
+                            )?,
+                            owner_bindings,
+                        };
+                        if foreign_seen.insert(application.clone()) {
+                            foreign_methods.push(application);
+                        }
+                        continue;
+                    }
+                    if let Some(method) = types.facts.selected_method(*call)
+                        && matches!(
+                            method.target,
+                            etas_types::method::MethodTarget::BoundSpec { .. }
+                        )
+                    {
+                        if let Some(application) =
+                            witnesses.method_application(method, &mut substitution)?
+                        {
+                            match application {
+                                super::witness::MethodApplication::Native { body, instance } => {
+                                    method_bodies.insert(body);
+                                    match instance {
+                                        Some(instance) => pending.push_back(instance),
+                                        None if phase == PreparationPhase::Types => {}
+                                        None => return Err(
+                                            "native invocation has unmaterialized deferred effect rows"
+                                                .into(),
+                                        ),
+                                    }
+                                }
+                                super::witness::MethodApplication::Foreign(Some(instance)) => {
+                                    if foreign_seen.insert(instance.clone()) {
+                                        foreign_methods.push(instance);
+                                    }
+                                }
+                                super::witness::MethodApplication::Foreign(None)
+                                    if phase == PreparationPhase::Types => {}
+                                super::witness::MethodApplication::Foreign(None) => {
+                                    return Err(
+                                        "foreign invocation has unmaterialized deferred effect rows"
+                                            .into(),
+                                    );
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    if let Some(pack) = types.facts.existential_packs.get(call) {
+                        let pack = witnesses.pack_bodies(pack, &mut substitution)?;
+                        method_bodies.extend(pack.bodies);
+                        pending.extend(pack.applications);
+                    }
+                    let fact = match types.facts.selected_method(*call) {
+                        Some(method) => &method.instantiation,
+                        None => match types.facts.generic_instantiations.get(call) {
+                            Some(fact) => fact,
+                            None => continue,
+                        },
+                    };
+                    if !fact.deferred_effect_row_obligations.is_empty()
+                        && phase == PreparationPhase::Types
+                    {
+                        continue;
+                    }
+                    for item in targets.get(call).into_iter().flatten() {
+                        let target_signature = signature(&types.facts, *item)
+                            .ok_or("native generic target has no checked signature".to_owned())?;
+                        let method_fact =
+                            match types.facts.selected_method(*call).map(|fact| &fact.target) {
+                                Some(etas_types::method::MethodTarget::BoundSpec {
+                                    member, ..
+                                }) => Some(witnesses.instantiation(member, target_signature, fact)?),
+                                _ => None,
+                            };
+                        let arguments = bind_call(
+                            &mut substitution,
+                            target_signature,
+                            method_fact.as_ref().unwrap_or(fact),
+                        )?;
+                        pending.push_back(NativeInstantiation {
+                            owner: *item,
+                            arguments,
+                            owner_bindings: types
+                                .facts
+                                .selected_method(*call)
+                                .into_iter()
+                                .flat_map(|fact| &fact.owner_bindings)
+                                .map(|(parameter, argument)| {
+                                    Ok((*parameter, substitution.substitute(*argument)?))
+                                })
+                                .collect::<Result<_, etas_types::TypeSubstitutionError>>()?,
+                        });
+                        if types.facts.selected_method(*call).is_some() {
+                            method_bodies.insert(*item);
+                        }
                     }
                 }
             }
@@ -394,9 +502,24 @@ pub(crate) fn prepare_from_targets(
             if !instance.arguments.is_empty() || !instance.owner_bindings.is_empty() {
                 plan.push(instance);
             }
-            drop(substitution);
             if let Some(callable) = callable_type {
                 materialized.push(interner.intern(etas_types::Type::Function(callable)));
+            }
+            // A source request can bind a continuation even when its enclosing
+            // Handler has no available request summary. Prepare the selected
+            // source carrier from each instantiated action result, alongside
+            // the payload ABI, before execution needs a read-only lookup.
+            if hir.source_standard_types
+                && let Some(owner) = types.facts.known_std_types.execution.continuation
+            {
+                request_outputs.sort_unstable();
+                request_outputs.dedup();
+                for output in request_outputs {
+                    materialized.push(interner.intern(etas_types::Type::Applied {
+                        constructor: etas_types::TypeConstructorId(owner.0),
+                        args: vec![output],
+                    }));
+                }
             }
             let names = HashMap::new();
             let mut validation = TypeSubstitutionEngine::existing(interner.store(), &names)
@@ -428,6 +551,8 @@ pub(crate) fn prepare_from_targets(
         store: Arc::new(interner.into_store()),
         plan: Arc::new(plan),
         method_bodies,
+        foreign_methods,
+        foreign_flows,
     })
 }
 
@@ -459,7 +584,11 @@ pub(super) fn bind_call(
             CallableGenericParamKind::Type => {
                 let ty = types
                     .get(&param.name)
-                    .ok_or("native invocation has no checked type binding")?;
+                    .ok_or_else(|| format!(
+                        "native invocation has no checked type binding for `{}`; checked parameters: {:?}",
+                        param.name,
+                        fact.type_bindings.iter().map(|(name, _)| name).collect::<Vec<_>>()
+                    ))?;
                 substitution
                     .substitute(*ty)
                     .map(NativeGenericArgument::Type)

@@ -25,77 +25,6 @@ fn type_spec_bounds(
         .chain(object_bounds)
 }
 
-/// Map standard spec references only after both checked registries agree on
-/// their canonical declarations. User and package specs need their own proof.
-pub(crate) fn checked_std_spec_correspondence(
-    source: &CheckedProgramData,
-    target: &etas_std::StdRegistry,
-    reachable: &[TypeId],
-    control: &dyn PipelineExecutionControl,
-) -> Result<HashMap<CheckedSpecRef, CheckedSpecRef>, ProjectionError> {
-    let mut mapped = HashMap::new();
-    for ty in reachable {
-        checkpoint(control)?;
-        for bound in type_spec_bounds(source, *ty) {
-            checkpoint(control)?;
-            let path = match &bound.spec {
-                CheckedSpecRef::Std(path) => Some(path),
-                CheckedSpecRef::Source(symbol) => source.types.std_spec_aliases.get(symbol),
-                CheckedSpecRef::External(_) => None,
-                CheckedSpecRef::Canonical(identity) => {
-                    if identity.kind() != etas_code::DefinitionKind::Spec
-                        || !source
-                            .types
-                            .canonical_specs
-                            .signatures
-                            .contains_key(identity)
-                    {
-                        return Err(ProjectionError::MissingIdentity(
-                            "canonical checked spec declaration".into(),
-                        ));
-                    }
-                    mapped.insert(bound.spec.clone(), bound.spec.clone());
-                    continue;
-                }
-            };
-            let Some(path) = path else { continue };
-            if source.std_registry.version() != target.version() {
-                return Err(ProjectionError::Invalid(
-                    "standard registry versions differ".into(),
-                ));
-            }
-            let source_symbol = source.std_registry.lookup_qualified(path).ok_or_else(|| {
-                ProjectionError::Invalid(
-                    "checked standard spec is absent in source registry".into(),
-                )
-            })?;
-            let target_symbol = target.lookup_qualified(path).ok_or_else(|| {
-                ProjectionError::Invalid(
-                    "checked standard spec is absent in target registry".into(),
-                )
-            })?;
-            if source_symbol.qualified_path != target_symbol.qualified_path
-                || source_symbol.decl != target_symbol.decl
-                || !matches!(&source_symbol.decl, etas_std::StdDecl::Type(decl) if decl.kind == etas_std::TypeDeclKind::Spec)
-            {
-                return Err(ProjectionError::Invalid(
-                    "standard spec declarations differ".into(),
-                ));
-            }
-            let replacement = CheckedSpecRef::Std(target_symbol.qualified_path.clone());
-            if mapped
-                .insert(bound.spec.clone(), replacement.clone())
-                .is_some_and(|old| old != replacement)
-            {
-                return Err(ProjectionError::Invalid(
-                    "conflicting standard spec correspondence".into(),
-                ));
-            }
-        }
-    }
-    Ok(mapped)
-}
-
 fn checkpoint(control: &dyn PipelineExecutionControl) -> Result<(), ProjectionError> {
     control.checkpoint().map_err(|error| {
         ProjectionError::Syntax(etas_code::syntax::SyntaxOperationError::Interrupted(error))
@@ -181,6 +110,7 @@ impl CheckedSpecPlan {
         } = input;
         let mut facts = CanonicalSpecFacts::default();
         let mut std_impls = Vec::new();
+        let mut checked_impls = Vec::new();
         let mut canonical_binders = None;
         for signature in &self.signatures {
             budget.charge_node()?;
@@ -335,6 +265,14 @@ impl CheckedSpecPlan {
                 args.push(relocation.substitute(*ty)?);
             }
             match self.mapping.get(&implementation.spec) {
+                Some(spec @ CheckedSpecRef::Source(_)) => {
+                    checked_impls.push(etas_types::facts::specs::CheckedSpecImplementationFact {
+                        generic_params,
+                        self_type,
+                        spec: spec.clone(),
+                        args,
+                    });
+                }
                 Some(CheckedSpecRef::Canonical(spec)) => facts.impls.push(CanonicalSpecImplFact {
                     generic_params,
                     self_type,
@@ -359,13 +297,17 @@ impl CheckedSpecPlan {
         Ok(etas_types::facts::RelocatedSpecFacts {
             canonical: facts,
             std_impls,
+            checked_impls,
         })
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CheckedTypeAndSpecPlanInput<'a> {
     pub source: &'a CheckedProgramData,
     pub target: &'a etas_std::StdRegistry,
+    pub target_definitions: Option<&'a super::DefinitionCatalog>,
+    pub additional_specs: &'a [CheckedSpecRef],
     pub roots: &'a [TypeId],
     pub rows: &'a [&'a etas_types::EffectRowRef],
     pub declarations: &'a HashMap<TypeId, TypeId>,
@@ -380,14 +322,13 @@ pub(crate) fn checked_type_and_spec_plan(
 ) -> Result<(Vec<TypeId>, CheckedSpecPlan), ProjectionError> {
     let CheckedTypeAndSpecPlanInput {
         source,
-        target,
         roots,
         rows,
         declarations,
-        identity,
         max_depth,
         control,
         budget,
+        ..
     } = input;
     let mut reachable = etas_types::ty::checked_type_graph(
         &source.type_store,
@@ -405,7 +346,7 @@ pub(crate) fn checked_type_and_spec_plan(
         .collect::<std::collections::HashSet<_>>();
     loop {
         checkpoint(control)?;
-        let plan = checked_spec_plan(source, target, &reachable, identity, control, budget)?;
+        let plan = checked_spec_plan(input, &reachable)?;
         let mut missing = Vec::new();
         for ty in plan.type_roots() {
             charge_edges(budget, 1)?;
@@ -482,16 +423,41 @@ fn checked_external_spec_parameters(
 }
 
 pub(crate) fn checked_spec_plan(
-    source: &CheckedProgramData,
-    target: &etas_std::StdRegistry,
+    input: CheckedTypeAndSpecPlanInput<'_>,
     reachable: &[TypeId],
-    identity: &dyn Fn(&CheckedSpecRef) -> Result<etas_code::DefinitionKey, ProjectionError>,
-    control: &dyn PipelineExecutionControl,
-    budget: &TypeSubstitutionBudget<'_>,
 ) -> Result<CheckedSpecPlan, ProjectionError> {
+    let CheckedTypeAndSpecPlanInput {
+        source,
+        target,
+        target_definitions,
+        additional_specs,
+        identity,
+        control,
+        budget,
+        ..
+    } = input;
     use std::collections::{HashSet, VecDeque};
-    let mut mapping = checked_std_spec_correspondence(source, target, reachable, control)?;
-    let mut pending = VecDeque::new();
+    let mut mapping = HashMap::new();
+    let mut source_specs = HashMap::new();
+    if let Some(catalog) = target_definitions {
+        for symbol in catalog.checked_program().types.spec_signatures.keys() {
+            checkpoint(control)?;
+            let spec = CheckedSpecRef::Source(*symbol);
+            source_specs.insert(catalog.native_spec_identity(&spec)?.clone(), spec);
+        }
+    }
+    if let Some(catalog) = target_definitions {
+        for symbol in target.symbols() {
+            if matches!(&symbol.decl, etas_std::StdDecl::Type(declaration) if declaration.kind == etas_std::TypeDeclKind::Spec)
+            {
+                let spec = CheckedSpecRef::Std(symbol.qualified_path.clone());
+                source_specs
+                    .entry(catalog.native_spec_identity(&spec)?.clone())
+                    .or_insert(spec);
+            }
+        }
+    }
+    let mut pending = VecDeque::from(additional_specs.to_vec());
     let mut implementations = Vec::new();
     for ty in reachable {
         charge_node(budget)?;
@@ -564,6 +530,15 @@ pub(crate) fn checked_spec_plan(
             &item.generic_params,
         )?;
     }
+    for item in &source.types.checked_spec_impls {
+        charge_node(budget)?;
+        add_impl(
+            item.self_type,
+            item.spec.clone(),
+            &item.args,
+            &item.generic_params,
+        )?;
+    }
     for item in &source.types.std_spec_impls {
         charge_node(budget)?;
         add_impl(
@@ -579,6 +554,21 @@ pub(crate) fn checked_spec_plan(
         charge_node(budget)?;
         if !seen.insert(spec.clone()) {
             continue;
+        }
+        if !source_specs.is_empty() {
+            let canonical_ref = match &spec {
+                CheckedSpecRef::Source(symbol) => source
+                    .types
+                    .std_spec_aliases
+                    .get(symbol)
+                    .map(|path| CheckedSpecRef::Std(path.clone()))
+                    .unwrap_or_else(|| spec.clone()),
+                _ => spec.clone(),
+            };
+            if let Some(mapped) = source_specs.get(&identity(&canonical_ref)?) {
+                mapping.insert(spec, mapped.clone());
+                continue;
+            }
         }
         if let Some(mapped) = checked_standard_ref(source, target, &spec)? {
             mapping.insert(spec, mapped);
@@ -923,6 +913,8 @@ mod tests {
         let (reachable, plan) = checked_type_and_spec_plan(CheckedTypeAndSpecPlanInput {
             source: &checked,
             target: &checked.std_registry,
+            target_definitions: None,
+            additional_specs: &[],
             roots: &[object],
             rows: &[],
             declarations: &HashMap::new(),
