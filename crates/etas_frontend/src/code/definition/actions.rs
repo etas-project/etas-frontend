@@ -91,19 +91,18 @@ fn standard_action(
             "checked standard action target is not an action descriptor",
         ));
     };
-    let stable = action
-        .stable_id
-        .ok_or_else(|| invalid("standard action descriptor has no stable identity"))?;
-    let signature = checked
-        .effect_registry
-        .standard_action(etas_effects::EffectActionId(stable))
-        .ok_or_else(|| {
-            invalid("standard action descriptor has no checked effect registry binding")
-        })?;
-    Ok(ActionRef {
-        tag: signature.owner,
-        action: signature.id,
-    })
+    let registry = &checked.effect_registry;
+    let reference = match action.stable_id {
+        Some(stable) => registry
+            .standard_action(etas_effects::EffectActionId(stable))
+            .map(|signature| ActionRef {
+                tag: signature.owner,
+                action: signature.id,
+            }),
+        None => registry.action_by_name(&descriptor.qualified_path.join(".")),
+    };
+    reference
+        .ok_or_else(|| invalid("standard action descriptor has no checked effect registry binding"))
 }
 
 pub(super) fn native_signatures<'a>(
