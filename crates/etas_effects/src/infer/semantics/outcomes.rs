@@ -249,6 +249,7 @@ impl EffectSemantics<'_> {
                 }
                 super::state::LatentSource::Unit(_)
                 | super::state::LatentSource::Reference { .. }
+                | super::state::LatentSource::DerivedResponseDecoder(_)
                 | super::state::LatentSource::EnumConstructor(_) => return None,
                 super::state::LatentSource::ExternalFrozen { reflection } => {
                     self.external_reflection_metadata(*reflection)?;

@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
-use etas_hir::{HirAnnotationArg, HirItem, SymbolId};
+use etas_code::descriptor::ValueProjectionStep as Step;
+use etas_hir::{HirAnnotationArg, HirHandlerArmId, HirItem, HirPatId, SymbolId};
 
 use super::{
     engine::{EffectSemantics, annotation_name},
@@ -13,6 +14,88 @@ pub(super) enum ModelToolSource {
 }
 
 impl EffectSemantics<'_> {
+    fn inference_decoder_path() -> [Step; 2] {
+        [Step::Field("decoder".into()), Step::Field("decode".into())]
+    }
+
+    fn inference_decoder_contract(
+        &self,
+        arm: HirHandlerArmId,
+    ) -> Option<(HirPatId, etas_types::TypeId)> {
+        if !self.hir.source_standard_types {
+            return None;
+        }
+        let syntax = self.hir.handler_arms.get(arm)?;
+        let Effect::Action(action) = self.effect_from_action_ref(&syntax.action)? else {
+            return None;
+        };
+        let registered = self.registry.compiler_action(
+            self.std_registry,
+            etas_std::CompilerActionRole::AgentInference,
+        )?;
+        if action.tag != registered.owner || action.action != registered.id {
+            return None;
+        }
+        let schema = *self.types.facts.handler_actions.get(&arm)?.params.get(1)?;
+        let function = etas_types::value_projection::project_indexed(
+            &self.types.store,
+            &self.types.facts,
+            self.type_lookup(),
+            schema,
+            &Self::inference_decoder_path(),
+        )
+        .ok()??;
+        let etas_types::Type::Function(function) = self.types.store.get(function)? else {
+            return None;
+        };
+        Some((*syntax.patterns.get(1)?, function.output))
+    }
+
+    pub(super) fn bind_inference_decoder(&self, arm: HirHandlerArmId, state: &mut EffectState) {
+        let Some((schema, _)) = self.inference_decoder_contract(arm) else {
+            return;
+        };
+        let Ok(bindings) = self.pattern_projection_bindings(schema) else {
+            return;
+        };
+        let decoder = Self::inference_decoder_path();
+        let origin = LatentSource::DerivedResponseDecoder(arm);
+        for (symbol, path) in bindings {
+            let Some(projection) = decoder.strip_prefix(path.as_slice()) else {
+                continue;
+            };
+            if projection.is_empty() {
+                state
+                    .local_latent_values
+                    .record_symbol_sources(symbol, [origin]);
+            } else {
+                state
+                    .local_latent_values
+                    .symbol_projections
+                    .entry((symbol, projection.to_vec()))
+                    .or_default()
+                    .insert(origin);
+            }
+        }
+    }
+
+    pub(super) fn inference_decoder_summary(&self, arm: HirHandlerArmId) -> Option<EffectSummary> {
+        let (_, ty) = self.inference_decoder_contract(arm)?;
+        Some(EffectSummary {
+            exits: Some(crate::CallableExitSummary {
+                exits: vec![crate::ExitTraceFact {
+                    outcome: crate::CallableOutcome::Returned {
+                        ty,
+                        observation: crate::ReturnObservation::Any,
+                    },
+                    trace: ActionTraceDomain::Empty,
+                }],
+                ..Default::default()
+            }),
+            ..EffectSummary::local()
+        })
+    }
+
     fn tool_invocation_context(
         &self,
         expr: HirExprId,

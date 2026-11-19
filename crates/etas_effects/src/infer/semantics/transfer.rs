@@ -310,12 +310,9 @@ impl HirAnalysisSemantics for EffectSemantics<'_> {
         state
     }
 
-    fn begin_handler_arm(
-        &mut self,
-        _arm: HirHandlerArmId,
-        mut state: Self::Domain,
-    ) -> Self::Domain {
+    fn begin_handler_arm(&mut self, arm: HirHandlerArmId, mut state: Self::Domain) -> Self::Domain {
         state.handler_depth += 1;
+        self.bind_inference_decoder(arm, &mut state);
         state
     }
 

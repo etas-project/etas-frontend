@@ -212,6 +212,11 @@ impl Relocation<'_> {
                         CallableValueOrigin::EnumConstructor(symbol) => {
                             CallableValueOrigin::EnumConstructor(self.variant(symbol)?)
                         }
+                        CallableValueOrigin::DerivedResponseDecoder(_) => {
+                            return Err(invalid(
+                                "captured response decoder requires its checked inference handler",
+                            ));
+                        }
                         CallableValueOrigin::StdReference { value, environment } => {
                             pending.extend(environment);
                             CallableValueOrigin::StdReference {

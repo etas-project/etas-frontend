@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use etas_code::CodeFingerprint;
-use etas_hir::{HirExprId, HirItemId, SymbolId};
+use etas_hir::{HirExprId, HirHandlerArmId, HirItemId, SymbolId};
 
 use crate::{EffectRow, EffectUnit, MetadataCallableSource, ParameterCallTarget};
 
@@ -110,6 +110,7 @@ pub enum CallableValueOrigin {
     Unavailable {
         expr: HirExprId,
     },
+    DerivedResponseDecoder(HirHandlerArmId),
 }
 
 #[derive(

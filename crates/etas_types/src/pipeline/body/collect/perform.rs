@@ -26,6 +26,23 @@ pub fn collect_perform<E>(
 ) -> Result<TypeId, E> {
     ctx.checkpoint()?;
     if let ResolveResult::Resolved(symbol) = action.action_symbol
+        && let super::handler_request::ActionIdentity::Standard(target) =
+            super::handler_request::action_identity(ctx, symbol)
+        && let Some(etas_std::StdDecl::EffectAction(declaration)) = ctx
+            .ctx
+            .std_registry
+            .symbol(target)
+            .map(|symbol| &symbol.decl)
+        && declaration.compiler_role == Some(etas_std::CompilerActionRole::AgentInference)
+    {
+        ctx.validate(crate::ValidationRequest::Diagnostic {
+            code: etas_core::TypeDiagnosticCode::InvalidEffectArgument,
+            span,
+            message: "perform infer<T>(prompt) constructs the checked Agentic.infer request".into(),
+        });
+        return Ok(expected.unwrap_or_else(|| ctx.primitive(PrimitiveType::Never)));
+    }
+    if let ResolveResult::Resolved(symbol) = action.action_symbol
         && let Some((target, signatures)) = super::action_selector::overload_signatures(ctx, symbol)
     {
         let mut candidates = Vec::new();

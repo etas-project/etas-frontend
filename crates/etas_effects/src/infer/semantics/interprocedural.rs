@@ -24,8 +24,9 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         if let Some(captures) = self.captured_values.get(&context.unit) {
             state.local_latent_values.join_assign(captures);
         }
-        if matches!(context.unit, EffectUnit::HandlerArm { .. }) {
+        if let EffectUnit::HandlerArm { arm, .. } = context.unit {
             state.handler_depth = 1;
+            self.bind_inference_decoder(arm, &mut state);
         }
         state
     }

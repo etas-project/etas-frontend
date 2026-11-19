@@ -9,23 +9,41 @@ impl EffectSemantics<'_> {
         target: HirExprId,
         value: HirExprId,
     ) -> Result<(), &'static str> {
+        use etas_code::descriptor::ValueProjectionStep as Step;
         let mut root = target;
-        let mut whole_binding = true;
+        let mut written = Vec::new();
+        let mut indexed = false;
         let mut visited = std::collections::HashSet::new();
         let symbol = loop {
             if !visited.insert(root) {
                 return Err("callable assignment contains a cyclic place");
             }
             match self.hir.exprs.get(root) {
-                Some(HirExpr::Field { base, .. } | HirExpr::Index { base, .. }) => {
+                Some(HirExpr::Field { base, field, .. }) => {
                     root = *base;
-                    whole_binding = false;
+                    written.push(Step::Field(field.clone()));
+                }
+                Some(HirExpr::Index { base, .. }) => {
+                    root = *base;
+                    indexed = true;
+                    let kind = self
+                        .types
+                        .facts
+                        .expr_types
+                        .get(base)
+                        .and_then(|ty| self.types.store.get(*ty));
+                    written.push(if matches!(kind, Some(Type::Map { .. })) {
+                        Step::MapValue
+                    } else {
+                        Step::SequenceElement
+                    });
                 }
                 Some(HirExpr::Path(path)) => {
                     break match &path.resolution {
                         ResolveResult::Resolved(symbol) => *symbol,
                         ResolveResult::PartiallyResolved(partial) => {
-                            whole_binding = false;
+                            written
+                                .extend(partial.remaining.iter().rev().cloned().map(Step::Field));
                             partial
                                 .resolved_prefix
                                 .ok_or("callable assignment has no resolved place root")?
@@ -39,12 +57,45 @@ impl EffectSemantics<'_> {
         let sources = self
             .latent_sources_for_expr(state, value)
             .unwrap_or_else(|| vec![LatentSource::Unavailable { expr: value }]);
-        if whole_binding {
+        if written.is_empty() {
             state
                 .local_latent_values
                 .set_symbol_sources(symbol, sources);
             self.record_symbol_projections(state, symbol, value, &[]);
         } else {
+            written.reverse();
+            // A field assignment can replace a previously checked callable
+            // origin without replacing the enclosing record.
+            let updates = state
+                .local_latent_values
+                .symbol_projections
+                .keys()
+                .filter_map(|(owner, path)| {
+                    if *owner != symbol {
+                        return None;
+                    }
+                    let tail = path.strip_prefix(written.as_slice())?;
+                    let updated = self
+                        .projected_sources(value, tail, state)
+                        .unwrap_or_else(|| {
+                            [LatentSource::Unavailable { expr: value }]
+                                .into_iter()
+                                .collect()
+                        });
+                    Some(((*owner, path.clone()), updated))
+                })
+                .collect::<Vec<_>>();
+            for (position, updated) in updates {
+                let origins = state
+                    .local_latent_values
+                    .symbol_projections
+                    .entry(position)
+                    .or_default();
+                if !indexed {
+                    origins.clear();
+                }
+                origins.extend(updated);
+            }
             state
                 .local_latent_values
                 .record_symbol_sources(symbol, sources);
@@ -234,6 +285,7 @@ impl EffectSemantics<'_> {
         span: Span,
     ) -> Option<EffectSummary> {
         match source {
+            LatentSource::DerivedResponseDecoder(arm) => self.inference_decoder_summary(arm),
             LatentSource::Projection(id) => {
                 let projection = self.parameter_projection(id)?;
                 let flow = self.checked_payload_callable_contract(projection.ty)?;
