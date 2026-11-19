@@ -96,20 +96,7 @@ pub(super) fn complete(
         let first = declarations
             .next()
             .expect("checked source action declaration");
-        builder.source_action_signature(
-            target,
-            first.type_params,
-            first.effect_args,
-            first.selector_param_names,
-            first.params,
-            first.output,
-            first
-                .default_handler_effects
-                .map(|effects| etas_std::StdEffectRowExpr {
-                    effects,
-                    tail: first.default_handler_effect_tail,
-                }),
-        );
+        builder.source_action_signature(target, first);
         builder.source_action_overloads(target, declarations.collect());
     }
     builder.try_finish().map_err(|error| error.to_string())
