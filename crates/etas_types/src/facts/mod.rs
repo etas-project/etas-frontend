@@ -52,6 +52,9 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    /// Calls to the installed Trusted constructor whose payload is a source string literal.
+    #[serde(default)]
+    pub trusted_literals: std::collections::BTreeSet<HirExprId>,
     #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
     pub declared_call_arguments: HashMap<HirExprId, crate::ArgumentBinding>,
     #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]

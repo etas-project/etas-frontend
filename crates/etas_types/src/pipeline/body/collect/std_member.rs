@@ -273,16 +273,15 @@ pub fn std_type_member_candidates_for_symbol<E>(
         .collect()
 }
 
-pub(super) fn std_overload_candidates<E>(
-    ctx: &mut BodyCollectContext<'_, '_, E>,
+pub(super) fn resolved_std_callee<'a, E>(
+    ctx: &BodyCollectContext<'_, '_, E>,
+    registry: &'a StdRegistry,
     callee: etas_hir::HirExprId,
-    args: &[etas_hir::HirArg],
-) -> Option<Vec<CallableCandidate>> {
+) -> Option<&'a StdSymbol> {
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
         return None;
     };
-    let registry = ctx.ctx.std_registry.clone();
-    let symbol = match &path.resolution {
+    match &path.resolution {
         ResolveResult::Resolved(symbol) => {
             let symbol = ctx
                 .ctx
@@ -292,7 +291,7 @@ pub(super) fn std_overload_candidates<E>(
             let SymbolDef::ImportAlias { path, .. } = &ctx.ctx.hir.symbols.get(symbol)?.def else {
                 return None;
             };
-            registry.lookup_qualified(path)?
+            registry.lookup_qualified(path)
         }
         ResolveResult::PartiallyResolved(partial) => {
             let prefix = ctx.ctx.hir.symbols.get(partial.resolved_prefix?)?;
@@ -301,10 +300,19 @@ pub(super) fn std_overload_candidates<E>(
             };
             let mut qualified = path.clone();
             qualified.extend(partial.remaining.iter().cloned());
-            registry.lookup_qualified(&qualified)?
+            registry.lookup_qualified(&qualified)
         }
-        _ => return None,
-    };
+        _ => None,
+    }
+}
+
+pub(super) fn std_overload_candidates<E>(
+    ctx: &mut BodyCollectContext<'_, '_, E>,
+    callee: etas_hir::HirExprId,
+    args: &[etas_hir::HirArg],
+) -> Option<Vec<CallableCandidate>> {
+    let registry = ctx.ctx.std_registry.clone();
+    let symbol = resolved_std_callee(ctx, &registry, callee)?;
     if registry.flow_declarations(symbol.id).count() < 2 {
         return None;
     }

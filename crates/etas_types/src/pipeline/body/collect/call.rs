@@ -126,6 +126,19 @@ fn collect_call_inner<E>(
             HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => None,
         })
         .collect::<Vec<_>>();
+    if let [HirArg::Positional(value)] = args
+        && matches!(
+            ctx.ctx.hir.exprs[*value],
+            HirExpr::Literal(etas_hir::HirLiteral::String { .. })
+        )
+        && type_generic_args.len() == generic_args.len()
+        && let Some(result) = super::literal::trusted_constructor(ctx, callee, &type_generic_args)
+    {
+        collect_expr(ctx, *value, None)?;
+        ctx.record_expr_type(callee, result);
+        ctx.state.provisional.trusted_literals.insert(call);
+        return Ok(result);
+    }
     if let Some(output) = collect_std_qualified_call(
         ctx,
         call,

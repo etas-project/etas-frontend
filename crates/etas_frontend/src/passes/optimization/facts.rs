@@ -33,6 +33,9 @@ pub(super) fn invalidate_replaced_expressions(
         .agent_method_calls
         .retain(|expr, _| !expressions.contains(expr));
     facts
+        .trusted_literals
+        .retain(|expr| !expressions.contains(expr));
+    facts
         .source_flow_calls
         .retain(|expr, _| !expressions.contains(expr));
     facts

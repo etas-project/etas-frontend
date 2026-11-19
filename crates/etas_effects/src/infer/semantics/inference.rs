@@ -305,15 +305,9 @@ impl EffectSemantics<'_> {
         summary.record_default_handled_action(effect.clone());
         summary.record_action_trace_event(effect.clone(), span, crate::ActionEventSource::Perform);
         let tool_choices = self.agent_tool_choices(fact.agent, span).ok()?;
-        let descriptor = self.std_registry.intrinsic(etas_std::StdIntrinsicId(
-            etas_std::intrinsic::runtime::AGENT_STEP,
-        ))?;
-        let etas_std::LoweringHint::DefaultAction { stable_id, .. } = &descriptor.lowering else {
-            return None;
-        };
         let signature = self
             .registry
-            .standard_action(crate::EffectActionId(*stable_id))?;
+            .compiler_action(self.std_registry, etas_std::CompilerActionRole::AgentStep)?;
         let step = Effect::AppliedAction(ActionInstanceRef {
             action: crate::ActionRef {
                 tag: signature.owner,

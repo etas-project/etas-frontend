@@ -88,7 +88,7 @@ pub fn collect_perform<E>(
         super::handler_request::record_request(ctx, action, expr);
         return Ok(output);
     }
-    let Some(signature) = action_signature(ctx, action) else {
+    let Some((_, signature)) = action_signature(ctx, action) else {
         ctx.validate(crate::ValidationRequest::Diagnostic {
             code: etas_core::TypeDiagnosticCode::UnknownType,
             span,
@@ -214,14 +214,14 @@ pub fn collect_perform<E>(
     Ok(output)
 }
 
-fn action_signature<E>(
+pub(super) fn action_signature<E>(
     ctx: &BodyCollectContext<'_, '_, E>,
     action: &ResolvedActionRef,
-) -> Option<EffectActionSignature> {
+) -> Option<(etas_hir::SymbolId, EffectActionSignature)> {
     let ResolveResult::Resolved(symbol) = action.action_symbol else {
         return None;
     };
-    let symbol = ctx
+    let canonical = ctx
         .ctx
         .symbols
         .canonical_symbol(ctx.ctx.hir, symbol)
@@ -229,10 +229,10 @@ fn action_signature<E>(
     ctx.state
         .provisional
         .symbol_types
-        .get(&symbol)
-        .or_else(|| ctx.ctx.symbol_fact(symbol))
+        .get(&canonical)
+        .or_else(|| ctx.ctx.symbol_fact(canonical))
         .and_then(|fact| match fact {
-            SymbolTypeFact::EffectAction { signature } => Some(signature.clone()),
+            SymbolTypeFact::EffectAction { signature } => Some((symbol, signature.clone())),
             _ => None,
         })
 }

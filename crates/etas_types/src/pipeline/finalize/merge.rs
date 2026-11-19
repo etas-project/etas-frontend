@@ -60,6 +60,7 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
         .declared_call_arguments
         .extend(body.declared_call_arguments);
     facts.agent_method_calls.extend(body.agent_method_calls);
+    facts.trusted_literals.extend(body.trusted_literals);
     facts.source_flow_calls.extend(body.source_flow_calls);
     facts.library_flow_calls.extend(body.library_flow_calls);
     facts.checked_method_calls.extend(body.checked_method_calls);

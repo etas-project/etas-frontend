@@ -76,6 +76,7 @@ pub enum TypeConstraint {
         owner: etas_hir::HirItemId,
         prompt: etas_hir::HirExprId,
         prompt_type: TypeId,
+        expected_prompt: TypeId,
         output: TypeId,
         schema: TypeId,
         action_symbol: etas_hir::SymbolId,

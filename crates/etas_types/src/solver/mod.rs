@@ -621,6 +621,7 @@ impl TypeSolver {
                 owner,
                 prompt,
                 prompt_type,
+                expected_prompt,
                 output,
                 schema,
                 action_symbol,
@@ -641,10 +642,7 @@ impl TypeSolver {
                     etas_core::TypeDiagnosticCode::TypeMismatch,
                     "perform infer is available only inside an agent method",
                 ))
-            } else if !matches!(
-                input.store.get(prompt_type),
-                Some(Type::Prompt | Type::Primitive(crate::PrimitiveType::Never))
-            ) {
+            } else if !assignability::is_assignable(input.store, prompt_type, *expected_prompt) {
                 Some((
                     etas_core::TypeDiagnosticCode::TypeMismatch,
                     "perform infer requires a Prompt, not an agent's input or output value",

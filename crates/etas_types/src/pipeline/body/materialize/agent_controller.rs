@@ -16,9 +16,8 @@ pub(super) fn materialize(
             .agent_method(inference.method)
             .ok_or("inference controller has no checked agent method")?
             .context_type;
-        let bindings = HashMap::from([("C".into(), context), ("O".into(), inference.output)]);
-        let step = operation(ctx, etas_std::intrinsic::runtime::AGENT_STEP, &bindings)?;
-        let invoke = operation(ctx, etas_std::intrinsic::runtime::TOOL_INVOKE, &bindings)?;
+        let step = operation(ctx, &["std", "agent", "step"], &[context, inference.output])?;
+        let invoke = operation(ctx, &["std", "tool", "invoke"], &[context])?;
         crate::ty::materialize_representations(
             &mut ctx.interner,
             step.signature
@@ -43,15 +42,12 @@ pub(super) fn materialize(
 
 fn operation(
     ctx: &mut TypePipelineContext<'_>,
-    intrinsic: u32,
-    bindings: &HashMap<String, TypeId>,
+    path: &[&str],
+    arguments: &[TypeId],
 ) -> Result<CheckedAgentOperationFact, String> {
     let registry = ctx.std_registry.clone();
-    let descriptor = registry
-        .intrinsic(etas_std::StdIntrinsicId(intrinsic))
-        .ok_or("agent controller operation is missing its canonical intrinsic")?;
     let symbol = registry
-        .lookup_qualified(&descriptor.qualified_path)
+        .lookup_qualified(path)
         .ok_or("agent controller operation is missing its standard declaration")?;
     let etas_std::StdDecl::Flow(flow) = &symbol.decl else {
         return Err("agent controller operation is not a standard flow".into());
@@ -60,13 +56,23 @@ fn operation(
         .module(symbol.module)
         .map(|module| module.path.as_slice());
     let mut signature = crate::lower::std::lower_std_flow_signature(ctx, &registry, flow, scope);
-    super::substitute_callable_signature(
-        ctx,
-        &crate::Substitution::default(),
-        bindings,
-        &mut signature,
-    )
-    .map_err(|error| error.to_string())?;
+    if signature.generic_params.len() != arguments.len() {
+        return Err(format!(
+            "{} has an incompatible controller signature",
+            path.join(".")
+        ));
+    }
+    let bindings = signature
+        .generic_params
+        .iter()
+        .zip(arguments)
+        .map(|(parameter, argument)| (parameter.subject, *argument))
+        .collect();
+    let names = HashMap::new();
+    let mut engine = crate::TypeSubstitutionEngine::materializing(&mut ctx.interner, &names, None)
+        .with_type_parameters(&bindings);
+    crate::facts::methods::map_signature(&mut signature, &mut |ty| engine.substitute(ty))
+        .map_err(|error| error.to_string())?;
     signature.generic_params.clear();
     Ok(CheckedAgentOperationFact {
         target: symbol.id,

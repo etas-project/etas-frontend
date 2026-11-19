@@ -356,6 +356,18 @@ impl EffectRegistry {
         self.standard_actions.get(&action)
     }
 
+    pub fn compiler_action(
+        &self,
+        std: &StdRegistry,
+        role: etas_std::CompilerActionRole,
+    ) -> Option<&EffectActionSig> {
+        let id = std.symbols().find_map(|symbol| match &symbol.decl {
+            StdDecl::EffectAction(action) if action.compiler_role == Some(role) => action.stable_id,
+            _ => None,
+        })?;
+        self.standard_action(EffectActionId(id))
+    }
+
     pub fn action_signature(&self, action: &ActionRef) -> Option<&EffectActionSig> {
         self.standard_actions
             .get(&action.action)

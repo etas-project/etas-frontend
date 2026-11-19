@@ -119,6 +119,9 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
         .expr_types
         .extend(state.provisional.expr_types);
     ctx.signature_facts
+        .trusted_literals
+        .extend(state.provisional.trusted_literals);
+    ctx.signature_facts
         .declared_call_arguments
         .extend(state.provisional.declared_call_arguments);
     ctx.signature_facts
