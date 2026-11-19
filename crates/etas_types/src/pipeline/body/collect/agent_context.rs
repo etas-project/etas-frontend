@@ -23,13 +23,19 @@ pub(super) fn constrain<E>(
     candidate: &CallableCandidate,
     span: Span,
 ) {
-    let CallableCandidateOperation::StdIntrinsic { intrinsic, .. } = candidate.operation else {
-        return;
+    let scoped_operation = match &candidate.operation {
+        CallableCandidateOperation::StdIntrinsic { intrinsic, .. } => matches!(
+            *intrinsic,
+            etas_std::intrinsic::runtime::AGENT_STEP | etas_std::intrinsic::runtime::TOOL_INVOKE
+        ),
+        CallableCandidateOperation::LibraryFlow { symbol, .. } => ctx
+            .ctx
+            .std_registry
+            .symbol(*symbol)
+            .is_some_and(is_scoped_flow),
+        _ => false,
     };
-    if !matches!(
-        intrinsic,
-        etas_std::intrinsic::runtime::AGENT_STEP | etas_std::intrinsic::runtime::TOOL_INVOKE
-    ) {
+    if !scoped_operation {
         return;
     }
     let Some(parameter) = candidate.signature.generic_params.first() else {
@@ -48,6 +54,11 @@ pub(super) fn constrain<E>(
         active,
         span,
     });
+}
+
+pub(super) fn is_scoped_flow(symbol: &etas_std::StdSymbol) -> bool {
+    symbol.qualified_path == ["std", "agent", "step"]
+        || symbol.qualified_path == ["std", "tool", "invoke"]
 }
 
 pub(super) fn handler_context<E>(

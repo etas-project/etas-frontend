@@ -87,7 +87,7 @@ fn collect_call_inner<E>(
     }
     let checked_generic_args = lower_callable_generic_args(ctx, generic_args);
     if let Some(candidates) = source_overload_candidates(ctx, callee, args)
-        .or_else(|| super::std_member::std_overload_candidates(ctx, callee, args))
+        .or_else(|| super::std_member::std_call_candidates(ctx, callee, args))
     {
         for candidate in &candidates {
             super::agent_context::constrain(ctx, candidate, span);

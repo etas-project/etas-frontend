@@ -281,6 +281,18 @@ pub(super) fn resolved_std_callee<'a, E>(
     let HirExpr::Path(path) = &ctx.ctx.hir.exprs[callee] else {
         return None;
     };
+    if path
+        .segments
+        .first()
+        .is_some_and(|segment| segment.name == "std")
+    {
+        let qualified = path
+            .segments
+            .iter()
+            .map(|segment| segment.name.as_str())
+            .collect::<Vec<_>>();
+        return registry.lookup_qualified(&qualified);
+    }
     match &path.resolution {
         ResolveResult::Resolved(symbol) => {
             let symbol = ctx
@@ -306,14 +318,16 @@ pub(super) fn resolved_std_callee<'a, E>(
     }
 }
 
-pub(super) fn std_overload_candidates<E>(
+pub(super) fn std_call_candidates<E>(
     ctx: &mut BodyCollectContext<'_, '_, E>,
     callee: etas_hir::HirExprId,
     args: &[etas_hir::HirArg],
 ) -> Option<Vec<CallableCandidate>> {
     let registry = ctx.ctx.std_registry.clone();
     let symbol = resolved_std_callee(ctx, &registry, callee)?;
-    if registry.flow_declarations(symbol.id).count() < 2 {
+    let scoped_source = super::agent_context::is_scoped_flow(symbol)
+        && registry.flow_body_binding(symbol.id, 0).is_some();
+    if !scoped_source && registry.flow_declarations(symbol.id).count() < 2 {
         return None;
     }
     let names = args
