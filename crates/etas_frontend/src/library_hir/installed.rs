@@ -171,7 +171,19 @@ impl Pass<ProjectContext> for PublishInstalledLibraryPass {
             .iter()
             .any(|d| d.severity == etas_core::Severity::Error)
         {
-            return PassResult::failed("installed library source association failed");
+            return PassResult::failed(format!(
+                "installed library source association failed: {}",
+                context
+                    .diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
+                    .map(|diagnostic| format!(
+                        "{} (source {})",
+                        diagnostic.message, diagnostic.primary.span.source.0
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
         }
         let types = context.types.as_ref().expect("installed type facts");
         let environment = context

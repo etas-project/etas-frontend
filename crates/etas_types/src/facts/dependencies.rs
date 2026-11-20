@@ -123,7 +123,7 @@ impl<'a> Serializer for &'a mut TypeDependencies {
         v: &T,
     ) -> Result<Self::Ok, Self::Error> {
         let value = v.serialize(&mut *self)?;
-        if name == "CheckedSpecRef" && variant == "Source" {
+        if matches!(name, "CheckedSpecRef" | "SpecMethodIdentity") && variant == "Source" {
             self.1
                 .insert(etas_hir::SymbolId(value.expect("checked source spec ID")));
         }

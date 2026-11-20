@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
-pub struct LibraryModuleCompilation {
+pub struct LibrarySlicePlan {
     pub modules: BTreeSet<Vec<String>>,
     pub definitions: BTreeSet<HirItemId>,
 }
@@ -38,10 +38,7 @@ impl<'v, 'h> HirVisitor<'v, 'h> for Nodes {
     }
 }
 impl LibraryHirImage {
-    pub fn module_compilations(
-        &self,
-        checked: &crate::CheckedProgramData,
-    ) -> Vec<LibraryModuleCompilation> {
+    pub fn execution_slices(&self, checked: &crate::CheckedProgramData) -> Vec<LibrarySlicePlan> {
         let mut unique = BTreeSet::new();
         self.program
             .items
@@ -76,7 +73,7 @@ impl LibraryHirImage {
                             .clone()
                     })
                     .collect();
-                Some(LibraryModuleCompilation {
+                Some(LibrarySlicePlan {
                     modules,
                     definitions,
                 })
@@ -203,12 +200,6 @@ impl LibraryHirImage {
         image
             .declarations
             .retain(|_, item| !unloaded_globals.contains(item));
-        image
-            .item_sources
-            .retain(|item, _| !unloaded_globals.contains(item));
-        image
-            .item_targets
-            .retain(|(_, item)| !unloaded_globals.contains(item));
         image
             .body_slots
             .retain(|item, _| definitions.contains(item));

@@ -23,7 +23,7 @@ use crate::{
 
 mod installed;
 mod modules;
-pub use modules::LibraryModuleCompilation;
+pub use modules::LibrarySlicePlan;
 mod restore;
 
 const SCHEMA: u32 = 71;

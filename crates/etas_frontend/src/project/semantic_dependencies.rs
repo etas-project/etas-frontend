@@ -113,7 +113,52 @@ impl CheckedSemanticDependencies {
                 .or_default()
                 .extend(dependencies);
         }
+        // These facts include action/default Effect signatures and generic
+        // bounds owned by symbols nested inside their enclosing declaration.
+        for symbol in checked.hir.symbols.iter() {
+            let Some(owner) = symbol.defining_item else {
+                continue;
+            };
+            if let Some(fact) = checked.types.symbol_types.get(&symbol.id) {
+                graph.record(Definition(owner), checked, fact);
+            }
+            if let Some(bounds) = checked.types.type_param_bounds.get(&symbol.id) {
+                graph.record(Definition(owner), checked, bounds);
+            }
+            if let Some(signature) = checked.types.spec_signatures.get(&symbol.id) {
+                graph.record(Definition(owner), checked, signature);
+            }
+        }
+        for (ty, layout) in &checked.types.enum_layouts {
+            graph.record(Type(*ty), checked, layout);
+        }
+        for (ty, parameters) in &checked.types.type_generics {
+            graph.record(Type(*ty), checked, parameters);
+        }
+        for method in checked.types.methods.entries() {
+            if let etas_types::method::MethodTarget::Source { callable, .. }
+            | etas_types::method::MethodTarget::Agent { callable, .. } = method.target
+            {
+                graph.record(Definition(callable), checked, method);
+            }
+        }
         Ok(graph)
+    }
+    fn record(
+        &mut self,
+        owner: SemanticDependency,
+        checked: &crate::CheckedProgramData,
+        fact: &impl serde::Serialize,
+    ) {
+        let (types, specs) = etas_types::semantic_type_references(fact);
+        let dependencies = self.edges.entry(owner).or_default();
+        dependencies.extend(types.into_iter().map(SemanticDependency::Type));
+        dependencies.extend(
+            specs
+                .into_iter()
+                .filter_map(|symbol| checked.hir.symbols.get(symbol)?.defining_item)
+                .map(SemanticDependency::Definition),
+        );
     }
     pub fn closure(
         &self,
