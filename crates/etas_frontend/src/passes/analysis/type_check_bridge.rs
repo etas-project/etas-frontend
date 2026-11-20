@@ -93,7 +93,18 @@ fn external_signature_input(
             .external_public_metadata
             .iter()
             .filter(|metadata| anchors.package_span(metadata.package).is_some())
-            .map(|metadata| convert_external_metadata(metadata, environment))
+            .map(|metadata| {
+                if Some(metadata.package) == standard
+                    && let Some(prepared) = context
+                        .standard_library_interface()
+                        .and_then(|library| library.prepared_signatures.as_ref())
+                {
+                    let mut input = prepared.as_ref().clone();
+                    input.package = external_package_key(metadata.package);
+                    return Ok(input);
+                }
+                convert_external_metadata(metadata, environment)
+            })
             .collect::<Result<_, _>>()?,
         symbol_bindings: Vec::new(),
         source_spec_bindings: Vec::new(),
@@ -1122,4 +1133,14 @@ fn wildcard_import_name_counts(
         }
     }
     counts
+}
+
+impl crate::StandardLibraryInterface {
+    /// Normalize complete source-owned signatures once, before installation.
+    pub fn prepare_signatures(&self) -> Result<etas_types::ExternalPublicMetadataInput, String> {
+        let mut environment = crate::ProjectEnvironmentInput::default();
+        self.append_environment(&mut environment);
+        convert_external_metadata(&environment.external_public_metadata[0], &environment)
+            .map_err(|error| error.to_string())
+    }
 }

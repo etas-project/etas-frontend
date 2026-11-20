@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use etas_core::{SourceFile, SourceId, Span};
 use etas_hir::{HirItem, HirItemId, HirProgram, SymbolId, Visibility};
@@ -17,7 +20,17 @@ pub struct DefinitionSourceUnit {
     pub kind: SourceKind,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct BodyExposure {
     pub retained: bool,
     pub exported: bool,
@@ -28,12 +41,42 @@ pub struct BodyExposure {
 #[derive(Debug, etas_core::RetainedSize)]
 pub struct DefinitionSources {
     source_set: Arc<SourceSet>,
-    parsed_sources: Arc<[ParsedSource]>,
-    files: HashMap<SourceId, DefinitionSourceUnit>,
+    parsed_sources: ParsedArchive,
+    files: HashMap<SourceId, LazySourceUnit>,
+    installed_origins:
+        Option<HashMap<etas_hir::HirModuleId, crate::code::identity::SourceModuleOrigin>>,
+    parse_stats: Option<Arc<SourceParseStats>>,
     bodies: HashMap<HirItemId, AstBodyRef>,
     exposure: HashMap<HirItemId, BodyExposure>,
     revisions: HashMap<Span, Arc<crate::code::draft::NativeBodyRevision>>,
     overlaid_bodies: HashMap<HirItemId, Arc<crate::code::draft::NativeBodyRevision>>,
+}
+
+#[derive(Debug, Default)]
+struct ParsedArchive(OnceLock<Arc<[ParsedSource]>>);
+#[derive(Debug, Default)]
+struct LazySourceUnit(OnceLock<DefinitionSourceUnit>);
+#[derive(Debug)]
+struct SourceParseStats {
+    count: std::sync::atomic::AtomicU64,
+    profile: etas_utils::ProfileHandle,
+}
+impl etas_core::memory::RetainedSize for SourceParseStats {
+    fn visit_retained<'a>(&'a self, _: &mut etas_core::memory::MemoryVisitor<'a>) {}
+}
+impl etas_core::memory::RetainedSize for ParsedArchive {
+    fn visit_retained<'a>(&'a self, visitor: &mut etas_core::memory::MemoryVisitor<'a>) {
+        if let Some(parsed) = self.0.get() {
+            etas_core::memory::RetainedSize::visit_retained(parsed, visitor);
+        }
+    }
+}
+impl etas_core::memory::RetainedSize for LazySourceUnit {
+    fn visit_retained<'a>(&'a self, visitor: &mut etas_core::memory::MemoryVisitor<'a>) {
+        if let Some(unit) = self.0.get() {
+            etas_core::memory::RetainedSize::visit_retained(unit, visitor);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -56,6 +99,44 @@ pub(crate) struct DefinitionSourceCaptureInput<'a> {
 }
 
 impl DefinitionSources {
+    pub(crate) fn installed(
+        sources: Arc<SourceSet>,
+        bodies: HashMap<HirItemId, AstBodyRef>,
+        exposure: HashMap<HirItemId, BodyExposure>,
+        origins: HashMap<etas_hir::HirModuleId, crate::code::identity::SourceModuleOrigin>,
+        profile: etas_utils::ProfileHandle,
+    ) -> Self {
+        profile.counter("std.installed.source_parse_count", 0);
+        Self {
+            files: sources
+                .files
+                .iter()
+                .map(|source| (source.id, LazySourceUnit::default()))
+                .collect(),
+            source_set: sources,
+            parsed_sources: ParsedArchive::default(),
+            installed_origins: Some(origins),
+            parse_stats: Some(Arc::new(SourceParseStats {
+                count: 0.into(),
+                profile,
+            })),
+            bodies,
+            exposure,
+            revisions: HashMap::new(),
+            overlaid_bodies: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn installed_origins(
+        &self,
+    ) -> Option<&HashMap<etas_hir::HirModuleId, crate::code::identity::SourceModuleOrigin>> {
+        self.installed_origins.as_ref()
+    }
+
+    pub(crate) fn installed_exposure(&self) -> HashMap<HirItemId, BodyExposure> {
+        self.exposure.clone()
+    }
+
     pub(crate) fn library_body_slots(
         &self,
     ) -> Result<std::collections::BTreeMap<HirItemId, AstBodyRef>, &'static str> {
@@ -337,9 +418,9 @@ impl DefinitionSources {
             source_set: source_set.clone(),
             parsed_sources: original
                 .filter(|archive| {
-                    archive.parsed_sources.len() == parsed.len()
+                    archive.parsed_sources().len() == parsed.len()
                         && archive
-                            .parsed_sources
+                            .parsed_sources()
                             .iter()
                             .zip(parsed)
                             .all(|(before, after)| {
@@ -347,9 +428,15 @@ impl DefinitionSources {
                                     && Arc::ptr_eq(&before.parse, &after.parse)
                             })
                 })
-                .map(|archive| archive.parsed_sources.clone())
-                .unwrap_or_else(|| Arc::from(parsed.to_vec())),
-            files,
+                .map(|archive| archive.parsed_sources().clone())
+                .map(|parsed| ParsedArchive(OnceLock::from(parsed)))
+                .unwrap_or_else(|| ParsedArchive(OnceLock::from(Arc::from(parsed.to_vec())))),
+            files: files
+                .into_iter()
+                .map(|(id, unit)| (id, LazySourceUnit(OnceLock::from(unit))))
+                .collect(),
+            installed_origins: None,
+            parse_stats: None,
             bodies,
             exposure,
             revisions: revisions.clone(),
@@ -358,7 +445,29 @@ impl DefinitionSources {
     }
 
     pub fn source(&self, id: SourceId) -> Option<&DefinitionSourceUnit> {
-        self.files.get(&id)
+        Some(self.files.get(&id)?.0.get_or_init(|| {
+            if let Some(stats) = &self.parse_stats {
+                let count = stats
+                    .count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1;
+                stats
+                    .profile
+                    .counter("std.installed.source_parse_count", count);
+            }
+            let source = self
+                .source_set
+                .files
+                .iter()
+                .find(|source| source.id == id)
+                .expect("archived source");
+            let file = Arc::new(source.to_core_source_file());
+            DefinitionSourceUnit {
+                program: Arc::new(etas_syntax::parse_program(file.as_ref().clone())),
+                file,
+                kind: source.kind.clone(),
+            }
+        }))
     }
     pub fn body(&self, item: HirItemId) -> Option<&AstBodyRef> {
         self.bodies.get(&item)
@@ -391,7 +500,51 @@ impl DefinitionSources {
         &self.source_set
     }
     pub(crate) fn parsed_sources(&self) -> &Arc<[ParsedSource]> {
-        &self.parsed_sources
+        self.parsed_sources.0.get_or_init(|| {
+            Arc::from(
+                self.source_set
+                    .files
+                    .iter()
+                    .map(|file| {
+                        let unit = self.source(file.id).expect("archived source");
+                        let program = &unit.program.value;
+                        ParsedSource {
+                            source: file.id,
+                            source_file: unit.file.clone(),
+                            parse: unit.program.clone(),
+                            declared_module: program
+                                .module
+                                .as_ref()
+                                .map(|module| crate::ModulePath::from_ast(&module.path)),
+                            imports: program
+                                .imports
+                                .iter()
+                                .enumerate()
+                                .map(|(index, import)| crate::AstImportRef {
+                                    source: file.id,
+                                    module_part: None,
+                                    index,
+                                    span: import.span,
+                                })
+                                .collect(),
+                            items: program
+                                .items
+                                .iter()
+                                .enumerate()
+                                .map(|(index, item)| crate::AstItemRef {
+                                    source: file.id,
+                                    module_part: None,
+                                    index,
+                                    kind: crate::AstItemKind::from_item(&item.item),
+                                    span: item.span(),
+                                })
+                                .collect(),
+                            diagnostics: unit.program.diagnostics.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
     }
     pub(crate) fn revisions(&self) -> &HashMap<Span, Arc<crate::code::draft::NativeBodyRevision>> {
         &self.revisions

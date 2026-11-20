@@ -68,7 +68,20 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
                 .standard_library_interface()
                 .is_some_and(|library| library.has_installed_validation(&context.std_registry));
         if let Some(library) = context.standard_library_interface() {
-            library.append_environment(&mut environment);
+            let package = library.append_environment(&mut environment);
+            if !reuse_library_validation && let Some(load) = &context.standard_method_loader {
+                let behaviors = match load(None) {
+                    Ok(behaviors) => behaviors,
+                    Err(error) => return PassResult::failed(error),
+                };
+                let metadata = environment
+                    .external_public_metadata
+                    .iter_mut()
+                    .find(|metadata| metadata.package == package)
+                    .expect("standard metadata");
+                metadata.methods.extend(behaviors.methods);
+                metadata.effect_summaries.extend(behaviors.summaries);
+            }
         }
         let Some(sources) = context.sources.as_ref() else {
             return PassResult::failed("source package validation requires the source set");

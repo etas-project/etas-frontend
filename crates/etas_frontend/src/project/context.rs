@@ -32,6 +32,7 @@ pub struct ProjectContext {
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub standard_library: Option<Arc<crate::StandardLibrary>>,
     pub(crate) standard_library_interface: Option<Arc<crate::StandardLibraryInterface>>,
+    pub(crate) standard_method_loader: Option<Arc<crate::session::StandardMethodLoader>>,
     pub(crate) deferred_standard_library: Option<Arc<crate::session::StandardLibraryLoader>>,
     pub incremental: bool,
     pub check_scope: CheckScope,
@@ -99,6 +100,46 @@ impl ProjectContext {
         })
     }
 
+    pub(crate) fn load_standard_method_behaviors(&mut self) -> Result<(), String> {
+        let Some(load) = &self.standard_method_loader else {
+            return Ok(());
+        };
+        let types = self
+            .types
+            .as_ref()
+            .ok_or("method behavior loading requires checked types")?;
+        let behaviors = load(Some((
+            &self.hir.as_ref().expect("checked HIR").hir,
+            &types.facts,
+        )))?;
+        let library = self
+            .standard_library_interface()
+            .expect("installed standard interface");
+        let mut environment = self
+            .validated_external_environment
+            .as_ref()
+            .expect("validated external environment")
+            .environment()
+            .clone();
+        let package = environment
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == library.package.import_root)
+            .expect("installed package")
+            .id;
+        let metadata = environment
+            .external_public_metadata
+            .iter_mut()
+            .find(|metadata| metadata.package == package)
+            .expect("installed metadata");
+        metadata.methods = behaviors.methods;
+        metadata.effect_summaries = library.metadata.effect_summaries.clone();
+        metadata.effect_summaries.extend(behaviors.summaries);
+        self.validated_external_environment =
+            Some(Arc::new(ValidatedExternalEnvironment::new(environment)));
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn new(input: ProjectInput) -> Self {
         Self::new_with_std_registry(input, Arc::new(etas_std::standard_registry()))
@@ -124,6 +165,7 @@ impl ProjectContext {
             std_registry,
             standard_library: None,
             standard_library_interface: None,
+            standard_method_loader: None,
             deferred_standard_library: None,
             incremental: false,
             check_scope: CheckScope::FullProject,

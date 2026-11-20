@@ -76,7 +76,9 @@ pub struct DefinitionOrigins {
     pub external_definitions: BTreeMap<Vec<String>, DefinitionKey>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct SourceModuleOrigin {
     package: PackageKey,
     module: Vec<String>,
@@ -205,6 +207,9 @@ impl DefinitionOrigins {
     pub fn checked_source_modules(
         checked: &CheckedProgramData,
     ) -> Result<HashMap<HirModuleId, SourceModuleOrigin>, ProjectionError> {
+        if let Some(origins) = checked.definition_sources.installed_origins() {
+            return Ok(origins.clone());
+        }
         Self::source_modules_from_inputs(
             &checked.hir,
             &checked.module_index,

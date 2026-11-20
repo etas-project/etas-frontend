@@ -1627,44 +1627,7 @@ impl CheckedProgramData {
     /// existential witnesses. An open spec invocation retains its candidate
     /// implementations until generic invocation preparation selects a witness.
     pub fn referenced_standard_methods(&self) -> std::collections::BTreeSet<etas_code::MethodId> {
-        let targets = self
-            .types
-            .checked_method_calls
-            .values()
-            .map(|call| &call.target)
-            .chain(
-                self.types
-                    .bound_method_values
-                    .values()
-                    .map(|value| &value.method.target),
-            )
-            .chain(
-                self.types
-                    .existential_packs
-                    .values()
-                    .flat_map(|pack| &pack.witnesses)
-                    .map(|witness| &witness.target),
-            )
-            .collect::<Vec<_>>();
-        let mut methods = targets
-            .iter()
-            .filter_map(|target| match target {
-                MethodTarget::External { identity } => Some(identity.clone()),
-                _ => None,
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        if targets
-            .iter()
-            .any(|target| matches!(target, MethodTarget::BoundSpec { .. }))
-        {
-            methods.extend(self.types.methods.entries().filter_map(
-                |method| match &method.target {
-                    MethodTarget::External { identity } => Some(identity.clone()),
-                    _ => None,
-                },
-            ));
-        }
-        methods
+        self.types.referenced_external_methods()
     }
 
     /// Source references, including function values, without unused prelude
@@ -1862,9 +1825,20 @@ impl std::ops::Deref for StandardLibrary {
     }
 }
 
+/// Source-owned behavior selected after consumer type checking. Public calling
+/// signatures are independent of these implementation graphs.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct StandardLibraryBehaviors {
+    pub methods: Vec<etas_package_metadata::PublishedMethod>,
+    pub summaries: Vec<ProjectExternalEffectSummaryInput>,
+}
+
 /// Published standard-library declarations used by consumers during checking.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct StandardLibraryInterface {
+    /// Normalized public signatures prepared by the installing compiler.
+    #[serde(skip)]
+    pub prepared_signatures: Option<Arc<etas_types::ExternalPublicMetadataInput>>,
     #[serde(skip)]
     pub validation: StandardLibraryValidation,
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,

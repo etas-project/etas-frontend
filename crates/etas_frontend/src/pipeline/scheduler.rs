@@ -79,6 +79,15 @@ pub(crate) fn run_controlled_check_pipeline(
             Some(crate::session::StandardLibraryInput::Interface(interface)) => {
                 context.standard_library_interface = Some(interface);
             }
+            Some(crate::session::StandardLibraryInput::Installed {
+                interface,
+                methods,
+                load,
+            }) => {
+                context.standard_library_interface = Some(interface);
+                context.standard_method_loader = Some(methods);
+                context.deferred_standard_library = load;
+            }
             Some(crate::session::StandardLibraryInput::Deferred { interface, load }) => {
                 context.standard_library_interface = Some(interface);
                 context.deferred_standard_library = Some(load);

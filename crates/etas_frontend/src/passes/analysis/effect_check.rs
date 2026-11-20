@@ -213,6 +213,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        if let Err(error) = context.load_standard_method_behaviors() {
+            return PassResult::failed(error);
+        }
+
         // A source-library bundle requires valid declarations and types before
         // whole-library effect/provenance analysis can produce usable facts.
         if context.input.options.standard_library_mode

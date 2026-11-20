@@ -82,7 +82,17 @@ pub struct StdSymbolBindingInput {
     pub qualified_path: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub struct ExternalPackageKey(pub u32);
 
 #[derive(Clone, Debug, Default)]
@@ -115,7 +125,7 @@ pub struct ExternalActionBindingInput {
     pub span: etas_core::Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalPublicMetadataInput {
     /// Declaration calling interfaces reconstructed from validated descriptors.
     pub parameter_interfaces:
@@ -142,14 +152,14 @@ pub struct ExternalPublicMetadataInput {
     pub actions: Vec<ExternalActionSignatureInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalNamedSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
     pub ty: Option<ExternalTypeInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalFlowSignatureInput {
     pub definition: Option<etas_code::DefinitionKey>,
     pub parameter_interface: Vec<crate::ParameterInterface>,
@@ -161,7 +171,7 @@ pub struct ExternalFlowSignatureInput {
     pub effects: Option<ExternalEffectRowInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalAgentSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
@@ -170,7 +180,7 @@ pub struct ExternalAgentSignatureInput {
     pub effects: Option<ExternalEffectRowInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalToolSignatureInput {
     pub path: Vec<String>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
@@ -179,7 +189,7 @@ pub struct ExternalToolSignatureInput {
     pub effects: Option<ExternalEffectRowInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalActionSignatureInput {
     pub parameter_interface: Vec<crate::ParameterInterface>,
     pub path: Vec<String>,
@@ -193,14 +203,16 @@ pub struct ExternalActionSignatureInput {
     pub default_handler_effects: Option<ExternalEffectRowInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalCallableGenericParamInput {
     pub name: String,
     pub kind: ExternalCallableGenericParamKindInput,
     pub bounds: Vec<ExternalSpecBoundInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ExternalCallableGenericParamKindInput {
     Type,
     Effect,
@@ -208,7 +220,7 @@ pub enum ExternalCallableGenericParamKindInput {
 
 pub type ExternalActionGenericParamInput = ExternalCallableGenericParamInput;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecSignatureInput {
     pub path: Vec<String>,
     pub kind: ExternalSpecKindInput,
@@ -219,14 +231,16 @@ pub struct ExternalSpecSignatureInput {
     pub super_specs: Vec<ExternalSpecBoundInput>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ExternalSpecKindInput {
     Type,
     Callable,
     Trace,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecMethodInput {
     pub name: String,
     pub path: Vec<String>,
@@ -235,13 +249,15 @@ pub struct ExternalSpecMethodInput {
     pub updating_receiver: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ExternalSpecBoundInput {
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalSpecImplInput {
     pub owner: Option<etas_code::ImplementationKey>,
     pub generic_params: Vec<ExternalCallableGenericParamInput>,
@@ -251,7 +267,7 @@ pub struct ExternalSpecImplInput {
     pub methods: Vec<etas_code::MethodId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalMethodInput {
     pub identity: etas_code::MethodId,
     pub self_type: ExternalTypeInput,
@@ -264,27 +280,27 @@ pub struct ExternalMethodInput {
     pub effects: ExternalEffectRowInput,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalTypeSpecSatisfactionInput {
     pub self_type: ExternalTypeInput,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalCallableSpecSatisfactionInput {
     pub item: etas_package_metadata::CallableContractTarget,
     pub spec: Vec<String>,
     pub args: Vec<ExternalTypeInput>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalTraceSpecConformanceInput {
     pub item: etas_package_metadata::CallableContractTarget,
     pub target: ExternalTraceSpecConformanceTargetInput,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub enum ExternalTraceSpecConformanceTargetInput {
     Inline,
     Named {
@@ -294,7 +310,7 @@ pub enum ExternalTraceSpecConformanceTargetInput {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub enum ExternalActionArgKindInput {
     Type,
     MemoryPlace,
@@ -302,19 +318,25 @@ pub enum ExternalActionArgKindInput {
     StringPattern,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ExternalEffectRowInput {
     pub effects: Vec<ExternalEffectRefInput>,
     pub tail: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ExternalEffectRefInput {
     pub path: Vec<String>,
     pub args: Vec<ExternalEffectArgInput>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ExternalEffectArgInput {
     Type(ExternalTypeInput),
     Path(Vec<String>),
@@ -323,13 +345,17 @@ pub enum ExternalEffectArgInput {
     Wildcard,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct ExternalRecordFieldInput {
     pub name: String,
     pub ty: ExternalTypeInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub enum ExternalTypeInput {
     AgentContext(etas_code::MethodId),
     Existential {
