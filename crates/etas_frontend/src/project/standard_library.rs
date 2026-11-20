@@ -182,7 +182,11 @@ impl StandardLibrary {
             .substitute(ty)
             .map_err(|e| format!("std public ABI {callable:?}: {e}"))?;
         }
-        consumer.type_store = Arc::new(interner.into_store());
+        // Relocation only interns additional types. Preserve the revision's
+        // shared store, and its definition indices, when the ABI already exists.
+        if interner.store().len() != consumer.type_store.len() {
+            consumer.type_store = Arc::new(interner.into_store());
+        }
         Ok(())
     }
 

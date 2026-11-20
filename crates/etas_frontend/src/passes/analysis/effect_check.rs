@@ -387,10 +387,16 @@ impl RunEffectPipelinePass {
             return PassResult::failed("effect checking requires the prepared effect registry");
         };
         let external_effect_metadata = prepared.dependencies().clone();
+        let mut external_contracts =
+            match external_metadata::ExternalContractIndex::new(environment, &context.std_registry)
+            {
+                Ok(contracts) => contracts,
+                Err(error) => return PassResult::failed(error),
+            };
         let external_summaries = match external_effect_summaries(
             environment,
             types,
-            &context.std_registry,
+            &mut external_contracts,
             &external_anchors,
             &mut external_metadata_diagnostics,
         ) {
@@ -400,7 +406,7 @@ impl RunEffectPipelinePass {
         let external_implementations = match external_metadata::external_implementations(
             environment,
             types,
-            &context.std_registry,
+            &mut external_contracts,
             &external_anchors,
             &mut external_metadata_diagnostics,
         ) {
