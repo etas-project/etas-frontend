@@ -1836,12 +1836,22 @@ impl CheckedProgramData {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug)]
 pub struct StandardLibrary {
+    /// Command diagnostics, excluded from retained executable memory accounting.
+    pub profile: etas_utils::ProfileHandle,
     /// Rootless runtime layouts authenticated by the toolchain installation.
     pub installed_layouts: Option<Arc<[u8]>>,
     pub program: CheckedProgram,
     pub interface: Arc<StandardLibraryInterface>,
+}
+
+impl etas_core::memory::RetainedSize for StandardLibrary {
+    fn visit_retained<'a>(&'a self, visitor: &mut etas_core::memory::MemoryVisitor<'a>) {
+        etas_core::memory::RetainedSize::visit_retained(&self.installed_layouts, visitor);
+        etas_core::memory::RetainedSize::visit_retained(&self.program, visitor);
+        etas_core::memory::RetainedSize::visit_retained(&self.interface, visitor);
+    }
 }
 
 impl std::ops::Deref for StandardLibrary {

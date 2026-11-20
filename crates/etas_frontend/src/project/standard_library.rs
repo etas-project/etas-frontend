@@ -27,10 +27,19 @@ impl StandardLibrary {
         &self,
         consumer: &mut CheckedProgramData,
     ) -> Result<(), String> {
-        let source = catalog(self.program.clone())?;
-        let target = catalog(Arc::new(consumer.clone()))?;
-        let correspondence =
-            NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
+        let _all = self.profile.span("std.consumer.public_abis", "std");
+        let source = {
+            let _phase = self.profile.span("std.consumer.body_catalog", "std");
+            catalog(self.program.clone())?
+        };
+        let target = {
+            let _phase = self.profile.span("std.consumer.caller_catalog", "std");
+            catalog(Arc::new(consumer.clone()))?
+        };
+        let correspondence = {
+            let _phase = self.profile.span("std.consumer.type_correspondence", "std");
+            NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?
+        };
         let mut callables = std::collections::BTreeSet::new();
         for symbol in consumer.referenced_standard_symbols() {
             if let Some(binding) = consumer.std_registry.body_binding(symbol) {
@@ -197,6 +206,7 @@ impl StandardLibrary {
         self: &Arc<Self>,
         consumer: &mut CheckedProgramData,
     ) -> Result<Arc<Self>, String> {
+        let _link = self.profile.span("std.consumer.link", "std");
         loop {
             let before = (
                 consumer.type_store.len(),
