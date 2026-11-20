@@ -242,6 +242,7 @@ pub struct TypeStore {
 /// Program-local lookup only. Hash collisions are resolved by full Type equality.
 /// The index borrows no mutable interner and does not copy aggregate type nodes.
 pub struct TypeLookupIndex {
+    base: Option<SharedTypeBase>,
     first: HashMap<u64, TypeId>,
     collisions: HashMap<u64, Vec<TypeId>>,
     indexed_len: usize,
@@ -250,9 +251,10 @@ pub struct TypeLookupIndex {
 impl TypeLookupIndex {
     pub fn new(store: &TypeStore) -> Self {
         let mut index = Self {
-            first: HashMap::with_capacity(store.len()),
+            base: store.base.clone(),
+            first: HashMap::with_capacity(store.local_types().len()),
             collisions: HashMap::new(),
-            indexed_len: 0,
+            indexed_len: store.base_len(),
         };
         index.include_appended_types(store);
         index
@@ -280,6 +282,9 @@ impl TypeLookupIndex {
     }
 
     pub fn get(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {
+        if let Some(id) = self.base.as_ref().and_then(|base| base.0.ids.get(ty)) {
+            return Some(*id);
+        }
         let key = type_hash(ty);
         let first = *self.first.get(&key)?;
         if store.get(first) == Some(ty) {
