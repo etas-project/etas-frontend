@@ -77,14 +77,14 @@ pub struct LibraryHirImage {
         crate::code::parameter_defaults::ParameterDefaultUnit,
     >,
     pub sources: Vec<LibraryHirSource>,
-    pub program: HirProgram,
-    pub type_store: etas_types::TypeStore,
-    pub types: etas_types::TypeFacts,
-    pub effects: etas_effects::EffectFacts,
-    pub effect_registry: etas_effects::EffectRegistry,
-    pub concurrency: crate::ConcurrencyFacts,
-    pub cpu_parallel: crate::CpuParallelEligibilityFacts,
-    pub(crate) native_instantiations: crate::project::instantiation::NativeInstantiationPlan,
+    pub program: Arc<HirProgram>,
+    pub type_store: Arc<etas_types::TypeStore>,
+    pub types: Arc<etas_types::TypeFacts>,
+    pub effects: Arc<etas_effects::EffectFacts>,
+    pub effect_registry: Arc<etas_effects::EffectRegistry>,
+    pub concurrency: Arc<crate::ConcurrencyFacts>,
+    pub cpu_parallel: Arc<crate::CpuParallelEligibilityFacts>,
+    pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
     pub std_contract: String,
     pub native_registry: etas_std::StdRegistryImage,
     pub environment: crate::ProjectEnvironmentInput,
@@ -204,14 +204,14 @@ impl LibraryHirImage {
             methods,
             parameter_defaults,
             sources,
-            program: checked.hir.program().clone(),
-            type_store: checked.type_store.as_ref().clone(),
-            types: checked.types.as_ref().clone(),
-            effects: checked.effects.as_ref().clone(),
-            effect_registry: checked.effect_registry.as_ref().clone(),
-            concurrency: checked.concurrency.as_ref().clone(),
-            cpu_parallel: checked.cpu_parallel.as_ref().clone(),
-            native_instantiations: checked.native_instantiations.as_ref().clone(),
+            program: checked.hir.shared_program().clone(),
+            type_store: checked.type_store.clone(),
+            types: checked.types.clone(),
+            effects: checked.effects.clone(),
+            effect_registry: checked.effect_registry.clone(),
+            concurrency: checked.concurrency.clone(),
+            cpu_parallel: checked.cpu_parallel.clone(),
+            native_instantiations: checked.native_instantiations.clone(),
             std_contract: checked.std_registry.version().compatibility_identity(),
             native_registry: etas_std::StdRegistryImage::capture(&checked.std_registry)
                 .map_err(error)?,
@@ -286,7 +286,7 @@ impl LibraryHirImage {
     }
 
     pub fn into_revision(self) -> Result<HirRevision, LibraryHirImageError> {
-        HirRevision::try_new(self.program)
+        HirRevision::from_shared_program(self.program)
             .map_err(|e| error(format!("invalid library HIR graph: {e:?}")))
     }
 

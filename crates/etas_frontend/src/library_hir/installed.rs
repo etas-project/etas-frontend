@@ -69,11 +69,11 @@ pub(super) fn load(
     }
     let emit = PublishInstalledLibraryPass {
         publication,
-        effects: Arc::new(std::mem::take(&mut image.effects)),
-        registry: Arc::new(std::mem::take(&mut image.effect_registry)),
-        concurrency: Arc::new(std::mem::take(&mut image.concurrency)),
-        cpu_parallel: Arc::new(std::mem::take(&mut image.cpu_parallel)),
-        instantiations: Arc::new(std::mem::take(&mut image.native_instantiations)),
+        effects: std::mem::take(&mut image.effects),
+        registry: std::mem::take(&mut image.effect_registry),
+        concurrency: std::mem::take(&mut image.concurrency),
+        cpu_parallel: std::mem::take(&mut image.cpu_parallel),
+        instantiations: std::mem::take(&mut image.native_instantiations),
     };
     let input = ProjectInput {
         project_root: root.to_owned(),
@@ -178,6 +178,7 @@ impl Pass<ProjectContext> for PublishInstalledLibraryPass {
             .expect("installed environment");
         let entry = context.entry.as_ref().expect("installed entry");
         let data = CheckedProgramData {
+            definition_catalog_cache: Arc::default(),
             reflection_targets: context
                 .reflection_targets
                 .clone()

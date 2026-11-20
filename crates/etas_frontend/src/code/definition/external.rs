@@ -43,7 +43,9 @@ impl DefinitionCatalog {
                 .ok_or(ProjectionError::MissingDeclaration(declaration))?;
             let callable = CallableId::declaration(identity.clone())?;
             if self.callables.contains_key(&callable) {
-                self.callable_bindings.insert(declaration, callable);
+                Arc::make_mut(&mut self.data)
+                    .callable_bindings
+                    .insert(declaration, callable);
             } else {
                 required.insert(declaration, callable);
             }
@@ -65,7 +67,9 @@ impl DefinitionCatalog {
             {
                 let callable = CallableId::declaration(identity.clone())?;
                 if self.callables.contains_key(&callable) {
-                    self.callable_bindings.insert(*symbol, callable);
+                    Arc::make_mut(&mut self.data)
+                        .callable_bindings
+                        .insert(*symbol, callable);
                 } else {
                     bindings.insert(*symbol, callable);
                 }
@@ -159,7 +163,7 @@ impl DefinitionCatalog {
                         ));
                     }
                 } else {
-                    self.external_callables.insert(
+                    Arc::make_mut(&mut self.data).external_callables.insert(
                         header.id.clone(),
                         ExternalCallable {
                             canonical: header.id.clone(),
@@ -178,11 +182,15 @@ impl DefinitionCatalog {
                     "external reflected callable has no portable definition header".into(),
                 ));
             }
-            self.callable_bindings.insert(symbol, callable);
+            Arc::make_mut(&mut self.data)
+                .callable_bindings
+                .insert(symbol, callable);
         }
         for (symbol, callable) in bindings {
             if self.external_callables.contains_key(&callable) {
-                self.callable_bindings.insert(symbol, callable);
+                Arc::make_mut(&mut self.data)
+                    .callable_bindings
+                    .insert(symbol, callable);
             }
         }
         Ok(())

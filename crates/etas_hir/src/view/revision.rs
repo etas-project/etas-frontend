@@ -15,7 +15,7 @@ impl HirRevision {
         Self::from_shared_program(Arc::new(program))
     }
 
-    fn from_shared_program(program: Arc<HirProgram>) -> Result<Self, HirTreeIndexError> {
+    pub fn from_shared_program(program: Arc<HirProgram>) -> Result<Self, HirTreeIndexError> {
         let index = Arc::new(HirTreeIndex::try_build(&program)?);
         Ok(Self { program, index })
     }

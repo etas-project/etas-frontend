@@ -158,7 +158,7 @@ impl Pass<ProjectContext> for LoadLibraryFactsPass {
         _: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let image = self.0.take().expect("library facts load exactly once");
-        let hir = match HirRevision::try_new(image.program) {
+        let hir = match HirRevision::from_shared_program(image.program) {
             Ok(hir) => hir,
             Err(reason) => return PassResult::failed(format!("invalid library HIR: {reason:?}")),
         };
@@ -187,8 +187,8 @@ impl Pass<ProjectContext> for LoadLibraryFactsPass {
         });
         context.hir_body_bindings = Some(bodies);
         let types = TypeOutput {
-            facts: Arc::new(image.types),
-            store: Arc::new(image.type_store),
+            facts: image.types,
+            store: image.type_store,
             diagnostics: Vec::new(),
         };
         if !self.1 {

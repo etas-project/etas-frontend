@@ -153,6 +153,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 Err(reason) => return PassResult::failed(reason),
             };
             let mut data = CheckedProgramData {
+                definition_catalog_cache: std::sync::Arc::default(),
                 reflection_targets: reflection_targets.clone(),
                 foreign_type_bindings: context
                     .candidate

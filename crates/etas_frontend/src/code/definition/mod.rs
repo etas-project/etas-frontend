@@ -1,7 +1,9 @@
 mod actions;
 mod applications;
+mod cache;
 mod collect;
 pub use actions::NativeActionSignature;
+pub(crate) use cache::DefinitionCatalogCache;
 pub(crate) use collect::{callable_signature, callable_source_header, selected_callable};
 mod frozen_calls;
 pub(crate) use frozen_calls::FrozenCalls;

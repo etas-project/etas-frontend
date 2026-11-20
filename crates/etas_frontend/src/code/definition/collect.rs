@@ -396,18 +396,20 @@ fn build_selected(
         crate::code::parameter_defaults::collect_units(checked.as_ref().into(), &identities)?;
     let mut catalog = DefinitionCatalog {
         checked,
-        origins: Arc::new(origins.clone()),
-        identities,
-        graph: projection.graph,
-        type_origins: projection.type_origins,
-        callables,
-        external_callables: BTreeMap::new(),
-        external_agents: BTreeMap::new(),
-        agents,
-        callable_bindings,
-        agent_bindings,
-        selected_bindings: HashMap::new(),
-        parameter_defaults,
+        data: Arc::new(super::store::DefinitionCatalogData {
+            origins: Arc::new(origins.clone()),
+            identities,
+            graph: projection.graph,
+            type_origins: projection.type_origins,
+            callables,
+            external_callables: BTreeMap::new(),
+            external_agents: BTreeMap::new(),
+            agents,
+            callable_bindings,
+            agent_bindings,
+            selected_bindings: HashMap::new(),
+            parameter_defaults,
+        }),
     };
     if selection.is_none() {
         catalog.bind_external_callables(limits)?;

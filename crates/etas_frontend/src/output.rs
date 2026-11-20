@@ -1572,6 +1572,7 @@ impl ProjectOutput {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckedProgramData {
+    pub(crate) definition_catalog_cache: Arc<crate::code::definition::DefinitionCatalogCache>,
     pub(crate) reflection_targets: Arc<crate::code::reflection::CheckedReflectionTargets>,
     pub(crate) foreign_type_bindings: Arc<crate::code::definition::ForeignTypeBindings>,
     pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
@@ -1762,6 +1763,8 @@ impl CheckedProgramData {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct StandardLibrary {
+    /// Rootless runtime layouts authenticated by the toolchain installation.
+    pub installed_layouts: Option<Arc<[u8]>>,
     pub program: CheckedProgram,
     pub interface: Arc<StandardLibraryInterface>,
 }
