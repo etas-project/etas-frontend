@@ -1622,6 +1622,36 @@ impl std::ops::Deref for CheckedProgramData {
 }
 
 impl CheckedProgramData {
+    /// Source references, including function values, without unused prelude
+    /// declarations. Selected overload calls retain their checked symbol.
+    pub fn referenced_standard_symbols(&self) -> std::collections::BTreeSet<etas_std::StdSymbolId> {
+        self.hir
+            .exprs
+            .iter()
+            .filter_map(|(_, expression)| {
+                let etas_hir::HirExpr::Path(path) = expression else {
+                    return None;
+                };
+                let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                    return None;
+                };
+                let etas_hir::SymbolDef::ImportAlias { path, .. } = &self.symbols.get(symbol)?.def
+                else {
+                    return None;
+                };
+                self.std_registry
+                    .lookup_qualified(path)
+                    .map(|symbol| symbol.id)
+            })
+            .chain(
+                self.types
+                    .library_flow_calls
+                    .values()
+                    .map(|call| call.symbol),
+            )
+            .collect()
+    }
+
     pub fn requires_definition_catalog(&self) -> bool {
         if !self.types.agent_inferences.is_empty() {
             return true;

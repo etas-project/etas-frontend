@@ -32,13 +32,8 @@ impl StandardLibrary {
         let correspondence =
             NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
         let mut callables = std::collections::BTreeSet::new();
-        for symbol in consumer.symbols.iter() {
-            if let SymbolDef::ImportAlias { path, .. } = &symbol.def
-                && let Some(binding) = consumer
-                    .std_registry
-                    .lookup_qualified(path)
-                    .and_then(|declaration| consumer.std_registry.body_binding(declaration.id))
-            {
+        for symbol in consumer.referenced_standard_symbols() {
+            if let Some(binding) = consumer.std_registry.body_binding(symbol) {
                 callables.insert(binding.callable.clone());
             }
         }
