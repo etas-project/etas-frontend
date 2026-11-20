@@ -1778,7 +1778,7 @@ impl std::ops::Deref for StandardLibrary {
 }
 
 /// Published standard-library declarations used by consumers during checking.
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct StandardLibraryInterface {
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,
     pub package: ProjectExternalPackageInput,
