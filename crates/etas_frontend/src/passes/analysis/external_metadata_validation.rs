@@ -53,6 +53,20 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
         _manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let mut environment = context.input.environment.clone();
+        // Source ownership is checked below on every invocation. A source-only
+        // environment adds exactly the authenticated, prevalidated SDK package;
+        // it introduces no additional external contract to validate.
+        let reuse_library_validation = environment.dependency_source_packages.is_empty()
+            && environment.external_definition_origins.is_empty()
+            && environment.external_packages.is_empty()
+            && environment.external_package_dependencies.is_empty()
+            && environment.external_modules.is_empty()
+            && environment.external_public_metadata.is_empty()
+            && environment.external_effect_metadata == Default::default()
+            && environment.tool_bindings.is_empty()
+            && context
+                .standard_library_interface()
+                .is_some_and(|library| library.has_installed_validation(&context.std_registry));
         if let Some(library) = context.standard_library_interface() {
             library.append_environment(&mut environment);
         }
@@ -90,7 +104,11 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
             context.validated_external_environment = None;
             return PassResult::stop();
         }
-        if let Err(error) = validate_external_environment(&environment, &context.std_registry) {
+        if let Err(error) = if reuse_library_validation {
+            Ok(())
+        } else {
+            validate_external_environment(&environment, &context.std_registry)
+        } {
             let Some(package) = error.package else {
                 return PassResult::failed(format!(
                     "invalid external environment has no package identity: {}",
@@ -118,6 +136,15 @@ impl Pass<ProjectContext> for ValidateExternalEnvironmentPass {
             PreservedArtifacts::All,
             ArtifactSet::one(VALIDATED_EXTERNAL_ENVIRONMENT),
         )
+    }
+}
+
+impl crate::StandardLibraryInterface {
+    /// Check the complete published interface before the toolchain installs it.
+    pub fn validate_for_install(&self, registry: &etas_std::StdRegistry) -> Result<(), String> {
+        let mut environment = ProjectEnvironmentInput::default();
+        self.append_environment(&mut environment);
+        validate_external_environment(&environment, registry).map_err(|error| error.reason)
     }
 }
 

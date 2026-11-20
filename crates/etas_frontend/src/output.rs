@@ -1865,6 +1865,8 @@ impl std::ops::Deref for StandardLibrary {
 /// Published standard-library declarations used by consumers during checking.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct StandardLibraryInterface {
+    #[serde(skip)]
+    pub validation: StandardLibraryValidation,
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,
     pub package: ProjectExternalPackageInput,
     pub metadata: ProjectExternalPublicMetadataInput,
@@ -1872,7 +1874,45 @@ pub struct StandardLibraryInterface {
     pub origins: etas_code::identity::PackageDefinitionOrigins,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct StandardLibraryValidation(std::sync::OnceLock<Arc<StandardLibraryValidationOwner>>);
+
+#[derive(Debug)]
+struct StandardLibraryValidationOwner {
+    interface: std::sync::Weak<StandardLibraryInterface>,
+    registry: std::sync::Weak<etas_std::StdRegistry>,
+}
+
+impl etas_core::memory::RetainedSize for StandardLibraryValidationOwner {
+    fn visit_retained<'a>(&'a self, _: &mut etas_core::memory::MemoryVisitor<'a>) {}
+}
+impl etas_core::memory::RetainedSize for StandardLibraryValidation {
+    fn visit_retained<'a>(&'a self, visitor: &mut etas_core::memory::MemoryVisitor<'a>) {
+        if let Some(owner) = self.0.get() {
+            visitor.visit_shared_arc(owner);
+        }
+    }
+}
+
 impl StandardLibraryInterface {
+    /// Restore the validation performed by the installing compiler. The caller
+    /// must authenticate the installed payload and its toolchain build first.
+    pub fn restore_installed_validation(self: &Arc<Self>, registry: &Arc<etas_std::StdRegistry>) {
+        self.validation.0.get_or_init(|| {
+            Arc::new(StandardLibraryValidationOwner {
+                interface: Arc::downgrade(self),
+                registry: Arc::downgrade(registry),
+            })
+        });
+    }
+
+    pub(crate) fn has_installed_validation(&self, registry: &Arc<etas_std::StdRegistry>) -> bool {
+        self.validation.0.get().is_some_and(|owner| {
+            std::ptr::eq(owner.interface.as_ptr(), self)
+                && owner.registry.as_ptr() == Arc::as_ptr(registry)
+        })
+    }
+
     /// Add the verified toolchain library to the prepared project environment.
     /// Reusing that environment in a frontend session preserves its package ID.
     pub fn append_environment(
