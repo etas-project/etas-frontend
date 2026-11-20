@@ -321,8 +321,8 @@ impl LibraryHirImage {
         self.restore_with_analysis(package_root, profile, None)
     }
 
-    /// Verify the archived program once during installation and retain the
-    /// solver output expected by restoration of this exact HIR image.
+    /// Verify the archived program during installation and retain materialized
+    /// Effect facts, including suspension analysis, for this exact HIR image.
     pub fn capture_effect_analysis(
         &self,
         package_root: &Path,
