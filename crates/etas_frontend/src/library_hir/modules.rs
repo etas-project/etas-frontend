@@ -31,11 +31,26 @@ impl LibraryHirImage {
         let parsed = files
             .iter()
             .map(|(id, source)| {
-                let parse = etas_syntax::parse_program(SourceFile::new(
-                    source.id,
-                    None,
-                    source.text.clone(),
-                ));
+                let file = SourceFile::new(source.id, None, source.text.clone());
+                let tokens = etas_syntax::lex(&file);
+                let mut parse = etas_syntax::parse_program(file);
+                // Declaration spans start at the declaration keyword; retain
+                // a preceding visibility modifier when copying source text.
+                for item in &mut parse.value.items {
+                    if let Some(token) = tokens
+                        .significant_tokens()
+                        .take_while(|token| token.span.range.end <= item.span.range.start)
+                        .last()
+                        && matches!(
+                            token.kind,
+                            etas_syntax::TokenKind::Keyword(
+                                etas_syntax::Keyword::Public | etas_syntax::Keyword::Private
+                            )
+                        )
+                    {
+                        item.span = token.span.cover(item.span);
+                    }
+                }
                 (*id, parse.value)
             })
             .collect::<BTreeMap<_, _>>();
