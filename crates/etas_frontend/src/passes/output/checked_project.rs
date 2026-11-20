@@ -164,13 +164,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
                 standard_library: context.standard_library.clone(),
-                toolchain_base: context.standard_library.as_ref().map(|library| {
-                    library
-                        .program
-                        .toolchain_base
-                        .clone()
-                        .unwrap_or_else(|| library.program.clone())
-                }),
+                toolchain_base: None,
                 checked_std_library_implementations: checked_std_library_implementations.clone(),
                 project_environment_fingerprint: definition_environment.fingerprint().to_owned(),
                 dependency_metadata_fingerprints: environment
@@ -303,7 +297,22 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             // Ordinary plans are bound to their owners' checked revisions only
             // now that every contract fact has been finalized. A candidate
             // binds to its frozen-contract revision when it is emitted.
+            if let Some(load) = &context.deferred_standard_library
+                && data.requires_executable_standard_library()
+            {
+                match load() {
+                    Ok(library) => data.standard_library = Some(library),
+                    Err(reason) => return PassResult::failed(reason),
+                }
+            }
             if let Some(library) = data.standard_library.clone() {
+                data.toolchain_base = Some(
+                    library
+                        .program
+                        .toolchain_base
+                        .clone()
+                        .unwrap_or_else(|| library.program.clone()),
+                );
                 if let Err(reason) = library.materialize_public_abis(&mut data) {
                     return PassResult::failed(reason);
                 }

@@ -3,7 +3,8 @@ use std::{
     collections::HashMap,
 };
 
-use etas_code::descriptor::ValueProjectionStep;
+use etas_code::{CodeFingerprint, descriptor::ValueProjectionStep};
+use etas_hir::{HirItemId, SymbolId};
 use etas_types::{TypeId, TypeSubstitutionError, ty::TypeLookupIndex};
 
 use super::engine::EffectSemantics;
@@ -14,9 +15,13 @@ pub(crate) struct EffectTypeQueries {
     pub(super) index: OnceCell<TypeLookupIndex>,
     representations: RefCell<HashMap<TypeId, Option<TypeId>>>,
     projections: RefCell<HashMap<TypeId, ValueProjections>>,
+    // Successful projection IDs remain in the fact table across solver rounds.
+    pub(super) parameter_projection_ids: RefCell<ParameterProjectionIds>,
 }
 
 type ValueProjections = HashMap<Vec<ValueProjectionStep>, Option<TypeId>>;
+type ParameterProjectionIds =
+    HashMap<(HirItemId, SymbolId), HashMap<Vec<ValueProjectionStep>, CodeFingerprint>>;
 
 impl EffectSemantics<'_> {
     pub(super) fn applied_representation(

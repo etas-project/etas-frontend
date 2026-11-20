@@ -1,10 +1,31 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use etas_code::{CodeFingerprint, descriptor::ValueProjectionStep as Step};
 use etas_hir::{HirItemId, SymbolDef, SymbolId};
 
 use super::{engine::EffectSemantics, specialize::EffectSpecializationError, state::LatentSource};
 use crate::facts::NativeParameterProjection;
+
+#[derive(Default)]
+pub(super) struct NativeParameterProjectionIndex {
+    by_owner: HashMap<HirItemId, BTreeSet<CodeFingerprint>>,
+    nodes: usize,
+}
+
+impl NativeParameterProjectionIndex {
+    pub(super) fn new(projections: &BTreeMap<CodeFingerprint, NativeParameterProjection>) -> Self {
+        let mut index = Self::default();
+        for (&id, projection) in projections {
+            index.insert(id, projection.owner, projection.path.len());
+        }
+        index
+    }
+
+    fn insert(&mut self, id: CodeFingerprint, owner: HirItemId, path_length: usize) {
+        self.by_owner.entry(owner).or_default().insert(id);
+        self.nodes = self.nodes.saturating_add(1 + path_length);
+    }
+}
 
 impl EffectSemantics<'_> {
     pub(crate) fn parameter_projection_target(
@@ -83,6 +104,25 @@ impl EffectSemantics<'_> {
         self.parameter_projections.borrow().get(&id).cloned()
     }
 
+    pub(super) fn callable_parameter_projections(
+        &self,
+        owner: HirItemId,
+    ) -> Vec<(CodeFingerprint, NativeParameterProjection)> {
+        let index = self.parameter_projection_index.borrow();
+        let projections = self.parameter_projections.borrow();
+        index
+            .by_owner
+            .get(&owner)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| {
+                let projection = &projections[id];
+                (self.type_contains_flow(projection.ty) || self.type_has_parameters(projection.ty))
+                    .then(|| (*id, projection.clone()))
+            })
+            .collect()
+    }
+
     pub(crate) fn project_parameter_origins(
         &self,
         sources: impl IntoIterator<Item = LatentSource>,
@@ -126,9 +166,18 @@ impl EffectSemantics<'_> {
         {
             return Err(invalid());
         }
-        let bytes = serde_json::to_vec(&(owner, parameter, &path)).map_err(|_| invalid())?;
-        let id = CodeFingerprint::of_bytes("etas.effects.parameter-projection.v1", &bytes);
+        let mut identities = self.type_queries.parameter_projection_ids.borrow_mut();
+        let paths = identities.entry((owner, parameter)).or_default();
+        let id = match paths.get(&path) {
+            Some(id) => return Ok(*id),
+            None => {
+                let bytes =
+                    serde_json::to_vec(&(owner, parameter, &path)).map_err(|_| invalid())?;
+                CodeFingerprint::of_bytes("etas.effects.parameter-projection.v1", &bytes)
+            }
+        };
         if self.parameter_projections.borrow().contains_key(&id) {
+            paths.insert(path, id);
             return Ok(id);
         }
         let ty = self.symbol_value_type(parameter).ok_or_else(invalid)?;
@@ -138,26 +187,23 @@ impl EffectSemantics<'_> {
             .ok_or_else(invalid)?;
         // Session-local IDs are retained only with their checked HIR revision.
         // Public metadata exports the scoped root and path, never this ID.
-        let mut projections = self.parameter_projections.borrow_mut();
-        if !projections.contains_key(&id) {
-            let used = projections
-                .values()
-                .map(|entry| 1 + entry.path.len())
-                .sum::<usize>();
-            if used.saturating_add(1 + path.len()) > etas_package_metadata::MAX_METADATA_GRAPH_NODES
-            {
-                return Err(invalid());
-            }
-            std::sync::Arc::make_mut(&mut projections).insert(
-                id,
-                NativeParameterProjection {
-                    owner,
-                    parameter,
-                    path,
-                    ty,
-                },
-            );
+        let mut index = self.parameter_projection_index.borrow_mut();
+        if index.nodes.saturating_add(1 + path.len())
+            > etas_package_metadata::MAX_METADATA_GRAPH_NODES
+        {
+            return Err(invalid());
         }
+        index.insert(id, owner, path.len());
+        paths.insert(path.clone(), id);
+        std::sync::Arc::make_mut(&mut self.parameter_projections.borrow_mut()).insert(
+            id,
+            NativeParameterProjection {
+                owner,
+                parameter,
+                path,
+                ty,
+            },
+        );
         Ok(id)
     }
 }

@@ -91,6 +91,8 @@ pub(crate) struct EffectSemantics<'a> {
             >,
         >,
     >,
+    pub(super) parameter_projection_index:
+        std::cell::RefCell<super::parameter_projection::NativeParameterProjectionIndex>,
     pub(super) type_queries: std::rc::Rc<super::type_queries::EffectTypeQueries>,
     pub(crate) metadata_callables:
         std::collections::BTreeMap<etas_code::CodeFingerprint, Option<usize>>,
@@ -269,6 +271,11 @@ impl<'a> EffectSemantics<'a> {
                     .sum(),
             ),
             callable_environments: std::cell::RefCell::new(callable_environments),
+            parameter_projection_index: std::cell::RefCell::new(
+                super::parameter_projection::NativeParameterProjectionIndex::new(
+                    &parameter_projections,
+                ),
+            ),
             parameter_projections: std::cell::RefCell::new(parameter_projections),
             type_queries,
             external_parameter_projections: std::cell::RefCell::new(external_parameter_projections),

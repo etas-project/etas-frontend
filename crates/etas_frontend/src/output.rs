@@ -4,9 +4,14 @@ use etas_core::{Diagnostic, SourceId, id_type};
 use etas_effects::{
     DependencyEffectMetadata, EffectFacts, EffectPipelineArtifacts, EffectRegistry,
 };
-use etas_hir::{HirItemId, HirModuleId, HirProgram, SymbolId, TopLevelLetClassification};
+use etas_hir::{
+    HirItemId, HirModuleId, HirProgram, SymbolDef, SymbolId, TopLevelLetClassification,
+};
 use etas_syntax::ast;
-use etas_types::{TypeFacts, TypeId, TypeOutput, TypeStore};
+use etas_types::{
+    DefaultArgument, ParameterDefaultRef, TypeFacts, TypeId, TypeOutput, TypeStore,
+    method::MethodTarget,
+};
 use etas_utils::UnitKindKey;
 
 use crate::project::{
@@ -1629,6 +1634,76 @@ impl CheckedProgramData {
                         | etas_std::intrinsic::runtime::TOOL_INVOKE
                 )
             })
+    }
+
+    /// Whether this application can enter SDK-owned code or need its runtime proofs.
+    pub fn requires_executable_standard_library(&self) -> bool {
+        let types = &self.types;
+        if self.requires_definition_catalog()
+            || !types.definition_operations.is_empty()
+            || !types.library_flow_calls.is_empty()
+            || !types.action_calls.is_empty()
+            || self
+                .effects
+                .metadata_callable_graphs
+                .values()
+                .any(|graph| graph.implementation.is_some())
+        {
+            return true;
+        }
+
+        let external_default = |default: &DefaultArgument| {
+            matches!(default.source, ParameterDefaultRef::External { .. })
+        };
+        if types
+            .declared_call_arguments
+            .values()
+            .any(|binding| binding.defaults.iter().any(external_default))
+            || types
+                .checked_method_calls
+                .values()
+                .chain(
+                    types
+                        .bound_method_values
+                        .values()
+                        .map(|value| &value.method),
+                )
+                .any(|method| {
+                    matches!(
+                        method.target,
+                        MethodTarget::External { .. } | MethodTarget::BoundSpec { .. }
+                    ) || method.defaults.iter().any(external_default)
+                })
+            || types
+                .existential_packs
+                .values()
+                .flat_map(|pack| &pack.witnesses)
+                .any(|witness| {
+                    matches!(
+                        witness.target,
+                        MethodTarget::External { .. }
+                            | MethodTarget::BoundSpec { .. }
+                            | MethodTarget::Standard { .. }
+                    )
+                })
+        {
+            return true;
+        }
+
+        // A path to a source std flow or value can cross into the SDK without
+        // an explicit call site, for example when passed as a function value.
+        self.symbols.iter().any(|symbol| {
+            let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                return false;
+            };
+            self.std_registry
+                .lookup_qualified(path)
+                .is_some_and(|declaration| {
+                    self.std_registry.body_binding(declaration.id).is_some()
+                        || (matches!(declaration.decl, etas_std::StdDecl::Value(_))
+                            && self.std_registry.declaration_key(declaration.id).is_some())
+                })
+        })
     }
 
     /// Residual plans every execution of this program must install. Plans are

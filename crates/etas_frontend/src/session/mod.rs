@@ -88,7 +88,14 @@ where
 pub(crate) enum StandardLibraryInput {
     Executable(Arc<crate::StandardLibrary>),
     Interface(Arc<crate::StandardLibraryInterface>),
+    Deferred {
+        interface: Arc<crate::StandardLibraryInterface>,
+        load: Arc<StandardLibraryLoader>,
+    },
 }
+
+pub(crate) type StandardLibraryLoader =
+    dyn Fn() -> Result<Arc<crate::StandardLibrary>, String> + Send + Sync;
 
 impl Default for FrontendSession<MemoryArtifactStore> {
     fn default() -> Self {
@@ -150,6 +157,20 @@ where
         interface: Arc<crate::StandardLibraryInterface>,
     ) -> Self {
         self.standard_library = Some(StandardLibraryInput::Interface(interface));
+        self
+    }
+
+    /// Check against the installed interface and link its executable bodies
+    /// when the runnable program requires them.
+    pub fn with_deferred_standard_library(
+        mut self,
+        interface: Arc<crate::StandardLibraryInterface>,
+        load: impl Fn() -> Result<Arc<crate::StandardLibrary>, String> + Send + Sync + 'static,
+    ) -> Self {
+        self.standard_library = Some(StandardLibraryInput::Deferred {
+            interface,
+            load: Arc::new(load),
+        });
         self
     }
 
