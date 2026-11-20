@@ -139,6 +139,27 @@ impl LibraryHirImage {
         program
             .handler_arms
             .retain(|id, _| nodes.arms.contains(&id));
+        let mut scopes = program
+            .scopes
+            .iter()
+            .filter(|scope| match scope.owner {
+                ScopeOwner::Module(_) | ScopeOwner::Item(_) => true,
+                ScopeOwner::Block(block) => nodes.blocks.contains(&block),
+                ScopeOwner::Lambda(expression)
+                | ScopeOwner::Handler(expression)
+                | ScopeOwner::MatchArm(expression) => nodes.expressions.contains(&expression),
+            })
+            .map(|scope| scope.id)
+            .collect::<BTreeSet<_>>();
+        let mut pending = scopes.iter().copied().collect::<Vec<_>>();
+        while let Some(scope) = pending.pop() {
+            if let Some(parent) = program.scopes.get(scope).and_then(|scope| scope.parent)
+                && scopes.insert(parent)
+            {
+                pending.push(parent);
+            }
+        }
+        program.scopes.retain(|scope| scopes.contains(&scope.id));
         let sources = &mut program.source_map;
         sources
             .expr_sources

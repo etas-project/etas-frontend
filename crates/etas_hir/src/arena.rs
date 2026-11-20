@@ -104,3 +104,9 @@ impl<Id: Idx, T> Index<Id> for Arena<Id, T> {
         self.get(id).expect("linked HIR node")
     }
 }
+
+impl<Id: Idx, T> std::ops::IndexMut<Id> for Arena<Id, T> {
+    fn index_mut(&mut self, id: Id) -> &mut T {
+        self.get_mut(id).expect("linked HIR node")
+    }
+}
