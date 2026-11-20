@@ -130,15 +130,46 @@ impl LibraryHirImage {
                     .insert(name.clone(), target_nodes(target));
             }
         }
+        // Effect type arguments also use static-path syntax, so they do not
+        // necessarily appear in the HIR type arena. Retain their declarations
+        // through the checked module names and qualified source paths.
+        let mut qualified = BTreeMap::<Vec<String>, BTreeSet<(u32, usize)>>::new();
+        let mut module_names =
+            BTreeMap::<Vec<String>, BTreeMap<String, BTreeSet<(u32, usize)>>>::new();
+        for (source, item) in &self.item_targets {
+            let Some(symbol) = self.program.items[*item].symbol() else {
+                continue;
+            };
+            let Some(path) = self.program.declaration_path(symbol) else {
+                continue;
+            };
+            let node = (source.source.0, source.index);
+            qualified.entry(path.clone()).or_default().insert(node);
+            let module = &self.module_index.modules[self.module_index.by_source[&source.source]]
+                .path
+                .segments;
+            if path.len() == module.len() + 1 && path.starts_with(module) {
+                module_names
+                    .entry(module.clone())
+                    .or_default()
+                    .entry(path.last().unwrap().clone())
+                    .or_default()
+                    .insert(node);
+            }
+        }
         let mut identifiers = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
         for (id, source) in &files {
             let file = SourceFile::new(source.id, None, source.text.clone());
             let tokens = etas_syntax::lex(&file);
+            let tokens = tokens.significant_tokens().collect::<Vec<_>>();
+            let module = &self.module_index.modules[self.module_index.by_source[&source.id]]
+                .path
+                .segments;
             for (index, item) in parsed[id].items.iter().enumerate() {
                 let mut referenced = base.clone();
                 let mut used = BTreeSet::new();
-                for token in tokens.significant_tokens().filter(|token| {
+                for (position, token) in tokens.iter().enumerate().filter(|(_, token)| {
                     item.span.range.start <= token.span.range.start
                         && token.span.range.end <= item.span.range.end
                 }) {
@@ -153,6 +184,27 @@ impl LibraryHirImage {
                     }
                     if let Some(targets) = local_names.get(id).and_then(|names| names.get(name)) {
                         referenced.extend(targets);
+                    }
+                    if let Some(targets) =
+                        module_names.get(module).and_then(|names| names.get(name))
+                    {
+                        referenced.extend(targets);
+                    }
+                    let mut path = vec![name.to_owned()];
+                    let mut cursor = position + 1;
+                    while cursor + 1 < tokens.len()
+                        && tokens[cursor].kind
+                            == etas_syntax::TokenKind::Punct(etas_syntax::Punct::Dot)
+                        && tokens[cursor + 1].kind.is_ident_like()
+                    {
+                        let span = tokens[cursor + 1].span.range;
+                        path.push(
+                            source.text[span.start.to_usize()..span.end.to_usize()].to_owned(),
+                        );
+                        if let Some(targets) = qualified.get(&path) {
+                            referenced.extend(targets);
+                        }
+                        cursor += 2;
                     }
                 }
                 identifiers.insert((*id, index), used);
