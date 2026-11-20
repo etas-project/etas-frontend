@@ -113,6 +113,11 @@ impl ScopeTree {
         self.scopes.get(id)
     }
 
+    /// Exclusive ID bound; linked scopes can leave holes below this limit.
+    pub fn id_limit(&self) -> usize {
+        self.scopes.len()
+    }
+
     pub fn retain(&mut self, mut keep: impl FnMut(&Scope) -> bool) {
         self.scopes.retain(|_, scope| keep(scope));
     }
