@@ -1,4 +1,4 @@
-//! Installation units retain the source files that own resolved declarations,
+//! Installation units retain the source declarations that own resolved dependencies,
 //! calls and methods. Prelude names come from the checked source declarations;
 //! each unit receives the corresponding source imports. Ordinary checking
 //! validates every selected closure before installation.
@@ -28,6 +28,29 @@ impl LibraryHirImage {
             .iter()
             .map(|source| (source.id.0, source))
             .collect::<BTreeMap<_, _>>();
+        let parsed = files
+            .iter()
+            .map(|(id, source)| {
+                let parse = etas_syntax::parse_program(SourceFile::new(
+                    source.id,
+                    None,
+                    source.text.clone(),
+                ));
+                (*id, parse.value)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let node_at = |span: etas_core::Span| {
+            parsed
+                .get(&span.source.0)?
+                .items
+                .iter()
+                .enumerate()
+                .find(|(_, item)| {
+                    item.span.range.start <= span.range.start
+                        && span.range.end <= item.span.range.end
+                })
+                .map(|(index, _)| (span.source.0, index))
+        };
         let prelude = self
             .module_index
             .by_path
@@ -35,18 +58,18 @@ impl LibraryHirImage {
                 segments: vec!["std".into(), "prelude".into()],
             })
             .copied();
-        let mut names = BTreeMap::<String, BTreeSet<u32>>::new();
-        let target_files = |target: &crate::ImportTarget| -> Vec<u32> {
+        let mut names = BTreeMap::<String, BTreeSet<(u32, usize)>>::new();
+        let target_nodes = |target: &crate::ImportTarget| -> Vec<(u32, usize)> {
             match target {
-                crate::ImportTarget::SourceItem { item, .. } => vec![item.source.0],
+                crate::ImportTarget::SourceItem { item, .. } => vec![(item.source.0, item.index)],
                 crate::ImportTarget::Module(crate::ResolvedModuleTarget::Source {
                     module, ..
                 }) => self.module_index.modules[*module]
                     .parts
                     .iter()
-                    .map(|part| self.module_index.parts[*part].source.0)
-                    .min_by_key(|id| files[id].text.len())
-                    .into_iter()
+                    .flat_map(|part| &self.module_index.parts[*part].items)
+                    .map(|item| (item.source.0, item.index))
+                    .take(1)
                     .collect(),
                 _ => Vec::new(),
             }
@@ -56,7 +79,7 @@ impl LibraryHirImage {
                 names
                     .entry(import.local_name.clone())
                     .or_default()
-                    .extend(target_files(&import.target));
+                    .extend(target_nodes(&import.target));
             }
         }
         for import in &self.resolved_imports.wildcard_imports {
@@ -65,46 +88,60 @@ impl LibraryHirImage {
                     names
                         .entry(name.clone())
                         .or_default()
-                        .extend(target_files(target));
+                        .extend(target_nodes(target));
                 }
             }
         }
-        let base = self
-            .sources
+        let base = parsed
             .iter()
-            .filter(|source| {
-                let module = self.module_index.by_source[&source.id];
+            .filter(|(id, _)| {
+                let module = self.module_index.by_source[&files[id].id];
                 self.module_index.modules[module].path.segments == ["std", "core"]
             })
-            .map(|source| source.id.0)
+            .flat_map(|(id, source)| (0..source.items.len()).map(move |index| (*id, index)))
             .collect::<BTreeSet<_>>();
-        let mut dependencies = BTreeMap::<u32, BTreeSet<u32>>::new();
+        let mut local_names = BTreeMap::<u32, BTreeMap<String, Vec<(u32, usize)>>>::new();
+        for import in &self.resolved_imports.imports {
+            local_names
+                .entry(import.import.source.0)
+                .or_default()
+                .insert(import.local_name.clone(), target_nodes(&import.target));
+        }
+        for import in &self.resolved_imports.wildcard_imports {
+            for (name, target) in &import.targets {
+                local_names
+                    .entry(import.import.source.0)
+                    .or_default()
+                    .insert(name.clone(), target_nodes(target));
+            }
+        }
+        let mut identifiers = BTreeMap::new();
+        let mut dependencies = BTreeMap::new();
         for (id, source) in &files {
-            let mut referenced = base.clone();
             let file = SourceFile::new(source.id, None, source.text.clone());
-            for token in etas_syntax::lex(&file).significant_tokens() {
-                if token.kind.is_ident_like() {
+            let tokens = etas_syntax::lex(&file);
+            for (index, item) in parsed[id].items.iter().enumerate() {
+                let mut referenced = base.clone();
+                let mut used = BTreeSet::new();
+                for token in tokens.significant_tokens().filter(|token| {
+                    item.span.range.start <= token.span.range.start
+                        && token.span.range.end <= item.span.range.end
+                }) {
+                    if !token.kind.is_ident_like() {
+                        continue;
+                    }
                     let span = token.span.range;
                     let name = &source.text[span.start.to_usize()..span.end.to_usize()];
+                    used.insert(name.to_owned());
                     if let Some(targets) = names.get(name) {
                         referenced.extend(targets);
                     }
+                    if let Some(targets) = local_names.get(id).and_then(|names| names.get(name)) {
+                        referenced.extend(targets);
+                    }
                 }
-            }
-            dependencies.insert(*id, referenced);
-        }
-        for import in &self.resolved_imports.imports {
-            dependencies
-                .get_mut(&import.import.source.0)
-                .expect("source import owner")
-                .extend(target_files(&import.target));
-        }
-        for import in &self.resolved_imports.wildcard_imports {
-            for target in import.targets.values() {
-                dependencies
-                    .get_mut(&import.import.source.0)
-                    .expect("source import owner")
-                    .extend(target_files(target));
+                identifiers.insert((*id, index), used);
+                dependencies.insert((*id, index), referenced);
             }
         }
         let source_of = |symbol: etas_hir::SymbolId| {
@@ -116,15 +153,15 @@ impl LibraryHirImage {
                 .symbols
                 .get(symbol)
                 .and_then(|symbol| symbol.defining_item)
-                .map(|item| self.program.items[item].span().source.0)
-                .filter(|id| files.contains_key(id))
+                .and_then(|item| node_at(self.program.items[item].span()))
         };
-        let mut reference = |source: etas_core::SourceId, resolution: &etas_hir::ResolveResult| {
+        let mut reference = |span: etas_core::Span, resolution: &etas_hir::ResolveResult| {
             if let etas_hir::ResolveResult::Resolved(symbol) = resolution
                 && let Some(target) = source_of(*symbol)
+                && let Some(owner) = node_at(span)
             {
                 dependencies
-                    .get_mut(&source.0)
+                    .get_mut(&owner)
                     .expect("checked reference owner")
                     .insert(target);
             }
@@ -132,16 +169,16 @@ impl LibraryHirImage {
         for symbol in self.program.symbols.iter() {
             if let etas_hir::SymbolDef::TypeParam { bounds, .. } = &symbol.def {
                 for bound in bounds {
-                    reference(bound.path.span.source, &bound.path.resolution);
+                    reference(bound.path.span, &bound.path.resolution);
                 }
             }
         }
         for (_, ty) in self.program.types.iter() {
             match ty {
-                HirType::Path { path, .. } => reference(path.span.source, &path.resolution),
+                HirType::Path { path, .. } => reference(path.span, &path.resolution),
                 HirType::Existential { bounds, .. } => {
                     for bound in bounds {
-                        reference(bound.path.span.source, &bound.path.resolution);
+                        reference(bound.path.span, &bound.path.resolution);
                     }
                 }
                 _ => {}
@@ -149,17 +186,17 @@ impl LibraryHirImage {
         }
         for (_, expr) in self.program.exprs.iter() {
             match expr {
-                HirExpr::Path(path) => reference(path.span.source, &path.resolution),
+                HirExpr::Path(path) => reference(path.span, &path.resolution),
                 HirExpr::Record(record) => {
                     if let Some(path) = &record.path {
-                        reference(path.span.source, &path.resolution);
+                        reference(path.span, &path.resolution);
                     }
                 }
                 HirExpr::SpecMethodCall { spec_path, .. } => {
-                    reference(spec_path.span.source, &spec_path.resolution)
+                    reference(spec_path.span, &spec_path.resolution)
                 }
                 HirExpr::Perform { action, .. } | HirExpr::Infer { action, .. } => {
-                    reference(action.span.source, &action.effect.path.resolution)
+                    reference(action.span, &action.effect.path.resolution)
                 }
                 _ => {}
             }
@@ -169,9 +206,7 @@ impl LibraryHirImage {
                 etas_hir::HirPat::Record {
                     path: Some(path), ..
                 }
-                | etas_hir::HirPat::Variant { path, .. } => {
-                    reference(path.span.source, &path.resolution)
-                }
+                | etas_hir::HirPat::Variant { path, .. } => reference(path.span, &path.resolution),
                 _ => {}
             }
         }
@@ -179,29 +214,29 @@ impl LibraryHirImage {
             match item {
                 HirItem::Impl(implementation) => match &implementation.target {
                     etas_hir::HirImplTarget::Inherent { target, .. } => {
-                        reference(target.span.source, &target.resolution)
+                        reference(target.span, &target.resolution)
                     }
                     etas_hir::HirImplTarget::Agent { target, specs } => {
-                        reference(target.span.source, &target.resolution);
+                        reference(target.span, &target.resolution);
                         for spec in specs {
-                            reference(spec.spec_path.span.source, &spec.spec_path.resolution);
+                            reference(spec.spec_path.span, &spec.spec_path.resolution);
                         }
                     }
                     etas_hir::HirImplTarget::SpecSatisfaction { specs, .. } => {
                         for spec in specs {
-                            reference(spec.spec_path.span.source, &spec.spec_path.resolution);
+                            reference(spec.spec_path.span, &spec.spec_path.resolution);
                         }
                     }
                     _ => {}
                 },
                 HirItem::Spec(spec) => {
                     for bound in &spec.bounds {
-                        reference(bound.path.span.source, &bound.path.resolution);
+                        reference(bound.path.span, &bound.path.resolution);
                     }
                 }
                 HirItem::Effect(effect) => {
                     if let Some(parent) = &effect.extends {
-                        reference(parent.path.span.source, &parent.path.resolution);
+                        reference(parent.path.span, &parent.path.resolution);
                     }
                 }
                 _ => {}
@@ -209,7 +244,7 @@ impl LibraryHirImage {
         }
         for (expr, symbol) in &self.types.source_flow_calls {
             reference(
-                self.program.exprs[*expr].span(&self.program.blocks).source,
+                self.program.exprs[*expr].span(&self.program.blocks),
                 &etas_hir::ResolveResult::Resolved(*symbol),
             );
         }
@@ -229,7 +264,7 @@ impl LibraryHirImage {
             | etas_types::method::MethodTarget::Agent { symbol, .. } = &method.target
             {
                 reference(
-                    self.program.exprs[expr].span(&self.program.blocks).source,
+                    self.program.exprs[expr].span(&self.program.blocks),
                     &etas_hir::ResolveResult::Resolved(*symbol),
                 );
             }
@@ -249,7 +284,9 @@ impl LibraryHirImage {
                         dependencies
                             .get_mut(&owner)
                             .expect("source spec owner")
-                            .insert(implementation.span.source.0);
+                            .insert(
+                                node_at(implementation.span).expect("implementation declaration"),
+                            );
                     }
                 }
             }
@@ -273,10 +310,11 @@ impl LibraryHirImage {
             && let Some(key) = self.type_store.nominal_identity(ty)
             && let Some(item) = self.declarations.get(key)
         {
-            let source = self.program.items[*item].span().source.0;
+            let source =
+                node_at(self.program.items[*item].span()).expect("continuation declaration");
             for (_, arm) in self.program.handler_arms.iter() {
                 dependencies
-                    .get_mut(&arm.span.source.0)
+                    .get_mut(&node_at(arm.span).expect("handler declaration"))
                     .expect("handler owner")
                     .insert(source);
             }
@@ -288,7 +326,7 @@ impl LibraryHirImage {
             .map(|source| source.id.0)
             .collect::<BTreeSet<_>>();
         for referenced in dependencies.values_mut() {
-            referenced.retain(|id| !prelude_sources.contains(id));
+            referenced.retain(|(id, _)| !prelude_sources.contains(id));
         }
         let roots = self
             .program
@@ -298,7 +336,7 @@ impl LibraryHirImage {
                 HirItem::Flow(_)
                 | HirItem::Tool(_)
                 | HirItem::Agent(_)
-                | HirItem::TopLevelLet(_) => Some(item.span().source.0),
+                | HirItem::TopLevelLet(_) => node_at(item.span()),
                 _ => None,
             })
             .collect::<BTreeSet<_>>();
@@ -312,14 +350,15 @@ impl LibraryHirImage {
                     pending.extend(&dependencies[&next]);
                 }
             }
-            if selected.len() == files.len() || !unique.insert(selected.clone()) {
+            if !unique.insert(selected.clone()) {
                 continue;
             }
             let prelude = self.selected_prelude(root, &selected);
+            let mut selected_sources = selected.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>();
             if let Some(source) = &prelude {
-                selected.insert(source.id.0);
+                selected_sources.insert(source.id.0);
             }
-            let modules = selected
+            let modules = selected_sources
                 .iter()
                 .map(|id| {
                     self.module_index.modules[self.module_index.by_source[&files[id].id]]
@@ -331,10 +370,10 @@ impl LibraryHirImage {
             let mut environment = self.environment.clone();
             environment
                 .stable_source_keys
-                .retain(|key| selected.contains(&key.source.0));
+                .retain(|key| selected_sources.contains(&key.source.0));
             environment
                 .standalone_source_packages
-                .retain(|package| selected.contains(&package.source.0));
+                .retain(|package| selected_sources.contains(&package.source.0));
             environment.environment_fingerprint = None;
             environment.external_modules_fingerprint = None;
             let mut input = crate::ProjectInput {
@@ -345,11 +384,59 @@ impl LibraryHirImage {
                 sources: self
                     .sources
                     .iter()
-                    .filter(|source| selected.contains(&source.id.0))
+                    .filter(|source| selected_sources.contains(&source.id.0))
                     .map(|source| crate::SourceInput {
                         id: source.id,
                         path: Some(root.join(&source.relative_path)),
-                        text: source.text.clone(),
+                        text: {
+                            let id = source.id.0;
+                            let used = selected
+                                .iter()
+                                .filter(|(owner, _)| *owner == id)
+                                .flat_map(|node| identifiers[node].iter().cloned())
+                                .collect::<BTreeSet<_>>();
+                            let mut text = format!(
+                                "module {};\n",
+                                self.module_index.modules[self.module_index.by_source[&source.id]]
+                                    .path
+                                    .segments
+                                    .join(".")
+                            );
+                            for import in &self.resolved_imports.imports {
+                                if import.import.source == source.id
+                                    && used.contains(&import.local_name)
+                                {
+                                    text.push_str(&self.selected_import(
+                                        &import.local_name,
+                                        &import.target,
+                                        import.visibility,
+                                    ));
+                                }
+                            }
+                            for import in &self.resolved_imports.wildcard_imports {
+                                if import.import.source == source.id {
+                                    for (name, target) in &import.targets {
+                                        if used.contains(name) {
+                                            text.push_str(&self.selected_import(
+                                                name,
+                                                target,
+                                                import.visibility,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            for (index, item) in parsed[&id].items.iter().enumerate() {
+                                if selected.contains(&(id, index)) {
+                                    text.push_str(
+                                        &source.text[item.span.range.start.to_usize()
+                                            ..item.span.range.end.to_usize()],
+                                    );
+                                    text.push('\n');
+                                }
+                            }
+                            text
+                        },
                         kind: source.kind.clone(),
                     })
                     .collect(),
@@ -368,10 +455,59 @@ impl LibraryHirImage {
         compilations
     }
 
+    fn selected_import(
+        &self,
+        name: &str,
+        target: &crate::ImportTarget,
+        visibility: etas_hir::Visibility,
+    ) -> String {
+        let path = match target {
+            crate::ImportTarget::SourceItem { item, member, .. } => {
+                let (_, declaration) = self
+                    .item_targets
+                    .iter()
+                    .find(|(source, _)| source == item)
+                    .expect("checked import target");
+                let symbol = self.program.items[*declaration]
+                    .symbol()
+                    .expect("named imported declaration");
+                let mut path = self
+                    .program
+                    .declaration_path(symbol)
+                    .expect("import declaration path");
+                if let Some(member) = member {
+                    path.push(member.clone());
+                }
+                path
+            }
+            crate::ImportTarget::StdItem {
+                module_path, name, ..
+            } => {
+                let mut path = module_path.segments.clone();
+                path.push(name.clone());
+                path
+            }
+            crate::ImportTarget::Module(crate::ResolvedModuleTarget::Source { module, .. }) => {
+                self.module_index.modules[*module].path.segments.clone()
+            }
+            _ => unreachable!("source std imports source or primitive declarations"),
+        };
+        let public = if visibility == etas_hir::Visibility::Public {
+            "public "
+        } else {
+            ""
+        };
+        if path.last().map(String::as_str) == Some(name) {
+            format!("{public}import {};\n", path.join("."))
+        } else {
+            format!("{public}import {} as {name};\n", path.join("."))
+        }
+    }
+
     fn selected_prelude(
         &self,
         root: &Path,
-        selected: &BTreeSet<u32>,
+        selected: &BTreeSet<(u32, usize)>,
     ) -> Option<crate::SourceInput> {
         let (prelude, module) = self
             .module_index
@@ -393,7 +529,7 @@ impl LibraryHirImage {
                     member,
                     ..
                 } => {
-                    if !selected.contains(&item.source.0) {
+                    if !selected.contains(&(item.source.0, item.index)) {
                         return;
                     }
                     let item = self
@@ -425,11 +561,11 @@ impl LibraryHirImage {
                     module, ..
                 }) => {
                     let path = &self.module_index.modules[*module].path.segments;
-                    if !self.module_index.modules[*module]
-                        .parts
-                        .iter()
-                        .any(|part| selected.contains(&self.module_index.parts[*part].source.0))
-                    {
+                    if !self.module_index.modules[*module].parts.iter().any(|part| {
+                        selected
+                            .iter()
+                            .any(|(id, _)| *id == self.module_index.parts[*part].source.0)
+                    }) {
                         return;
                     }
                     path.clone()
