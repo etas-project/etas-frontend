@@ -284,10 +284,11 @@ impl StandardLibrary {
             .foreign_methods
             .into_iter()
             .filter(|application| {
-                self.metadata
-                    .methods
+                self.descriptors
+                    .headers
                     .iter()
-                    .any(|method| method.identity == application.identity)
+                    .flat_map(|headers| &headers.callables)
+                    .any(|header| header.id.as_method() == Some(&application.identity))
             })
             .collect::<Vec<_>>();
         let control_types = requests::collect(consumer)?;
