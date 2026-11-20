@@ -100,7 +100,7 @@ impl DefinitionCatalog {
             .checked
             .external_definition_origins()
             .iter()
-            .filter_map(|metadata| metadata.descriptors.as_ref())
+            .filter_map(|metadata| metadata.descriptors.as_deref())
             .chain(standard.as_deref())
         {
             let Some(headers) = &set.headers else {

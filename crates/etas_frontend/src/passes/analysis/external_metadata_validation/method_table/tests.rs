@@ -41,7 +41,7 @@ fn in_memory_method_metadata_must_reference_its_checked_descriptor_binders() {
         external_definition_origins: vec![crate::ProjectExternalDefinitionOriginsInput {
             package,
             origins: public.definition_origins.unwrap(),
-            descriptors: public.definition_descriptors,
+            descriptors: public.definition_descriptors.map(std::sync::Arc::new),
         }],
         external_public_metadata: vec![crate::ProjectExternalPublicMetadataInput {
             scoped_callbacks: public.scoped_callbacks,

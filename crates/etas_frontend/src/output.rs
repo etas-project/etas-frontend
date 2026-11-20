@@ -353,7 +353,7 @@ pub(crate) fn resolve_stable_source_key(
 pub struct ProjectExternalDefinitionOriginsInput {
     pub package: ExternalPackageId,
     pub origins: etas_code::identity::PackageDefinitionOrigins,
-    pub descriptors: Option<etas_code::descriptor::DefinitionDescriptorSet>,
+    pub descriptors: Option<Arc<etas_code::descriptor::DefinitionDescriptorSet>>,
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -1623,6 +1623,50 @@ impl std::ops::Deref for CheckedProgramData {
 }
 
 impl CheckedProgramData {
+    /// Methods that can cross the SDK boundary from checked expressions or
+    /// existential witnesses. An open spec invocation retains its candidate
+    /// implementations until generic invocation preparation selects a witness.
+    pub fn referenced_standard_methods(&self) -> std::collections::BTreeSet<etas_code::MethodId> {
+        let targets = self
+            .types
+            .checked_method_calls
+            .values()
+            .map(|call| &call.target)
+            .chain(
+                self.types
+                    .bound_method_values
+                    .values()
+                    .map(|value| &value.method.target),
+            )
+            .chain(
+                self.types
+                    .existential_packs
+                    .values()
+                    .flat_map(|pack| &pack.witnesses)
+                    .map(|witness| &witness.target),
+            )
+            .collect::<Vec<_>>();
+        let mut methods = targets
+            .iter()
+            .filter_map(|target| match target {
+                MethodTarget::External { identity } => Some(identity.clone()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if targets
+            .iter()
+            .any(|target| matches!(target, MethodTarget::BoundSpec { .. }))
+        {
+            methods.extend(self.types.methods.entries().filter_map(
+                |method| match &method.target {
+                    MethodTarget::External { identity } => Some(identity.clone()),
+                    _ => None,
+                },
+            ));
+        }
+        methods
+    }
+
     /// Source references, including function values, without unused prelude
     /// declarations. Selected overload calls retain their checked symbol.
     pub fn referenced_standard_symbols(&self) -> std::collections::BTreeSet<etas_std::StdSymbolId> {
@@ -1858,7 +1902,7 @@ impl StandardLibraryInterface {
             .push(ProjectExternalDefinitionOriginsInput {
                 package,
                 origins: self.origins.clone(),
-                descriptors: Some(self.descriptors.as_ref().clone()),
+                descriptors: Some(self.descriptors.clone()),
             });
         package
     }

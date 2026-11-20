@@ -443,7 +443,7 @@ impl<'a> ExternalContractIndex<'a> {
                     .map(|binding| (binding.path(), &binding.definition))
                     .collect(),
             );
-            if let Some(set) = &origin.descriptors
+            if let Some(set) = origin.descriptors.as_deref()
                 && let Some(headers) = &set.headers
             {
                 for header in &headers.callables {

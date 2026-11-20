@@ -37,12 +37,10 @@ impl StandardLibrary {
                 callables.insert(binding.callable.clone());
             }
         }
-        for method in consumer.types.methods.entries() {
-            if let etas_types::method::MethodTarget::External { identity } = &method.target {
-                let callable = etas_code::CallableId::method(identity.clone());
-                if source.item_owner(&callable).is_some() {
-                    callables.insert(callable);
-                }
+        for identity in consumer.referenced_standard_methods() {
+            let callable = etas_code::CallableId::method(identity);
+            if source.item_owner(&callable).is_some() {
+                callables.insert(callable);
             }
         }
         callables.extend(
