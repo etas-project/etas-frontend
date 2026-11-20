@@ -119,6 +119,7 @@ pub(super) fn load(
         compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
         std_registry: registry,
         standard_library: None,
+        standard_library_interface: None,
         toolchain_base: None,
         checked_std_library_implementations: Arc::new(publication.implementations),
         project_environment_fingerprint: environment.fingerprint().to_owned(),

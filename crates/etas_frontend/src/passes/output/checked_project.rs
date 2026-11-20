@@ -166,6 +166,14 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
                 standard_library: context.standard_library.clone(),
+                standard_library_interface: context.standard_library_interface.clone().or_else(
+                    || {
+                        context
+                            .standard_library
+                            .as_ref()
+                            .map(|library| library.interface.clone())
+                    },
+                ),
                 toolchain_base: None,
                 checked_std_library_implementations: checked_std_library_implementations.clone(),
                 project_environment_fingerprint: definition_environment.fingerprint().to_owned(),

@@ -1581,6 +1581,8 @@ pub struct CheckedProgramData {
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
     /// Independently checked toolchain body owner for artifact std callables.
     pub standard_library: Option<Arc<StandardLibrary>>,
+    /// Immutable calling interface before demand-loaded implementation facts.
+    pub(crate) standard_library_interface: Option<Arc<StandardLibraryInterface>>,
     /// Installed SDK program before linking caller-specific types and methods.
     pub(crate) toolchain_base: Option<CheckedProgram>,
     pub(crate) checked_std_library_implementations:
@@ -1753,7 +1755,39 @@ impl CheckedProgramData {
 
     /// Checks against the validated environment captured by this program.
     pub fn uses_environment(&self, environment: &ProjectEnvironmentInput) -> bool {
-        self.definition_environment.environment() == environment
+        let checked = self.definition_environment.environment();
+        if checked == environment {
+            return true;
+        }
+        let Some(library) = self
+            .standard_library_interface
+            .as_ref()
+            .filter(|library| library.prepared_signatures.is_some())
+        else {
+            return false;
+        };
+        let mut declared = checked.clone();
+        let Some(package) = declared
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == library.package.import_root)
+            .map(|package| package.id)
+        else {
+            return false;
+        };
+        let Some(metadata) = declared
+            .external_public_metadata
+            .iter_mut()
+            .find(|metadata| metadata.package == package)
+        else {
+            return false;
+        };
+        // These are the only fields hydrated after signature checking. Compare
+        // the original installed declarations, leaving every other field exact.
+        metadata.methods = library.metadata.methods.clone();
+        metadata.flows = library.metadata.flows.clone();
+        metadata.effect_summaries = library.metadata.effect_summaries.clone();
+        declared == *environment
     }
 
     pub fn checked_reflections(
