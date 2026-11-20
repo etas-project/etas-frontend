@@ -265,6 +265,20 @@ impl LibraryHirImage {
                 HirExpr::Perform { action, .. } | HirExpr::Infer { action, .. } => {
                     reference(action.span, &action.effect.path.resolution)
                 }
+                HirExpr::Index { span, .. } | HirExpr::Try { span, .. } => {
+                    let ty = if matches!(expr, HirExpr::Index { .. }) {
+                        self.types.known_std_types.index_error
+                    } else {
+                        self.types.known_std_types.result_enum
+                    };
+                    if let Some(ty) = ty
+                        && let Some(identity) = self.type_store.nominal_identity(ty)
+                        && let Some(item) = self.declarations.get(identity)
+                        && let Some(symbol) = self.program.items[*item].symbol()
+                    {
+                        reference(*span, &etas_hir::ResolveResult::Resolved(symbol));
+                    }
+                }
                 _ => {}
             }
         }
