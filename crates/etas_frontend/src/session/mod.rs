@@ -95,7 +95,7 @@ pub(crate) enum StandardLibraryInput {
 }
 
 pub(crate) type StandardLibraryLoader =
-    dyn Fn() -> Result<Arc<crate::StandardLibrary>, String> + Send + Sync;
+    dyn Fn(&crate::CheckedProgramData) -> Result<Arc<crate::StandardLibrary>, String> + Send + Sync;
 
 impl Default for FrontendSession<MemoryArtifactStore> {
     fn default() -> Self {
@@ -165,7 +165,10 @@ where
     pub fn with_deferred_standard_library(
         mut self,
         interface: Arc<crate::StandardLibraryInterface>,
-        load: impl Fn() -> Result<Arc<crate::StandardLibrary>, String> + Send + Sync + 'static,
+        load: impl Fn(&crate::CheckedProgramData) -> Result<Arc<crate::StandardLibrary>, String>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.standard_library = Some(StandardLibraryInput::Deferred {
             interface,

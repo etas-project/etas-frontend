@@ -295,7 +295,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             if let Some(load) = &context.deferred_standard_library
                 && data.requires_executable_standard_library()
             {
-                match load() {
+                match load(&data) {
                     Ok(library) => data.standard_library = Some(library),
                     Err(reason) => return PassResult::failed(reason),
                 }

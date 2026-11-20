@@ -22,6 +22,8 @@ use crate::{
 };
 
 mod installed;
+mod modules;
+pub use modules::LibraryModuleCompilation;
 mod restore;
 
 const SCHEMA: u32 = 70;
