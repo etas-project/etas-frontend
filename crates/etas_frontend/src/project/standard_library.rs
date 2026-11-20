@@ -709,5 +709,6 @@ fn catalog(program: crate::CheckedProgram) -> Result<DefinitionCatalog, String> 
         external_definitions: DefinitionOrigins::checked_external_definitions(&program)
             .map_err(|e| e.to_string())?,
     };
-    DefinitionCatalog::build(program, &origins, Default::default()).map_err(|e| e.to_string())
+    DefinitionCatalog::build_for_execution(program, &origins, Default::default())
+        .map_err(|e| e.to_string())
 }

@@ -68,6 +68,7 @@ impl Owner {
 }
 
 struct Entry {
+    execution: bool,
     owner: Owner,
     origins: DefinitionOrigins,
     limits: DescriptorLimits,
@@ -90,11 +91,15 @@ pub(super) fn build(
     checked: CheckedProgram,
     origins: &DefinitionOrigins,
     limits: DescriptorLimits,
+    execution: bool,
 ) -> Result<DefinitionCatalog, ProjectionError> {
     let mut cache = checked.definition_catalog_cache.clone();
     loop {
         if let Some(entry) = cache.entry.get() {
-            if entry.owner.matches(&checked) && entry.origins == *origins && entry.limits == limits
+            if entry.execution == execution
+                && entry.owner.matches(&checked)
+                && entry.origins == *origins
+                && entry.limits == limits
             {
                 return Ok(DefinitionCatalog {
                     checked,
@@ -103,8 +108,9 @@ pub(super) fn build(
             }
             cache = cache.next.get_or_init(Default::default).clone();
         } else {
-            let catalog = super::collect::build(checked.clone(), origins, limits)?;
+            let catalog = super::collect::build(checked.clone(), origins, limits, execution)?;
             let _ = cache.entry.set(Entry {
+                execution,
                 owner: Owner::new(&checked),
                 origins: origins.clone(),
                 limits,

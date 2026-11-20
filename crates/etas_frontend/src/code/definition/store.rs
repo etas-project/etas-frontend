@@ -464,7 +464,18 @@ impl DefinitionCatalog {
         origins: &DefinitionOrigins,
         limits: DescriptorLimits,
     ) -> Result<Self, ProjectionError> {
-        super::cache::build(checked, origins, limits)
+        super::cache::build(checked, origins, limits, false)
+    }
+
+    /// Link the bodies retained by the semantic dependency closure. Reflection
+    /// consumers continue to receive the complete declaration catalog.
+    pub fn build_for_execution(
+        checked: CheckedProgram,
+        origins: &DefinitionOrigins,
+        limits: DescriptorLimits,
+    ) -> Result<Self, ProjectionError> {
+        let execution = !checked.requires_definition_catalog();
+        super::cache::build(checked, origins, limits, execution)
     }
 
     pub fn descriptors(&self) -> &DescriptorGraph {

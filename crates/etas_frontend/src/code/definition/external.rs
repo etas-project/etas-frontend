@@ -28,6 +28,7 @@ impl DefinitionCatalog {
     pub(super) fn bind_external_callables(
         &mut self,
         limits: DescriptorLimits,
+        execution: bool,
     ) -> Result<(), ProjectionError> {
         let mut required = BTreeMap::new();
         for fact in self.checked.checked_reflections().values() {
@@ -83,9 +84,12 @@ impl DefinitionCatalog {
                 .values()
                 .map(|call| call.callable.clone()),
         );
+        let required_methods = self.checked.referenced_standard_methods();
         pending.extend(self.checked.types.methods.entries().filter_map(
             |method| match &method.target {
-                etas_types::method::MethodTarget::External { identity } => {
+                etas_types::method::MethodTarget::External { identity }
+                    if !execution || required_methods.contains(identity) =>
+                {
                     Some(CallableId::method(identity.clone()))
                 }
                 _ => None,

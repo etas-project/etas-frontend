@@ -23,10 +23,12 @@ pub(super) fn build(
     checked: CheckedProgram,
     origins: &DefinitionOrigins,
     limits: DescriptorLimits,
+    execution: bool,
 ) -> Result<DefinitionCatalog, ProjectionError> {
     let origins = origins.canonicalized_for_checked(&checked)?;
     let identities = DefinitionIdentityIndex::build_with_limits(&checked, &origins, limits)?;
-    build_selected(checked, &origins, identities, limits, None).map(|(catalog, _)| catalog)
+    build_selected(checked, &origins, identities, limits, None, execution)
+        .map(|(catalog, _)| catalog)
 }
 
 pub(super) fn build_exported(
@@ -38,8 +40,14 @@ pub(super) fn build_exported(
 ) -> Result<DefinitionDescriptorSet, ProjectionError> {
     let origins = origins.canonicalized_for_checked(&checked)?;
     let source = checked.clone();
-    let (catalog, declarations) =
-        build_selected(checked, &origins, identities, limits, Some(selection))?;
+    let (catalog, declarations) = build_selected(
+        checked,
+        &origins,
+        identities,
+        limits,
+        Some(selection),
+        false,
+    )?;
     let agents = catalog
         .agents
         .values()
@@ -83,6 +91,7 @@ fn build_selected(
     identities: DefinitionIdentityIndex,
     limits: DescriptorLimits,
     selection: Option<&BTreeSet<HirItemId>>,
+    execution: bool,
 ) -> Result<(DefinitionCatalog, Vec<DefinitionTypeBinding>), ProjectionError> {
     checked
         .reflection_targets
@@ -111,8 +120,23 @@ fn build_selected(
         }
     }
     let mut callables = BTreeMap::new();
+    let mut implementations = BTreeSet::new();
     let mut callable_bindings = HashMap::new();
     for (id, symbol, item) in pending {
+        if execution
+            && matches!(
+                checked.items.get(item),
+                Some(HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Decl { .. },
+                    ..
+                })) | Some(HirItem::Tool(etas_hir::HirToolDecl {
+                    body: etas_hir::HirToolBody::Decl { .. },
+                    ..
+                }))
+            )
+        {
+            continue;
+        }
         if !selected_callable(&checked, Some(&identities), symbol, item, selection)? {
             continue;
         }
@@ -129,6 +153,7 @@ fn build_selected(
             .ok_or(ProjectionError::MissingCallable(symbol))?;
         let (names, declared) = callable_source_header(checked.as_ref().into(), item)?;
         let owner = if let Some(method) = id.as_method() {
+            implementations.insert(method.implementation().clone());
             GenericOwner::Method(method.clone())
         } else {
             GenericOwner::Declaration(
@@ -184,6 +209,9 @@ fn build_selected(
     let mut pending_agents = BTreeMap::new();
     for (item, decl) in checked.items.iter() {
         let HirItem::Agent(decl) = decl else { continue };
+        if execution && matches!(decl.body, etas_hir::HirAgentBody::Decl { .. }) {
+            continue;
+        }
         if selection.is_some_and(|selection| !selection.contains(&item)) {
             continue;
         }
@@ -239,6 +267,7 @@ fn build_selected(
             .agent_methods
             .values()
             .filter(|method| method.agent == item && Some(method.symbol) != default_method)
+            .filter(|method| !execution || callable_bindings.contains_key(&method.symbol))
             .filter(|method| selection.is_none() || method.private_to.is_none())
             .map(|method| {
                 callable_bindings
@@ -338,7 +367,22 @@ fn build_selected(
     // Source std callables have a native body in another checked program.
     // Keep their local signature types under the callable's canonical scope so
     // cross-program generic bindings use declaration identity.
+    let required_methods = checked.referenced_standard_methods();
+    let mut required_callables = checked
+        .types
+        .library_flow_calls
+        .values()
+        .map(|call| call.callable.clone())
+        .collect::<BTreeSet<_>>();
+    for symbol in checked.referenced_standard_symbols() {
+        if let Some(binding) = checked.std_registry.body_binding(symbol) {
+            required_callables.insert(binding.callable.clone());
+        }
+    }
     for (callable, signature) in &checked.types.library_callable_signatures {
+        if execution && !required_callables.contains(callable) {
+            continue;
+        }
         let owner = match callable.as_method() {
             Some(method) => GenericOwner::Method(method.clone()),
             None => GenericOwner::Declaration(
@@ -357,6 +401,9 @@ fn build_selected(
     let mut methods = checked.types.external_methods.iter().collect::<Vec<_>>();
     methods.sort_by(|left, right| left.identity.cmp(&right.identity));
     for method in methods {
+        if execution && !required_methods.contains(&method.identity) {
+            continue;
+        }
         projector.project_signature(
             GenericOwner::Method(method.identity.clone()),
             &method.signature,
@@ -388,6 +435,9 @@ fn build_selected(
             continue;
         };
         let mut types = vec![implementation.self_type];
+        if execution && !implementations.contains(owner) {
+            continue;
+        }
         types.extend_from_slice(&implementation.args);
         projector.project_implementation_contract(owner, &implementation.generic_params, &types)?;
     }
@@ -412,7 +462,7 @@ fn build_selected(
         }),
     };
     if selection.is_none() {
-        catalog.bind_external_callables(limits)?;
+        catalog.bind_external_callables(limits, execution)?;
         catalog.bind_external_agents(limits)?;
         catalog.add_selected_views()?;
     }
