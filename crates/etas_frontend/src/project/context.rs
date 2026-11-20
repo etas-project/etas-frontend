@@ -135,6 +135,15 @@ impl ProjectContext {
         metadata.methods = behaviors.methods;
         metadata.effect_summaries = library.metadata.effect_summaries.clone();
         metadata.effect_summaries.extend(behaviors.summaries);
+        // Name and overload discovery already used the complete prepared
+        // signatures. Effect analysis consumes the loaded semantic closure.
+        let summaries = &metadata.effect_summaries;
+        metadata.flows.retain(|flow| {
+            summaries.iter().any(|summary| {
+                summary.item == flow.path
+                    || (flow.definition.is_some() && summary.definition == flow.definition)
+            })
+        });
         self.validated_external_environment =
             Some(Arc::new(ValidatedExternalEnvironment::new(environment)));
         Ok(())
