@@ -105,7 +105,15 @@ pub(super) fn generics(
 
 fn resolved_path(hir: &HirProgram, path: &etas_hir::ResolvedPath) -> Result<Vec<String>, String> {
     let ResolveResult::Resolved(symbol) = path.resolution else {
-        return Err("source type query has an unresolved type or bound".to_owned());
+        return Err(format!(
+            "source type query has an unresolved type or bound `{}` in source {}",
+            path.segments
+                .iter()
+                .map(|segment| segment.name.as_str())
+                .collect::<Vec<_>>()
+                .join("."),
+            path.span.source.0
+        ));
     };
     let symbol = hir
         .canonical_source_symbol(symbol)

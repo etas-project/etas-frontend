@@ -72,6 +72,64 @@ impl LibraryHirImage {
             }
             dependencies.insert(module.clone(), referenced);
         }
+        // Implicit prelude names and generic bounds need their resolved owner,
+        // even when no qualified path appears in the authored source.
+        let mut reference = |source: etas_core::SourceId, resolution: &etas_hir::ResolveResult| {
+            let Some(from) = self.module_index.by_source.get(&source) else {
+                return;
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = resolution else {
+                return;
+            };
+            let Some(symbol) = self.program.canonical_source_symbol(*symbol) else {
+                return;
+            };
+            let mut path = match &self
+                .program
+                .symbols
+                .get(symbol)
+                .expect("checked dependency symbol")
+                .def
+            {
+                etas_hir::SymbolDef::ImportAlias { path, .. } => path.clone(),
+                _ => self.program.declaration_path(symbol).unwrap_or_default(),
+            };
+            while !path.is_empty() && !files.contains_key(&path) {
+                path.pop();
+            }
+            if !path.is_empty() {
+                let module = &self.module_index.modules[*from].path.segments;
+                dependencies
+                    .get_mut(module)
+                    .expect("source module dependency set")
+                    .insert(path);
+            }
+        };
+        for symbol in self.program.symbols.iter() {
+            if let etas_hir::SymbolDef::TypeParam { bounds, .. } = &symbol.def {
+                for bound in bounds {
+                    reference(bound.path.span.source, &bound.path.resolution);
+                }
+            }
+        }
+        for (_, ty) in self.program.types.iter() {
+            match ty {
+                etas_hir::HirType::Path { path, .. } => {
+                    reference(path.span.source, &path.resolution)
+                }
+                etas_hir::HirType::Existential { bounds, .. } => {
+                    for bound in bounds {
+                        reference(bound.path.span.source, &bound.path.resolution);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (_, expr) in self.program.exprs.iter() {
+            if let etas_hir::HirExpr::Path(path) = expr {
+                reference(path.span.source, &path.resolution);
+            }
+        }
         let mut unique = BTreeSet::new();
         let mut compilations = Vec::new();
         for module in files.keys() {
