@@ -17,7 +17,11 @@ pub struct LibraryModuleCompilation {
 }
 
 impl LibraryHirImage {
-    pub fn module_compilations(&self, root: &Path) -> Vec<LibraryModuleCompilation> {
+    pub fn module_compilations(
+        &self,
+        root: &Path,
+        source_root: &Path,
+    ) -> Vec<LibraryModuleCompilation> {
         use etas_hir::{HirExpr, HirItem, HirType};
         let files = self
             .sources
@@ -316,7 +320,7 @@ impl LibraryHirImage {
             environment.external_modules_fingerprint = None;
             let mut input = crate::ProjectInput {
                 project_root: root.to_owned(),
-                source_root: Some(root.to_owned()),
+                source_root: Some(source_root.to_owned()),
                 options: self.compile_options.clone(),
                 environment,
                 sources: self
@@ -361,11 +365,6 @@ impl LibraryHirImage {
             .iter()
             .find(|source| source.id == source_id)
             .expect("checked prelude source");
-        let native = self
-            .native_registry
-            .clone()
-            .into_registry()
-            .expect("checked native contracts");
         let mut lines = BTreeSet::new();
         let mut import = |name: &str, target: &crate::ImportTarget| {
             let path = match target {
@@ -396,11 +395,13 @@ impl LibraryHirImage {
                     }
                     path
                 }
-                crate::ImportTarget::StdItem { symbol, .. } => native
-                    .symbol(*symbol)
-                    .expect("primitive prelude target")
-                    .qualified_path
-                    .clone(),
+                crate::ImportTarget::StdItem {
+                    module_path, name, ..
+                } => {
+                    let mut path = module_path.segments.clone();
+                    path.push(name.clone());
+                    path
+                }
                 crate::ImportTarget::Module(crate::ResolvedModuleTarget::Source {
                     module, ..
                 }) => {
