@@ -244,27 +244,39 @@ pub struct TypeStore {
 pub struct TypeLookupIndex {
     first: HashMap<u64, TypeId>,
     collisions: HashMap<u64, Vec<TypeId>>,
+    indexed_len: usize,
 }
 
 impl TypeLookupIndex {
     pub fn new(store: &TypeStore) -> Self {
-        let mut first = HashMap::with_capacity(store.len());
-        let mut collisions = HashMap::<u64, Vec<TypeId>>::new();
-        for (id, ty) in store.iter() {
+        let mut index = Self {
+            first: HashMap::with_capacity(store.len()),
+            collisions: HashMap::new(),
+            indexed_len: 0,
+        };
+        index.include_appended_types(store);
+        index
+    }
+
+    /// Extend the index after interning new types in the same store. Indexed
+    /// types, including their canonical identities, must remain unchanged.
+    pub fn include_appended_types(&mut self, store: &TypeStore) {
+        for index in self.indexed_len..store.len() {
+            let id = TypeId(index as u32);
             if store.nominal_identity(id).is_some() || store.parameter_identity(id).is_some() {
                 continue;
             }
-            let key = type_hash(ty);
-            match first.entry(key) {
+            let key = type_hash(store.get(id).expect("type index in the store"));
+            match self.first.entry(key) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(id);
                 }
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    collisions.entry(key).or_default().push(id);
+                    self.collisions.entry(key).or_default().push(id);
                 }
             }
         }
-        Self { first, collisions }
+        self.indexed_len = store.len();
     }
 
     pub fn get(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {

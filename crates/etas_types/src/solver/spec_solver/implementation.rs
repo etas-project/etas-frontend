@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     CallableGenericParam, CallableGenericParamKind, TypeId, TypeStore, TypeSubstitutionEngine,
-    TypeUnifier,
+    TypeUnifier, ty::TypeLookupIndex,
 };
 
 pub fn match_subject(
@@ -36,9 +36,21 @@ pub(crate) fn substitute(
     bindings: &HashMap<TypeId, TypeId>,
     arguments: &[TypeId],
 ) -> Option<Vec<TypeId>> {
+    substitute_with_lookup(store, None, bindings, arguments)
+}
+
+pub(crate) fn substitute_with_lookup(
+    store: &TypeStore,
+    lookup: Option<&TypeLookupIndex>,
+    bindings: &HashMap<TypeId, TypeId>,
+    arguments: &[TypeId],
+) -> Option<Vec<TypeId>> {
     let names = HashMap::new();
-    let mut substitution =
-        TypeSubstitutionEngine::existing(store, &names).with_type_parameters(bindings);
+    let mut substitution = match lookup {
+        Some(lookup) => TypeSubstitutionEngine::existing_indexed(store, lookup, &names),
+        None => TypeSubstitutionEngine::existing(store, &names),
+    }
+    .with_type_parameters(bindings);
     arguments
         .iter()
         .map(|ty| substitution.substitute(*ty).ok())

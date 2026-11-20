@@ -7,7 +7,8 @@ mod requests;
 
 use etas_hir::SymbolDef;
 use etas_types::{
-    TypeInterner, TypeOutput, TypeSubstitutionEngine, ty::TypeRelocationMaterializationInput,
+    TypeInterner, TypeOutput, TypeSubstitutionEngine,
+    ty::{TypeLookupIndex, TypeRelocationMaterializationInput},
 };
 
 use super::instantiation::{self, InstantiationError, NativeGenericArgument, NativeInstantiation};
@@ -57,6 +58,8 @@ impl StandardLibrary {
                 .map(|call| call.callable.clone()),
         );
         let mut interner = TypeInterner::from_store(consumer.type_store.as_ref().clone());
+        let source_types = &self.program.type_store;
+        let source_lookup = TypeLookupIndex::new(source_types);
         for callable in callables {
             let scope = callable
                 .as_method()
@@ -173,14 +176,8 @@ impl StandardLibrary {
                 output: signature.output,
                 effects: Some(row),
             };
-            let ty = self
-                .program
-                .type_store
-                .iter()
-                .find_map(|(id, ty)| {
-                    matches!(ty, etas_types::Type::Function(candidate) if candidate == &flow)
-                        .then_some(id)
-                })
+            let ty = source_lookup
+                .get(source_types, &etas_types::Type::Function(flow))
                 .ok_or("std body has no checked public function type")?;
             TypeSubstitutionEngine::relocating_materialized(TypeRelocationMaterializationInput {
                 source: &self.program.type_store,

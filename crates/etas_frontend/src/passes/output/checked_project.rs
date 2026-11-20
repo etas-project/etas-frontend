@@ -230,7 +230,8 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             ) {
                 // Public library callables need an ABI type even when no body
                 // in this compilation references them as a function value.
-                let mut store = data.type_store.as_ref().clone();
+                let mut types =
+                    etas_types::TypeInterner::from_store(data.type_store.as_ref().clone());
                 let signatures = data
                     .types
                     .item_signatures
@@ -245,9 +246,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                         output: signature.output,
                         effects: signature.effects.clone(),
                     });
-                    if !store.iter().any(|(_, existing)| existing == &ty) {
-                        store.intern(ty);
-                    }
+                    types.intern(ty);
                     if let Some(contract) = data
                         .effects
                         .public_contracts
@@ -268,31 +267,26 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                             output: signature.output,
                             effects: Some(row),
                         });
-                        if !store.iter().any(|(_, existing)| existing == &ty) {
-                            store.intern(ty);
-                        }
+                        types.intern(ty);
                     }
                 }
-                data.type_store = std::sync::Arc::new(store);
-            }
-            if context.input.options.standard_library_mode == crate::StandardLibraryMode::Artifact {
-                let mut store = data.type_store.as_ref().clone();
-                let signatures = data
-                    .types
-                    .std_callable_signatures
-                    .iter()
-                    .collect::<std::collections::BTreeMap<_, _>>();
-                for signature in signatures.into_values() {
-                    let ty = etas_types::Type::Function(etas_types::FlowType {
-                        input: signature.params.clone(),
-                        output: signature.output,
-                        effects: signature.effects.clone(),
-                    });
-                    if !store.iter().any(|(_, existing)| existing == &ty) {
-                        store.intern(ty);
+                if context.input.options.standard_library_mode
+                    == crate::StandardLibraryMode::Artifact
+                {
+                    let signatures = data
+                        .types
+                        .std_callable_signatures
+                        .iter()
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    for signature in signatures.into_values() {
+                        types.intern(etas_types::Type::Function(etas_types::FlowType {
+                            input: signature.params.clone(),
+                            output: signature.output,
+                            effects: signature.effects.clone(),
+                        }));
                     }
                 }
-                data.type_store = std::sync::Arc::new(store);
+                data.type_store = std::sync::Arc::new(types.into_store());
             }
             // Ordinary plans are bound to their owners' checked revisions only
             // now that every contract fact has been finalized. A candidate
