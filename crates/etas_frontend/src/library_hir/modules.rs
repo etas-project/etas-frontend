@@ -150,8 +150,27 @@ impl LibraryHirImage {
         for (_, expr) in self.program.exprs.iter() {
             match expr {
                 HirExpr::Path(path) => reference(path.span.source, &path.resolution),
+                HirExpr::Record(record) => {
+                    if let Some(path) = &record.path {
+                        reference(path.span.source, &path.resolution);
+                    }
+                }
+                HirExpr::SpecMethodCall { spec_path, .. } => {
+                    reference(spec_path.span.source, &spec_path.resolution)
+                }
                 HirExpr::Perform { action, .. } | HirExpr::Infer { action, .. } => {
                     reference(action.span.source, &action.effect.path.resolution)
+                }
+                _ => {}
+            }
+        }
+        for (_, pattern) in self.program.pats.iter() {
+            match pattern {
+                etas_hir::HirPat::Record {
+                    path: Some(path), ..
+                }
+                | etas_hir::HirPat::Variant { path, .. } => {
+                    reference(path.span.source, &path.resolution)
                 }
                 _ => {}
             }
