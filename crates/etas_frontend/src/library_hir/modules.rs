@@ -1,747 +1,426 @@
-//! Installation units retain the source declarations that own resolved dependencies,
-//! calls and methods. Prelude names come from the checked source declarations;
-//! each unit receives the corresponding source imports. Ordinary checking
-//! validates every selected closure before installation.
-
+//! Installed execution units are slices of one checked program. Source text and
+//! declaration/type interfaces remain shared; no source is rewritten or solved.
 use super::LibraryHirImage;
-use etas_core::SourceFile;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use crate::project::SemanticDependency;
+use etas_hir::*;
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct LibraryModuleCompilation {
     pub modules: BTreeSet<Vec<String>>,
-    pub input: crate::ProjectInput,
+    pub definitions: BTreeSet<HirItemId>,
 }
 
+#[derive(Default)]
+struct Nodes {
+    expressions: BTreeSet<HirExprId>,
+    blocks: BTreeSet<HirBlockId>,
+    statements: BTreeSet<HirStmtId>,
+    patterns: BTreeSet<HirPatId>,
+    arms: BTreeSet<HirHandlerArmId>,
+}
+impl<'v, 'h> HirVisitor<'v, 'h> for Nodes {
+    fn enter_expr(&mut self, node: ExprView<'v, 'h>) {
+        self.expressions.insert(node.id());
+    }
+    fn enter_block(&mut self, node: BlockView<'v, 'h>) {
+        self.blocks.insert(node.id());
+    }
+    fn enter_stmt(&mut self, node: StmtView<'v, 'h>) {
+        self.statements.insert(node.id());
+    }
+    fn enter_pattern(&mut self, node: PatternView<'v, 'h>) {
+        self.patterns.insert(node.id());
+    }
+    fn enter_handler_arm(&mut self, node: HandlerArmView<'v, 'h>) {
+        self.arms.insert(node.id());
+    }
+}
 impl LibraryHirImage {
     pub fn module_compilations(
         &self,
-        root: &Path,
-        source_root: &Path,
+        checked: &crate::CheckedProgramData,
     ) -> Vec<LibraryModuleCompilation> {
-        use etas_hir::{HirExpr, HirItem, HirType};
-        let files = self
-            .sources
-            .iter()
-            .map(|source| (source.id.0, source))
-            .collect::<BTreeMap<_, _>>();
-        let parsed = files
-            .iter()
-            .map(|(id, source)| {
-                let file = SourceFile::new(source.id, None, source.text.clone());
-                let tokens = etas_syntax::lex(&file);
-                let mut parse = etas_syntax::parse_program(file);
-                // Declaration spans start at the declaration keyword; retain
-                // a preceding visibility modifier when copying source text.
-                for item in &mut parse.value.items {
-                    if let Some(token) = tokens
-                        .significant_tokens()
-                        .take_while(|token| token.span.range.end <= item.span.range.start)
-                        .last()
-                        && matches!(
-                            token.kind,
-                            etas_syntax::TokenKind::Keyword(
-                                etas_syntax::Keyword::Public | etas_syntax::Keyword::Private
-                            )
-                        )
-                    {
-                        item.span = token.span.cover(item.span);
-                    }
-                }
-                (*id, parse.value)
-            })
-            .collect::<BTreeMap<_, _>>();
-        let node_at = |span: etas_core::Span| {
-            parsed
-                .get(&span.source.0)?
-                .items
-                .iter()
-                .enumerate()
-                .find(|(_, item)| {
-                    item.span.range.start <= span.range.start
-                        && span.range.end <= item.span.range.end
-                })
-                .map(|(index, _)| (span.source.0, index))
-        };
-        let prelude = self
-            .module_index
-            .by_path
-            .get(&crate::ModulePath {
-                segments: vec!["std".into(), "prelude".into()],
-            })
-            .copied();
-        let mut names = BTreeMap::<String, BTreeSet<(u32, usize)>>::new();
-        let target_nodes = |target: &crate::ImportTarget| -> Vec<(u32, usize)> {
-            match target {
-                crate::ImportTarget::SourceItem { item, .. } => vec![(item.source.0, item.index)],
-                crate::ImportTarget::Module(crate::ResolvedModuleTarget::Source {
-                    module, ..
-                }) => self.module_index.modules[*module]
-                    .parts
-                    .iter()
-                    .flat_map(|part| &self.module_index.parts[*part].items)
-                    .map(|item| (item.source.0, item.index))
-                    .take(1)
-                    .collect(),
-                _ => Vec::new(),
-            }
-        };
-        for import in &self.resolved_imports.imports {
-            if Some(import.from) == prelude {
-                names
-                    .entry(import.local_name.clone())
-                    .or_default()
-                    .extend(target_nodes(&import.target));
-            }
-        }
-        for import in &self.resolved_imports.wildcard_imports {
-            if Some(import.from) == prelude {
-                for (name, target) in &import.targets {
-                    names
-                        .entry(name.clone())
-                        .or_default()
-                        .extend(target_nodes(target));
-                }
-            }
-        }
-        let base = parsed
-            .iter()
-            .filter(|(id, _)| {
-                let module = self.module_index.by_source[&files[id].id];
-                self.module_index.modules[module].path.segments == ["std", "core"]
-            })
-            .flat_map(|(id, source)| (0..source.items.len()).map(move |index| (*id, index)))
-            .collect::<BTreeSet<_>>();
-        let mut local_names = BTreeMap::<u32, BTreeMap<String, Vec<(u32, usize)>>>::new();
-        let import_node = |import: &crate::AstImportRef| {
-            (
-                import.source.0,
-                parsed[&import.source.0].items.len() + import.index,
-            )
-        };
-        for import in &self.resolved_imports.imports {
-            local_names
-                .entry(import.import.source.0)
-                .or_default()
-                .insert(import.local_name.clone(), vec![import_node(&import.import)]);
-        }
-        for import in &self.resolved_imports.wildcard_imports {
-            for name in import.targets.keys() {
-                local_names
-                    .entry(import.import.source.0)
-                    .or_default()
-                    .insert(name.clone(), vec![import_node(&import.import)]);
-            }
-        }
-        // Effect type arguments also use static-path syntax, so they do not
-        // necessarily appear in the HIR type arena. Retain their declarations
-        // through the checked module names and qualified source paths.
-        let mut qualified = BTreeMap::<Vec<String>, BTreeSet<(u32, usize)>>::new();
-        let mut module_names =
-            BTreeMap::<Vec<String>, BTreeMap<String, BTreeSet<(u32, usize)>>>::new();
-        for (source, item) in &self.item_targets {
-            let Some(symbol) = self.program.items[*item].symbol() else {
-                continue;
-            };
-            let Some(path) = self.program.declaration_path(symbol) else {
-                continue;
-            };
-            let node = (source.source.0, source.index);
-            qualified.entry(path.clone()).or_default().insert(node);
-            let module = &self.module_index.modules[self.module_index.by_source[&source.source]]
-                .path
-                .segments;
-            if path.len() == module.len() + 1 && path.starts_with(module) {
-                module_names
-                    .entry(module.clone())
-                    .or_default()
-                    .entry(path.last().unwrap().clone())
-                    .or_default()
-                    .insert(node);
-            }
-        }
-        for import in &self.resolved_imports.imports {
-            if import.visibility == etas_hir::Visibility::Public {
-                let mut path = self.module_index.modules[import.from].path.segments.clone();
-                path.push(import.local_name.clone());
-                qualified
-                    .entry(path)
-                    .or_default()
-                    .insert(import_node(&import.import));
-            }
-        }
-        for import in &self.resolved_imports.wildcard_imports {
-            if import.visibility == etas_hir::Visibility::Public {
-                for name in import.targets.keys() {
-                    let mut path = self.module_index.modules[import.from].path.segments.clone();
-                    path.push(name.clone());
-                    qualified
-                        .entry(path)
-                        .or_default()
-                        .insert(import_node(&import.import));
-                }
-            }
-        }
-        let mut identifiers = BTreeMap::new();
-        let mut dependencies = BTreeMap::new();
-        for (owner, target) in self
-            .resolved_imports
-            .imports
-            .iter()
-            .map(|import| (&import.import, &import.target))
-            .chain(
-                self.resolved_imports
-                    .wildcard_imports
-                    .iter()
-                    .flat_map(|import| {
-                        import
-                            .targets
-                            .values()
-                            .map(move |target| (&import.import, target))
-                    }),
-            )
-        {
-            let node = import_node(owner);
-            identifiers.entry(node).or_insert_with(BTreeSet::new);
-            let referenced = dependencies.entry(node).or_insert_with(|| base.clone());
-            referenced.extend(target_nodes(target));
-            if let crate::ImportTarget::StdItem {
-                module_path, name, ..
-            } = target
-            {
-                let mut path = module_path.segments.clone();
-                path.push(name.clone());
-                if let Some(targets) = qualified.get(&path) {
-                    referenced.extend(targets);
-                }
-            }
-        }
-        for (id, source) in &files {
-            let file = SourceFile::new(source.id, None, source.text.clone());
-            let tokens = etas_syntax::lex(&file);
-            let tokens = tokens.significant_tokens().collect::<Vec<_>>();
-            let module = &self.module_index.modules[self.module_index.by_source[&source.id]]
-                .path
-                .segments;
-            for (index, item) in parsed[id].items.iter().enumerate() {
-                let mut referenced = base.clone();
-                let mut used = BTreeSet::new();
-                for (position, token) in tokens.iter().enumerate().filter(|(_, token)| {
-                    item.span.range.start <= token.span.range.start
-                        && token.span.range.end <= item.span.range.end
-                }) {
-                    if !token.kind.is_ident_like() {
-                        continue;
-                    }
-                    let span = token.span.range;
-                    let name = &source.text[span.start.to_usize()..span.end.to_usize()];
-                    used.insert(name.to_owned());
-                    if let Some(targets) = names.get(name) {
-                        referenced.extend(targets);
-                    }
-                    if let Some(targets) = local_names.get(id).and_then(|names| names.get(name)) {
-                        referenced.extend(targets);
-                    }
-                    if let Some(targets) =
-                        module_names.get(module).and_then(|names| names.get(name))
-                    {
-                        referenced.extend(targets);
-                    }
-                    let mut path = vec![name.to_owned()];
-                    let mut cursor = position + 1;
-                    while cursor + 1 < tokens.len()
-                        && tokens[cursor].kind
-                            == etas_syntax::TokenKind::Punct(etas_syntax::Punct::Dot)
-                        && tokens[cursor + 1].kind.is_ident_like()
-                    {
-                        let span = tokens[cursor + 1].span.range;
-                        path.push(
-                            source.text[span.start.to_usize()..span.end.to_usize()].to_owned(),
-                        );
-                        if let Some(targets) = qualified.get(&path) {
-                            referenced.extend(targets);
-                        }
-                        cursor += 2;
-                    }
-                }
-                identifiers.insert((*id, index), used);
-                dependencies.insert((*id, index), referenced);
-            }
-        }
-        let source_of = |symbol: etas_hir::SymbolId| {
-            let symbol = self
-                .program
-                .canonical_source_symbol(symbol)
-                .unwrap_or(symbol);
-            self.program
-                .symbols
-                .get(symbol)
-                .and_then(|symbol| symbol.defining_item)
-                .and_then(|item| node_at(self.program.items[item].span()))
-        };
-        let mut reference = |span: etas_core::Span, resolution: &etas_hir::ResolveResult| {
-            if let etas_hir::ResolveResult::Resolved(symbol) = resolution
-                && let Some(target) = source_of(*symbol)
-                && let Some(owner) = node_at(span)
-            {
-                dependencies
-                    .get_mut(&owner)
-                    .expect("checked reference owner")
-                    .insert(target);
-            }
-        };
-        for symbol in self.program.symbols.iter() {
-            if let etas_hir::SymbolDef::TypeParam { bounds, .. } = &symbol.def {
-                for bound in bounds {
-                    reference(bound.path.span, &bound.path.resolution);
-                }
-            }
-        }
-        for (_, ty) in self.program.types.iter() {
-            match ty {
-                HirType::Path { path, .. } => reference(path.span, &path.resolution),
-                HirType::Existential { bounds, .. } => {
-                    for bound in bounds {
-                        reference(bound.path.span, &bound.path.resolution);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for (_, expr) in self.program.exprs.iter() {
-            match expr {
-                HirExpr::Path(path) => reference(path.span, &path.resolution),
-                HirExpr::Record(record) => {
-                    if let Some(path) = &record.path {
-                        reference(path.span, &path.resolution);
-                    }
-                }
-                HirExpr::SpecMethodCall { spec_path, .. } => {
-                    reference(spec_path.span, &spec_path.resolution)
-                }
-                HirExpr::Perform { action, .. } | HirExpr::Infer { action, .. } => {
-                    reference(action.span, &action.effect.path.resolution)
-                }
-                HirExpr::Index { span, .. } | HirExpr::Try { span, .. } => {
-                    let ty = if matches!(expr, HirExpr::Index { .. }) {
-                        self.types.known_std_types.index_error
-                    } else {
-                        self.types.known_std_types.result_enum
-                    };
-                    if let Some(ty) = ty
-                        && let Some(identity) = self.type_store.nominal_identity(ty)
-                        && let Some(item) = self.declarations.get(identity)
-                        && let Some(symbol) = self.program.items[*item].symbol()
-                    {
-                        reference(*span, &etas_hir::ResolveResult::Resolved(symbol));
-                    }
-                }
-                _ => {}
-            }
-        }
-        for (_, pattern) in self.program.pats.iter() {
-            match pattern {
-                etas_hir::HirPat::Record {
-                    path: Some(path), ..
-                }
-                | etas_hir::HirPat::Variant { path, .. } => reference(path.span, &path.resolution),
-                _ => {}
-            }
-        }
-        for (_, item) in self.program.items.iter() {
-            match item {
-                HirItem::Impl(implementation) => match &implementation.target {
-                    etas_hir::HirImplTarget::Inherent { target, .. } => {
-                        reference(target.span, &target.resolution)
-                    }
-                    etas_hir::HirImplTarget::Agent { target, specs } => {
-                        reference(target.span, &target.resolution);
-                        for spec in specs {
-                            reference(spec.spec_path.span, &spec.spec_path.resolution);
-                        }
-                    }
-                    etas_hir::HirImplTarget::SpecSatisfaction { specs, .. } => {
-                        for spec in specs {
-                            reference(spec.spec_path.span, &spec.spec_path.resolution);
-                        }
-                    }
-                    _ => {}
-                },
-                HirItem::Spec(spec) => {
-                    for bound in &spec.bounds {
-                        reference(bound.path.span, &bound.path.resolution);
-                    }
-                }
-                HirItem::Effect(effect) => {
-                    if let Some(parent) = &effect.extends {
-                        reference(parent.path.span, &parent.path.resolution);
-                    }
-                }
-                _ => {}
-            }
-        }
-        for (expr, symbol) in &self.types.source_flow_calls {
-            reference(
-                self.program.exprs[*expr].span(&self.program.blocks),
-                &etas_hir::ResolveResult::Resolved(*symbol),
-            );
-        }
-        for (expr, method) in self
-            .types
-            .checked_method_calls
-            .iter()
-            .map(|(expr, method)| (*expr, method))
-            .chain(
-                self.types
-                    .bound_method_values
-                    .iter()
-                    .map(|(expr, method)| (*expr, &method.method)),
-            )
-        {
-            if let etas_types::method::MethodTarget::Source { symbol, .. }
-            | etas_types::method::MethodTarget::Agent { symbol, .. } = &method.target
-            {
-                reference(
-                    self.program.exprs[expr].span(&self.program.blocks),
-                    &etas_hir::ResolveResult::Resolved(*symbol),
-                );
-            }
-        }
-        // Keep the checked implementation environment of every source spec.
-        for (_, item) in self.program.items.iter() {
-            if let HirItem::Impl(implementation) = item {
-                let specs = match &implementation.target {
-                    etas_hir::HirImplTarget::SpecSatisfaction { specs, .. }
-                    | etas_hir::HirImplTarget::Agent { specs, .. } => specs,
-                    _ => continue,
-                };
-                for spec in specs {
-                    if let etas_hir::ResolveResult::Resolved(symbol) = &spec.spec_path.resolution
-                        && let Some(owner) = source_of(*symbol)
-                    {
-                        dependencies
-                            .get_mut(&owner)
-                            .expect("source spec owner")
-                            .insert(
-                                node_at(implementation.span).expect("implementation declaration"),
-                            );
-                    }
-                }
-            }
-        }
-        // Overload ordinals are part of canonical callable identities.
-        for symbol in self.program.symbols.iter() {
-            if let Some(group) = self.program.flow_overload_group(symbol.id) {
-                let sources = group
-                    .iter()
-                    .filter_map(|symbol| source_of(*symbol))
-                    .collect::<BTreeSet<_>>();
-                for source in &sources {
-                    dependencies
-                        .get_mut(source)
-                        .expect("overload owner")
-                        .extend(&sources);
-                }
-            }
-        }
-        if let Some(ty) = self.types.known_std_types.execution.continuation
-            && let Some(key) = self.type_store.nominal_identity(ty)
-            && let Some(item) = self.declarations.get(key)
-        {
-            let source =
-                node_at(self.program.items[*item].span()).expect("continuation declaration");
-            for (_, arm) in self.program.handler_arms.iter() {
-                dependencies
-                    .get_mut(&node_at(arm.span).expect("handler declaration"))
-                    .expect("handler owner")
-                    .insert(source);
-            }
-        }
-        let prelude_sources = self
-            .sources
-            .iter()
-            .filter(|source| Some(self.module_index.by_source[&source.id]) == prelude)
-            .map(|source| source.id.0)
-            .collect::<BTreeSet<_>>();
-        for referenced in dependencies.values_mut() {
-            referenced.retain(|(id, _)| !prelude_sources.contains(id));
-        }
-        let roots = self
-            .program
+        let mut unique = BTreeSet::new();
+        self.program
             .items
             .iter()
-            .filter_map(|(_, item)| match item {
-                HirItem::Flow(_)
-                | HirItem::Tool(_)
-                | HirItem::Agent(_)
-                | HirItem::TopLevelLet(_) => node_at(item.span()),
-                _ => None,
+            .filter(|(_, item)| {
+                matches!(
+                    item,
+                    HirItem::Flow(_) | HirItem::Tool(_) | HirItem::Agent(_)
+                )
+            })
+            .filter_map(|(root, _)| {
+                let closure = checked
+                    .semantic_dependencies
+                    .closure([SemanticDependency::Definition(root)]);
+                let definitions = closure
+                    .iter()
+                    .filter_map(|node| match node {
+                        SemanticDependency::Definition(item) => Some(*item),
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                if !unique.insert(definitions.clone()) {
+                    return None;
+                }
+                let modules = definitions
+                    .iter()
+                    .map(|item| {
+                        let source = self.program.items[*item].span().source;
+                        self.module_index.modules[self.module_index.by_source[&source]]
+                            .path
+                            .segments
+                            .clone()
+                    })
+                    .collect();
+                Some(LibraryModuleCompilation {
+                    modules,
+                    definitions,
+                })
+            })
+            .collect()
+    }
+
+    pub fn execution_slice(&self, definitions: &BTreeSet<HirItemId>) -> Self {
+        let revision =
+            HirRevision::from_shared_program(self.program.clone()).expect("checked library HIR");
+        let view = revision.view();
+        let mut nodes = Nodes::default();
+        for (item, declaration) in self.program.items.iter() {
+            if definitions.contains(&item)
+                || !matches!(
+                    declaration,
+                    HirItem::Flow(_)
+                        | HirItem::Tool(_)
+                        | HirItem::Agent(_)
+                        | HirItem::TopLevelLet(_)
+                        | HirItem::Impl(_)
+                )
+            {
+                walk_item(&view, item, &mut nodes);
+            }
+        }
+        // Attributes and default expressions belong to the shared declarations.
+        for expression in self.program.parameter_defaults.values().copied().chain(
+            self.program
+                .item_annotations
+                .values()
+                .flatten()
+                .flat_map(|annotation| &annotation.args)
+                .map(|arg| match arg {
+                    HirAnnotationArg::Positional { value, .. }
+                    | HirAnnotationArg::Named { value, .. } => *value,
+                }),
+        ) {
+            walk_expr_tree(&view, expression, &mut nodes);
+        }
+        let mut image = self.clone();
+        let mut program = self.program.as_ref().clone();
+        let unloaded_globals = program
+            .items
+            .iter()
+            .filter_map(|(item, declaration)| {
+                (matches!(declaration, HirItem::TopLevelLet(_)) && !definitions.contains(&item))
+                    .then_some(item)
             })
             .collect::<BTreeSet<_>>();
-        let mut unique = BTreeSet::new();
-        let mut compilations = Vec::new();
-        for source in roots {
-            let mut selected = BTreeSet::new();
-            let mut pending = vec![source];
-            while let Some(next) = pending.pop() {
-                if selected.insert(next) {
-                    pending.extend(&dependencies[&next]);
-                }
-            }
-            if !unique.insert(selected.clone()) {
+        for (item, declaration) in program.items.iter_mut() {
+            if definitions.contains(&item) {
                 continue;
             }
-            let prelude = self.selected_prelude(root, &selected);
-            let mut selected_sources = selected.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>();
-            if let Some(source) = &prelude {
-                selected_sources.insert(source.id.0);
-            }
-            let modules = selected_sources
-                .iter()
-                .map(|id| {
-                    self.module_index.modules[self.module_index.by_source[&files[id].id]]
-                        .path
-                        .segments
-                        .clone()
-                })
-                .collect();
-            let mut environment = self.environment.clone();
-            environment
-                .stable_source_keys
-                .retain(|key| selected_sources.contains(&key.source.0));
-            environment
-                .standalone_source_packages
-                .retain(|package| selected_sources.contains(&package.source.0));
-            environment.environment_fingerprint = None;
-            environment.external_modules_fingerprint = None;
-            let mut input = crate::ProjectInput {
-                project_root: root.to_owned(),
-                source_root: Some(source_root.to_owned()),
-                options: self.compile_options.clone(),
-                environment,
-                sources: self
-                    .sources
-                    .iter()
-                    .filter(|source| selected_sources.contains(&source.id.0))
-                    .map(|source| crate::SourceInput {
-                        id: source.id,
-                        path: Some(root.join(&source.relative_path)),
-                        text: {
-                            let id = source.id.0;
-                            let used = selected
-                                .iter()
-                                .filter(|(owner, _)| *owner == id)
-                                .flat_map(|node| identifiers[node].iter().cloned())
-                                .collect::<BTreeSet<_>>();
-                            let mut text = format!(
-                                "module {};\n",
-                                self.module_index.modules[self.module_index.by_source[&source.id]]
-                                    .path
-                                    .segments
-                                    .join(".")
-                            );
-                            for import in &self.resolved_imports.imports {
-                                if import.import.source == source.id
-                                    && (used.contains(&import.local_name)
-                                        || selected.contains(&import_node(&import.import)))
-                                {
-                                    text.push_str(&self.selected_import(
-                                        &import.local_name,
-                                        &import.target,
-                                        import.visibility,
-                                    ));
-                                }
-                            }
-                            for import in &self.resolved_imports.wildcard_imports {
-                                if import.import.source == source.id {
-                                    for (name, target) in &import.targets {
-                                        if used.contains(name)
-                                            || selected.contains(&import_node(&import.import))
-                                        {
-                                            text.push_str(&self.selected_import(
-                                                name,
-                                                target,
-                                                import.visibility,
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            for (index, item) in parsed[&id].items.iter().enumerate() {
-                                if selected.contains(&(id, index)) {
-                                    text.push_str(
-                                        &source.text[item.span.range.start.to_usize()
-                                            ..item.span.range.end.to_usize()],
-                                    );
-                                    text.push('\n');
-                                }
-                            }
-                            text
-                        },
-                        kind: source.kind.clone(),
-                    })
-                    .collect(),
-                entry: self.entry.requested.clone(),
-            };
-            if let Some(prelude) = prelude {
-                let id = prelude.id;
-                *input
-                    .sources
-                    .iter_mut()
-                    .find(|source| source.id == id)
-                    .expect("selected prelude unit") = prelude;
-            }
-            compilations.push(LibraryModuleCompilation { modules, input });
-        }
-        compilations
-    }
-
-    fn selected_import(
-        &self,
-        name: &str,
-        target: &crate::ImportTarget,
-        visibility: etas_hir::Visibility,
-    ) -> String {
-        let path = match target {
-            crate::ImportTarget::SourceItem { item, member, .. } => {
-                let (_, declaration) = self
-                    .item_targets
-                    .iter()
-                    .find(|(source, _)| source == item)
-                    .expect("checked import target");
-                let symbol = self.program.items[*declaration]
-                    .symbol()
-                    .expect("named imported declaration");
-                let mut path = self
-                    .program
-                    .declaration_path(symbol)
-                    .expect("import declaration path");
-                if let Some(member) = member {
-                    path.push(member.clone());
+            match declaration {
+                HirItem::Flow(flow) if flow.body.as_block().is_some() => {
+                    flow.body = HirFlowBody::Decl { span: flow.span }
                 }
-                path
+                HirItem::Tool(tool) => tool.body = HirToolBody::Decl { span: tool.span },
+                HirItem::Agent(agent) => agent.body = HirAgentBody::Decl { span: agent.span },
+                _ => {}
             }
-            crate::ImportTarget::StdItem {
-                module_path, name, ..
-            } => {
-                let mut path = module_path.segments.clone();
-                path.push(name.clone());
-                path
+        }
+        program
+            .items
+            .retain(|item, _| !unloaded_globals.contains(&item));
+        for (_, module) in program.modules_arena.iter_mut() {
+            module.items.retain(|item| !unloaded_globals.contains(item));
+        }
+        program
+            .exprs
+            .retain(|id, _| nodes.expressions.contains(&id));
+        program.blocks.retain(|id, _| nodes.blocks.contains(&id));
+        program.stmts.retain(|id, _| nodes.statements.contains(&id));
+        program.pats.retain(|id, _| nodes.patterns.contains(&id));
+        program
+            .handler_arms
+            .retain(|id, _| nodes.arms.contains(&id));
+        let sources = &mut program.source_map;
+        sources
+            .expr_sources
+            .retain(|id, _| nodes.expressions.contains(id));
+        sources
+            .block_sources
+            .retain(|id, _| nodes.blocks.contains(id));
+        sources
+            .stmt_sources
+            .retain(|id, _| nodes.statements.contains(id));
+        sources
+            .pat_sources
+            .retain(|id, _| nodes.patterns.contains(id));
+        sources
+            .handler_arm_sources
+            .retain(|id, _| nodes.arms.contains(id));
+        sources
+            .item_sources
+            .retain(|id, _| !unloaded_globals.contains(id));
+        for references in sources.syntax_to_hir.values_mut() {
+            references.retain(|node| match node {
+                HirNodeRef::Item(id) => !unloaded_globals.contains(id),
+                HirNodeRef::Expr(id) => nodes.expressions.contains(id),
+                HirNodeRef::Block(id) => nodes.blocks.contains(id),
+                HirNodeRef::Stmt(id) => nodes.statements.contains(id),
+                HirNodeRef::Pat(id) => nodes.patterns.contains(id),
+                HirNodeRef::HandlerArm(id) => nodes.arms.contains(id),
+                _ => true,
+            });
+        }
+        sources.syntax_to_hir.retain(|_, nodes| !nodes.is_empty());
+        let mut syntax = sources
+            .syntax_to_hir
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut pending = syntax.iter().copied().collect::<Vec<_>>();
+        while let Some(node) = pending.pop() {
+            if let Some(parent) = sources.syntax_nodes.get(&node).and_then(|node| node.parent)
+                && syntax.insert(parent)
+            {
+                pending.push(parent);
             }
-            crate::ImportTarget::Module(crate::ResolvedModuleTarget::Source { module, .. }) => {
-                self.module_index.modules[*module].path.segments.clone()
+        }
+        sources.syntax_nodes.retain(|id, _| syntax.contains(id));
+        image
+            .declarations
+            .retain(|_, item| !unloaded_globals.contains(item));
+        image
+            .item_sources
+            .retain(|item, _| !unloaded_globals.contains(item));
+        image
+            .item_targets
+            .retain(|(_, item)| !unloaded_globals.contains(item));
+        image
+            .body_slots
+            .retain(|item, _| definitions.contains(item));
+        image
+            .reachability
+            .analysis_items
+            .retain(|item| definitions.contains(item));
+        image
+            .reachability
+            .reachable_items
+            .retain(|item| definitions.contains(item));
+        let facts = Arc::make_mut(&mut image.types);
+        facts
+            .declared_call_arguments
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .existential_packs
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .checked_method_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .bound_method_values
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .agent_method_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .source_flow_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .library_flow_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .std_intrinsic_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .action_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .expr_types
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .reflections
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .definition_operations
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .agent_inferences
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .agent_controllers
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .task_owners
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .expr_memory_places
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .field_projections
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .index_facts
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .slice_facts
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .checked_index_errors
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .generic_instantiations
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .try_facts
+            .retain(|id, _| nodes.expressions.contains(id));
+        facts
+            .trusted_literals
+            .retain(|id| nodes.expressions.contains(id));
+        facts
+            .stmt_types
+            .retain(|id, _| nodes.statements.contains(id));
+        facts
+            .pattern_types
+            .retain(|id, _| nodes.patterns.contains(id));
+        facts
+            .handler_actions
+            .retain(|id, _| nodes.arms.contains(id));
+        facts
+            .deferred_handler_instantiations
+            .retain(|id, _| nodes.arms.contains(id));
+        facts
+            .body_type_dependencies
+            .retain(|item, _| definitions.contains(item));
+        let effects = Arc::make_mut(&mut image.effects);
+        effects
+            .handled_body_requests
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .native_call_targets
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .source_call_arguments
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .dynamic_call_sources
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .iteration_call_sources
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .metadata_call_targets
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .generic_effect_rows
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .expr_effects
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .handler_values
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .handle_applications
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .performed_actions
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .try_captures
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .latent_effects
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .std_callable_values
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .std_action_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .handled_body_requests
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .native_call_targets
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .source_call_arguments
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .dynamic_call_sources
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .iteration_call_sources
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .metadata_call_targets
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .generic_effect_rows
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .expr_effects
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .handler_values
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .handle_applications
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .performed_actions
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .try_captures
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .latent_effects
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .std_callable_values
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .std_action_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .task_calls
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .continuation_transfers
+            .retain(|id, _| nodes.expressions.contains(id));
+        effects
+            .stmt_effects
+            .retain(|id, _| nodes.statements.contains(id));
+        effects
+            .handler_action_effects
+            .retain(|id, _| nodes.arms.contains(id));
+        let keep_unit = |unit: &etas_effects::EffectUnit| match unit {
+            etas_effects::EffectUnit::Item(item) => definitions.contains(item),
+            etas_effects::EffectUnit::ParameterDefault { expr, .. } => {
+                nodes.expressions.contains(expr)
             }
-            _ => unreachable!("source std imports source or primitive declarations"),
+            etas_effects::EffectUnit::HandlerArm { arm, .. } => nodes.arms.contains(arm),
+            etas_effects::EffectUnit::AnonymousFlow { value, .. } => {
+                nodes.expressions.contains(value)
+            }
         };
-        let public = if visibility == etas_hir::Visibility::Public {
-            "public "
-        } else {
-            ""
-        };
-        if path.last().map(String::as_str) == Some(name) {
-            format!("{public}import {};\n", path.join("."))
-        } else {
-            format!("{public}import {} as {name};\n", path.join("."))
-        }
-    }
-
-    fn selected_prelude(
-        &self,
-        root: &Path,
-        selected: &BTreeSet<(u32, usize)>,
-    ) -> Option<crate::SourceInput> {
-        let (prelude, module) = self
-            .module_index
-            .modules
-            .iter()
-            .find(|(_, module)| module.path.segments == ["std", "prelude"])?;
-        let source_id = self.module_index.parts[*module.parts.first()?].source;
-        let source = self
-            .sources
-            .iter()
-            .find(|source| source.id == source_id)
-            .expect("checked prelude source");
-        let mut lines = BTreeSet::new();
-        let mut import = |name: &str, target: &crate::ImportTarget| {
-            let path = match target {
-                crate::ImportTarget::SourceItem {
-                    module: _,
-                    item,
-                    member,
-                    ..
-                } => {
-                    if !selected.contains(&(item.source.0, item.index)) {
-                        return;
-                    }
-                    let item = self
-                        .item_targets
-                        .iter()
-                        .find(|(source, _)| source == item)
-                        .map(|(_, item)| *item)
-                        .expect("checked prelude target");
-                    let symbol = self.program.items[item]
-                        .symbol()
-                        .expect("named prelude target");
-                    let mut path = self
-                        .program
-                        .declaration_path(symbol)
-                        .expect("prelude declaration path");
-                    if let Some(member) = member {
-                        path.push(member.clone());
-                    }
-                    path
-                }
-                crate::ImportTarget::StdItem {
-                    module_path, name, ..
-                } => {
-                    let mut path = module_path.segments.clone();
-                    path.push(name.clone());
-                    path
-                }
-                crate::ImportTarget::Module(crate::ResolvedModuleTarget::Source {
-                    module, ..
-                }) => {
-                    let path = &self.module_index.modules[*module].path.segments;
-                    if !self.module_index.modules[*module].parts.iter().any(|part| {
-                        selected
-                            .iter()
-                            .any(|(id, _)| *id == self.module_index.parts[*part].source.0)
-                    }) {
-                        return;
-                    }
-                    path.clone()
-                }
-                _ => unreachable!("source std prelude has checked source or primitive targets"),
-            };
-            if path.last().map(String::as_str) == Some(name) {
-                lines.insert(format!("public import {};", path.join(".")));
-            } else {
-                lines.insert(format!("public import {} as {name};", path.join(".")));
-            }
-        };
-        for item in &self.resolved_imports.imports {
-            if item.from == prelude && item.visibility == etas_hir::Visibility::Public {
-                import(&item.local_name, &item.target);
-            }
-        }
-        for item in &self.resolved_imports.wildcard_imports {
-            if item.from == prelude && item.visibility == etas_hir::Visibility::Public {
-                for (name, target) in &item.targets {
-                    import(name, target);
-                }
-            }
-        }
-        Some(crate::SourceInput {
-            id: source.id,
-            path: Some(root.join(&source.relative_path)),
-            text: format!(
-                "module std.prelude;\n{}\n",
-                lines.into_iter().collect::<Vec<_>>().join("\n")
-            ),
-            kind: source.kind.clone(),
-        })
+        effects.unit_effects.retain(|unit, _| keep_unit(unit));
+        effects.suspension.retain(|unit, _| keep_unit(unit));
+        image.program = Arc::new(program);
+        image
     }
 }

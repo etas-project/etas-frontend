@@ -792,6 +792,9 @@ fn remap_facts(facts: &mut crate::TypeFacts, remapper: &mut TypeIdRemapper<'_, '
             }
         }
     }
+    for roots in facts.body_type_dependencies.values_mut() {
+        *roots = roots.iter().map(|ty| remapper.ty(*ty)).collect();
+    }
     facts.known_std_types.result_enum = facts.known_std_types.result_enum.map(|ty| remapper.ty(ty));
     facts.known_std_types.option_enum = facts.known_std_types.option_enum.map(|ty| remapper.ty(ty));
     facts.known_std_types.source_iterator = facts

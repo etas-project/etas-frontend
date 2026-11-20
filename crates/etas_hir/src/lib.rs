@@ -1,3 +1,4 @@
+mod arena;
 pub mod db;
 pub mod diagnostic;
 pub mod dump;

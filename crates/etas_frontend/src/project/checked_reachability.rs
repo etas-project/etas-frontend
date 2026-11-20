@@ -318,6 +318,38 @@ impl crate::CheckedProgramData {
         self.checked_callable_reachability(CheckedCallableRoot::Item(entry))
     }
 
+    /// Direct checked references, including defaults, methods and implicit packs.
+    pub(crate) fn direct_checked_dependencies(
+        &self,
+        item: HirItemId,
+    ) -> Result<BTreeSet<HirItemId>, CheckedReachabilityError> {
+        let mut pending = Vec::new();
+        if let Some(method) = self.types.agent_default_method(item) {
+            pending.push(method.body);
+        }
+        let mut defaults_seen = HashSet::new();
+        let mut visitor = References {
+            checked: self,
+            pending: &mut pending,
+            error: None,
+            defaults_seen: &mut defaults_seen,
+        };
+        walk_item(&self.hir.view(), item, &mut visitor);
+        for annotation in self.hir.item_annotations.get(&item).into_iter().flatten() {
+            for argument in &annotation.args {
+                let value = match argument {
+                    etas_hir::HirAnnotationArg::Positional { value, .. }
+                    | etas_hir::HirAnnotationArg::Named { value, .. } => *value,
+                };
+                walk_expr_tree(&self.hir.view(), value, &mut visitor);
+            }
+        }
+        if let Some(error) = visitor.error {
+            return Err(error);
+        }
+        Ok(pending.into_iter().collect())
+    }
+
     pub fn checked_callable_reachability(
         &self,
         root: CheckedCallableRoot,

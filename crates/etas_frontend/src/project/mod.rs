@@ -67,3 +67,6 @@ pub use source::{
     SourceSet,
 };
 pub use unit_tree::{UnitKind, UnitNode, UnitTarget, UnitTree};
+
+mod semantic_dependencies;
+pub use semantic_dependencies::{CheckedSemanticDependencies, SemanticDependency};

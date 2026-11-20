@@ -68,6 +68,7 @@ pub(super) fn load(
         ));
     }
     let emit = PublishInstalledLibraryPass {
+        semantic_dependencies: image.semantic_dependencies.clone(),
         publication,
         effects: std::mem::take(&mut image.effects),
         registry: std::mem::take(&mut image.effect_registry),
@@ -132,6 +133,7 @@ pub(super) fn load(
 }
 
 struct PublishInstalledLibraryPass {
+    semantic_dependencies: Arc<crate::project::CheckedSemanticDependencies>,
     publication: InstalledPublication,
     effects: Arc<etas_effects::EffectFacts>,
     registry: Arc<etas_effects::EffectRegistry>,
@@ -179,6 +181,7 @@ impl Pass<ProjectContext> for PublishInstalledLibraryPass {
         let entry = context.entry.as_ref().expect("installed entry");
         let data = CheckedProgramData {
             definition_catalog_cache: Arc::default(),
+            semantic_dependencies: self.semantic_dependencies.clone(),
             reflection_targets: context
                 .reflection_targets
                 .clone()

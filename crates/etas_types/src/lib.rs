@@ -111,3 +111,7 @@ pub use pipeline::{
     finalize::finalize_body_deltas_with_application, infer_callable_outputs,
     infer_callable_outputs_controlled,
 };
+
+pub use facts::dependencies::type_dependencies;
+
+pub use facts::dependencies::semantic_type_references;

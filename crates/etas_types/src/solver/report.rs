@@ -5,10 +5,11 @@ use etas_hir::HirExprId;
 
 use crate::{CheckedIndexKind, CheckedSliceKind, TypeId, solver::unification::Substitution};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct SolverReport {
     pub existential_packs:
         HashMap<HirExprId, crate::facts::existentials::CheckedExistentialPackFact>,
+    #[serde(skip)]
     pub substitutions: Substitution,
     pub named_substitutions: HashMap<String, TypeId>,
     pub inferred_expr_types: HashMap<HirExprId, TypeId>,
@@ -29,7 +30,9 @@ pub struct SolverReport {
     pub index_facts: HashMap<HirExprId, CheckedIndexKind>,
     pub slice_facts: HashMap<HirExprId, CheckedSliceKind>,
     pub checked_index_errors: HashMap<HirExprId, TypeId>,
+    #[serde(skip)]
     pub(crate) pending_spec_obligations: Vec<crate::SpecObligation>,
+    #[serde(skip)]
     pub failures: Vec<SolverFailure>,
 }
 

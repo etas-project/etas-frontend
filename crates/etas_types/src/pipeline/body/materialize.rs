@@ -76,6 +76,16 @@ pub fn run(ctx: &mut crate::pipeline::context::TypePipelineContext<'_>, state: B
             return;
         }
     };
+    let mut dependencies = crate::facts::dependencies::TypeDependencies::default();
+    dependencies.record(&state.provisional);
+    dependencies.record(&state.solver_report);
+    dependencies.record(&state.owner_params);
+    ctx.signature_facts
+        .body_spec_dependencies
+        .insert(state.item, dependencies.1);
+    ctx.signature_facts
+        .body_type_dependencies
+        .insert(state.item, dependencies.0);
     state
         .provisional
         .expr_types

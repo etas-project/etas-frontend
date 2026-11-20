@@ -154,6 +154,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             };
             let mut data = CheckedProgramData {
                 definition_catalog_cache: std::sync::Arc::default(),
+                semantic_dependencies: std::sync::Arc::default(),
                 reflection_targets: reflection_targets.clone(),
                 foreign_type_bindings: context
                     .candidate
@@ -333,6 +334,15 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 data.residual = std::sync::Arc::new(residual.with_binding(binding));
             } else {
                 data.residual = std::sync::Arc::new(residual);
+            }
+            if data.compile_options.standard_library_mode
+                == crate::StandardLibraryMode::SourceBootstrap
+            {
+                data.semantic_dependencies =
+                    match crate::project::CheckedSemanticDependencies::build(&data) {
+                        Ok(graph) => std::sync::Arc::new(graph),
+                        Err(error) => return PassResult::failed(error),
+                    };
             }
             context.checked = Some(std::sync::Arc::new(data));
         }

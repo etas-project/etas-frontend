@@ -1572,6 +1572,7 @@ impl ProjectOutput {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckedProgramData {
+    pub semantic_dependencies: Arc<crate::project::CheckedSemanticDependencies>,
     pub(crate) definition_catalog_cache: Arc<crate::code::definition::DefinitionCatalogCache>,
     pub(crate) reflection_targets: Arc<crate::code::reflection::CheckedReflectionTargets>,
     pub(crate) foreign_type_bindings: Arc<crate::code::definition::ForeignTypeBindings>,

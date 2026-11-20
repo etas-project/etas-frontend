@@ -26,7 +26,7 @@ mod modules;
 pub use modules::LibraryModuleCompilation;
 mod restore;
 
-const SCHEMA: u32 = 70;
+const SCHEMA: u32 = 71;
 const EFFECT_ANALYSIS_SCHEMA: u32 = 1;
 const PREPARED_EFFECT_MAGIC: &[u8; 8] = b"ETASEFF2";
 
@@ -69,6 +69,7 @@ pub struct LibraryHirSource {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryHirImage {
+    pub semantic_dependencies: Arc<crate::project::CheckedSemanticDependencies>,
     pub schema: u32,
     pub compiler_version: String,
     pub package: PackageKey,
@@ -199,6 +200,7 @@ impl LibraryHirImage {
             .collect::<Result<Vec<_>, LibraryHirImageError>>()?;
         item_targets.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         Ok(Self {
+            semantic_dependencies: checked.semantic_dependencies.clone(),
             schema: SCHEMA,
             compiler_version: checked.compiler_version.clone(),
             package,
