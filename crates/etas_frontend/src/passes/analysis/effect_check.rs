@@ -6,7 +6,7 @@ mod task_rows;
 
 use std::sync::Arc;
 
-use etas_effects::{EffectAnalysisOutput, pipeline::EffectAnalysisMode};
+use etas_effects::pipeline::EffectAnalysisMode;
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
     PreservedArtifacts,
@@ -19,7 +19,7 @@ use self::external_metadata::{
     tool_provider_bindings,
 };
 use crate::incremental::CheckScope;
-use crate::library_hir::{ArchivedEffectAnalysis, ArchivedEffectTypes, LibraryEffectAnalysisMode};
+use crate::library_hir::{ArchivedEffectTypes, LibraryEffectAnalysisMode, PreparedLibraryEffects};
 use crate::passes::artifacts::{
     ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_CATALOG, MODULE_INDEX,
     PARSED_SOURCE_SET, PREPARED_EFFECT_REGISTRY, PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS,
@@ -238,7 +238,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
             None => EffectAnalysisMode::Compute,
             Some(LibraryEffectAnalysisMode::Capture(_)) => {
                 capture_types = context.types.clone();
-                EffectAnalysisMode::Capture
+                EffectAnalysisMode::Compute
             }
             Some(LibraryEffectAnalysisMode::Replay(snapshot)) => {
                 if let Some(types) = &snapshot.types {
@@ -250,19 +250,34 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 }
                 EffectAnalysisMode::Replay(&snapshot.analysis)
             }
+            Some(LibraryEffectAnalysisMode::Prepared(snapshot)) => {
+                if let Some(types) = &snapshot.types {
+                    context.types = Some(etas_types::TypeOutput {
+                        facts: types.facts.clone(),
+                        store: types.store.clone(),
+                        diagnostics: Vec::new(),
+                    });
+                }
+                EffectAnalysisMode::ReplayPrepared(&snapshot.effects)
+            }
         };
-        let replaying = matches!(analysis_mode, EffectAnalysisMode::Replay(_));
+        let replaying = matches!(
+            analysis_mode,
+            EffectAnalysisMode::Replay(_) | EffectAnalysisMode::ReplayPrepared(_)
+        );
         let diagnostics_before = context.diagnostics.len();
         for _ in 0..limit {
             let mut requested = None;
-            let mut captured = None;
-            let result = self.run_once(
-                context,
-                manager,
-                &mut requested,
-                analysis_mode,
-                &mut captured,
-            );
+            let prepared = std::sync::OnceLock::new();
+            let mode = if matches!(
+                library_analysis,
+                Some(LibraryEffectAnalysisMode::Capture(_))
+            ) {
+                EffectAnalysisMode::CapturePrepared(&prepared)
+            } else {
+                analysis_mode
+            };
+            let result = self.run_once(context, manager, &mut requested, mode);
             let Some(ty) = requested else {
                 if matches!(&result.control, etas_utils::PassControl::Continue) {
                     match task_rows::refine(context) {
@@ -281,7 +296,9 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                         Err(error) => return PassResult::failed(error),
                     }
                     if let Some(LibraryEffectAnalysisMode::Capture(capture)) = &library_analysis {
-                        let analysis = captured.expect("successful Effect analysis was captured");
+                        let effects = prepared
+                            .into_inner()
+                            .expect("successful Effect facts were captured");
                         let initial = capture_types.as_ref().expect("checked input types");
                         let final_types = context.types.as_ref().expect("checked solved types");
                         let types = (!Arc::ptr_eq(&initial.facts, &final_types.facts)
@@ -292,7 +309,7 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                         });
                         assert!(
                             capture
-                                .set(ArchivedEffectAnalysis { analysis, types })
+                                .set(PreparedLibraryEffects { effects, types })
                                 .is_ok()
                         );
                     }
@@ -328,7 +345,6 @@ impl RunEffectPipelinePass {
         manager: &mut PassManager<ProjectContext>,
         requested: &mut Option<etas_types::Type>,
         analysis_mode: EffectAnalysisMode<'_>,
-        captured: &mut Option<Arc<EffectAnalysisOutput>>,
     ) -> PassResult {
         context.residual_plans = None;
         context.residual_support = None;
@@ -508,10 +524,7 @@ impl RunEffectPipelinePass {
             analysis_mode,
         );
         let pipeline_output = match result {
-            Ok((output, analysis)) => {
-                *captured = analysis;
-                output
-            }
+            Ok((output, _)) => output,
             Err(etas_effects::EffectPipelineError::TypeMaterializationRequired(ty)) => {
                 context.prepared_effect_registry = Some(prepared);
                 *requested = Some(ty);

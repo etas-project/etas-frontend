@@ -32,7 +32,7 @@ mod analyze_memory_provenance;
 mod replay_summaries;
 mod solve_summaries;
 pub(super) use analyze_memory_provenance::AnalyzeMemoryProvenancePass;
-use replay_summaries::ReplaySummariesPass;
+use replay_summaries::{ReplayPreparedFactsPass, ReplaySummariesPass};
 pub(super) use solve_summaries::SolveSummariesPass;
 mod materialize_facts;
 pub(super) use materialize_facts::MaterializeFactsPass;
@@ -65,8 +65,23 @@ pub(super) fn build_effect_pipeline<'a>(replay: bool) -> Pipeline<EffectPipeline
             .pass(AnalyzeMemoryProvenancePass)
             .pass(SolveSummariesPass)
     };
+    finish_effect_pipeline(pipeline.pass(MaterializeFactsPass))
+}
+
+pub(super) fn build_prepared_effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>> {
+    finish_effect_pipeline(
+        Pipeline::new("effects.run")
+            .pass(BuildRegistryPass)
+            .pass(BindFrozenCallsPass)
+            .pass(CollectUnitsPass)
+            .pass(ReplayPreparedFactsPass),
+    )
+}
+
+fn finish_effect_pipeline<'a>(
+    pipeline: Pipeline<EffectPipelineContext<'a>>,
+) -> Pipeline<EffectPipelineContext<'a>> {
     pipeline
-        .pass(MaterializeFactsPass)
         .pass(ValidateContractsPass)
         .pass(MaterializeTraceSpecModelsPass)
         .pass(AnalyzeTraceSpecMonitorsPass)

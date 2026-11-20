@@ -7,7 +7,9 @@ use etas_utils::{
     Pipeline, PreservedArtifacts, UnitOrder, UnitSelector,
 };
 
-use super::{LibraryEffectAnalysisMode, LibraryHirImage, LibraryHirImageError, error};
+use super::{
+    LibraryDefinitions, LibraryEffectAnalysisMode, LibraryHirImage, LibraryHirImageError, error,
+};
 use crate::{
     HirBodyBindings, HirItemBindings, HirOutput, ProjectContext, ProjectInput,
     SOURCE_FILE_UNIT_KIND, SourceInput,
@@ -32,7 +34,6 @@ pub(super) fn restore(
     let declarations = image.declarations.clone();
     let methods = image.methods.clone();
     let parameter_defaults = image.parameter_defaults.clone();
-    let package = image.package;
     let input = ProjectInput {
         project_root: root.to_owned(),
         source_root: Some(root.to_owned()),
@@ -109,7 +110,7 @@ pub(super) fn restore(
             run.output.diagnostics,
         ))
     })?;
-    let linked = LibraryHirImage::from_checked(&checked, package, root)?;
+    let linked = LibraryDefinitions::from_checked(&checked)?;
     if linked.declarations != declarations || linked.methods != methods {
         return Err(error(
             "library declarations changed while restoring native provenance",

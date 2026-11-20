@@ -75,6 +75,11 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
                     &mut effects,
                     context.input.reachable_items,
                 );
+                if let crate::pipeline::EffectAnalysisMode::CapturePrepared(capture) =
+                    context.analysis_mode
+                {
+                    assert!(capture.set(effects.clone()).is_ok());
+                }
                 context.effects = Some(effects);
             }
             Err(error) => return context.fail(error),

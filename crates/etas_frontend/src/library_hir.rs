@@ -23,6 +23,7 @@ mod restore;
 
 const SCHEMA: u32 = 70;
 const EFFECT_ANALYSIS_SCHEMA: u32 = 1;
+const PREPARED_EFFECT_MAGIC: &[u8; 8] = b"ETASEFF2";
 
 /// Input to fact materialization, before runtime proofs are projected and bound.
 #[derive(Serialize, Deserialize)]
@@ -39,10 +40,17 @@ pub(crate) struct ArchivedEffectTypes {
     pub store: Arc<etas_types::TypeStore>,
 }
 
+#[derive(Serialize, Deserialize)]
+pub(crate) struct PreparedLibraryEffects {
+    pub effects: etas_effects::EffectOutput,
+    pub types: Option<ArchivedEffectTypes>,
+}
+
 #[derive(Clone)]
 pub(crate) enum LibraryEffectAnalysisMode {
-    Capture(Arc<OnceLock<ArchivedEffectAnalysis>>),
+    Capture(Arc<OnceLock<PreparedLibraryEffects>>),
     Replay(Arc<ArchivedEffectAnalysis>),
+    Prepared(Arc<PreparedLibraryEffects>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,12 +100,17 @@ pub struct LibraryHirImage {
     pub reachability: crate::ReachabilityFacts,
 }
 
-impl LibraryHirImage {
-    pub fn from_checked(
-        checked: &CheckedProgramData,
-        package: PackageKey,
-        package_root: &Path,
-    ) -> Result<Self, LibraryHirImageError> {
+struct LibraryDefinitions {
+    declarations: BTreeMap<DefinitionKey, HirItemId>,
+    methods: BTreeMap<MethodId, HirItemId>,
+    parameter_defaults: BTreeMap<
+        etas_code::descriptor::ParameterDefaultInfo,
+        crate::code::parameter_defaults::ParameterDefaultUnit,
+    >,
+}
+
+impl LibraryDefinitions {
+    fn from_checked(checked: &CheckedProgramData) -> Result<Self, LibraryHirImageError> {
         if !checked.frozen_agent_call_boundaries.is_empty()
             || !checked.foreign_type_bindings.is_empty()
         {
@@ -127,6 +140,25 @@ impl LibraryHirImage {
                 declarations.insert(key.clone(), item);
             }
         }
+        Ok(Self {
+            declarations,
+            methods,
+            parameter_defaults,
+        })
+    }
+}
+
+impl LibraryHirImage {
+    pub fn from_checked(
+        checked: &CheckedProgramData,
+        package: PackageKey,
+        package_root: &Path,
+    ) -> Result<Self, LibraryHirImageError> {
+        let LibraryDefinitions {
+            declarations,
+            methods,
+            parameter_defaults,
+        } = LibraryDefinitions::from_checked(checked)?;
         let sources = checked
             .sources
             .sources
@@ -219,6 +251,20 @@ impl LibraryHirImage {
         encode_value(self)
     }
 
+    /// Native codec for a toolchain-paired installation. Portable library
+    /// artifacts continue using the self-describing body codec.
+    pub fn encode_prepared(&self) -> Result<Vec<u8>, LibraryHirImageError> {
+        bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(error)
+    }
+
+    pub fn decode_prepared(payload: &[u8]) -> Result<Self, LibraryHirImageError> {
+        let image: Self = decode_prepared_value(payload)?;
+        if image.schema != SCHEMA || image.compiler_version != crate::FRONTEND_COMPILER_VERSION {
+            return Err(error("incompatible prepared library HIR image"));
+        }
+        Ok(image)
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Self, LibraryHirImageError> {
         let mut cursor = std::io::Cursor::new(bytes);
         let image: Self = ciborium::de::from_reader(&mut cursor).map_err(error)?;
@@ -291,7 +337,11 @@ impl LibraryHirImage {
         let analysis = capture
             .get()
             .ok_or_else(|| error("installed library has no solved Effect analysis"))?;
-        encode_value(&(EFFECT_ANALYSIS_SCHEMA, analysis))
+        let mut bytes = PREPARED_EFFECT_MAGIC.to_vec();
+        bytes.extend(
+            bincode::serde::encode_to_vec(analysis, bincode::config::standard()).map_err(error)?,
+        );
+        Ok(bytes)
     }
 
     /// Reuse solved analysis authenticated by the toolchain installation. The
@@ -303,6 +353,17 @@ impl LibraryHirImage {
         payload: &[u8],
         profile: &etas_utils::ProfileHandle,
     ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
+        if let Some(payload) = payload.strip_prefix(PREPARED_EFFECT_MAGIC) {
+            let prepared: PreparedLibraryEffects = {
+                let _decode = profile.span("std.decode_effect_analysis", "std");
+                decode_prepared_value(payload)?
+            };
+            return self.restore_with_analysis(
+                package_root,
+                profile,
+                Some(LibraryEffectAnalysisMode::Prepared(Arc::new(prepared))),
+            );
+        }
         let (schema, analysis): (u32, ArchivedEffectAnalysis) = {
             let _decode = profile.span("std.decode_effect_analysis", "std");
             let mut cursor = std::io::Cursor::new(payload);
@@ -350,6 +411,20 @@ impl std::error::Error for LibraryHirImageError {}
 
 fn error(value: impl std::fmt::Display) -> LibraryHirImageError {
     LibraryHirImageError(value.to_string())
+}
+
+fn decode_prepared_value<T: serde::de::DeserializeOwned>(
+    payload: &[u8],
+) -> Result<T, LibraryHirImageError> {
+    let (value, consumed) = bincode::serde::decode_from_slice(
+        payload,
+        bincode::config::standard().with_limit::<{ 512 * 1024 * 1024 }>(),
+    )
+    .map_err(error)?;
+    if consumed != payload.len() {
+        return Err(error("trailing bytes in prepared library data"));
+    }
+    Ok(value)
 }
 
 fn encode_value(value: &impl Serialize) -> Result<Vec<u8>, LibraryHirImageError> {

@@ -629,10 +629,16 @@ pub enum EffectAnalysisMode<'a> {
     Compute,
     /// Compute the analysis and retain a copy before fact materialization.
     Capture,
+    /// Retain materialized facts, including suspension and default validation,
+    /// for an authenticated installation with these exact compiler inputs.
+    CapturePrepared(&'a std::sync::OnceLock<EffectOutput>),
     /// Reuse a successful analysis for these exact checked inputs. The caller
     /// must authenticate the complete archive and its input identity against
     /// the running toolchain before supplying it here.
     Replay(&'a EffectAnalysisOutput),
+    /// Load installation-prepared facts and run the remaining contract and
+    /// executable proof passes against this session's checked graph.
+    ReplayPrepared(&'a EffectOutput),
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -735,7 +741,10 @@ impl RunEffectPipeline {
         let mut context = EffectPipelineContext::new(input);
         context.registry_source = registry_source;
         context.analysis_mode = mode;
-        let mut pipeline = effect_pipeline(matches!(mode, EffectAnalysisMode::Replay(_)));
+        let mut pipeline = match mode {
+            EffectAnalysisMode::ReplayPrepared(_) => passes::build_prepared_effect_pipeline(),
+            _ => effect_pipeline(matches!(mode, EffectAnalysisMode::Replay(_))),
+        };
         let mut manager = PassManager::with_config(PipelineConfig::default().with_timing(true));
         if let Some(control) = control {
             manager.set_execution_control(control);
