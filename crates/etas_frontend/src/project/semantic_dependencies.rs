@@ -142,7 +142,42 @@ impl CheckedSemanticDependencies {
                 graph.record(Definition(callable), checked, method);
             }
         }
+        let index = checked.hir.index();
+        for (expression, action) in &checked.types.action_calls {
+            if let Some(owner) = index.expr_item.get(expression) {
+                graph.symbol_reference(*owner, action.action_symbol, checked);
+            }
+        }
+        for (arm, action) in &checked.types.handler_actions {
+            if let Some(etas_hir::HirOwner::Expr(expression)) = index.handler_arm_owner.get(arm)
+                && let Some(owner) = index.expr_item.get(expression)
+            {
+                graph.symbol_reference(*owner, action.action_symbol, checked);
+            }
+        }
         Ok(graph)
+    }
+    fn symbol_reference(
+        &mut self,
+        owner: HirItemId,
+        symbol: etas_hir::SymbolId,
+        checked: &crate::CheckedProgramData,
+    ) {
+        let symbol = checked
+            .hir
+            .canonical_source_symbol(symbol)
+            .unwrap_or(symbol);
+        if let Some(target) = checked
+            .hir
+            .symbols
+            .get(symbol)
+            .and_then(|symbol| symbol.defining_item)
+        {
+            self.edges
+                .entry(SemanticDependency::Definition(owner))
+                .or_default()
+                .insert(SemanticDependency::Definition(target));
+        }
     }
     fn record(
         &mut self,

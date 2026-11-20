@@ -116,14 +116,6 @@ impl LibraryHirImage {
         }
         let mut image = self.clone();
         let mut program = self.program.as_ref().clone();
-        let unloaded_globals = program
-            .items
-            .iter()
-            .filter_map(|(item, declaration)| {
-                (matches!(declaration, HirItem::TopLevelLet(_)) && !definitions.contains(&item))
-                    .then_some(item)
-            })
-            .collect::<BTreeSet<_>>();
         for (item, declaration) in program.items.iter_mut() {
             if definitions.contains(&item) {
                 continue;
@@ -134,14 +126,9 @@ impl LibraryHirImage {
                 }
                 HirItem::Tool(tool) => tool.body = HirToolBody::Decl { span: tool.span },
                 HirItem::Agent(agent) => agent.body = HirAgentBody::Decl { span: agent.span },
+                HirItem::TopLevelLet(value) => value.value = None,
                 _ => {}
             }
-        }
-        program
-            .items
-            .retain(|item, _| !unloaded_globals.contains(&item));
-        for (_, module) in program.modules_arena.iter_mut() {
-            module.items.retain(|item| !unloaded_globals.contains(item));
         }
         program
             .exprs
@@ -168,12 +155,9 @@ impl LibraryHirImage {
         sources
             .handler_arm_sources
             .retain(|id, _| nodes.arms.contains(id));
-        sources
-            .item_sources
-            .retain(|id, _| !unloaded_globals.contains(id));
         for references in sources.syntax_to_hir.values_mut() {
             references.retain(|node| match node {
-                HirNodeRef::Item(id) => !unloaded_globals.contains(id),
+                HirNodeRef::Item(_) => true,
                 HirNodeRef::Expr(id) => nodes.expressions.contains(id),
                 HirNodeRef::Block(id) => nodes.blocks.contains(id),
                 HirNodeRef::Stmt(id) => nodes.statements.contains(id),
@@ -197,9 +181,6 @@ impl LibraryHirImage {
             }
         }
         sources.syntax_nodes.retain(|id, _| syntax.contains(id));
-        image
-            .declarations
-            .retain(|_, item| !unloaded_globals.contains(item));
         image
             .body_slots
             .retain(|item, _| definitions.contains(item));
@@ -400,7 +381,8 @@ impl LibraryHirImage {
             .handler_action_effects
             .retain(|id, _| nodes.arms.contains(id));
         let keep_unit = |unit: &etas_effects::EffectUnit| match unit {
-            etas_effects::EffectUnit::Item(item) => definitions.contains(item),
+            // Declaration contracts stay shared even when their code is not loaded.
+            etas_effects::EffectUnit::Item(_) => true,
             etas_effects::EffectUnit::ParameterDefault { expr, .. } => {
                 nodes.expressions.contains(expr)
             }

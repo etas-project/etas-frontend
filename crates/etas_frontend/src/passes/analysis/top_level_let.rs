@@ -66,9 +66,12 @@ impl Pass<ProjectContext> for ValidateTopLevelLetPass {
                 let etas_types::SymbolTypeFact::TopLevelLet { ty, classification } = ty_fact else {
                     continue;
                 };
-                let next =
-                    classify_top_level_let(&hir.hir, &checked.facts, &facts, top_level_let.value)
-                        .unwrap_or_else(|| classification.clone());
+                let next = top_level_let
+                    .value
+                    .and_then(|value| {
+                        classify_top_level_let(&hir.hir, &checked.facts, &facts, value)
+                    })
+                    .unwrap_or_else(|| classification.clone());
                 let existing = facts
                     .symbols
                     .get(&top_level_let.symbol)

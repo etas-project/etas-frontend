@@ -46,7 +46,9 @@ impl HirSemanticUnit {
             Self::Item(item) => item_body(hir, context, item),
             Self::ParameterDefault { expr, .. } => HirAnalysisBody::Expr(expr),
             Self::TopLevelLet(item) => match hir.items.get(item) {
-                Some(HirItem::TopLevelLet(decl)) => HirAnalysisBody::Expr(decl.value),
+                Some(HirItem::TopLevelLet(decl)) => decl
+                    .value
+                    .map_or(HirAnalysisBody::External, HirAnalysisBody::Expr),
                 Some(_) => HirAnalysisBody::Missing,
                 None => HirAnalysisBody::Missing,
             },

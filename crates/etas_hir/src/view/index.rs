@@ -127,14 +127,12 @@ impl HirTreeIndexBuilder<'_> {
                 }
             }
             HirItem::TopLevelLet(value) => {
-                let body = HirBodyRef::new(item_id, HirBodyKind::TopLevelLet);
-                self.insert_body(item_id, body, HirOwner::Item(item_id), None);
-                self.index_expr(value.value, HirOwner::Body(body), item_id);
-                self.index
-                    .body_exprs
-                    .entry(body)
-                    .or_default()
-                    .push(value.value);
+                if let Some(value) = value.value {
+                    let body = HirBodyRef::new(item_id, HirBodyKind::TopLevelLet);
+                    self.insert_body(item_id, body, HirOwner::Item(item_id), None);
+                    self.index_expr(value, HirOwner::Body(body), item_id);
+                    self.index.body_exprs.entry(body).or_default().push(value);
+                }
             }
             HirItem::Impl(item) => {
                 for (index, impl_item) in item.items.iter().enumerate() {

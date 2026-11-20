@@ -718,7 +718,7 @@ impl LowerCtx {
             symbol,
             visibility: hir_visibility(decl.visibility),
             type_annotation,
-            value,
+            value: Some(value),
             classification: TopLevelLetClassification::Unknown,
             span: decl.span,
         }

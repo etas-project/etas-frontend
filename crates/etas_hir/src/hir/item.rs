@@ -441,7 +441,8 @@ pub struct HirTopLevelLetDecl {
     pub symbol: SymbolId,
     pub visibility: Visibility,
     pub type_annotation: Option<HirTypeId>,
-    pub value: HirExprId,
+    /// None is a linked declaration whose initializer belongs to another unit.
+    pub value: Option<HirExprId>,
     pub classification: TopLevelLetClassification,
     pub span: Span,
 }

@@ -152,7 +152,7 @@ pub fn collect_body_item<E>(
             let initializer_type = expected.filter(|_| !source_resource);
             let ty = crate::pipeline::body::collect::expr::collect_expr(
                 &mut body,
-                top.value,
+                top.value.expect("checked source constant initializer"),
                 initializer_type,
             )?;
             if let Some(expected) = initializer_type {

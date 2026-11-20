@@ -513,7 +513,9 @@ impl<'a> Dump<'a> {
                         if let Some(type_annotation) = item.type_annotation {
                             this.type_id("TypeAnnotation", type_annotation);
                         }
-                        this.expr_id("Value", item.value);
+                        if let Some(value) = item.value {
+                            this.expr_id("Value", value);
+                        }
                     },
                 );
             }

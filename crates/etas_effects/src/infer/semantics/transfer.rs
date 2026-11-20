@@ -796,7 +796,7 @@ impl EffectSemantics<'_> {
         if let Some(EffectUnit::Item(item)) = state.unit {
             if matches!(
                 self.hir.items.get(item),
-                Some(etas_hir::HirItem::TopLevelLet(value)) if value.value == expr
+                Some(etas_hir::HirItem::TopLevelLet(value)) if value.value == Some(expr)
             ) && self.flow_container_missing_latent_sources(state, expr)
             {
                 let span = self.hir.exprs[expr].span(&self.hir.blocks);
