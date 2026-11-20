@@ -116,18 +116,24 @@ impl LibraryHirImage {
             .flat_map(|(id, source)| (0..source.items.len()).map(move |index| (*id, index)))
             .collect::<BTreeSet<_>>();
         let mut local_names = BTreeMap::<u32, BTreeMap<String, Vec<(u32, usize)>>>::new();
+        let import_node = |import: &crate::AstImportRef| {
+            (
+                import.source.0,
+                parsed[&import.source.0].items.len() + import.index,
+            )
+        };
         for import in &self.resolved_imports.imports {
             local_names
                 .entry(import.import.source.0)
                 .or_default()
-                .insert(import.local_name.clone(), target_nodes(&import.target));
+                .insert(import.local_name.clone(), vec![import_node(&import.import)]);
         }
         for import in &self.resolved_imports.wildcard_imports {
-            for (name, target) in &import.targets {
+            for name in import.targets.keys() {
                 local_names
                     .entry(import.import.source.0)
                     .or_default()
-                    .insert(name.clone(), target_nodes(target));
+                    .insert(name.clone(), vec![import_node(&import.import)]);
             }
         }
         // Effect type arguments also use static-path syntax, so they do not
@@ -157,8 +163,62 @@ impl LibraryHirImage {
                     .insert(node);
             }
         }
+        for import in &self.resolved_imports.imports {
+            if import.visibility == etas_hir::Visibility::Public {
+                let mut path = self.module_index.modules[import.from].path.segments.clone();
+                path.push(import.local_name.clone());
+                qualified
+                    .entry(path)
+                    .or_default()
+                    .insert(import_node(&import.import));
+            }
+        }
+        for import in &self.resolved_imports.wildcard_imports {
+            if import.visibility == etas_hir::Visibility::Public {
+                for name in import.targets.keys() {
+                    let mut path = self.module_index.modules[import.from].path.segments.clone();
+                    path.push(name.clone());
+                    qualified
+                        .entry(path)
+                        .or_default()
+                        .insert(import_node(&import.import));
+                }
+            }
+        }
         let mut identifiers = BTreeMap::new();
         let mut dependencies = BTreeMap::new();
+        for (owner, target) in self
+            .resolved_imports
+            .imports
+            .iter()
+            .map(|import| (&import.import, &import.target))
+            .chain(
+                self.resolved_imports
+                    .wildcard_imports
+                    .iter()
+                    .flat_map(|import| {
+                        import
+                            .targets
+                            .values()
+                            .map(move |target| (&import.import, target))
+                    }),
+            )
+        {
+            let node = import_node(owner);
+            identifiers.entry(node).or_insert_with(BTreeSet::new);
+            let referenced = dependencies.entry(node).or_insert_with(|| base.clone());
+            referenced.extend(target_nodes(target));
+            if let crate::ImportTarget::StdItem {
+                module_path, name, ..
+            } = target
+            {
+                let mut path = module_path.segments.clone();
+                path.push(name.clone());
+                if let Some(targets) = qualified.get(&path) {
+                    referenced.extend(targets);
+                }
+            }
+        }
         for (id, source) in &files {
             let file = SourceFile::new(source.id, None, source.text.clone());
             let tokens = etas_syntax::lex(&file);
@@ -485,7 +545,8 @@ impl LibraryHirImage {
                             );
                             for import in &self.resolved_imports.imports {
                                 if import.import.source == source.id
-                                    && used.contains(&import.local_name)
+                                    && (used.contains(&import.local_name)
+                                        || selected.contains(&import_node(&import.import)))
                                 {
                                     text.push_str(&self.selected_import(
                                         &import.local_name,
@@ -497,7 +558,9 @@ impl LibraryHirImage {
                             for import in &self.resolved_imports.wildcard_imports {
                                 if import.import.source == source.id {
                                     for (name, target) in &import.targets {
-                                        if used.contains(name) {
+                                        if used.contains(name)
+                                            || selected.contains(&import_node(&import.import))
+                                        {
                                             text.push_str(&self.selected_import(
                                                 name,
                                                 target,
