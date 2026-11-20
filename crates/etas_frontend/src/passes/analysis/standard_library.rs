@@ -23,7 +23,9 @@ use crate::passes::artifacts::{
     TYPE_OUTPUT,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub(crate) struct CheckedStandardLibraryImplementation {
     pub declaration: StdSymbolId,
     pub source: StdLibrarySourceId,
@@ -36,7 +38,16 @@ pub(crate) struct CheckedStandardLibraryImplementation {
     pub determinism: etas_effects::Determinism,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    etas_core::RetainedSize,
+)]
 pub(crate) struct CheckedStandardLibraryImplementations {
     pub implementations: Vec<CheckedStandardLibraryImplementation>,
 }

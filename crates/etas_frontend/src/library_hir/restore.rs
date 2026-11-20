@@ -60,7 +60,7 @@ pub(super) fn restore(
             UnitOrder::SourceOrder,
             Pipeline::new("frontend.library_source_archive").pass(passes::ParseSourceFilePass),
         )
-        .pass(LoadLibraryFactsPass(Some(image)))
+        .pass(LoadLibraryFactsPass(Some(image), false))
         .pass(passes::BuildModuleCatalogPass)
         .pass(passes::ValidateExternalEnvironmentPass)
         .pass(passes::ValidateItemAnnotationsPass)
@@ -126,7 +126,9 @@ pub(super) fn restore(
 
 /// Installs descriptive archive data. Executable proofs are rebuilt by the
 /// ordinary effect, handler, reflection and checked-publication passes below.
-struct LoadLibraryFactsPass(Option<LibraryHirImage>);
+/// The authenticated installed path supplies finalized facts separately and skips
+/// the signature environment, which is used only by static analysis.
+pub(super) struct LoadLibraryFactsPass(pub Option<LibraryHirImage>, pub bool);
 
 impl Pass<ProjectContext> for LoadLibraryFactsPass {
     fn descriptor(&self) -> PassDescriptor {
@@ -189,7 +191,9 @@ impl Pass<ProjectContext> for LoadLibraryFactsPass {
             store: Arc::new(image.type_store),
             diagnostics: Vec::new(),
         };
-        context.type_environment = Some(SignatureEnvironment::new(&hir, &types));
+        if !self.1 {
+            context.type_environment = Some(SignatureEnvironment::new(&hir, &types));
+        }
         context.signature_types = Some(types.clone());
         context.types = Some(types);
         context.hir = Some(HirOutput { hir });

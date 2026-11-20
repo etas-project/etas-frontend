@@ -1,7 +1,9 @@
 //! Portable HIR component for library bundles. This preserves the checked
 //! graph's scopes, private declarations, type/effect facts, generic applications
-//! and source map. The raw graph can be loaded separately; executable loading
-//! rebuilds native provenance and passes the normal publication gates.
+//! and source map. Portable executable loading rebuilds native provenance and
+//! passes the normal publication gates. An authenticated toolchain installation
+//! can reuse finalized static facts and bind only process-local source and
+//! reflection owners.
 
 use std::{
     collections::BTreeMap,
@@ -19,6 +21,7 @@ use crate::{
     code::identity::{DefinitionIdentityIndex, DefinitionOrigins, standard_package_key},
 };
 
+mod installed;
 mod restore;
 
 const SCHEMA: u32 = 70;
@@ -344,6 +347,33 @@ impl LibraryHirImage {
         Ok(bytes)
     }
 
+    /// Prepare direct publication from the finalized checked program. Programs
+    /// with residual monitors keep the full proof-rebinding path instead.
+    pub fn prepare_installed_publication(
+        &self,
+        checked: &CheckedProgramData,
+        package_root: &Path,
+        profile: &etas_utils::ProfileHandle,
+    ) -> Result<Vec<u8>, LibraryHirImageError> {
+        if !checked.residual.is_empty() {
+            return self.capture_effect_analysis(package_root, profile);
+        }
+        let payload = installed::encode(checked)?;
+        let published =
+            self.clone()
+                .into_checked_from_installed_analysis(package_root, &payload, profile)?;
+        let definitions = LibraryDefinitions::from_checked(&published)?;
+        if definitions.declarations != self.declarations
+            || definitions.methods != self.methods
+            || definitions.parameter_defaults != self.parameter_defaults
+        {
+            return Err(error(
+                "installed publication changed the library definition index",
+            ));
+        }
+        Ok(payload)
+    }
+
     /// Reuse solved analysis authenticated by the toolchain installation. The
     /// caller must verify that the bytes belong to this exact image and to the
     /// running toolchain before invoking this method.
@@ -353,6 +383,9 @@ impl LibraryHirImage {
         payload: &[u8],
         profile: &etas_utils::ProfileHandle,
     ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
+        if let Some(payload) = payload.strip_prefix(installed::MAGIC) {
+            return installed::load(self, package_root, payload, profile);
+        }
         if let Some(payload) = payload.strip_prefix(PREPARED_EFFECT_MAGIC) {
             let prepared: PreparedLibraryEffects = {
                 let _decode = profile.span("std.decode_effect_analysis", "std");
