@@ -6,6 +6,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
 };
 
 use etas_code::{DefinitionKey, MethodId, PackageKey, StableSourceKey};
@@ -21,6 +22,28 @@ use crate::{
 mod restore;
 
 const SCHEMA: u32 = 70;
+const EFFECT_ANALYSIS_SCHEMA: u32 = 1;
+
+/// Input to fact materialization, before runtime proofs are projected and bound.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ArchivedEffectAnalysis {
+    pub analysis: Arc<etas_effects::EffectAnalysisOutput>,
+    // Effect solving can materialize types or refine task rows. Reproduce that
+    // input revision if it differs from the one loaded from the body archive.
+    pub types: Option<ArchivedEffectTypes>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ArchivedEffectTypes {
+    pub facts: Arc<etas_types::TypeFacts>,
+    pub store: Arc<etas_types::TypeStore>,
+}
+
+#[derive(Clone)]
+pub(crate) enum LibraryEffectAnalysisMode {
+    Capture(Arc<OnceLock<ArchivedEffectAnalysis>>),
+    Replay(Arc<ArchivedEffectAnalysis>),
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LibraryHirSource {
@@ -231,6 +254,7 @@ impl LibraryHirImage {
             package_root,
             registry,
             &etas_utils::ProfileHandle::disabled(),
+            None,
         )
     }
 
@@ -248,13 +272,69 @@ impl LibraryHirImage {
         package_root: &Path,
         profile: &etas_utils::ProfileHandle,
     ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
-        let registry = std::sync::Arc::new(
+        self.restore_with_analysis(package_root, profile, None)
+    }
+
+    /// Verify the archived program once during installation and retain the
+    /// solver output expected by restoration of this exact HIR image.
+    pub fn capture_effect_analysis(
+        &self,
+        package_root: &Path,
+        profile: &etas_utils::ProfileHandle,
+    ) -> Result<Vec<u8>, LibraryHirImageError> {
+        let capture = Arc::new(OnceLock::new());
+        self.clone().restore_with_analysis(
+            package_root,
+            profile,
+            Some(LibraryEffectAnalysisMode::Capture(capture.clone())),
+        )?;
+        let analysis = capture
+            .get()
+            .ok_or_else(|| error("installed library has no solved Effect analysis"))?;
+        encode_value(&(EFFECT_ANALYSIS_SCHEMA, analysis))
+    }
+
+    /// Reuse solved analysis authenticated by the toolchain installation. The
+    /// caller must verify that the bytes belong to this exact image and to the
+    /// running toolchain before invoking this method.
+    pub fn into_checked_from_installed_analysis(
+        self,
+        package_root: &Path,
+        payload: &[u8],
+        profile: &etas_utils::ProfileHandle,
+    ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
+        let (schema, analysis): (u32, ArchivedEffectAnalysis) = {
+            let _decode = profile.span("std.decode_effect_analysis", "std");
+            let mut cursor = std::io::Cursor::new(payload);
+            let analysis = ciborium::de::from_reader(&mut cursor).map_err(error)?;
+            if cursor.position() != payload.len() as u64 {
+                return Err(error("trailing bytes in library Effect analysis"));
+            }
+            analysis
+        };
+        if schema != EFFECT_ANALYSIS_SCHEMA {
+            return Err(error("incompatible library Effect analysis schema"));
+        }
+        self.restore_with_analysis(
+            package_root,
+            profile,
+            Some(LibraryEffectAnalysisMode::Replay(Arc::new(analysis))),
+        )
+    }
+
+    fn restore_with_analysis(
+        self,
+        package_root: &Path,
+        profile: &etas_utils::ProfileHandle,
+        analysis: Option<LibraryEffectAnalysisMode>,
+    ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
+        let registry = Arc::new(
             self.native_registry
                 .clone()
                 .into_registry()
                 .map_err(error)?,
         );
-        restore::restore(self, package_root, registry, profile)
+        restore::restore(self, package_root, registry, profile, analysis)
     }
 }
 

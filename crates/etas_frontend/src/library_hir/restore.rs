@@ -7,7 +7,7 @@ use etas_utils::{
     Pipeline, PreservedArtifacts, UnitOrder, UnitSelector,
 };
 
-use super::{LibraryHirImage, LibraryHirImageError, error};
+use super::{LibraryEffectAnalysisMode, LibraryHirImage, LibraryHirImageError, error};
 use crate::{
     HirBodyBindings, HirItemBindings, HirOutput, ProjectContext, ProjectInput,
     SOURCE_FILE_UNIT_KIND, SourceInput,
@@ -19,6 +19,7 @@ pub(super) fn restore(
     root: &Path,
     registry: Arc<etas_std::StdRegistry>,
     profile: &etas_utils::ProfileHandle,
+    analysis: Option<LibraryEffectAnalysisMode>,
 ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
     if image.schema != super::SCHEMA || image.compiler_version != crate::FRONTEND_COMPILER_VERSION {
         return Err(error("incompatible checked library image"));
@@ -49,7 +50,8 @@ pub(super) fn restore(
             .collect(),
         entry: image.entry.requested.clone(),
     };
-    let context = ProjectContext::new_with_std_registry(input, registry);
+    let mut context = ProjectContext::new_with_std_registry(input, registry);
+    context.library_effect_analysis = analysis;
     let pipeline = Pipeline::new("frontend.restore_library")
         .pass(passes::BuildSourceSetPass)
         .for_each(
