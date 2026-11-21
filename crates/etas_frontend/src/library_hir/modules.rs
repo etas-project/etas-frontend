@@ -298,6 +298,9 @@ impl LibraryHirImage {
         facts
             .body_type_dependencies
             .retain(|item, _| definitions.contains(item));
+        facts
+            .body_spec_dependencies
+            .retain(|item, _| definitions.contains(item));
         let effects = Arc::make_mut(&mut image.effects);
         effects
             .handled_body_requests
@@ -357,8 +360,7 @@ impl LibraryHirImage {
             .handler_action_effects
             .retain(|id, _| nodes.arms.contains(id));
         let keep_unit = |unit: &etas_effects::EffectUnit| match unit {
-            // Declaration contracts stay shared even when their code is not loaded.
-            etas_effects::EffectUnit::Item(_) => true,
+            etas_effects::EffectUnit::Item(item) => definitions.contains(item),
             etas_effects::EffectUnit::ParameterDefault { expr, .. } => {
                 nodes.expressions.contains(expr)
             }
@@ -369,6 +371,65 @@ impl LibraryHirImage {
         };
         effects.unit_effects.retain(|unit, _| keep_unit(unit));
         effects.suspension.retain(|unit, _| keep_unit(unit));
+        // Use the same checked owners as BodyEffectOutput::project. Captures
+        // and environments are body facts, not shared declaration interfaces.
+        effects
+            .parameter_projections
+            .retain(|_, fact| definitions.contains(&fact.owner));
+        effects
+            .callable_environments
+            .retain(|_, fact| definitions.contains(&fact.owner));
+        effects
+            .captured_callables
+            .retain(|id, _| effects.callable_environments.contains_key(&id.environment));
+        effects.metadata_callables.retain(|source, _| {
+            source
+                .environment
+                .is_none_or(|id| effects.callable_environments.contains_key(&id))
+        });
+        effects
+            .callable_references
+            .retain(|reference, _| match reference.environment {
+                Some(id) => effects.callable_environments.contains_key(&id),
+                None => definitions.contains(&reference.owner),
+            });
+        effects
+            .frozen_callable_graphs
+            .retain(|_, fact| definitions.contains(&fact.owner));
+        effects
+            .item_effects
+            .retain(|item, _| definitions.contains(item));
+        effects
+            .public_contracts
+            .retain(|contract| definitions.contains(&contract.item));
+        effects
+            .requirements
+            .items
+            .retain(|item, _| definitions.contains(item));
+        effects
+            .interpreter_support
+            .items
+            .retain(|item, _| definitions.contains(item));
+        let owned_symbol = |symbol: &SymbolId| {
+            program
+                .symbols
+                .get(*symbol)
+                .and_then(|symbol| match &symbol.def {
+                    SymbolDef::Param { owner, .. } => Some(*owner),
+                    _ => symbol.defining_item,
+                })
+                .is_some_and(|item| definitions.contains(&item))
+        };
+        effects
+            .symbol_effects
+            .retain(|symbol, _| owned_symbol(symbol));
+        effects
+            .requirements
+            .symbols
+            .retain(|symbol, _| owned_symbol(symbol));
+        effects
+            .inferred_parameter_effects
+            .retain(|symbol, _| owned_symbol(symbol));
         let closure = self.semantic_dependencies.closure(
             definitions
                 .iter()
