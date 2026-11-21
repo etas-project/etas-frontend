@@ -82,6 +82,10 @@ impl LibraryHirImage {
     }
 
     pub fn execution_slice(&self, definitions: &BTreeSet<HirItemId>) -> Self {
+        self.clone().into_execution_slice(definitions)
+    }
+
+    pub(crate) fn into_execution_slice(self, definitions: &BTreeSet<HirItemId>) -> Self {
         let revision =
             HirRevision::from_shared_program(self.program.clone()).expect("checked library HIR");
         let view = revision.view();
@@ -114,8 +118,9 @@ impl LibraryHirImage {
         ) {
             walk_expr_tree(&view, expression, &mut nodes);
         }
-        let mut image = self.clone();
-        let mut program = self.program.as_ref().clone();
+        drop(revision);
+        let mut image = self;
+        let program = Arc::make_mut(&mut image.program);
         for (item, declaration) in program.items.iter_mut() {
             if definitions.contains(&item) {
                 continue;
@@ -425,7 +430,7 @@ impl LibraryHirImage {
             matches!(program.symbols.get(*symbol).map(|symbol| &symbol.def),
                 Some(SymbolDef::Param { owner, .. }) if definitions.contains(owner))
         });
-        let closure = self.semantic_dependencies.closure(
+        let closure = image.semantic_dependencies.closure(
             definitions
                 .iter()
                 .copied()
@@ -434,7 +439,6 @@ impl LibraryHirImage {
         Arc::make_mut(&mut image.semantic_dependencies)
             .edges
             .retain(|node, _| closure.contains(node));
-        image.program = Arc::new(program);
         image
     }
 }
