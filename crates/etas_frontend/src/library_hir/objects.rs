@@ -121,7 +121,10 @@ struct ModuleBodies {
 fn owner(index: &HirTreeIndex, node: HirOwner) -> Option<HirItemId> {
     match node {
         HirOwner::Item(item) => Some(item),
-        HirOwner::Body(body) => Some(body.item),
+        HirOwner::Body(body) => index
+            .body_owner
+            .get(&body)
+            .and_then(|owner_| owner(index, *owner_)),
         HirOwner::Expr(expr) => index.expr_item.get(&expr).copied(),
         HirOwner::Stmt(stmt) => index.stmt_item.get(&stmt).copied(),
         HirOwner::Block(block) => index
