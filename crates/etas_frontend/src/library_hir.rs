@@ -23,6 +23,7 @@ use crate::{
 
 mod installed;
 mod modules;
+pub mod objects;
 pub use modules::LibrarySlicePlan;
 mod restore;
 
