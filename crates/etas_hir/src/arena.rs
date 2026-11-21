@@ -66,6 +66,35 @@ impl<Id: Idx, T> Arena<Id, T> {
         let index = self.position(id)?;
         self.values.get_mut(index)
     }
+    /// Link disjoint checked objects while preserving their original IDs.
+    pub fn extend_linked(&mut self, values: impl IntoIterator<Item = (Id, T)>) {
+        let mut extent = self.len();
+        let old_ids = self.ids.take();
+        let mut entries = std::mem::take(&mut self.values)
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    old_ids.as_ref().map_or(index as u32, |ids| ids[index]),
+                    value,
+                )
+            })
+            .collect::<Vec<_>>();
+        entries.extend(
+            values
+                .into_iter()
+                .map(|(id, value)| (id.into_usize() as u32, value)),
+        );
+        entries.sort_unstable_by_key(|(id, _)| *id);
+        if let Some((last, _)) = entries.last() {
+            extent = extent.max(*last as usize + 1);
+        }
+        let (ids, values) = entries.into_iter().unzip();
+        self.ids = Some(ids);
+        self.values = values;
+        self.extent = extent;
+    }
+
     /// The ID address space remains stable when linked nodes are removed.
     pub fn len(&self) -> usize {
         if self.ids.is_some() {

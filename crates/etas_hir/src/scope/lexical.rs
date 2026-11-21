@@ -122,6 +122,11 @@ impl ScopeTree {
         self.scopes.retain(|_, scope| keep(scope));
     }
 
+    pub fn extend_linked(&mut self, scopes: impl IntoIterator<Item = Scope>) {
+        self.scopes
+            .extend_linked(scopes.into_iter().map(|scope| (scope.id, scope)));
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Scope> {
         self.scopes.iter().map(|(_, scope)| scope)
     }
