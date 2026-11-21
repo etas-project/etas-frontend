@@ -29,7 +29,9 @@ fn overriding_default_does_not_remove_an_independent_error_of_the_same_type() {
         )
         .unwrap();
     summary.record_escaping_effect(error.clone());
-    summary.subtract_handled_effects(&coverage, &EffectRow::closed(EffectSet::one(action)));
+    summary
+        .subtract_handled_effects(&coverage, &EffectRow::closed(EffectSet::one(action)))
+        .unwrap();
     assert_eq!(
         summary.escaping_effects,
         EffectRow::closed(EffectSet::one(error))
@@ -58,7 +60,9 @@ fn error_capture_changes_the_contribution_without_forgetting_the_provider() {
         action
     );
     summary.record_escaping_effect(error.clone());
-    summary.subtract_handled_effects(&coverage, &EffectRow::closed(EffectSet::one(action)));
+    summary
+        .subtract_handled_effects(&coverage, &EffectRow::closed(EffectSet::one(action)))
+        .unwrap();
     assert!(summary.escaping_effects.effects.contains(&error));
 }
 
@@ -83,7 +87,9 @@ fn branch_join_keeps_default_and_direct_causes_and_is_idempotent() {
     direct.join_assign(&default);
     assert_eq!(forward, direct);
     assert!(!forward.join_assign(&direct));
-    forward.subtract_handled_effects(&coverage, &EffectRow::closed(EffectSet::one(action)));
+    forward
+        .subtract_handled_effects(&coverage, &EffectRow::closed(EffectSet::one(action)))
+        .unwrap();
     assert!(forward.escaping_effects.effects.contains(&error));
 }
 

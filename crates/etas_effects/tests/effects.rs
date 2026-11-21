@@ -10006,7 +10006,7 @@ flow main() -> unit {
                     .get(item.symbol)
                     .is_some_and(|symbol| symbol.name == "AutoApproval") =>
             {
-                Some(item.value)
+                item.value
             }
             _ => None,
         })

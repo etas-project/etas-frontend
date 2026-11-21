@@ -130,7 +130,16 @@ fn entry_reachability_follows_only_the_selected_method_bodies() {
         };
         assert!(checked.reachability.reachable_items.contains(&callable));
         assert!(checked.reachability.analysis_items.contains(&callable));
-        assert_eq!(checked.hir.view().body(body).unwrap().item().id(), callable);
+        assert_eq!(
+            checked
+                .hir
+                .view()
+                .body(body.expect("source method has a checked body"))
+                .unwrap()
+                .item()
+                .id(),
+            callable
+        );
     }
     assert_eq!(checked.reachability.reachable_items.len(), 3);
 }
