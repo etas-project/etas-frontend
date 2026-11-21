@@ -58,7 +58,14 @@ pub(super) fn validate(ctx: &mut TypePipelineContext<'_>, state: &SignaturePipel
             let actual_receiver = state
                 .type_impl_methods
                 .get(&provided.symbol)
-                .and_then(|method| ctx.hir.items.get(method.body))
+                .map(|method| method.body)
+                .or_else(|| {
+                    state
+                        .agent_methods
+                        .get(&provided.symbol)
+                        .map(|method| method.body)
+                })
+                .and_then(|body| ctx.hir.items.get(body))
                 .and_then(|item| match item {
                     etas_hir::HirItem::Flow(flow) => Some(flow.receiver_mode),
                     _ => None,

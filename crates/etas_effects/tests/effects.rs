@@ -814,6 +814,8 @@ flow main(input: string) -> string ![] {
         .item_effects
         .get(&main)
         .expect("main summary should be materialized");
+    let controller = types.facts.agent_controllers.values().next().unwrap();
+    let inference = types.facts.agent_inferences.values().next().unwrap();
     assert!(
         summary
             .requested_actions
@@ -824,25 +826,8 @@ flow main(input: string) -> string ![] {
                     action: AGENTIC_INFER_ACTION,
                 },
                 args: vec![
-                    etas_types::EffectArgRef::Path(vec![
-                        "app".to_owned(),
-                        "main".to_owned(),
-                        "Writer".to_owned(),
-                        "run".to_owned()
-                    ]),
-                    etas_types::EffectArgRef::Type(
-                        types
-                            .facts
-                            .symbol_types
-                            .iter()
-                            .find_map(|(symbol, fact)| match fact {
-                                etas_types::SymbolTypeFact::Agent { signature }
-                                    if hir.symbols.get(*symbol).unwrap().name == "Writer" =>
-                                    signature.callable().map(|entry| entry.output),
-                                _ => None,
-                            })
-                            .unwrap()
-                    ),
+                    etas_types::EffectArgRef::Type(controller.context),
+                    etas_types::EffectArgRef::Type(inference.output),
                 ],
             })),
         "{summary:?}"
@@ -857,25 +842,8 @@ flow main(input: string) -> string ![] {
                     action: AGENTIC_INFER_ACTION,
                 },
                 args: vec![
-                    etas_types::EffectArgRef::Path(vec![
-                        "app".to_owned(),
-                        "main".to_owned(),
-                        "Writer".to_owned(),
-                        "run".to_owned()
-                    ]),
-                    etas_types::EffectArgRef::Type(
-                        types
-                            .facts
-                            .symbol_types
-                            .iter()
-                            .find_map(|(symbol, fact)| match fact {
-                                etas_types::SymbolTypeFact::Agent { signature }
-                                    if hir.symbols.get(*symbol).unwrap().name == "Writer" =>
-                                    signature.callable().map(|entry| entry.output),
-                                _ => None,
-                            })
-                            .unwrap()
-                    ),
+                    etas_types::EffectArgRef::Type(controller.context),
+                    etas_types::EffectArgRef::Type(inference.output),
                 ],
             })),
         "{summary:?}"
@@ -1174,9 +1142,7 @@ flow main(callbacks: Array<Callback>) -> unit {
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
-                && diagnostic
-                    .message
-                    .contains("latent flow realization requires checked latent source facts")
+                && diagnostic.message.contains("callable source Projection(")
         }),
         "{:?}",
         output.diagnostics
@@ -1185,7 +1151,7 @@ flow main(callbacks: Array<Callback>) -> unit {
     assert!(matches!(
         output.facts.interpreter_support.items.get(&main),
         Some(InterpreterSupport::Rejected(
-            FrontendRejectionReason::EscapedEffect
+            FrontendRejectionReason::UnresolvedEffect
         ))
     ));
 }
@@ -1592,9 +1558,7 @@ flow run(callback: unit -> unit) -> unit {
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
-                && diagnostic
-                    .message
-                    .contains("first-class flow call requires a checked latent effect fact")
+                && diagnostic.message.contains("callable source Parameter {")
         }),
         "{:?}",
         output.diagnostics
@@ -1603,7 +1567,7 @@ flow run(callback: unit -> unit) -> unit {
     assert!(matches!(
         output.facts.interpreter_support.items.get(&run),
         Some(InterpreterSupport::Rejected(
-            FrontendRejectionReason::EscapedEffect
+            FrontendRejectionReason::UnresolvedEffect
         ))
     ));
 }
@@ -2072,9 +2036,9 @@ flow main(callback: unit -> unit) -> unit {
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic.code == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
-                && diagnostic.message.contains(
-                    "returned first-class flow propagation requires a checked latent return source",
-                )
+                && diagnostic
+                    .message
+                    .contains("first-class flow call requires a checked latent effect fact")
         }),
         "{:?}",
         output.diagnostics
@@ -2083,7 +2047,7 @@ flow main(callback: unit -> unit) -> unit {
     assert!(matches!(
         output.facts.interpreter_support.items.get(&main),
         Some(InterpreterSupport::Rejected(
-            FrontendRejectionReason::EscapedEffect
+            FrontendRejectionReason::UnresolvedEffect
         ))
     ));
 }
@@ -5416,7 +5380,8 @@ flow main() -> unit ![] ~ Reports { return; }
 
 #[test]
 fn trace_spec_expansion_limit_reports_incomplete_facts_at_source() {
-    let expression = std::iter::repeat_n("(+Gate.first | +Gate.second)", 14)
+    let terms = etas_package_metadata::MAX_METADATA_GRAPH_NODES.ilog2() as usize + 1;
+    let expression = std::iter::repeat_n("(+Gate.first | +Gate.second)", terms)
         .collect::<Vec<_>>()
         .join(" & ");
     let source = format!(
@@ -6896,15 +6861,20 @@ flow main() -> unit { relay(() => { println("rebound")?; return; }); }
 }
 
 #[test]
-fn unknown_rebound_callback_is_not_hidden_by_a_known_branch() {
+fn rebound_projected_callback_retains_symbolic_behavior_beside_a_known_branch() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
         r#"
-flow invoke(condition: bool, unknown: { action: () -> unit ![] }) -> unit {
-    var selected: () -> unit ![] = () => { return; };
-    if condition { selected = unknown.action; }
+type Callbacks = { next: () -> unit ![Console.stdout_write] };
+flow invoke(condition: bool, unknown: Callbacks) -> unit {
+    var selected: () -> unit ![Console.stdout_write] = () => { return; };
+    if condition { selected = unknown.next; }
     selected();
+}
+flow main() -> unit ![Console.stdout_write] {
+    let callbacks = Callbacks { next = () => { perform Console.stdout_write("visible"); } };
+    invoke(true, callbacks);
 }
 "#,
     ));
@@ -6913,11 +6883,18 @@ flow invoke(condition: bool, unknown: { action: () -> unit ![] }) -> unit {
     let types = etas_types::check_program(&hir);
     assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
     let output = check_program(&hir, &types);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let invoke = &output.facts.item_effects[&flow_item(&hir, "invoke")];
+    assert!(invoke.action_trace.has_parameter_calls(), "{invoke:?}");
+    let main = &output.facts.item_effects[&flow_item(&hir, "main")];
     assert!(
-        output.diagnostics.iter().any(|diagnostic| diagnostic.code
-            == DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)),
-        "{:?}",
-        output.diagnostics
+        main.requested_actions
+            .effects
+            .contains(&Effect::Action(ActionRef {
+                tag: CONSOLE_TAG,
+                action: CONSOLE_STDOUT_WRITE_ACTION,
+            })),
+        "{main:?}"
     );
 }
 
@@ -7766,12 +7743,12 @@ agent Reviewer(input: string) -> string {
 }
 
 #[test]
-fn check_program_rejects_agent_public_agentic_infer_row() {
+fn check_program_rejects_agent_public_agentic_row() {
     let parsed = etas_syntax::parse_program(etas_core::SourceFile::new(
         etas_core::SourceId(0),
         None,
         r#"
-agent Reviewer(input: Prompt) -> string ![Agentic.infer<Reviewer, string>] {
+agent Reviewer(input: Prompt) -> string ![Agentic] {
     return perform infer<string>(input);
 }
 "#,

@@ -386,7 +386,12 @@ flow main() -> unit { let value = Data.Entries.get("key"); return; }
     else {
         panic!("resource binding");
     };
-    assert!(!program.effects.item_effects.contains_key(&item));
+    assert!(
+        program.effects.item_effects[&item]
+            .requested_actions
+            .effects
+            .is_empty()
+    );
     assert_eq!(
         program.checked_call_reachability(root).unwrap(),
         BTreeSet::from([root])

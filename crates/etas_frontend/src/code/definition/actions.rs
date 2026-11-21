@@ -128,6 +128,53 @@ pub(super) fn native_signatures<'a>(
             bind(&mut uses, fact.action_symbol, action_ref(effect)?)?;
         }
     }
+    // Imported actions can occur in checked callback templates before their
+    // performed-action facts are instantiated at a call site.
+    let references = checked
+        .hir
+        .exprs
+        .iter()
+        .filter_map(|(_, expr)| match expr {
+            etas_hir::HirExpr::Perform { action, .. } => Some(action),
+            _ => None,
+        })
+        .chain(checked.hir.handler_arms.iter().map(|(_, arm)| &arm.action));
+    for action in references {
+        let etas_hir::ResolveResult::Resolved(symbol) = action.action_symbol else {
+            continue;
+        };
+        if !matches!(
+            checked.symbols.get(symbol).map(|data| &data.def),
+            Some(SymbolDef::Synthetic {
+                reason: etas_hir::SyntheticSymbolReason::ExternalEffectAction
+            })
+        ) {
+            continue;
+        }
+        let etas_hir::ResolveResult::Resolved(owner) = action.effect.path.resolution else {
+            return Err(invalid("external action has no checked effect owner"));
+        };
+        let Some(SymbolDef::ImportAlias { path, .. }) =
+            checked.symbols.get(owner).map(|data| &data.def)
+        else {
+            return Err(invalid("external action owner has no imported identity"));
+        };
+        let mut qualified = path.clone();
+        qualified.push(action.action.clone());
+        let reference = checked
+            .effect_registry
+            .action_by_name(&qualified.join("."))
+            .ok_or_else(|| invalid("external action has no checked registry binding"))?;
+        let owner = identities
+            .symbol(owner)
+            .ok_or_else(|| ProjectionError::MissingIdentity(path.join(".")))?;
+        if identities.effect_tag(reference.tag)? != owner {
+            return Err(invalid(
+                "external action registry owner disagrees with its imported identity",
+            ));
+        }
+        bind(&mut uses, symbol, reference)?;
+    }
     let mut declarations = BTreeSet::new();
     for (_, item) in checked.hir.items.iter() {
         match item {
@@ -177,7 +224,10 @@ pub(super) fn native_signatures<'a>(
                 .get(symbol)
                 .ok_or(ProjectionError::MissingSymbol(symbol))?;
             let SymbolDef::ImportAlias { path, .. } = &data.def else {
-                return Err(invalid("action signature has no checked native binding"));
+                return Err(invalid(&format!(
+                    "action signature has no checked native binding: {symbol:?} {:?}",
+                    data.def
+                )));
             };
             let descriptor = checked
                 .std_registry

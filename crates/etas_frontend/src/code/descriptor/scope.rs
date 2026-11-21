@@ -77,10 +77,55 @@ impl DefinitionDescriptorProjector<'_> {
         parameters: &[GenericDeclaration],
     ) -> Result<usize, ProjectionError> {
         if let Some(scope) = self.scopes.iter().position(|scope| scope.owner == owner) {
-            if self.scopes[scope].parameters != parameters {
+            let previous = self.scopes[scope].parameters.clone();
+            if previous.len() != parameters.len()
+                || previous
+                    .iter()
+                    .zip(parameters)
+                    .any(|(a, b)| a.name != b.name || a.effect != b.effect)
+            {
                 return Err(ProjectionError::Invalid(
                     "one definition identity has conflicting generic binders".into(),
                 ));
+            }
+            if previous
+                .iter()
+                .zip(parameters)
+                .any(|(a, b)| a.bounds != b.bounds)
+                && self.binder_contract(owner.clone(), &previous)?
+                    != self.binder_contract(owner.clone(), parameters)?
+            {
+                return Err(ProjectionError::Invalid(
+                    "one definition identity has conflicting generic bounds".into(),
+                ));
+            }
+            // A declaration can have both an imported signature and a linked
+            // source signature. Their local parameter IDs share one portable
+            // owner/position, while each checked type needs its scoped origin.
+            for (parameter, binder) in parameters
+                .iter()
+                .zip(self.scopes[scope].own_binders.clone())
+            {
+                if let Some(subject) = parameter.subject {
+                    if !matches!(
+                        self.checked.type_store.get(subject),
+                        Some(etas_types::Type::Var(_) | etas_types::Type::Named(_))
+                    ) {
+                        return Err(ProjectionError::Invalid(format!(
+                            "generic binder subject is not a parameter: {:?}",
+                            self.checked.type_store.get(subject)
+                        )));
+                    }
+                    if self.scopes[scope]
+                        .type_parameters
+                        .insert(subject, binder)
+                        .is_some_and(|old| old != binder)
+                    {
+                        return Err(ProjectionError::Invalid(
+                            "conflicting checked generic parameter identity".into(),
+                        ));
+                    }
+                }
             }
             return Ok(scope);
         }
@@ -135,5 +180,28 @@ impl DefinitionDescriptorProjector<'_> {
             });
         }
         Ok(scope)
+    }
+
+    fn binder_contract(
+        &self,
+        owner: GenericOwner,
+        parameters: &[GenericDeclaration],
+    ) -> Result<etas_code::CodeFingerprint, ProjectionError> {
+        use etas_code::descriptor::{PrimitiveInfo, SignatureInfo, TypeInfo};
+        // Compare portable declarations: linked Source and imported External
+        // spec references can name the same canonical bound.
+        let mut projection = Self::from_input(self.checked, self.identities, self.limits);
+        let scope = projection.callable_scope(owner, parameters)?;
+        let unit = projection.reserve_type()?;
+        projection.types[unit.0 as usize] = Some(TypeInfo::Primitive(PrimitiveInfo::Unit));
+        let root = projection.reserve_type()?;
+        projection.types[root.0 as usize] = Some(TypeInfo::Function(SignatureInfo {
+            generics: projection.scopes[scope].own_binders.clone(),
+            parameters: Vec::new(),
+            output: unit,
+            declared_output: None,
+            effects: None,
+        }));
+        Ok(projection.finish()?.type_fingerprint(root)?)
     }
 }

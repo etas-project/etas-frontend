@@ -366,7 +366,6 @@ pub(super) fn external_effect_summaries(
                 matches!(
                     value.ty.as_ref(),
                     Some(crate::ProjectExternalTypeInput::Function { .. })
-                        | Some(crate::ProjectExternalTypeInput::Handler { .. })
                 )
                 .then_some(&value.path)
             }))

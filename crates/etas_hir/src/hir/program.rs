@@ -58,6 +58,49 @@ pub struct HirAgentMethod {
 }
 
 impl HirProgram {
+    /// Whether an arm discards every payload and cannot resume the request.
+    /// Such an arm does not depend on the payload or result type of an overload.
+    pub fn handler_ignores_request_abi<E>(
+        &self,
+        arm: &crate::HirHandlerArm,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<bool, E> {
+        use crate::{HirPat, HirStmt, HirTreeChild};
+        if arm.continuation.is_some()
+            || !arm
+                .patterns
+                .iter()
+                .all(|pat| matches!(self.pats[*pat], HirPat::Wildcard { .. }))
+        {
+            return Ok(false);
+        }
+        let mut pending = vec![HirTreeChild::Block(arm.body)];
+        while let Some(node) = pending.pop() {
+            checkpoint()?;
+            match node {
+                HirTreeChild::Block(block) => {
+                    let block = &self.blocks[block];
+                    pending.extend(block.stmts.iter().copied().map(HirTreeChild::Stmt));
+                    pending.extend(block.final_expr.map(HirTreeChild::Expr));
+                }
+                HirTreeChild::Stmt(stmt) => {
+                    if matches!(self.stmts[stmt], HirStmt::Resume { .. }) {
+                        return Ok(false);
+                    }
+                    crate::for_each_stmt_child(self, stmt, |node| pending.push(node));
+                }
+                HirTreeChild::Expr(expr) => {
+                    crate::for_each_expr_child(self, expr, |node| pending.push(node));
+                }
+                HirTreeChild::HandlerArm(handler) => {
+                    pending.push(HirTreeChild::Block(self.handler_arms[handler].body));
+                }
+                HirTreeChild::Pattern(_) => (),
+            }
+        }
+        Ok(true)
+    }
+
     pub fn flow_overload_group(&self, symbol: crate::SymbolId) -> Option<&[crate::SymbolId]> {
         let direct = |symbol| {
             self.flow_overloads
