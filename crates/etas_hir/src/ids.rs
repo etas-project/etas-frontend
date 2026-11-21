@@ -1,4 +1,4 @@
-pub use etas_core::Arena;
+pub use crate::arena::Arena;
 
 etas_core::id_type!(HirModuleId);
 etas_core::id_type!(HirItemId);

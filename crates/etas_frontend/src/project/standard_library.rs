@@ -7,7 +7,8 @@ mod requests;
 
 use etas_hir::SymbolDef;
 use etas_types::{
-    TypeInterner, TypeOutput, TypeSubstitutionEngine, ty::TypeRelocationMaterializationInput,
+    TypeInterner, TypeOutput, TypeSubstitutionEngine,
+    ty::{TypeLookupIndex, TypeRelocationMaterializationInput},
 };
 
 use super::instantiation::{self, InstantiationError, NativeGenericArgument, NativeInstantiation};
@@ -26,27 +27,29 @@ impl StandardLibrary {
         &self,
         consumer: &mut CheckedProgramData,
     ) -> Result<(), String> {
-        let source = catalog(self.program.clone())?;
-        let target = catalog(Arc::new(consumer.clone()))?;
-        let correspondence =
-            NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?;
+        let _all = self.profile.span("std.consumer.public_abis", "std");
+        let source = {
+            let _phase = self.profile.span("std.consumer.body_catalog", "std");
+            catalog(self.program.clone())?
+        };
+        let target = {
+            let _phase = self.profile.span("std.consumer.caller_catalog", "std");
+            catalog(Arc::new(consumer.clone()))?
+        };
+        let correspondence = {
+            let _phase = self.profile.span("std.consumer.type_correspondence", "std");
+            NativeTypeCorrespondence::build(&source, &target).map_err(|e| e.to_string())?
+        };
         let mut callables = std::collections::BTreeSet::new();
-        for symbol in consumer.symbols.iter() {
-            if let SymbolDef::ImportAlias { path, .. } = &symbol.def
-                && let Some(binding) = consumer
-                    .std_registry
-                    .lookup_qualified(path)
-                    .and_then(|declaration| consumer.std_registry.body_binding(declaration.id))
-            {
+        for symbol in consumer.referenced_standard_symbols() {
+            if let Some(binding) = consumer.std_registry.body_binding(symbol) {
                 callables.insert(binding.callable.clone());
             }
         }
-        for method in consumer.types.methods.entries() {
-            if let etas_types::method::MethodTarget::External { identity } = &method.target {
-                let callable = etas_code::CallableId::method(identity.clone());
-                if source.item_owner(&callable).is_some() {
-                    callables.insert(callable);
-                }
+        for identity in consumer.referenced_standard_methods() {
+            let callable = etas_code::CallableId::method(identity);
+            if source.item_owner(&callable).is_some() {
+                callables.insert(callable);
             }
         }
         callables.extend(
@@ -57,6 +60,8 @@ impl StandardLibrary {
                 .map(|call| call.callable.clone()),
         );
         let mut interner = TypeInterner::from_store(consumer.type_store.as_ref().clone());
+        let source_types = &self.program.type_store;
+        let source_lookup = TypeLookupIndex::new(source_types);
         for callable in callables {
             let scope = callable
                 .as_method()
@@ -173,14 +178,8 @@ impl StandardLibrary {
                 output: signature.output,
                 effects: Some(row),
             };
-            let ty = self
-                .program
-                .type_store
-                .iter()
-                .find_map(|(id, ty)| {
-                    matches!(ty, etas_types::Type::Function(candidate) if candidate == &flow)
-                        .then_some(id)
-                })
+            let ty = source_lookup
+                .get(source_types, &etas_types::Type::Function(flow))
                 .ok_or("std body has no checked public function type")?;
             TypeSubstitutionEngine::relocating_materialized(TypeRelocationMaterializationInput {
                 source: &self.program.type_store,
@@ -192,7 +191,11 @@ impl StandardLibrary {
             .substitute(ty)
             .map_err(|e| format!("std public ABI {callable:?}: {e}"))?;
         }
-        consumer.type_store = Arc::new(interner.into_store());
+        // Relocation only interns additional types. Preserve the revision's
+        // shared store, and its definition indices, when the ABI already exists.
+        if interner.store().len() != consumer.type_store.len() {
+            consumer.type_store = Arc::new(interner.into_store());
+        }
         Ok(())
     }
 
@@ -203,6 +206,7 @@ impl StandardLibrary {
         self: &Arc<Self>,
         consumer: &mut CheckedProgramData,
     ) -> Result<Arc<Self>, String> {
+        let _link = self.profile.span("std.consumer.link", "std");
         loop {
             let before = (
                 consumer.type_store.len(),
@@ -280,10 +284,11 @@ impl StandardLibrary {
             .foreign_methods
             .into_iter()
             .filter(|application| {
-                self.metadata
-                    .methods
+                self.descriptors
+                    .headers
                     .iter()
-                    .any(|method| method.identity == application.identity)
+                    .flat_map(|headers| &headers.callables)
+                    .any(|header| header.id.as_method() == Some(&application.identity))
             })
             .collect::<Vec<_>>();
         let control_types = requests::collect(consumer)?;
@@ -705,5 +710,6 @@ fn catalog(program: crate::CheckedProgram) -> Result<DefinitionCatalog, String> 
         external_definitions: DefinitionOrigins::checked_external_definitions(&program)
             .map_err(|e| e.to_string())?,
     };
-    DefinitionCatalog::build(program, &origins, Default::default()).map_err(|e| e.to_string())
+    DefinitionCatalog::build_for_execution(program, &origins, Default::default())
+        .map_err(|e| e.to_string())
 }

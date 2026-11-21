@@ -4,29 +4,26 @@ use etas_types::Type;
 use super::{engine::EffectSemantics, state::EffectState};
 
 impl EffectSemantics<'_> {
-    pub(super) fn validate_callback_arguments(
-        &mut self,
-        call: HirExprId,
-        mut state: EffectState,
-    ) -> EffectState {
+    pub(super) fn validate_callback_arguments(&mut self, call: HirExprId, state: &mut EffectState) {
         let (parameters, arguments) = if let Some(method) =
             self.types.facts.checked_method_calls.get(&call)
         {
-            let parameters = method.signature.params.clone();
+            let parameters = &method.signature.params;
             let arguments = match self.checked_method_arguments(call) {
                 Ok(arguments) => arguments,
                 Err(error) => {
-                    return self.incomplete_at(
+                    self.mark_incomplete_at(
                         self.hir.exprs[call].span(&self.hir.blocks),
                         error.to_string(),
                         state,
                     );
+                    return;
                 }
             };
             (parameters, arguments)
         } else if let Some(HirExpr::Call { callee, args, .. }) = self.hir.exprs.get(call) {
             let parameters = if let Some(fact) = self.types.facts.std_intrinsic_calls.get(&call) {
-                fact.signature.params.clone()
+                &fact.signature.params
             } else if let Some(Type::Function(flow)) = self
                 .types
                 .facts
@@ -34,9 +31,9 @@ impl EffectSemantics<'_> {
                 .get(callee)
                 .and_then(|ty| self.types.store.get(*ty))
             {
-                flow.input.clone()
+                &flow.input
             } else {
-                return state;
+                return;
             };
             let arguments = args
                 .iter()
@@ -46,10 +43,10 @@ impl EffectSemantics<'_> {
                 .collect::<Vec<_>>();
             (parameters, arguments)
         } else {
-            return state;
+            return;
         };
 
-        for (parameter, argument) in parameters.into_iter().zip(arguments) {
+        for (parameter, argument) in parameters.iter().copied().zip(arguments) {
             let Some(Type::Function(expected)) = self.types.store.get(parameter) else {
                 continue;
             };
@@ -71,22 +68,24 @@ impl EffectSemantics<'_> {
             // Context may solve after collection. The shared value analysis also
             // follows aliases and captured/returned callable environments.
             let bound = self.row_from_type_ref(bound);
-            let summary = match self.latent_summary_for_expr(&state, argument, "callback") {
+            let summary = match self.latent_summary_for_expr(state, argument, "callback") {
                 Ok(summary) => summary,
                 Err(error) => {
-                    return self.incomplete_at(
+                    self.mark_incomplete_at(
                         self.hir.exprs[argument].span(&self.hir.blocks),
                         error.to_string(),
                         state,
                     );
+                    return;
                 }
             };
             if matches!(summary.support, crate::InterpreterSupport::Rejected(_)) {
-                return self.incomplete_at(
+                self.mark_incomplete_at(
                     self.hir.exprs[argument].span(&self.hir.blocks),
                     "callback effect contract requires a complete latent behavior summary",
                     state,
                 );
+                return;
             }
             let coverage = crate::EffectCoverage {
                 registry: self.registry,
@@ -103,6 +102,5 @@ impl EffectSemantics<'_> {
                 );
             }
         }
-        state
     }
 }

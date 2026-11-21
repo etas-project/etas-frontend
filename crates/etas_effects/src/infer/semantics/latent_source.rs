@@ -221,14 +221,7 @@ impl EffectSemantics<'_> {
                     Some(_) => return None,
                 },
                 Type::Nominal(_) | Type::Applied { .. } => {
-                    pending.push(
-                        etas_types::ty::applied_representation_in_store_indexed(
-                            &self.types.store,
-                            self.type_lookup(),
-                            ty,
-                        )
-                        .ok()??,
-                    );
+                    pending.push(self.applied_representation(ty).ok()??);
                 }
                 Type::Record(record) => pending.extend(record.fields.iter().map(|field| field.ty)),
                 Type::Tuple(elements) => pending.extend(elements),

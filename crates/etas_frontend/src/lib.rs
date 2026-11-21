@@ -63,7 +63,8 @@ pub use output::{
     ProjectExternalTypeInput, ProjectExternalTypeSpecSatisfactionInput, ProjectId, ProjectInput,
     ProjectOutput, ProjectStableSourceKeyInput, ProjectStandaloneSourcePackage,
     ProjectToolBindingInput, SOURCE_FILE_UNIT_KIND, SharedEffectOutput, SourcePackageOriginError,
-    StandardLibrary, StandardLibraryMode, TopLevelLetFact, TopLevelLetFacts, UnitId,
+    StandardLibrary, StandardLibraryBehaviors, StandardLibraryInterface, StandardLibraryMode,
+    TopLevelLetFact, TopLevelLetFacts, UnitId,
 };
 pub use package_metadata::{
     PackageMetadataArtifact, PackageMetadataBinInput, PackageMetadataBuildInput,
@@ -84,8 +85,9 @@ pub use project::{
     ParsedSource, ProjectSourceLoadOptions, ProjectSourceLoadScope, ProjectSourceLoader, ReExport,
     ReachabilityFacts, ResolvedImport, ResolvedImports, ResolvedModulePath, ResolvedModuleTarget,
     ResolvedPaths, ResolvedWildcardImport, RuntimeSourceReason, RuntimeSourceReasonKind,
-    RuntimeSourceRequirement, RuntimeSourceRequirements, SourceBundle, SourceFile, SourceInput,
-    SourceKind, SourceLoader, SourceSet, UnitKind, UnitNode, UnitTarget, UnitTree,
+    RuntimeSourceRequirement, RuntimeSourceRequirements, SemanticDependency, SourceBundle,
+    SourceFile, SourceInput, SourceKind, SourceLoader, SourceSet, UnitKind, UnitNode, UnitTarget,
+    UnitTree,
 };
 pub use residual::{
     CheckedResidualApplication, CheckedResidualBinding, CheckedResidualPlan, CheckedResidualPlans,

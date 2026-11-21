@@ -18,20 +18,20 @@ use crate::{
     },
 };
 
-#[derive(etas_core::RetainedSize)]
+#[derive(Clone, etas_core::RetainedSize)]
 pub(super) struct NativeCallableSlot {
     pub canonical: CallableId,
     pub item: HirItemId,
     pub private_to: Option<HirModuleId>,
 }
 
-#[derive(etas_core::RetainedSize)]
+#[derive(Clone, etas_core::RetainedSize)]
 pub(super) struct CatalogCallable {
     pub header: CallableHeaderInfo,
     pub native: Arc<NativeCallableSlot>,
 }
 
-#[derive(etas_core::RetainedSize)]
+#[derive(Clone, etas_core::RetainedSize)]
 pub(super) struct CatalogAgent {
     pub header: AgentHeaderInfo,
     pub private_to: Option<HirModuleId>,
@@ -46,6 +46,12 @@ pub enum StaticReflectionView<'a> {
 #[derive(etas_core::RetainedSize)]
 pub struct DefinitionCatalog {
     pub(super) checked: CheckedProgram,
+    pub(super) data: Arc<DefinitionCatalogData>,
+}
+
+/// Immutable definition indices shared by views of the same checked revision.
+#[derive(Clone, etas_core::RetainedSize)]
+pub struct DefinitionCatalogData {
     pub(super) origins: Arc<DefinitionOrigins>,
     pub(super) identities: DefinitionIdentityIndex,
     pub(super) graph: DescriptorGraph,
@@ -61,6 +67,19 @@ pub struct DefinitionCatalog {
         etas_code::descriptor::ParameterDefaultInfo,
         crate::code::parameter_defaults::ParameterDefaultUnit,
     >,
+}
+
+impl std::ops::Deref for DefinitionCatalog {
+    type Target = DefinitionCatalogData;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl std::ops::DerefMut for DefinitionCatalog {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.data)
+    }
 }
 
 impl DefinitionCatalog {
@@ -445,7 +464,18 @@ impl DefinitionCatalog {
         origins: &DefinitionOrigins,
         limits: DescriptorLimits,
     ) -> Result<Self, ProjectionError> {
-        super::collect::build(checked, origins, limits)
+        super::cache::build(checked, origins, limits, false)
+    }
+
+    /// Link the bodies retained by the semantic dependency closure. Reflection
+    /// consumers continue to receive the complete declaration catalog.
+    pub fn build_for_execution(
+        checked: CheckedProgram,
+        origins: &DefinitionOrigins,
+        limits: DescriptorLimits,
+    ) -> Result<Self, ProjectionError> {
+        let execution = !checked.requires_definition_catalog();
+        super::cache::build(checked, origins, limits, execution)
     }
 
     pub fn descriptors(&self) -> &DescriptorGraph {
@@ -1005,7 +1035,7 @@ impl DefinitionCatalog {
                     ));
                 }
                 record.header.id = selected_method_id(callable, spec)?;
-                if let Some(previous) = self
+                if let Some(previous) = Arc::make_mut(&mut self.data)
                     .external_callables
                     .insert(record.header.id.clone(), record.clone())
                     && previous != record
@@ -1077,7 +1107,9 @@ impl DefinitionCatalog {
                 },
                 native: record.native.clone(),
             };
-            if let Some(previous) = self.callables.insert(selected.clone(), record)
+            if let Some(previous) = Arc::make_mut(&mut self.data)
+                .callables
+                .insert(selected.clone(), record)
                 && previous.native.item
                     != self
                         .checked
@@ -1091,7 +1123,9 @@ impl DefinitionCatalog {
                     "selected callable identity has conflicting body owners".into(),
                 ));
             }
-            self.selected_bindings.insert((symbol, spec), selected);
+            Arc::make_mut(&mut self.data)
+                .selected_bindings
+                .insert((symbol, spec), selected);
         }
         Ok(())
     }

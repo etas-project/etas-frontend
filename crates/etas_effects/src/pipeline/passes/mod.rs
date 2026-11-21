@@ -29,8 +29,10 @@ pub(super) use build_registry::BuildRegistryPass;
 mod collect_units;
 pub(super) use collect_units::CollectUnitsPass;
 mod analyze_memory_provenance;
+mod replay_summaries;
 mod solve_summaries;
 pub(super) use analyze_memory_provenance::AnalyzeMemoryProvenancePass;
+use replay_summaries::{ReplayPreparedFactsPass, ReplaySummariesPass};
 pub(super) use solve_summaries::SolveSummariesPass;
 mod materialize_facts;
 pub(super) use materialize_facts::MaterializeFactsPass;
@@ -51,14 +53,35 @@ pub(super) use validate_trace_spec::ValidateTraceSpecPass;
 mod emit_output;
 pub(super) use emit_output::EmitOutputPass;
 
-pub(super) fn build_effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>> {
-    Pipeline::new("effects.run")
+pub(super) fn build_effect_pipeline<'a>(replay: bool) -> Pipeline<EffectPipelineContext<'a>> {
+    let pipeline = Pipeline::new("effects.run")
         .pass(BuildRegistryPass)
         .pass(BindFrozenCallsPass)
-        .pass(CollectUnitsPass)
-        .pass(AnalyzeMemoryProvenancePass)
-        .pass(SolveSummariesPass)
-        .pass(MaterializeFactsPass)
+        .pass(CollectUnitsPass);
+    let pipeline = if replay {
+        pipeline.pass(ReplaySummariesPass)
+    } else {
+        pipeline
+            .pass(AnalyzeMemoryProvenancePass)
+            .pass(SolveSummariesPass)
+    };
+    finish_effect_pipeline(pipeline.pass(MaterializeFactsPass))
+}
+
+pub(super) fn build_prepared_effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>> {
+    finish_effect_pipeline(
+        Pipeline::new("effects.run")
+            .pass(BuildRegistryPass)
+            .pass(BindFrozenCallsPass)
+            .pass(CollectUnitsPass)
+            .pass(ReplayPreparedFactsPass),
+    )
+}
+
+fn finish_effect_pipeline<'a>(
+    pipeline: Pipeline<EffectPipelineContext<'a>>,
+) -> Pipeline<EffectPipelineContext<'a>> {
+    pipeline
         .pass(ValidateContractsPass)
         .pass(MaterializeTraceSpecModelsPass)
         .pass(AnalyzeTraceSpecMonitorsPass)

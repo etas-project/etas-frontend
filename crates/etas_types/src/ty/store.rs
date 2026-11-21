@@ -102,8 +102,22 @@ impl Hasher for TypeHash {
     }
 }
 
+impl Serialize for SharedTypeBase {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        TypeStore::with_base(self.clone()).serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for SharedTypeBase {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        TypeStore::deserialize(deserializer).map(Self::new)
+    }
+}
+
 impl SharedTypeBase {
     pub fn new(store: TypeStore) -> Self {
+        if let Some(base) = store.unchanged_base() {
+            return base.clone();
+        }
         let nominal_identities = store.nominal_identities();
         let parameter_identities = store.parameter_identities();
         let types = if store.base.is_none() {
@@ -147,6 +161,9 @@ impl SharedTypeBase {
             .map_err(TypeBaseBuildError::Interrupted)?;
         if store.len() > max_types {
             return Err(TypeBaseBuildError::TypeLimit { limit: max_types });
+        }
+        if let Some(base) = store.unchanged_base() {
+            return Ok(base.clone());
         }
         let mut types = Vec::with_capacity(store.len());
         let mut nominal_identities = BTreeMap::new();
@@ -242,32 +259,49 @@ pub struct TypeStore {
 /// Program-local lookup only. Hash collisions are resolved by full Type equality.
 /// The index borrows no mutable interner and does not copy aggregate type nodes.
 pub struct TypeLookupIndex {
+    base: Option<SharedTypeBase>,
     first: HashMap<u64, TypeId>,
     collisions: HashMap<u64, Vec<TypeId>>,
+    indexed_len: usize,
 }
 
 impl TypeLookupIndex {
     pub fn new(store: &TypeStore) -> Self {
-        let mut first = HashMap::with_capacity(store.len());
-        let mut collisions = HashMap::<u64, Vec<TypeId>>::new();
-        for (id, ty) in store.iter() {
+        let mut index = Self {
+            base: store.base.clone(),
+            first: HashMap::with_capacity(store.local_types().len()),
+            collisions: HashMap::new(),
+            indexed_len: store.base_len(),
+        };
+        index.include_appended_types(store);
+        index
+    }
+
+    /// Extend the index after interning new types in the same store. Indexed
+    /// types, including their canonical identities, must remain unchanged.
+    pub fn include_appended_types(&mut self, store: &TypeStore) {
+        for index in self.indexed_len..store.len() {
+            let id = TypeId(index as u32);
             if store.nominal_identity(id).is_some() || store.parameter_identity(id).is_some() {
                 continue;
             }
-            let key = type_hash(ty);
-            match first.entry(key) {
+            let key = type_hash(store.get(id).expect("type index in the store"));
+            match self.first.entry(key) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(id);
                 }
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    collisions.entry(key).or_default().push(id);
+                    self.collisions.entry(key).or_default().push(id);
                 }
             }
         }
-        Self { first, collisions }
+        self.indexed_len = store.len();
     }
 
     pub fn get(&self, store: &TypeStore, ty: &Type) -> Option<TypeId> {
+        if let Some(id) = self.base.as_ref().and_then(|base| base.0.ids.get(ty)) {
+            return Some(*id);
+        }
         let key = type_hash(ty);
         let first = *self.first.get(&key)?;
         if store.get(first) == Some(ty) {
@@ -301,6 +335,14 @@ fn identity_matches_type(identity: &etas_code::DefinitionKey, ty: &Type) -> bool
 impl TypeStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn unchanged_base(&self) -> Option<&SharedTypeBase> {
+        self.base.as_ref().filter(|_| {
+            self.types.is_empty()
+                && self.nominal_identities.is_empty()
+                && self.parameter_identities.is_empty()
+        })
     }
 
     pub fn with_base(base: SharedTypeBase) -> Self {

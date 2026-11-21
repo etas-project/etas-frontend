@@ -147,10 +147,14 @@ impl BodyArtifactReuseIndex {
     }
 
     pub fn dependencies(&self) -> Vec<ArtifactKey> {
-        self.records
+        let mut keys = self
+            .records
             .iter()
             .map(BodyArtifactReuseIndexRecord::artifact_key)
-            .collect()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+        keys
     }
 }
 

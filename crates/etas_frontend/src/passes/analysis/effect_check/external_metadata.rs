@@ -18,14 +18,13 @@ use crate::{
 pub(super) fn external_implementations(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
-    std_registry: &etas_std::StdRegistry,
+    contracts: &mut ExternalContractIndex<'_>,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<
     Vec<etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>>,
     String,
 > {
-    let mut contracts = ExternalContractIndex::new(environment, std_registry)?;
     let mut result: Vec<
         etas_effects::AnchoredExternalMetadata<etas_effects::ExternalSpecImplementationMetadata>,
     > = Vec::new();
@@ -292,7 +291,7 @@ pub(super) fn tool_provider_bindings(
 pub(super) fn external_effect_summaries(
     environment: &ProjectEnvironmentInput,
     types: &TypeOutput,
-    std_registry: &etas_std::StdRegistry,
+    contracts: &mut ExternalContractIndex<'_>,
     anchors: &ExternalImportAnchorIndex,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<
@@ -301,7 +300,6 @@ pub(super) fn external_effect_summaries(
 > {
     let mut summaries = Vec::new();
     let mut seen = HashSet::<(Option<String>, Vec<String>)>::new();
-    let mut contracts = ExternalContractIndex::new(environment, std_registry)?;
     for metadata in &environment.external_public_metadata {
         if anchors.package_span(metadata.package).is_none() {
             continue;
@@ -398,7 +396,7 @@ type ContractCandidate<'a> = (
     &'a etas_code::descriptor::CallableHeaderInfo,
 );
 
-struct ExternalContractIndex<'a> {
+pub(super) struct ExternalContractIndex<'a> {
     paths: HashMap<crate::ExternalPackageId, HashMap<Vec<String>, &'a etas_code::DefinitionKey>>,
     candidates: BTreeMap<etas_code::CallableId, Vec<ContractCandidate<'a>>>,
     graphs: HashMap<usize, Arc<etas_code::descriptor::DescriptorGraphInput>>,
@@ -407,7 +405,7 @@ struct ExternalContractIndex<'a> {
 }
 
 impl<'a> ExternalContractIndex<'a> {
-    fn new(
+    pub(super) fn new(
         environment: &'a ProjectEnvironmentInput,
         std_registry: &etas_std::StdRegistry,
     ) -> Result<Self, String> {
@@ -443,7 +441,7 @@ impl<'a> ExternalContractIndex<'a> {
                     .map(|binding| (binding.path(), &binding.definition))
                     .collect(),
             );
-            if let Some(set) = &origin.descriptors
+            if let Some(set) = origin.descriptors.as_deref()
                 && let Some(headers) = &set.headers
             {
                 for header in &headers.callables {

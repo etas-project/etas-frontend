@@ -14,13 +14,13 @@ use crate::{HirBlockId, HirExprId, HirItemId, HirModuleId, ResolveResult, ScopeI
 
 #[derive(Clone, Debug, Default, etas_core::RetainedSize, serde::Serialize, serde::Deserialize)]
 pub struct ScopeTree {
-    scopes: Vec<Scope>,
+    scopes: crate::Arena<ScopeId, Scope>,
 }
 
 impl ScopeTree {
     pub fn alloc(&mut self, parent: Option<ScopeId>, owner: ScopeOwner, span: Span) -> ScopeId {
         let id = ScopeId(self.scopes.len().min(u32::MAX as usize) as u32);
-        self.scopes.push(Scope {
+        self.scopes.alloc(Scope {
             id,
             parent,
             owner,
@@ -51,7 +51,7 @@ impl ScopeTree {
         name: String,
         symbol: SymbolId,
     ) -> Option<SymbolId> {
-        let scope = &mut self.scopes[scope.index()];
+        let scope = &mut self.scopes[scope];
         let entry = scope.names.entry((namespace, name)).or_default();
         let previous = entry.first().copied();
         entry.push(symbol);
@@ -71,7 +71,7 @@ impl ScopeTree {
         namespace: ScopeNamespace,
         name: &str,
     ) -> Option<SymbolId> {
-        self.scopes[scope.index()]
+        self.scopes[scope]
             .names
             .get(&(namespace, name.to_owned()))
             .and_then(|symbols| match symbols.as_slice() {
@@ -96,7 +96,7 @@ impl ScopeTree {
     ) -> ResolveResult {
         let mut current = Some(scope);
         while let Some(scope_id) = current {
-            let scope = &self.scopes[scope_id.index()];
+            let scope = &self.scopes[scope_id];
             if let Some(symbols) = scope.names.get(&(namespace, name.to_owned())) {
                 return match symbols.as_slice() {
                     [symbol] => ResolveResult::Resolved(*symbol),
@@ -110,11 +110,20 @@ impl ScopeTree {
     }
 
     pub fn get(&self, id: ScopeId) -> Option<&Scope> {
-        self.scopes.get(id.index())
+        self.scopes.get(id)
+    }
+
+    /// Exclusive ID bound; linked scopes can leave holes below this limit.
+    pub fn id_limit(&self) -> usize {
+        self.scopes.len()
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&Scope) -> bool) {
+        self.scopes.retain(|_, scope| keep(scope));
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Scope> {
-        self.scopes.iter()
+        self.scopes.iter().map(|(_, scope)| scope)
     }
 }
 

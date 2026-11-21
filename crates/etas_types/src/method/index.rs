@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::{Type, TypeId, TypeStore};
+use crate::{Type, TypeId, TypeStore, ty::TypeLookupIndex};
 
 use super::{MethodEvidence, MethodSignatureFact, MethodTarget};
 
@@ -122,6 +122,18 @@ impl MethodIndex {
         args: &[TypeId],
         member: &crate::SpecMethodIdentity,
     ) -> Result<Option<MethodWitness<'_>>, String> {
+        self.resolve_witness_with_lookup(store, None, facts, receiver, args, member)
+    }
+
+    fn resolve_witness_with_lookup(
+        &self,
+        store: &TypeStore,
+        lookup: Option<&TypeLookupIndex>,
+        facts: &crate::SpecFacts,
+        receiver: TypeId,
+        args: &[TypeId],
+        member: &crate::SpecMethodIdentity,
+    ) -> Result<Option<MethodWitness<'_>>, String> {
         let Some(candidates) = self
             .witness_patterns
             .get(&receiver_head(store, receiver))
@@ -154,8 +166,8 @@ impl MethodIndex {
             ) {
                 continue;
             }
-            let Some(actual) = crate::solver::spec_solver::implementation::substitute(
-                store, &bindings, parameters,
+            let Some(actual) = crate::solver::spec_solver::implementation::substitute_with_lookup(
+                store, lookup, &bindings, parameters,
             ) else {
                 continue;
             };
@@ -187,6 +199,27 @@ impl MethodIndex {
         facts: &crate::SpecFacts,
         receiver: TypeId,
     ) -> Result<Vec<MethodWitness<'_>>, String> {
+        self.witnesses_for_receiver_with_lookup(store, None, facts, receiver)
+    }
+
+    /// Enumerate witnesses using a shared index for the immutable checked store.
+    pub fn witnesses_for_receiver_indexed(
+        &self,
+        store: &TypeStore,
+        lookup: &TypeLookupIndex,
+        facts: &crate::SpecFacts,
+        receiver: TypeId,
+    ) -> Result<Vec<MethodWitness<'_>>, String> {
+        self.witnesses_for_receiver_with_lookup(store, Some(lookup), facts, receiver)
+    }
+
+    fn witnesses_for_receiver_with_lookup(
+        &self,
+        store: &TypeStore,
+        lookup: Option<&TypeLookupIndex>,
+        facts: &crate::SpecFacts,
+        receiver: TypeId,
+    ) -> Result<Vec<MethodWitness<'_>>, String> {
         let Some(members) = self.witness_patterns.get(&receiver_head(store, receiver)) else {
             return Ok(Vec::new());
         };
@@ -206,15 +239,15 @@ impl MethodIndex {
                 ) else {
                     continue;
                 };
-                let Some(args) =
-                    crate::solver::spec_solver::implementation::substitute(store, &bindings, args)
-                else {
+                let Some(args) = crate::solver::spec_solver::implementation::substitute_with_lookup(
+                    store, lookup, &bindings, args,
+                ) else {
                     continue;
                 };
                 if visited.insert((member, args.clone())) {
-                    if let Some(witness) =
-                        self.resolve_witness(store, facts, receiver, &args, member)?
-                    {
+                    if let Some(witness) = self.resolve_witness_with_lookup(
+                        store, lookup, facts, receiver, &args, member,
+                    )? {
                         result.push(witness);
                     }
                 }

@@ -63,7 +63,7 @@ pub(in crate::pipeline) enum EmptyCollectionKind {
     RecordOrMap,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize)]
 pub struct ProvisionalFacts {
     pub trusted_literals: std::collections::BTreeSet<HirExprId>,
     pub declared_call_arguments: HashMap<HirExprId, crate::ArgumentBinding>,

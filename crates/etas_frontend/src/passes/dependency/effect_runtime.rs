@@ -80,8 +80,7 @@ fn complete(context: &mut ProjectContext) -> Result<(), String> {
         }
         let key = method.identity.implementation();
         if context
-            .standard_library
-            .as_ref()
+            .standard_library_interface()
             .is_some_and(|library| library.origins.package == key.package())
         {
             // The selected SDK already carries this implementation's checked

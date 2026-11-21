@@ -76,7 +76,9 @@ pub struct DefinitionOrigins {
     pub external_definitions: BTreeMap<Vec<String>, DefinitionKey>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, etas_core::RetainedSize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
 pub struct SourceModuleOrigin {
     package: PackageKey,
     module: Vec<String>,
@@ -205,6 +207,9 @@ impl DefinitionOrigins {
     pub fn checked_source_modules(
         checked: &CheckedProgramData,
     ) -> Result<HashMap<HirModuleId, SourceModuleOrigin>, ProjectionError> {
+        if let Some(origins) = checked.definition_sources.installed_origins() {
+            return Ok(origins.clone());
+        }
         Self::source_modules_from_inputs(
             &checked.hir,
             &checked.module_index,
@@ -601,7 +606,7 @@ pub(crate) enum BoundDeclaration {
     Standard(etas_std::StdSpecRef),
 }
 
-#[derive(etas_core::RetainedSize)]
+#[derive(Clone, etas_core::RetainedSize)]
 pub struct DefinitionIdentityIndex {
     standard_package: PackageKey,
     module_packages: HashMap<HirModuleId, PackageKey>,
@@ -618,7 +623,7 @@ pub struct DefinitionIdentityIndex {
     effect_tags: HashMap<etas_effects::EffectTagId, DefinitionKey>,
 }
 
-#[derive(etas_core::RetainedSize)]
+#[derive(Clone, etas_core::RetainedSize)]
 struct MethodPath {
     inherent: bool,
     callable: Option<CallableId>,

@@ -258,6 +258,15 @@ fn walk_with_mode<'view, 'hir, V>(
                     .expect("handler arm id should exist in HIR tree");
                 visitor.enter_handler_arm(arm);
                 stack.push(WalkFrame::ExitHandlerArm(arm_id));
+                push_reversed(
+                    &mut stack,
+                    arm.data()
+                        .patterns
+                        .iter()
+                        .copied()
+                        .chain(arm.data().continuation)
+                        .map(WalkFrame::EnterPattern),
+                );
                 if bodies == BodyTraversal::Owned {
                     push_reversed(
                         &mut stack,

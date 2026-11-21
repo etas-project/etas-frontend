@@ -1,4 +1,5 @@
 pub mod concurrency;
+pub(crate) mod dependencies;
 pub mod effects;
 pub mod enums;
 pub mod existentials;
@@ -52,6 +53,12 @@ use crate::TypeId;
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct TypeFacts {
+    /// Direct type dependencies emitted with each solved body, before packaging.
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub body_spec_dependencies: HashMap<HirItemId, std::collections::BTreeSet<SymbolId>>,
+    #[serde(default, serialize_with = "etas_utils::serde_ordered::map")]
+    pub body_type_dependencies: HashMap<HirItemId, std::collections::BTreeSet<TypeId>>,
+
     /// Calls to the installed Trusted constructor whose payload is a source string literal.
     #[serde(default)]
     pub trusted_literals: std::collections::BTreeSet<HirExprId>,
@@ -270,5 +277,50 @@ impl From<&TypeFacts> for SpecFacts {
             std_impls: facts.std_spec_impls.clone(),
             std_spec_aliases: facts.std_spec_aliases.clone(),
         }
+    }
+}
+
+impl TypeFacts {
+    /// External method roots selected by checked calls, values and witnesses.
+    pub fn referenced_external_methods(&self) -> std::collections::BTreeSet<etas_code::MethodId> {
+        let targets = self
+            .checked_method_calls
+            .values()
+            .map(|call| &call.target)
+            .chain(
+                self.bound_method_values
+                    .values()
+                    .map(|value| &value.method.target),
+            )
+            .chain(
+                self.existential_packs
+                    .values()
+                    .flat_map(|pack| &pack.witnesses)
+                    .map(|witness| &witness.target),
+            )
+            .collect::<Vec<_>>();
+        let mut methods = targets
+            .iter()
+            .filter_map(|target| match target {
+                crate::method::MethodTarget::External { identity } => Some(identity.clone()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if targets
+            .iter()
+            .any(|target| matches!(target, crate::method::MethodTarget::BoundSpec { .. }))
+        {
+            methods.extend(
+                self.methods
+                    .entries()
+                    .filter_map(|method| match &method.target {
+                        crate::method::MethodTarget::External { identity } => {
+                            Some(identity.clone())
+                        }
+                        _ => None,
+                    }),
+            );
+        }
+        methods
     }
 }

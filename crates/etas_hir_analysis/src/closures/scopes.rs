@@ -27,7 +27,7 @@ enum Visit {
 
 impl ClosureScopes {
     pub fn build(scopes: &ScopeTree) -> Result<Self, String> {
-        let count = scopes.iter().count();
+        let count = scopes.id_limit();
         let mut children = vec![Vec::new(); count];
         let mut lambdas = vec![None; count];
         let mut pending = Vec::new();
@@ -86,7 +86,10 @@ impl ClosureScopes {
         }
         // Every node has at most one parent. Unvisited nodes therefore belong to
         // a component with a parent cycle, not an additional valid tree root.
-        if entries.iter().any(Option::is_none) {
+        if scopes
+            .iter()
+            .any(|scope| entries[scope.id.index()].is_none())
+        {
             return Err("cyclic closure scope ancestry".into());
         }
         Ok(Self { entries })

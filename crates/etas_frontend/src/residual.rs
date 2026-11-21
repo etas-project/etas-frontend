@@ -206,6 +206,15 @@ impl etas_core::memory::RetainedSize for CheckedResidualPlans {
 }
 
 impl CheckedResidualPlans {
+    /// An installation may publish this only after proving that no residual
+    /// plan is required by the archived program.
+    pub(crate) fn empty_for_target(target: ResidualTargetCapabilities) -> Self {
+        Self {
+            target,
+            ..Self::default()
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.plans.is_empty()
     }

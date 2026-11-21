@@ -2,6 +2,7 @@ use etas_core::Span;
 use etas_hir::{
     HirArg, HirBlockId, HirExprId, HirGenericArg, HirHandlerArmId, HirStmtId, ResolvedActionRef,
 };
+use etas_utils::{JoinSemiLattice, PartialOrder};
 
 use crate::intraprocedural::{
     AnalysisStep, Control, HandleParts, HirAnalysisSemantics, UnhandledReason,
@@ -12,7 +13,7 @@ use super::{
     InterproceduralSemantics, ResolvedCallee, SummaryStore, UnitContext,
 };
 
-pub(crate) struct CallGraphCollectionAdapter<'a, S>
+pub(super) struct CallGraphCollectionAdapter<'a, S>
 where
     S: InterproceduralSemantics
         + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
@@ -20,6 +21,27 @@ where
     semantics: &'a mut S,
     context: UnitContext<S::Unit>,
     graph: &'a mut CallGraph<S::Unit>,
+    bottom: <S as InterproceduralSemantics>::Domain,
+}
+
+/// Call discovery tracks control-flow exits and never updates analysis facts.
+#[derive(Clone, Copy)]
+pub(super) struct CallGraphDiscoveryState;
+
+impl PartialOrder for CallGraphDiscoveryState {
+    fn less_equal(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl JoinSemiLattice for CallGraphDiscoveryState {
+    fn bottom() -> Self {
+        Self
+    }
+
+    fn join_assign(&mut self, _other: &Self) -> bool {
+        false
+    }
 }
 
 impl<'a, S> CallGraphCollectionAdapter<'a, S>
@@ -36,6 +58,7 @@ where
             semantics,
             context: UnitContext::new(unit, AnalysisPhase::DiscoverCalls),
             graph,
+            bottom: <S as InterproceduralSemantics>::Domain::bottom(),
         }
     }
 }
@@ -76,7 +99,7 @@ where
     S: InterproceduralSemantics
         + HirAnalysisSemantics<Domain = <S as InterproceduralSemantics>::Domain>,
 {
-    type Domain = <S as InterproceduralSemantics>::Domain;
+    type Domain = CallGraphDiscoveryState;
 
     fn analysis_context(&self) -> &crate::HirAnalysisContext {
         self.semantics.analysis_context()
@@ -137,7 +160,7 @@ where
             self.context,
             call,
             callee,
-            &state,
+            &self.bottom,
         ) {
             CallTarget::Direct(callee_unit) => {
                 self.graph.add_call(self.context.unit, callee_unit);
@@ -158,7 +181,7 @@ where
             self.semantics,
             self.context,
             expr,
-            &state,
+            &self.bottom,
         ) {
             self.graph.add_call(self.context.unit, target);
         }
@@ -171,9 +194,9 @@ where
         _span: Span,
         state: Self::Domain,
     ) -> AnalysisStep<Self::Domain> {
-        if let Some(target) = self
-            .semantics
-            .spec_method_call_target(self.context, expr, &state)
+        if let Some(target) =
+            self.semantics
+                .spec_method_call_target(self.context, expr, &self.bottom)
         {
             self.graph.add_call(self.context.unit, target);
         }

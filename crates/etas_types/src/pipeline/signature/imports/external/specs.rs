@@ -100,6 +100,10 @@ pub(super) fn prepare(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatu
             }
         }
     }
+    bind_aliases(ctx, input);
+}
+
+pub(super) fn bind_aliases(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatureInput) {
     for binding in input
         .symbol_bindings
         .iter()

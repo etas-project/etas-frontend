@@ -34,11 +34,13 @@ impl DefinitionCatalog {
             let SymbolTypeFact::Agent { signature } = fact else {
                 continue;
             };
-            let Some(identity) = self.identities.symbol(*symbol) else {
+            let Some(identity) = self.identities.symbol(*symbol).cloned() else {
                 continue;
             };
-            if self.agents.contains_key(identity) {
-                self.agent_bindings.insert(*symbol, identity.clone());
+            if self.agents.contains_key(&identity) {
+                Arc::make_mut(&mut self.data)
+                    .agent_bindings
+                    .insert(*symbol, identity.clone());
             } else {
                 pending.insert(identity.clone(), signature.component);
             }
@@ -121,7 +123,9 @@ impl DefinitionCatalog {
                     {
                         return Err(invalid("external agent method has conflicting definitions"));
                     }
-                    self.external_callables.insert(id.clone(), external);
+                    Arc::make_mut(&mut self.data)
+                        .external_callables
+                        .insert(id.clone(), external);
                 }
                 let selected_snapshots = methods
                     .keys()
@@ -151,15 +155,19 @@ impl DefinitionCatalog {
                         "external agent has conflicting portable definitions",
                     ));
                 }
-                self.external_agents.insert(header.identity.clone(), record);
+                Arc::make_mut(&mut self.data)
+                    .external_agents
+                    .insert(header.identity.clone(), record);
             }
         }
         for (symbol, fact) in &self.checked.types.symbol_types {
             if matches!(fact, SymbolTypeFact::Agent { .. })
-                && let Some(identity) = self.identities.symbol(*symbol)
-                && self.external_agents.contains_key(identity)
+                && let Some(identity) = self.identities.symbol(*symbol).cloned()
+                && self.external_agents.contains_key(&identity)
             {
-                self.agent_bindings.insert(*symbol, identity.clone());
+                Arc::make_mut(&mut self.data)
+                    .agent_bindings
+                    .insert(*symbol, identity.clone());
             }
         }
         for fact in self.checked.checked_reflections().values() {

@@ -4,6 +4,9 @@ mod external_metadata;
 pub(super) mod residual_identity;
 mod task_rows;
 
+use std::sync::Arc;
+
+use etas_effects::pipeline::EffectAnalysisMode;
 use etas_utils::{
     ArtifactSet, Pass, PassContext, PassDescriptor, PassKind, PassManager, PassResult,
     PreservedArtifacts,
@@ -16,6 +19,7 @@ use self::external_metadata::{
     tool_provider_bindings,
 };
 use crate::incremental::CheckScope;
+use crate::library_hir::{ArchivedEffectTypes, LibraryEffectAnalysisMode, PreparedLibraryEffects};
 use crate::passes::artifacts::{
     ANALYSIS_REACHABILITY_FACTS, EFFECT_OUTPUT, HIR_OUTPUT, MODULE_CATALOG, MODULE_INDEX,
     PARSED_SOURCE_SET, PREPARED_EFFECT_REGISTRY, PROJECT_ENTRY, RESOLVED_IMPORTS, SIGNATURE_FACTS,
@@ -209,6 +213,10 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
         _pass_context: &PassContext<ProjectContext>,
         manager: &mut PassManager<ProjectContext>,
     ) -> PassResult {
+        if let Err(error) = context.load_standard_method_behaviors() {
+            return PassResult::failed(error);
+        }
+
         // A source-library bundle requires valid declarations and types before
         // whole-library effect/provenance analysis can produce usable facts.
         if context.input.options.standard_library_mode
@@ -228,14 +236,61 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                 |candidate| candidate.descriptor_limits,
             )
             .max_nodes;
+        let library_analysis = context.library_effect_analysis.clone();
+        let mut capture_types = None;
+        let analysis_mode = match &library_analysis {
+            None => EffectAnalysisMode::Compute,
+            Some(LibraryEffectAnalysisMode::Capture(_)) => {
+                capture_types = context.types.clone();
+                EffectAnalysisMode::Compute
+            }
+            Some(LibraryEffectAnalysisMode::Replay(snapshot)) => {
+                if let Some(types) = &snapshot.types {
+                    context.types = Some(etas_types::TypeOutput {
+                        facts: types.facts.clone(),
+                        store: types.store.clone(),
+                        diagnostics: Vec::new(),
+                    });
+                }
+                EffectAnalysisMode::Replay(&snapshot.analysis)
+            }
+            Some(LibraryEffectAnalysisMode::Prepared(snapshot)) => {
+                if let Some(types) = &snapshot.types {
+                    context.types = Some(etas_types::TypeOutput {
+                        facts: types.facts.clone(),
+                        store: types.store.clone(),
+                        diagnostics: Vec::new(),
+                    });
+                }
+                EffectAnalysisMode::ReplayPrepared(&snapshot.effects)
+            }
+        };
+        let replaying = matches!(
+            analysis_mode,
+            EffectAnalysisMode::Replay(_) | EffectAnalysisMode::ReplayPrepared(_)
+        );
         let diagnostics_before = context.diagnostics.len();
         for _ in 0..limit {
             let mut requested = None;
-            let result = self.run_once(context, manager, &mut requested);
+            let prepared = std::sync::OnceLock::new();
+            let mode = if matches!(
+                library_analysis,
+                Some(LibraryEffectAnalysisMode::Capture(_))
+            ) {
+                EffectAnalysisMode::CapturePrepared(&prepared)
+            } else {
+                analysis_mode
+            };
+            let result = self.run_once(context, manager, &mut requested, mode);
             let Some(ty) = requested else {
                 if matches!(&result.control, etas_utils::PassControl::Continue) {
                     match task_rows::refine(context) {
                         Ok(true) => {
+                            if replaying {
+                                return PassResult::failed(
+                                    "installed Effect analysis changed task rows on replay",
+                                );
+                            }
                             // These summaries used the previous task payload ABI.
                             // Recompute them before publishing any effect proof.
                             context.diagnostics.truncate(diagnostics_before);
@@ -244,9 +299,32 @@ impl Pass<ProjectContext> for RunEffectPipelinePass {
                         Ok(false) => {}
                         Err(error) => return PassResult::failed(error),
                     }
+                    if let Some(LibraryEffectAnalysisMode::Capture(capture)) = &library_analysis {
+                        let effects = prepared
+                            .into_inner()
+                            .expect("successful Effect facts were captured");
+                        let initial = capture_types.as_ref().expect("checked input types");
+                        let final_types = context.types.as_ref().expect("checked solved types");
+                        let types = (!Arc::ptr_eq(&initial.facts, &final_types.facts)
+                            || !Arc::ptr_eq(&initial.store, &final_types.store))
+                        .then(|| ArchivedEffectTypes {
+                            facts: final_types.facts.clone(),
+                            store: final_types.store.clone(),
+                        });
+                        assert!(
+                            capture
+                                .set(PreparedLibraryEffects { effects, types })
+                                .is_ok()
+                        );
+                    }
                 }
                 return result;
             };
+            if replaying {
+                return PassResult::failed(
+                    "installed Effect analysis requires a missing materialized type",
+                );
+            }
             let types = context.types.as_mut().expect("checked type phase");
             let mut interner = etas_types::TypeInterner::from_store(types.store.as_ref().clone());
             let before = interner.store().len();
@@ -270,6 +348,7 @@ impl RunEffectPipelinePass {
         context: &mut ProjectContext,
         manager: &mut PassManager<ProjectContext>,
         requested: &mut Option<etas_types::Type>,
+        analysis_mode: EffectAnalysisMode<'_>,
     ) -> PassResult {
         context.residual_plans = None;
         context.residual_support = None;
@@ -291,12 +370,14 @@ impl RunEffectPipelinePass {
         let Some(validated_environment) = context.validated_external_environment.as_ref() else {
             return PassResult::failed("effect checking requires validated external metadata");
         };
-        let mut environment = validated_environment.environment().clone();
-        let standard_package = context
-            .standard_library
-            .as_ref()
-            .map(|library| library.append_environment(&mut environment));
-        let environment = &environment;
+        let environment = validated_environment.environment();
+        let standard_package = context.standard_library_interface().and_then(|library| {
+            environment
+                .external_packages
+                .iter()
+                .find(|package| package.import_root == library.package.import_root)
+                .map(|package| package.id)
+        });
         let Some(catalog) = context.module_catalog.as_ref() else {
             return PassResult::failed("effect checking requires the module catalog");
         };
@@ -310,10 +391,16 @@ impl RunEffectPipelinePass {
             return PassResult::failed("effect checking requires the prepared effect registry");
         };
         let external_effect_metadata = prepared.dependencies().clone();
+        let mut external_contracts =
+            match external_metadata::ExternalContractIndex::new(environment, &context.std_registry)
+            {
+                Ok(contracts) => contracts,
+                Err(error) => return PassResult::failed(error),
+            };
         let external_summaries = match external_effect_summaries(
             environment,
             types,
-            &context.std_registry,
+            &mut external_contracts,
             &external_anchors,
             &mut external_metadata_diagnostics,
         ) {
@@ -323,7 +410,7 @@ impl RunEffectPipelinePass {
         let external_implementations = match external_metadata::external_implementations(
             environment,
             types,
-            &context.std_registry,
+            &mut external_contracts,
             &external_anchors,
             &mut external_metadata_diagnostics,
         ) {
@@ -440,13 +527,14 @@ impl RunEffectPipelinePass {
             external_artifact_anchors: &external_artifact_anchors,
             reachable_items,
         };
-        let result = etas_effects::RunEffectPipeline::run_prepared(
+        let result = etas_effects::RunEffectPipeline::run_prepared_with_analysis(
             input,
             prepared.clone(),
             manager.execution_control_handle(),
+            analysis_mode,
         );
         let pipeline_output = match result {
-            Ok(output) => output,
+            Ok((output, _)) => output,
             Err(etas_effects::EffectPipelineError::TypeMaterializationRequired(ty)) => {
                 context.prepared_effect_registry = Some(prepared);
                 *requested = Some(ty);

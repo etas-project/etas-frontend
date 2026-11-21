@@ -28,6 +28,7 @@ impl DefinitionCatalog {
     pub(super) fn bind_external_callables(
         &mut self,
         limits: DescriptorLimits,
+        execution: bool,
     ) -> Result<(), ProjectionError> {
         let mut required = BTreeMap::new();
         for fact in self.checked.checked_reflections().values() {
@@ -43,7 +44,9 @@ impl DefinitionCatalog {
                 .ok_or(ProjectionError::MissingDeclaration(declaration))?;
             let callable = CallableId::declaration(identity.clone())?;
             if self.callables.contains_key(&callable) {
-                self.callable_bindings.insert(declaration, callable);
+                Arc::make_mut(&mut self.data)
+                    .callable_bindings
+                    .insert(declaration, callable);
             } else {
                 required.insert(declaration, callable);
             }
@@ -65,7 +68,9 @@ impl DefinitionCatalog {
             {
                 let callable = CallableId::declaration(identity.clone())?;
                 if self.callables.contains_key(&callable) {
-                    self.callable_bindings.insert(*symbol, callable);
+                    Arc::make_mut(&mut self.data)
+                        .callable_bindings
+                        .insert(*symbol, callable);
                 } else {
                     bindings.insert(*symbol, callable);
                 }
@@ -79,9 +84,12 @@ impl DefinitionCatalog {
                 .values()
                 .map(|call| call.callable.clone()),
         );
+        let required_methods = self.checked.referenced_standard_methods();
         pending.extend(self.checked.types.methods.entries().filter_map(
             |method| match &method.target {
-                etas_types::method::MethodTarget::External { identity } => {
+                etas_types::method::MethodTarget::External { identity }
+                    if !execution || required_methods.contains(identity) =>
+                {
                     Some(CallableId::method(identity.clone()))
                 }
                 _ => None,
@@ -96,7 +104,7 @@ impl DefinitionCatalog {
             .checked
             .external_definition_origins()
             .iter()
-            .filter_map(|metadata| metadata.descriptors.as_ref())
+            .filter_map(|metadata| metadata.descriptors.as_deref())
             .chain(standard.as_deref())
         {
             let Some(headers) = &set.headers else {
@@ -111,21 +119,30 @@ impl DefinitionCatalog {
                 continue;
             }
             let graph = DescriptorGraph::new(set.graph.clone(), limits)?;
-            let snapshots = headers.snapshots.as_ref().map(|snapshots| {
-                snapshots
-                    .flows
-                    .iter()
-                    .chain(&snapshots.tools)
-                    .map(|snapshot| (&snapshot.identity, snapshot))
-                    .collect::<BTreeMap<_, _>>()
-            });
-            let method_snapshots = headers.snapshots.as_ref().map(|snapshots| {
-                snapshots
-                    .methods
-                    .iter()
-                    .map(|snapshot| (&snapshot.revision.definition, snapshot))
-                    .collect::<BTreeMap<_, _>>()
-            });
+            let snapshots = headers
+                .snapshots
+                .as_ref()
+                .filter(|_| !execution)
+                .map(|snapshots| {
+                    snapshots
+                        .flows
+                        .iter()
+                        .chain(&snapshots.tools)
+                        .map(|snapshot| (&snapshot.identity, snapshot))
+                        .collect::<BTreeMap<_, _>>()
+                });
+            let method_snapshots =
+                headers
+                    .snapshots
+                    .as_ref()
+                    .filter(|_| !execution)
+                    .map(|snapshots| {
+                        snapshots
+                            .methods
+                            .iter()
+                            .map(|snapshot| (&snapshot.revision.definition, snapshot))
+                            .collect::<BTreeMap<_, _>>()
+                    });
             let bodies = headers.bodies.as_ref().map(|bodies| {
                 bodies
                     .entries
@@ -159,7 +176,7 @@ impl DefinitionCatalog {
                         ));
                     }
                 } else {
-                    self.external_callables.insert(
+                    Arc::make_mut(&mut self.data).external_callables.insert(
                         header.id.clone(),
                         ExternalCallable {
                             canonical: header.id.clone(),
@@ -178,11 +195,15 @@ impl DefinitionCatalog {
                     "external reflected callable has no portable definition header".into(),
                 ));
             }
-            self.callable_bindings.insert(symbol, callable);
+            Arc::make_mut(&mut self.data)
+                .callable_bindings
+                .insert(symbol, callable);
         }
         for (symbol, callable) in bindings {
             if self.external_callables.contains_key(&callable) {
-                self.callable_bindings.insert(symbol, callable);
+                Arc::make_mut(&mut self.data)
+                    .callable_bindings
+                    .insert(symbol, callable);
             }
         }
         Ok(())

@@ -30,7 +30,7 @@ pub(crate) struct FrontendPipelineRequest {
     pub(crate) check_scope: CheckScope,
     pub(crate) collect_timing: bool,
     pub(crate) std_registry: Arc<etas_std::StdRegistry>,
-    pub(crate) standard_library: Option<Arc<crate::StandardLibrary>>,
+    pub(crate) standard_library: Option<crate::session::StandardLibraryInput>,
     pub(crate) memory_probe: Option<crate::session::FrontendMemoryProbe>,
 }
 
@@ -72,7 +72,28 @@ pub(crate) fn run_controlled_check_pipeline(
     .with_check_scope(check_scope);
     context.pipeline_plan_change = pipeline_plan_change;
     if context.input.options.standard_library_mode == crate::StandardLibraryMode::Artifact {
-        context.standard_library = standard_library;
+        match standard_library {
+            Some(crate::session::StandardLibraryInput::Executable(library)) => {
+                context.standard_library = Some(library);
+            }
+            Some(crate::session::StandardLibraryInput::Interface(interface)) => {
+                context.standard_library_interface = Some(interface);
+            }
+            Some(crate::session::StandardLibraryInput::Installed {
+                interface,
+                methods,
+                load,
+            }) => {
+                context.standard_library_interface = Some(interface);
+                context.standard_method_loader = Some(methods);
+                context.deferred_standard_library = load;
+            }
+            Some(crate::session::StandardLibraryInput::Deferred { interface, load }) => {
+                context.standard_library_interface = Some(interface);
+                context.deferred_standard_library = Some(load);
+            }
+            None => {}
+        }
     }
     run_controlled_context_pipeline(
         context,

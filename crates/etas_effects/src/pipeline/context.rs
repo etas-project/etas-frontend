@@ -8,7 +8,9 @@ use crate::{
 };
 
 use super::passes::build_effect_pipeline;
-use super::{EffectPipelineArtifacts, EffectPipelineInput, EffectPipelineOutput};
+use super::{
+    EffectAnalysisMode, EffectPipelineArtifacts, EffectPipelineInput, EffectPipelineOutput,
+};
 
 pub(super) enum RegistrySource {
     CheckedTypes,
@@ -28,6 +30,8 @@ pub(super) struct EffectPipelineContext<'a> {
     pub(super) registry_diagnostics: Vec<Diagnostic>,
     pub(super) artifacts: Option<EffectPipelineArtifacts>,
     pub(super) analysis: Option<EffectAnalysisOutput>,
+    pub(super) analysis_mode: EffectAnalysisMode<'a>,
+    pub(super) captured_analysis: Option<std::sync::Arc<EffectAnalysisOutput>>,
     pub(super) effects: Option<EffectOutput>,
     pub(super) trace_spec_models: Option<crate::trace_spec::TraceSpecModelStore>,
     pub(super) trace_spec_analysis: Option<crate::trace_spec::TraceSpecAnalysisOutput>,
@@ -50,6 +54,8 @@ impl<'a> EffectPipelineContext<'a> {
             registry_diagnostics: Vec::new(),
             artifacts: None,
             analysis: None,
+            analysis_mode: EffectAnalysisMode::Compute,
+            captured_analysis: None,
             effects: None,
             trace_spec_models: None,
             trace_spec_analysis: None,
@@ -109,6 +115,6 @@ impl<'a> EffectPipelineContext<'a> {
     }
 }
 
-pub(super) fn effect_pipeline<'a>() -> Pipeline<EffectPipelineContext<'a>> {
-    build_effect_pipeline()
+pub(super) fn effect_pipeline<'a>(replay: bool) -> Pipeline<EffectPipelineContext<'a>> {
+    build_effect_pipeline(replay)
 }

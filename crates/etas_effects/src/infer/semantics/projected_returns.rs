@@ -41,13 +41,7 @@ impl EffectSemantics<'_> {
                             });
                 }
                 Some(Type::Nominal(_) | Type::Applied { .. }) => {
-                    let Ok(Some(representation)) =
-                        etas_types::ty::applied_representation_in_store_indexed(
-                            &self.types.store,
-                            self.type_lookup(),
-                            ty,
-                        )
-                    else {
+                    let Ok(Some(representation)) = self.applied_representation(ty) else {
                         break;
                     };
                     ty = representation;
@@ -117,12 +111,7 @@ impl EffectSemantics<'_> {
             if matches!(
                 self.types.store.get(ty),
                 Some(Type::Nominal(_) | Type::Applied { .. })
-            ) && let Ok(Some(representation)) =
-                etas_types::ty::applied_representation_in_store_indexed(
-                    &self.types.store,
-                    self.type_lookup(),
-                    ty,
-                )
+            ) && let Ok(Some(representation)) = self.applied_representation(ty)
             {
                 ty = representation;
             }
@@ -187,16 +176,7 @@ impl EffectSemantics<'_> {
             for step in steps {
                 let mut selected = path.clone();
                 selected.push(step.clone());
-                if let Some(child) = etas_types::value_projection::project_indexed(
-                    &self.types.store,
-                    &self.types.facts,
-                    self.type_lookup(),
-                    ty,
-                    &[step],
-                )
-                .ok()
-                .flatten()
-                {
+                if let Ok(Some(child)) = self.project_value(ty, &[step]) {
                     pending.push((child, selected, ancestors.clone()));
                 } else {
                     paths.insert(selected);
@@ -375,15 +355,7 @@ impl EffectSemantics<'_> {
             return Some(found);
         }
         if let Some(ty) = self.types.facts.expr_types.get(&expr)
-            && let Some(selected) = etas_types::value_projection::project_indexed(
-                &self.types.store,
-                &self.types.facts,
-                self.type_lookup(),
-                *ty,
-                path,
-            )
-            .ok()
-            .flatten()
+            && let Ok(Some(selected)) = self.project_value(*ty, path)
         {
             if !self.type_contains_flow(selected) && !self.type_has_parameters(selected) {
                 return Some(BTreeSet::new());

@@ -40,7 +40,8 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
         let state = exit.into_joined_domain();
         if let EffectUnit::Item(item) = context.unit
             && let Some(etas_hir::HirItem::TopLevelLet(binding)) = self.hir.items.get(item)
-            && let Some(sources) = self.latent_sources_for_expr(&state, binding.value)
+            && let Some(initializer) = binding.value
+            && let Some(sources) = self.latent_sources_for_expr(&state, initializer)
         {
             self.discovered_global_values
                 .record_symbol_sources(binding.symbol, sources);

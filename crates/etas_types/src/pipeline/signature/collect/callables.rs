@@ -187,7 +187,9 @@ fn top_level_let_signature_type(
     top: &etas_hir::HirTopLevelLetDecl,
 ) -> Option<(TypeId, Option<ResourceHandleFact>)> {
     let annotated = top.type_annotation.and_then(|ty| lower_type_ref(ctx, ty));
-    let resource_handle = resource_handles::top_level_resource_handle_signature(ctx, top.value);
+    let resource_handle = top
+        .value
+        .and_then(|value| resource_handles::top_level_resource_handle_signature(ctx, value));
     if let Some(ty) = annotated {
         return Some((ty, resource_handle.map(|(_, fact)| fact)));
     }

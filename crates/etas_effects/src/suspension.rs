@@ -7,7 +7,7 @@ use etas_hir::{
     SymbolDef,
 };
 use etas_hir_analysis::{HirAnalysisContext, interprocedural::HirAnalysisBody};
-use etas_types::{SymbolTypeFact, Type, TypeOutput, method::MethodTarget};
+use etas_types::{SymbolTypeFact, Type, TypeOutput, method::MethodTarget, ty::TypeLookupIndex};
 
 use crate::{EffectFacts, EffectUnit};
 
@@ -68,6 +68,7 @@ struct Node {
 struct CallContext<'a> {
     hir: &'a HirRevision,
     types: &'a TypeOutput,
+    type_lookup: &'a TypeLookupIndex,
     effects: &'a EffectFacts,
     registry: &'a etas_std::StdRegistry,
     imported: &'a BTreeMap<etas_code::CallableId, SuspensionSummary>,
@@ -91,6 +92,7 @@ pub fn analyze(
 ) -> Result<BTreeMap<EffectUnit, SuspensionSummary>, etas_utils::PipelineInterruption> {
     let context = HirAnalysisContext::new(hir);
     let view = hir.view();
+    let type_lookup = TypeLookupIndex::new(&types.store);
     let specs = etas_types::SpecFacts::from(types.facts.as_ref());
     let payload_shapes = crate::infer::semantics::latent_shape::LatentTypeShapes::build(types);
     let mut graph = BTreeMap::new();
@@ -129,6 +131,7 @@ pub fn analyze(
         let calls = CallContext {
             hir,
             types,
+            type_lookup: &type_lookup,
             effects,
             registry,
             imported,

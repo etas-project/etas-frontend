@@ -31,6 +31,9 @@ pub struct ProjectContext {
     pub input: ProjectInput,
     pub std_registry: Arc<etas_std::StdRegistry>,
     pub standard_library: Option<Arc<crate::StandardLibrary>>,
+    pub(crate) standard_library_interface: Option<Arc<crate::StandardLibraryInterface>>,
+    pub(crate) standard_method_loader: Option<Arc<crate::session::StandardMethodLoader>>,
+    pub(crate) deferred_standard_library: Option<Arc<crate::session::StandardLibraryLoader>>,
     pub incremental: bool,
     pub check_scope: CheckScope,
     pub project_wide_change: bool,
@@ -62,6 +65,7 @@ pub struct ProjectContext {
     pub(crate) signature_types: Option<TypeOutput>,
     pub(crate) type_environment: Option<etas_types::SignatureEnvironment>,
     pub(crate) prepared_effect_registry: Option<etas_effects::PreparedEffectRegistry>,
+    pub(crate) library_effect_analysis: Option<crate::library_hir::LibraryEffectAnalysisMode>,
     pub top_level_lets: Option<TopLevelLetFacts>,
     pub(crate) type_body_outputs: HashMap<UnitId, Arc<etas_types::BodyTypeOutput>>,
     pub(crate) effect_body_outputs: HashMap<UnitId, Arc<etas_effects::BodyEffectOutput>>,
@@ -88,6 +92,63 @@ pub struct ProjectContext {
 }
 
 impl ProjectContext {
+    pub(crate) fn standard_library_interface(&self) -> Option<&crate::StandardLibraryInterface> {
+        self.standard_library_interface.as_deref().or_else(|| {
+            self.standard_library
+                .as_ref()
+                .map(|library| library.interface.as_ref())
+        })
+    }
+
+    pub(crate) fn load_standard_method_behaviors(&mut self) -> Result<(), String> {
+        let Some(load) = &self.standard_method_loader else {
+            return Ok(());
+        };
+        let types = self
+            .types
+            .as_ref()
+            .ok_or("method behavior loading requires checked types")?;
+        let behaviors = load(Some((
+            &self.hir.as_ref().expect("checked HIR").hir,
+            &types.facts,
+        )))?;
+        let library = self
+            .standard_library_interface()
+            .expect("installed standard interface");
+        let mut environment = self
+            .validated_external_environment
+            .as_ref()
+            .expect("validated external environment")
+            .environment()
+            .clone();
+        let package = environment
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == library.package.import_root)
+            .expect("installed package")
+            .id;
+        let metadata = environment
+            .external_public_metadata
+            .iter_mut()
+            .find(|metadata| metadata.package == package)
+            .expect("installed metadata");
+        metadata.methods = behaviors.methods;
+        metadata.effect_summaries = library.metadata.effect_summaries.clone();
+        metadata.effect_summaries.extend(behaviors.summaries);
+        // Name and overload discovery already used the complete prepared
+        // signatures. Effect analysis consumes the loaded semantic closure.
+        let summaries = &metadata.effect_summaries;
+        metadata.flows.retain(|flow| {
+            summaries.iter().any(|summary| {
+                summary.item == flow.path
+                    || (flow.definition.is_some() && summary.definition == flow.definition)
+            })
+        });
+        self.validated_external_environment =
+            Some(Arc::new(ValidatedExternalEnvironment::new(environment)));
+        Ok(())
+    }
+
     #[cfg(test)]
     pub fn new(input: ProjectInput) -> Self {
         Self::new_with_std_registry(input, Arc::new(etas_std::standard_registry()))
@@ -112,6 +173,9 @@ impl ProjectContext {
             input,
             std_registry,
             standard_library: None,
+            standard_library_interface: None,
+            standard_method_loader: None,
+            deferred_standard_library: None,
             incremental: false,
             check_scope: CheckScope::FullProject,
             project_wide_change: false,
@@ -141,6 +205,7 @@ impl ProjectContext {
             signature_types: None,
             type_environment: None,
             prepared_effect_registry: None,
+            library_effect_analysis: None,
             top_level_lets: None,
             type_body_outputs: HashMap::new(),
             effect_body_outputs: HashMap::new(),

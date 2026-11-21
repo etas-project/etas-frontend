@@ -7,7 +7,9 @@ use etas_utils::{
     Pipeline, PreservedArtifacts, UnitOrder, UnitSelector,
 };
 
-use super::{LibraryHirImage, LibraryHirImageError, error};
+use super::{
+    LibraryDefinitions, LibraryEffectAnalysisMode, LibraryHirImage, LibraryHirImageError, error,
+};
 use crate::{
     HirBodyBindings, HirItemBindings, HirOutput, ProjectContext, ProjectInput,
     SOURCE_FILE_UNIT_KIND, SourceInput,
@@ -19,6 +21,7 @@ pub(super) fn restore(
     root: &Path,
     registry: Arc<etas_std::StdRegistry>,
     profile: &etas_utils::ProfileHandle,
+    analysis: Option<LibraryEffectAnalysisMode>,
 ) -> Result<crate::CheckedProgram, LibraryHirImageError> {
     if image.schema != super::SCHEMA || image.compiler_version != crate::FRONTEND_COMPILER_VERSION {
         return Err(error("incompatible checked library image"));
@@ -31,7 +34,6 @@ pub(super) fn restore(
     let declarations = image.declarations.clone();
     let methods = image.methods.clone();
     let parameter_defaults = image.parameter_defaults.clone();
-    let package = image.package;
     let input = ProjectInput {
         project_root: root.to_owned(),
         source_root: Some(root.to_owned()),
@@ -49,7 +51,8 @@ pub(super) fn restore(
             .collect(),
         entry: image.entry.requested.clone(),
     };
-    let context = ProjectContext::new_with_std_registry(input, registry);
+    let mut context = ProjectContext::new_with_std_registry(input, registry);
+    context.library_effect_analysis = analysis;
     let pipeline = Pipeline::new("frontend.restore_library")
         .pass(passes::BuildSourceSetPass)
         .for_each(
@@ -57,7 +60,7 @@ pub(super) fn restore(
             UnitOrder::SourceOrder,
             Pipeline::new("frontend.library_source_archive").pass(passes::ParseSourceFilePass),
         )
-        .pass(LoadLibraryFactsPass(Some(image)))
+        .pass(LoadLibraryFactsPass(Some(image), false))
         .pass(passes::BuildModuleCatalogPass)
         .pass(passes::ValidateExternalEnvironmentPass)
         .pass(passes::ValidateItemAnnotationsPass)
@@ -107,7 +110,7 @@ pub(super) fn restore(
             run.output.diagnostics,
         ))
     })?;
-    let linked = LibraryHirImage::from_checked(&checked, package, root)?;
+    let linked = LibraryDefinitions::from_checked(&checked)?;
     if linked.declarations != declarations || linked.methods != methods {
         return Err(error(
             "library declarations changed while restoring native provenance",
@@ -123,7 +126,9 @@ pub(super) fn restore(
 
 /// Installs descriptive archive data. Executable proofs are rebuilt by the
 /// ordinary effect, handler, reflection and checked-publication passes below.
-struct LoadLibraryFactsPass(Option<LibraryHirImage>);
+/// The authenticated installed path supplies finalized facts separately and skips
+/// the signature environment, which is used only by static analysis.
+pub(super) struct LoadLibraryFactsPass(pub Option<LibraryHirImage>, pub bool);
 
 impl Pass<ProjectContext> for LoadLibraryFactsPass {
     fn descriptor(&self) -> PassDescriptor {
@@ -153,7 +158,7 @@ impl Pass<ProjectContext> for LoadLibraryFactsPass {
         _: &mut PassManager<ProjectContext>,
     ) -> PassResult {
         let image = self.0.take().expect("library facts load exactly once");
-        let hir = match HirRevision::try_new(image.program) {
+        let hir = match HirRevision::from_shared_program(image.program) {
             Ok(hir) => hir,
             Err(reason) => return PassResult::failed(format!("invalid library HIR: {reason:?}")),
         };
@@ -182,11 +187,13 @@ impl Pass<ProjectContext> for LoadLibraryFactsPass {
         });
         context.hir_body_bindings = Some(bodies);
         let types = TypeOutput {
-            facts: Arc::new(image.types),
-            store: Arc::new(image.type_store),
+            facts: image.types,
+            store: image.type_store,
             diagnostics: Vec::new(),
         };
-        context.type_environment = Some(SignatureEnvironment::new(&hir, &types));
+        if !self.1 {
+            context.type_environment = Some(SignatureEnvironment::new(&hir, &types));
+        }
         context.signature_types = Some(types.clone());
         context.types = Some(types);
         context.hir = Some(HirOutput { hir });

@@ -68,18 +68,10 @@ impl EffectSemantics<'_> {
                 .or_default()
                 .extend(sources);
         }
-        let projections = self
-            .parameter_projections
-            .borrow()
-            .iter()
-            .filter(|(_, projection)| {
-                Some(projection.owner) == unit.owner()
-                    && (self.type_contains_flow(projection.ty)
-                        || self.type_has_parameters(projection.ty))
-            })
-            .map(|(id, projection)| (*id, projection.clone()))
-            .collect::<Vec<_>>();
-        for (id, projection) in projections {
+        let Some(owner) = unit.owner() else {
+            return Ok(());
+        };
+        for (id, projection) in self.callable_parameter_projections(owner) {
             let Some(TraceArgumentBinding::Expression(expr)) =
                 arguments.get(&ParameterCallTarget::Native(projection.parameter))
             else {

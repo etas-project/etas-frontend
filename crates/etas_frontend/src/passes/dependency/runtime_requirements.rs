@@ -112,7 +112,7 @@ pub(super) fn compute_reachability(
         .as_ref()
         .ok_or("runtime source planning requires a module index")?;
     let mut planner = RuntimeSourceRequirementPlanner {
-        checked_library: context.standard_library.as_ref().and_then(|library| {
+        checked_library: context.standard_library_interface().and_then(|library| {
             environment
                 .external_definition_origins
                 .iter()
@@ -129,6 +129,34 @@ pub(super) fn compute_reachability(
             .external_public_metadata
             .iter()
             .map(|metadata| (metadata.package, metadata))
+            .collect(),
+        method_owners: environment
+            .external_public_metadata
+            .iter()
+            .flat_map(|metadata| {
+                metadata
+                    .methods
+                    .iter()
+                    .map(|method| (method.identity.clone(), metadata.package))
+            })
+            .chain(
+                environment
+                    .external_definition_origins
+                    .iter()
+                    .flat_map(|origin| {
+                        origin
+                            .descriptors
+                            .iter()
+                            .flat_map(|set| set.headers.iter())
+                            .flat_map(|headers| &headers.callables)
+                            .filter_map(|header| {
+                                header
+                                    .id
+                                    .as_method()
+                                    .map(|method| (method.clone(), origin.package))
+                            })
+                    }),
+            )
             .collect(),
         module_paths: environment
             .external_definition_origins
@@ -223,6 +251,7 @@ struct RuntimeSourceRequirementPlanner<'a> {
     namespaces: &'a crate::project::DependencyModuleNamespaces,
     packages: BTreeMap<ExternalPackageId, &'a ProjectExternalPackageInput>,
     metadata: BTreeMap<ExternalPackageId, &'a ProjectExternalPublicMetadataInput>,
+    method_owners: BTreeMap<etas_code::MethodId, ExternalPackageId>,
     module_paths: BTreeMap<(ExternalPackageId, Vec<String>), Vec<String>>,
     tool_bindings: BTreeSet<&'a str>,
     loaded_overlays: BTreeSet<(ExternalPackageId, ModulePath)>,
@@ -231,16 +260,11 @@ struct RuntimeSourceRequirementPlanner<'a> {
 
 impl RuntimeSourceRequirementPlanner<'_> {
     fn collect_external_method(&mut self, identity: &etas_code::MethodId) -> Result<(), String> {
-        let owner = self
-            .metadata
-            .iter()
-            .find_map(|(owner, metadata)| {
-                metadata
-                    .methods
-                    .iter()
-                    .any(|method| &method.identity == identity)
-                    .then_some(*owner)
-            })
+        // Ownership belongs to the published calling header. Its executable
+        // behavior can remain unloaded until effect analysis needs it.
+        let owner = *self
+            .method_owners
+            .get(identity)
             .ok_or("checked external method has no published package owner")?;
         let package = self
             .packages

@@ -36,6 +36,9 @@ pub fn merge_body_deltas_with_application<'a>(
 }
 
 fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(), String> {
+    facts
+        .body_spec_dependencies
+        .extend(body.body_spec_dependencies);
     for conformance in body.trace_spec_conformances {
         let target = facts
             .trace_spec_conformances
@@ -48,6 +51,9 @@ fn merge_facts(facts: &mut crate::TypeFacts, body: crate::TypeFacts) -> Result<(
             .ok_or("instantiated trace conformance has no declaration fact")?;
         *target = conformance;
     }
+    facts
+        .body_type_dependencies
+        .extend(body.body_type_dependencies);
     facts.type_generics.extend(body.type_generics);
     facts
         .external_type_aliases

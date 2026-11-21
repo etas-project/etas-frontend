@@ -153,6 +153,8 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 Err(reason) => return PassResult::failed(reason),
             };
             let mut data = CheckedProgramData {
+                definition_catalog_cache: std::sync::Arc::default(),
+                semantic_dependencies: std::sync::Arc::default(),
                 reflection_targets: reflection_targets.clone(),
                 foreign_type_bindings: context
                     .candidate
@@ -164,13 +166,15 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 compiler_version: crate::FRONTEND_COMPILER_VERSION.to_owned(),
                 std_registry: context.std_registry.clone(),
                 standard_library: context.standard_library.clone(),
-                toolchain_base: context.standard_library.as_ref().map(|library| {
-                    library
-                        .program
-                        .toolchain_base
-                        .clone()
-                        .unwrap_or_else(|| library.program.clone())
-                }),
+                standard_library_interface: context.standard_library_interface.clone().or_else(
+                    || {
+                        context
+                            .standard_library
+                            .as_ref()
+                            .map(|library| library.interface.clone())
+                    },
+                ),
+                toolchain_base: None,
                 checked_std_library_implementations: checked_std_library_implementations.clone(),
                 project_environment_fingerprint: definition_environment.fingerprint().to_owned(),
                 dependency_metadata_fingerprints: environment
@@ -236,7 +240,8 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
             ) {
                 // Public library callables need an ABI type even when no body
                 // in this compilation references them as a function value.
-                let mut store = data.type_store.as_ref().clone();
+                let mut types =
+                    etas_types::TypeInterner::from_store(data.type_store.as_ref().clone());
                 let signatures = data
                     .types
                     .item_signatures
@@ -251,9 +256,7 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                         output: signature.output,
                         effects: signature.effects.clone(),
                     });
-                    if !store.iter().any(|(_, existing)| existing == &ty) {
-                        store.intern(ty);
-                    }
+                    types.intern(ty);
                     if let Some(contract) = data
                         .effects
                         .public_contracts
@@ -274,36 +277,46 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                             output: signature.output,
                             effects: Some(row),
                         });
-                        if !store.iter().any(|(_, existing)| existing == &ty) {
-                            store.intern(ty);
-                        }
+                        types.intern(ty);
                     }
                 }
-                data.type_store = std::sync::Arc::new(store);
-            }
-            if context.input.options.standard_library_mode == crate::StandardLibraryMode::Artifact {
-                let mut store = data.type_store.as_ref().clone();
-                let signatures = data
-                    .types
-                    .std_callable_signatures
-                    .iter()
-                    .collect::<std::collections::BTreeMap<_, _>>();
-                for signature in signatures.into_values() {
-                    let ty = etas_types::Type::Function(etas_types::FlowType {
-                        input: signature.params.clone(),
-                        output: signature.output,
-                        effects: signature.effects.clone(),
-                    });
-                    if !store.iter().any(|(_, existing)| existing == &ty) {
-                        store.intern(ty);
+                if context.input.options.standard_library_mode
+                    == crate::StandardLibraryMode::Artifact
+                {
+                    let signatures = data
+                        .types
+                        .std_callable_signatures
+                        .iter()
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    for signature in signatures.into_values() {
+                        types.intern(etas_types::Type::Function(etas_types::FlowType {
+                            input: signature.params.clone(),
+                            output: signature.output,
+                            effects: signature.effects.clone(),
+                        }));
                     }
                 }
-                data.type_store = std::sync::Arc::new(store);
+                data.type_store = std::sync::Arc::new(types.into_store());
             }
             // Ordinary plans are bound to their owners' checked revisions only
             // now that every contract fact has been finalized. A candidate
             // binds to its frozen-contract revision when it is emitted.
+            if let Some(load) = &context.deferred_standard_library
+                && data.requires_executable_standard_library()
+            {
+                match load(&data) {
+                    Ok(library) => data.standard_library = Some(library),
+                    Err(reason) => return PassResult::failed(reason),
+                }
+            }
             if let Some(library) = data.standard_library.clone() {
+                data.toolchain_base = Some(
+                    library
+                        .program
+                        .toolchain_base
+                        .clone()
+                        .unwrap_or_else(|| library.program.clone()),
+                );
                 if let Err(reason) = library.materialize_public_abis(&mut data) {
                     return PassResult::failed(reason);
                 }
@@ -329,6 +342,15 @@ impl Pass<ProjectContext> for BuildCheckedProjectPass {
                 data.residual = std::sync::Arc::new(residual.with_binding(binding));
             } else {
                 data.residual = std::sync::Arc::new(residual);
+            }
+            if data.compile_options.standard_library_mode
+                == crate::StandardLibraryMode::SourceBootstrap
+            {
+                data.semantic_dependencies =
+                    match crate::project::CheckedSemanticDependencies::build(&data) {
+                        Ok(graph) => std::sync::Arc::new(graph),
+                        Err(error) => return PassResult::failed(error),
+                    };
             }
             context.checked = Some(std::sync::Arc::new(data));
         }

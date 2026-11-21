@@ -58,10 +58,31 @@ pub fn run_from_input<'a>(
     input: &crate::SignaturePipelineInput<'a>,
 ) {
     ctx.hir_view = input.view.clone();
+    if let Some(prepared) = &input.prepared_external {
+        prepared.initialize(ctx, &input.external);
+    }
     imports::reflection::initialize(ctx, &input.reflection);
     imports::std::apply_hir_std_prelude(ctx);
     imports::std::apply_std_signature_input(ctx, &input.std);
-    imports::external::apply_external_signature_input(ctx, &input.external);
+    if let Some(prepared) = &input.prepared_external {
+        let mut other = input.external.clone();
+        other
+            .metadata
+            .retain(|metadata| metadata.package != prepared.package);
+        other
+            .symbol_bindings
+            .retain(|binding| binding.package != prepared.package);
+        other
+            .action_bindings
+            .retain(|binding| binding.package != prepared.package);
+        other
+            .source_spec_bindings
+            .retain(|binding| binding.package != prepared.package);
+        imports::external::apply_external_signature_input(ctx, &other);
+        prepared.bind(ctx, &input.external);
+    } else {
+        imports::external::apply_external_signature_input(ctx, &input.external);
+    }
     run_with_annotations(ctx, input.annotation_validation);
     imports::source::apply_source_signature_input(ctx, &input.source);
     crate::task_scope::infer(ctx);

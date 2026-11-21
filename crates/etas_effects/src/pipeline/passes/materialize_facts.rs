@@ -24,6 +24,12 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
                 "solved effect summaries",
             ));
         };
+        if matches!(
+            context.analysis_mode,
+            crate::pipeline::EffectAnalysisMode::Capture
+        ) {
+            context.captured_analysis = Some(std::sync::Arc::new(analysis.clone()));
+        }
         let effects = crate::facts::EffectFactProjector::materialize(
             context.input.hir,
             context.input.types,
@@ -69,6 +75,11 @@ impl<'a> Pass<EffectPipelineContext<'a>> for MaterializeFactsPass {
                     &mut effects,
                     context.input.reachable_items,
                 );
+                if let crate::pipeline::EffectAnalysisMode::CapturePrepared(capture) =
+                    context.analysis_mode
+                {
+                    assert!(capture.set(effects.clone()).is_ok());
+                }
                 context.effects = Some(effects);
             }
             Err(error) => return context.fail(error),

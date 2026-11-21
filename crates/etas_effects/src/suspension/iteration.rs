@@ -24,9 +24,10 @@ pub(super) fn begin(context: CallContext<'_>, iterable: HirExprId, node: &mut No
         return;
     }
     if !matches!(
-        etas_types::source_iteration::checked_cursor(
+        etas_types::source_iteration::checked_cursor_indexed(
             &context.types.store,
             &context.types.facts,
+            context.type_lookup,
             ty
         ),
         Ok(Some(_))
@@ -291,9 +292,10 @@ fn step(
             }
             _ => return None,
         };
-        let layout = etas_types::source_iteration::checked_cursor(
+        let layout = etas_types::source_iteration::checked_cursor_indexed(
             &context.types.store,
             &context.types.facts,
+            context.type_lookup,
             cursor,
         )
         .ok()??;

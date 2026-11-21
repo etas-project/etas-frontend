@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
 use etas_core::Span;
 use etas_hir::HirItemId;
@@ -6,8 +6,8 @@ use etas_types::EffectArgRef;
 use etas_utils::{PassControl, PassFailure, PassManager, PipelineConfig};
 
 use crate::{
-    DependencyEffectMetadata, EffectOutput, EffectPipelineError, EffectRegistry, EffectUnit,
-    ToolProviderBindingMetadata,
+    DependencyEffectMetadata, EffectAnalysisOutput, EffectOutput, EffectPipelineError,
+    EffectRegistry, EffectUnit, ToolProviderBindingMetadata,
 };
 
 mod artifacts;
@@ -621,6 +621,26 @@ impl TraceSpecPipelineAnalysis {
 
 pub struct RunEffectPipeline;
 
+/// Selects how a prepared pipeline acquires its solved analysis.
+#[derive(Clone, Copy, Default)]
+pub enum EffectAnalysisMode<'a> {
+    /// Compute the analysis for this pipeline run.
+    #[default]
+    Compute,
+    /// Compute the analysis and retain a copy before fact materialization.
+    Capture,
+    /// Retain materialized facts, including suspension and default validation,
+    /// for an authenticated installation with these exact compiler inputs.
+    CapturePrepared(&'a std::sync::OnceLock<EffectOutput>),
+    /// Reuse a successful analysis for these exact checked inputs. The caller
+    /// must authenticate the complete archive and its input identity against
+    /// the running toolchain before supplying it here.
+    Replay(&'a EffectAnalysisOutput),
+    /// Load installation-prepared facts and run the remaining contract and
+    /// executable proof passes against this session's checked graph.
+    ReplayPrepared(&'a EffectOutput),
+}
+
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct EffectInferencePlan {
     pub registry: std::sync::Arc<EffectRegistry>,
@@ -628,7 +648,7 @@ pub struct EffectInferencePlan {
 
 impl RunEffectPipeline {
     pub fn schedule_text() -> String {
-        let pipeline = effect_pipeline();
+        let pipeline = effect_pipeline(false);
         PassManager::<EffectPipelineContext<'static>>::new().schedule_text(&pipeline)
     }
 
@@ -641,14 +661,26 @@ impl RunEffectPipeline {
     pub fn run(
         input: EffectPipelineInput<'_>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        Self::run_with_control(input, None, context::RegistrySource::CheckedTypes)
+        Self::run_with_control(
+            input,
+            None,
+            context::RegistrySource::CheckedTypes,
+            EffectAnalysisMode::Compute,
+        )
+        .map(|(output, _)| output)
     }
 
     pub fn run_controlled(
         input: EffectPipelineInput<'_>,
         control: std::sync::Arc<dyn etas_utils::PipelineExecutionControl>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
-        Self::run_with_control(input, Some(control), context::RegistrySource::CheckedTypes)
+        Self::run_with_control(
+            input,
+            Some(control),
+            context::RegistrySource::CheckedTypes,
+            EffectAnalysisMode::Compute,
+        )
+        .map(|(output, _)| output)
     }
 
     pub fn run_prepared(
@@ -656,18 +688,36 @@ impl RunEffectPipeline {
         prepared: PreparedEffectRegistry,
         control: Option<std::sync::Arc<dyn etas_utils::PipelineExecutionControl>>,
     ) -> Result<EffectPipelineOutput, EffectPipelineError> {
+        Self::run_prepared_with_analysis(input, prepared, control, EffectAnalysisMode::Compute)
+            .map(|(output, _)| output)
+    }
+
+    /// Optionally captures or reuses solved analysis in a prepared pipeline.
+    /// The returned analysis is present only for [`EffectAnalysisMode::Capture`]
+    /// after a successful pipeline run. Replay still materializes facts and
+    /// checks contracts, TraceSpec and residual plans for this session.
+    pub fn run_prepared_with_analysis<'a>(
+        input: EffectPipelineInput<'a>,
+        prepared: PreparedEffectRegistry,
+        control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
+        mode: EffectAnalysisMode<'a>,
+    ) -> Result<(EffectPipelineOutput, Option<Arc<EffectAnalysisOutput>>), EffectPipelineError>
+    {
         Self::run_with_control(
             input,
             control,
             context::RegistrySource::Prepared(Box::new(prepared)),
+            mode,
         )
     }
 
-    fn run_with_control(
-        input: EffectPipelineInput<'_>,
-        control: Option<std::sync::Arc<dyn etas_utils::PipelineExecutionControl>>,
+    fn run_with_control<'a>(
+        input: EffectPipelineInput<'a>,
+        control: Option<Arc<dyn etas_utils::PipelineExecutionControl>>,
         registry_source: context::RegistrySource,
-    ) -> Result<EffectPipelineOutput, EffectPipelineError> {
+        mode: EffectAnalysisMode<'a>,
+    ) -> Result<(EffectPipelineOutput, Option<Arc<EffectAnalysisOutput>>), EffectPipelineError>
+    {
         validate_source_snapshot_identities(input.source_snapshots, control.as_deref())?;
         for entry in input.external_summaries {
             if entry.returned_callables.as_ref().is_some_and(|graph| {
@@ -690,7 +740,11 @@ impl RunEffectPipeline {
         }
         let mut context = EffectPipelineContext::new(input);
         context.registry_source = registry_source;
-        let mut pipeline = effect_pipeline();
+        context.analysis_mode = mode;
+        let mut pipeline = match mode {
+            EffectAnalysisMode::ReplayPrepared(_) => passes::build_prepared_effect_pipeline(),
+            _ => effect_pipeline(matches!(mode, EffectAnalysisMode::Replay(_))),
+        };
         let mut manager = PassManager::with_config(PipelineConfig::default().with_timing(true));
         if let Some(control) = control {
             manager.set_execution_control(control);
@@ -709,6 +763,7 @@ impl RunEffectPipeline {
                     .unwrap_or_else(|| pass_manager_failure(failure)));
             }
         }
+        let captured_analysis = context.captured_analysis.take();
         let mut output = context.into_output()?;
         output.artifacts.pass_timings = result
             .records
@@ -721,7 +776,7 @@ impl RunEffectPipeline {
                 })
             })
             .collect();
-        Ok(output)
+        Ok((output, captured_analysis))
     }
 
     pub fn plan(

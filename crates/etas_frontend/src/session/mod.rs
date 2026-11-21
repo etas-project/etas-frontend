@@ -80,9 +80,33 @@ where
     projects: HashMap<ProjectSessionId, FrontendProjectState<S>>,
     new_store: Box<dyn Fn() -> Result<S, FrontendSessionError>>,
     std_registry: Arc<etas_std::StdRegistry>,
-    standard_library: Option<Arc<crate::StandardLibrary>>,
+    standard_library: Option<StandardLibraryInput>,
     memory_probe: Option<FrontendMemoryProbe>,
 }
+
+#[derive(Clone)]
+pub(crate) enum StandardLibraryInput {
+    Executable(Arc<crate::StandardLibrary>),
+    Interface(Arc<crate::StandardLibraryInterface>),
+    Installed {
+        interface: Arc<crate::StandardLibraryInterface>,
+        methods: Arc<StandardMethodLoader>,
+        load: Option<Arc<StandardLibraryLoader>>,
+    },
+    Deferred {
+        interface: Arc<crate::StandardLibraryInterface>,
+        load: Arc<StandardLibraryLoader>,
+    },
+}
+
+pub(crate) type StandardMethodLoader = dyn Fn(
+        Option<(&etas_hir::HirProgram, &etas_types::TypeFacts)>,
+    ) -> Result<crate::StandardLibraryBehaviors, String>
+    + Send
+    + Sync;
+
+pub(crate) type StandardLibraryLoader =
+    dyn Fn(&crate::CheckedProgramData) -> Result<Arc<crate::StandardLibrary>, String> + Send + Sync;
 
 impl Default for FrontendSession<MemoryArtifactStore> {
     fn default() -> Self {
@@ -135,7 +159,53 @@ where
     S: FrontendArtifactStore + 'static,
 {
     pub fn with_standard_library(mut self, library: Arc<crate::StandardLibrary>) -> Self {
-        self.standard_library = Some(library);
+        self.standard_library = Some(StandardLibraryInput::Executable(library));
+        self
+    }
+
+    pub fn with_standard_library_interface(
+        mut self,
+        interface: Arc<crate::StandardLibraryInterface>,
+    ) -> Self {
+        self.standard_library = Some(StandardLibraryInput::Interface(interface));
+        self
+    }
+
+    /// Check against the installed interface and link its executable bodies
+    /// when the runnable program requires them.
+    pub fn with_deferred_standard_library(
+        mut self,
+        interface: Arc<crate::StandardLibraryInterface>,
+        load: impl Fn(&crate::CheckedProgramData) -> Result<Arc<crate::StandardLibrary>, String>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.standard_library = Some(StandardLibraryInput::Deferred {
+            interface,
+            load: Arc::new(load),
+        });
+        self
+    }
+
+    /// Keep implementation graphs out of signature checking; load checked
+    /// behavior only for methods selected by the consumer's type facts.
+    pub fn with_installed_standard_library(
+        mut self,
+        interface: Arc<crate::StandardLibraryInterface>,
+        methods: impl Fn(
+            Option<(&etas_hir::HirProgram, &etas_types::TypeFacts)>,
+        ) -> Result<crate::StandardLibraryBehaviors, String>
+        + Send
+        + Sync
+        + 'static,
+        load: Option<Arc<StandardLibraryLoader>>,
+    ) -> Self {
+        self.standard_library = Some(StandardLibraryInput::Installed {
+            interface,
+            methods: Arc::new(methods),
+            load,
+        });
         self
     }
 

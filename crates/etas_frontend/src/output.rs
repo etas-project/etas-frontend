@@ -4,9 +4,14 @@ use etas_core::{Diagnostic, SourceId, id_type};
 use etas_effects::{
     DependencyEffectMetadata, EffectFacts, EffectPipelineArtifacts, EffectRegistry,
 };
-use etas_hir::{HirItemId, HirModuleId, HirProgram, SymbolId, TopLevelLetClassification};
+use etas_hir::{
+    HirItemId, HirModuleId, HirProgram, SymbolDef, SymbolId, TopLevelLetClassification,
+};
 use etas_syntax::ast;
-use etas_types::{TypeFacts, TypeId, TypeOutput, TypeStore};
+use etas_types::{
+    DefaultArgument, ParameterDefaultRef, TypeFacts, TypeId, TypeOutput, TypeStore,
+    method::MethodTarget,
+};
 use etas_utils::UnitKindKey;
 
 use crate::project::{
@@ -348,7 +353,7 @@ pub(crate) fn resolve_stable_source_key(
 pub struct ProjectExternalDefinitionOriginsInput {
     pub package: ExternalPackageId,
     pub origins: etas_code::identity::PackageDefinitionOrigins,
-    pub descriptors: Option<etas_code::descriptor::DefinitionDescriptorSet>,
+    pub descriptors: Option<Arc<etas_code::descriptor::DefinitionDescriptorSet>>,
 }
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
@@ -1567,6 +1572,8 @@ impl ProjectOutput {
 
 #[derive(Clone, Debug, etas_core::RetainedSize)]
 pub struct CheckedProgramData {
+    pub semantic_dependencies: Arc<crate::project::CheckedSemanticDependencies>,
+    pub(crate) definition_catalog_cache: Arc<crate::code::definition::DefinitionCatalogCache>,
     pub(crate) reflection_targets: Arc<crate::code::reflection::CheckedReflectionTargets>,
     pub(crate) foreign_type_bindings: Arc<crate::code::definition::ForeignTypeBindings>,
     pub(crate) native_instantiations: Arc<crate::project::instantiation::NativeInstantiationPlan>,
@@ -1574,6 +1581,8 @@ pub struct CheckedProgramData {
     pub std_registry: std::sync::Arc<etas_std::StdRegistry>,
     /// Independently checked toolchain body owner for artifact std callables.
     pub standard_library: Option<Arc<StandardLibrary>>,
+    /// Immutable calling interface before demand-loaded implementation facts.
+    pub(crate) standard_library_interface: Option<Arc<StandardLibraryInterface>>,
     /// Installed SDK program before linking caller-specific types and methods.
     pub(crate) toolchain_base: Option<CheckedProgram>,
     pub(crate) checked_std_library_implementations:
@@ -1616,6 +1625,43 @@ impl std::ops::Deref for CheckedProgramData {
 }
 
 impl CheckedProgramData {
+    /// Methods that can cross the SDK boundary from checked expressions or
+    /// existential witnesses. An open spec invocation retains its candidate
+    /// implementations until generic invocation preparation selects a witness.
+    pub fn referenced_standard_methods(&self) -> std::collections::BTreeSet<etas_code::MethodId> {
+        self.types.referenced_external_methods()
+    }
+
+    /// Source references, including function values, without unused prelude
+    /// declarations. Selected overload calls retain their checked symbol.
+    pub fn referenced_standard_symbols(&self) -> std::collections::BTreeSet<etas_std::StdSymbolId> {
+        self.hir
+            .exprs
+            .iter()
+            .filter_map(|(_, expression)| {
+                let etas_hir::HirExpr::Path(path) = expression else {
+                    return None;
+                };
+                let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                    return None;
+                };
+                let etas_hir::SymbolDef::ImportAlias { path, .. } = &self.symbols.get(symbol)?.def
+                else {
+                    return None;
+                };
+                self.std_registry
+                    .lookup_qualified(path)
+                    .map(|symbol| symbol.id)
+            })
+            .chain(
+                self.types
+                    .library_flow_calls
+                    .values()
+                    .map(|call| call.symbol),
+            )
+            .collect()
+    }
+
     pub fn requires_definition_catalog(&self) -> bool {
         if !self.types.agent_inferences.is_empty() {
             return true;
@@ -1631,6 +1677,76 @@ impl CheckedProgramData {
             })
     }
 
+    /// Whether this application can enter SDK-owned code or need its runtime proofs.
+    pub fn requires_executable_standard_library(&self) -> bool {
+        let types = &self.types;
+        if self.requires_definition_catalog()
+            || !types.definition_operations.is_empty()
+            || !types.library_flow_calls.is_empty()
+            || !types.action_calls.is_empty()
+            || self
+                .effects
+                .metadata_callable_graphs
+                .values()
+                .any(|graph| graph.implementation.is_some())
+        {
+            return true;
+        }
+
+        let external_default = |default: &DefaultArgument| {
+            matches!(default.source, ParameterDefaultRef::External { .. })
+        };
+        if types
+            .declared_call_arguments
+            .values()
+            .any(|binding| binding.defaults.iter().any(external_default))
+            || types
+                .checked_method_calls
+                .values()
+                .chain(
+                    types
+                        .bound_method_values
+                        .values()
+                        .map(|value| &value.method),
+                )
+                .any(|method| {
+                    matches!(
+                        method.target,
+                        MethodTarget::External { .. } | MethodTarget::BoundSpec { .. }
+                    ) || method.defaults.iter().any(external_default)
+                })
+            || types
+                .existential_packs
+                .values()
+                .flat_map(|pack| &pack.witnesses)
+                .any(|witness| {
+                    matches!(
+                        witness.target,
+                        MethodTarget::External { .. }
+                            | MethodTarget::BoundSpec { .. }
+                            | MethodTarget::Standard { .. }
+                    )
+                })
+        {
+            return true;
+        }
+
+        // A path to a source std flow or value can cross into the SDK without
+        // an explicit call site, for example when passed as a function value.
+        self.symbols.iter().any(|symbol| {
+            let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+                return false;
+            };
+            self.std_registry
+                .lookup_qualified(path)
+                .is_some_and(|declaration| {
+                    self.std_registry.body_binding(declaration.id).is_some()
+                        || (matches!(declaration.decl, etas_std::StdDecl::Value(_))
+                            && self.std_registry.declaration_key(declaration.id).is_some())
+                })
+        })
+    }
+
     /// Residual plans every execution of this program must install. Plans are
     /// descriptions of required enforcement, not installation evidence.
     pub fn residual_plans(&self) -> &crate::residual::CheckedResidualPlans {
@@ -1639,7 +1755,37 @@ impl CheckedProgramData {
 
     /// Checks against the validated environment captured by this program.
     pub fn uses_environment(&self, environment: &ProjectEnvironmentInput) -> bool {
-        self.definition_environment.environment() == environment
+        let checked = self.definition_environment.environment();
+        if checked == environment {
+            return true;
+        }
+        let Some(library) = self.standard_library_interface.as_ref().filter(|library| {
+            library.prepared_signatures.is_some() || library.prepared_external.is_some()
+        }) else {
+            return false;
+        };
+        let mut declared = checked.clone();
+        let Some(package) = declared
+            .external_packages
+            .iter()
+            .find(|package| package.import_root == library.package.import_root)
+            .map(|package| package.id)
+        else {
+            return false;
+        };
+        let Some(metadata) = declared
+            .external_public_metadata
+            .iter_mut()
+            .find(|metadata| metadata.package == package)
+        else {
+            return false;
+        };
+        // These are the only fields hydrated after signature checking. Compare
+        // the original installed declarations, leaving every other field exact.
+        metadata.methods = library.metadata.methods.clone();
+        metadata.flows = library.metadata.flows.clone();
+        metadata.effect_summaries = library.metadata.effect_summaries.clone();
+        declared == *environment
     }
 
     pub fn checked_reflections(
@@ -1685,9 +1831,54 @@ impl CheckedProgramData {
     }
 }
 
-#[derive(Clone, Debug, etas_core::RetainedSize)]
+#[derive(Clone, Debug)]
 pub struct StandardLibrary {
+    /// Command diagnostics, excluded from retained executable memory accounting.
+    pub profile: etas_utils::ProfileHandle,
+    /// Rootless runtime layouts authenticated by the toolchain installation.
+    pub installed_layouts: Option<Arc<[u8]>>,
     pub program: CheckedProgram,
+    pub interface: Arc<StandardLibraryInterface>,
+}
+
+impl etas_core::memory::RetainedSize for StandardLibrary {
+    fn visit_retained<'a>(&'a self, visitor: &mut etas_core::memory::MemoryVisitor<'a>) {
+        etas_core::memory::RetainedSize::visit_retained(&self.installed_layouts, visitor);
+        etas_core::memory::RetainedSize::visit_retained(&self.program, visitor);
+        etas_core::memory::RetainedSize::visit_retained(&self.interface, visitor);
+    }
+}
+
+impl std::ops::Deref for StandardLibrary {
+    type Target = StandardLibraryInterface;
+
+    fn deref(&self) -> &Self::Target {
+        &self.interface
+    }
+}
+
+/// Source-owned behavior selected after consumer type checking. Public calling
+/// signatures are independent of these implementation graphs.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct StandardLibraryBehaviors {
+    pub methods: Vec<etas_package_metadata::PublishedMethod>,
+    pub summaries: Vec<ProjectExternalEffectSummaryInput>,
+}
+
+/// Published standard-library declarations used by consumers during checking.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct StandardLibraryInterface {
+    /// Normalized public signatures prepared by the installing compiler.
+    #[serde(skip)]
+    pub prepared_signatures: Option<Arc<etas_types::ExternalPublicMetadataInput>>,
+    /// Fully imported signatures and their shared type universe.
+    #[serde(skip)]
+    pub prepared_external: Option<Arc<etas_types::PreparedExternalSignatures>>,
+    /// Portable normalized signatures, decoded only for a different package slot.
+    #[serde(skip)]
+    pub signature_fallback: Option<Arc<Vec<u8>>>,
+    #[serde(skip)]
+    pub validation: StandardLibraryValidation,
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,
     pub package: ProjectExternalPackageInput,
     pub metadata: ProjectExternalPublicMetadataInput,
@@ -1695,7 +1886,45 @@ pub struct StandardLibrary {
     pub origins: etas_code::identity::PackageDefinitionOrigins,
 }
 
-impl StandardLibrary {
+#[derive(Clone, Debug, Default)]
+pub struct StandardLibraryValidation(std::sync::OnceLock<Arc<StandardLibraryValidationOwner>>);
+
+#[derive(Debug)]
+struct StandardLibraryValidationOwner {
+    interface: std::sync::Weak<StandardLibraryInterface>,
+    registry: std::sync::Weak<etas_std::StdRegistry>,
+}
+
+impl etas_core::memory::RetainedSize for StandardLibraryValidationOwner {
+    fn visit_retained<'a>(&'a self, _: &mut etas_core::memory::MemoryVisitor<'a>) {}
+}
+impl etas_core::memory::RetainedSize for StandardLibraryValidation {
+    fn visit_retained<'a>(&'a self, visitor: &mut etas_core::memory::MemoryVisitor<'a>) {
+        if let Some(owner) = self.0.get() {
+            visitor.visit_shared_arc(owner);
+        }
+    }
+}
+
+impl StandardLibraryInterface {
+    /// Restore the validation performed by the installing compiler. The caller
+    /// must authenticate the installed payload and its toolchain build first.
+    pub fn restore_installed_validation(self: &Arc<Self>, registry: &Arc<etas_std::StdRegistry>) {
+        self.validation.0.get_or_init(|| {
+            Arc::new(StandardLibraryValidationOwner {
+                interface: Arc::downgrade(self),
+                registry: Arc::downgrade(registry),
+            })
+        });
+    }
+
+    pub(crate) fn has_installed_validation(&self, registry: &Arc<etas_std::StdRegistry>) -> bool {
+        self.validation.0.get().is_some_and(|owner| {
+            std::ptr::eq(owner.interface.as_ptr(), self)
+                && owner.registry.as_ptr() == Arc::as_ptr(registry)
+        })
+    }
+
     /// Add the verified toolchain library to the prepared project environment.
     /// Reusing that environment in a frontend session preserves its package ID.
     pub fn append_environment(
@@ -1735,7 +1964,7 @@ impl StandardLibrary {
             .push(ProjectExternalDefinitionOriginsInput {
                 package,
                 origins: self.origins.clone(),
-                descriptors: Some(self.descriptors.as_ref().clone()),
+                descriptors: Some(self.descriptors.clone()),
             });
         package
     }

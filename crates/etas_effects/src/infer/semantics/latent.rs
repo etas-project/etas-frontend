@@ -25,7 +25,7 @@ impl EffectSemantics<'_> {
             return None;
         };
         if !matches!(
-            self.hir.exprs.get(value.value),
+            self.hir.exprs.get(value.value?),
             Some(HirExpr::Lambda { .. })
         ) {
             return None;
@@ -451,7 +451,7 @@ impl EffectSemantics<'_> {
         let etas_hir::HirItem::TopLevelLet(value) = self.hir.items.get(item)? else {
             return None;
         };
-        let HirExpr::Lambda { body, .. } = self.hir.exprs.get(value.value)? else {
+        let HirExpr::Lambda { body, .. } = self.hir.exprs.get(value.value?)? else {
             return None;
         };
         let body = match body {
@@ -460,7 +460,7 @@ impl EffectSemantics<'_> {
         };
         Some(EffectUnit::AnonymousFlow {
             owner: item,
-            value: value.value,
+            value: value.value?,
             body,
         })
     }
@@ -612,15 +612,19 @@ impl EffectSemantics<'_> {
         message: impl Into<String>,
         mut state: EffectState,
     ) -> EffectState {
-        self.diagnostics.push(Diagnostic::effect_check(
-            EffectDiagnosticCode::IncompleteEffectFacts,
-            span,
-            message,
-        ));
-        state.mark_incomplete();
+        self.mark_rejected_at(span, message, &mut state);
+        state
+    }
+
+    pub(super) fn mark_rejected_at(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        state: &mut EffectState,
+    ) {
+        self.mark_incomplete_at(span, message, state);
         state.summary.support =
             InterpreterSupport::Rejected(FrontendRejectionReason::EscapedEffect);
-        state
     }
 
     pub(crate) fn flow_container_missing_latent_sources(
