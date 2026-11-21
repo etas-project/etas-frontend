@@ -73,10 +73,20 @@ pub(super) fn collect_handler_for_requests<E>(
     for handler in handlers {
         ctx.checkpoint()?;
         let arm = ctx.ctx.hir.handler_arms[*handler].clone();
+        let ignores_abi = ctx
+            .ctx
+            .hir
+            .handler_ignores_request_abi(&arm, || ctx.checkpoint())?;
         let action_signature = match arm.action.action_symbol {
-            etas_hir::ResolveResult::Resolved(symbol) => {
-                action_signature(ctx, symbol, *handler, &arm, requests, request_body)
-            }
+            etas_hir::ResolveResult::Resolved(symbol) => action_signature(
+                ctx,
+                symbol,
+                *handler,
+                &arm,
+                requests,
+                request_body,
+                ignores_abi,
+            ),
             _ => None,
         };
         if let Some(signature) = &action_signature {
@@ -304,6 +314,7 @@ fn action_signature<E>(
     arm: &etas_hir::HirHandlerArm,
     requests: &[super::handler_request::ActionRequest],
     request_body: Option<etas_hir::HirExprId>,
+    ignores_abi: bool,
 ) -> Option<crate::EffectActionSignature> {
     let action = super::handler_request::action_identity(ctx, symbol);
     let scope = request_body.map(|body| (handler, body));
@@ -321,6 +332,24 @@ fn action_signature<E>(
                 )
             })
             .collect::<Option<Vec<_>>>()?;
+        // A non-resuming arm that binds no payload can handle every overload:
+        // it neither inspects the input ABI nor supplies an action result.
+        if ignores_abi
+            && signatures.iter().all(|signature| {
+                signature.effect_args.is_empty()
+                    && signature.params.len() == signatures[0].params.len()
+            })
+        {
+            let mut signature = signatures.into_iter().next()?;
+            signature.generic_params.clear();
+            signature.params = signature
+                .params
+                .iter()
+                .map(|_| ctx.fresh_type_var())
+                .collect();
+            signature.output = ctx.fresh_type_var();
+            return Some(signature);
+        }
         return super::handler_request::instantiate_overloads(
             ctx, signatures, requests, action, scope, arm.span,
         );

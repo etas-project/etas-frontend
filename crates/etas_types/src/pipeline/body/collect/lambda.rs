@@ -55,6 +55,7 @@ pub fn collect_lambda<E>(
         .unwrap_or_else(|| ctx.fresh_type_var());
     let previous_return = ctx.state.expected_return.replace(output);
     let previous_candidates = ctx.state.inferred_returns.take();
+    let previous_handler_depth = std::mem::replace(&mut ctx.state.handler_depth, 0);
     // Constructing a callable does not issue the requests in its latent body.
     // Nested handles still collect their own local request instances.
     let previous_request_depth = std::mem::replace(&mut ctx.state.request_scope_depth, 0);
@@ -65,6 +66,7 @@ pub fn collect_lambda<E>(
     };
     ctx.state.expected_return = previous_return;
     ctx.state.inferred_returns = previous_candidates;
+    ctx.state.handler_depth = previous_handler_depth;
     ctx.state.request_scope_depth = previous_request_depth;
     ctx.state.action_requests.truncate(previous_requests);
     let body_ty = body_ty?;

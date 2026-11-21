@@ -1958,7 +1958,6 @@ fn validate_effect_summaries(
             matches!(
                 value.ty.as_ref(),
                 Some(ProjectExternalTypeInput::Function { .. })
-                    | Some(ProjectExternalTypeInput::Handler { .. })
             )
             .then_some((value.path.clone(), None))
         }));

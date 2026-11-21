@@ -4575,11 +4575,11 @@ fn check_program_types_spec_method_selection_with_explicit_evidence() {
 type Prompt;
 
 spec PromptEncode {
-  flow encode(input: Prompt) -> string;
+  flow encode(self) -> string;
 }
 
 impl Prompt ~ PromptEncode {
-  flow encode(input: Prompt) -> string {
+  flow encode(self) -> string {
     return "encoded";
   }
 }
@@ -4602,13 +4602,13 @@ fn check_program_instantiates_parameterized_spec_method_selection() {
         None,
         r#"
 spec Identity<T> {
-  flow id(input: T) -> T;
+  flow id(self) -> T;
 }
 
 type Token = i32;
 
 impl Token ~ Identity<Token> {
-  flow id(input: Token) -> Token { return input; }
+  flow id(self) -> Token { return self; }
 }
 
 flow apply(input: Token) -> Token {

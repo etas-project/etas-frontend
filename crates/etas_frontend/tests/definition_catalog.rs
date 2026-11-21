@@ -80,16 +80,22 @@ flow inspect() -> unit { let first = ^Worker.run; let second = ^Worker.explain; 
             .descriptors()
             .effect_row(callable.analysis.effects.requested.unwrap())
             .unwrap();
-        assert_eq!(row.effects.len(), 1);
+        let inference = row.effects.iter().find(|effect| matches!(effect.arguments.as_slice(),
+            [StaticEffectArgInfo::Type(context), StaticEffectArgInfo::Type(_)]
+                if matches!(catalog.descriptors().type_info(*context), Some(TypeInfo::AgentContext(_)))
+        )).expect("checked inference context/output selectors");
         let [
-            StaticEffectArgInfo::Callable(id),
+            StaticEffectArgInfo::Type(context),
             StaticEffectArgInfo::Type(_),
-        ] = row.effects[0].arguments.as_slice()
+        ] = inference.arguments.as_slice()
         else {
             panic!("canonical method/output selectors: {row:?}");
         };
-        assert_eq!(id, &callable.id);
-        selected.push(id.clone());
+        let Some(TypeInfo::AgentContext(method)) = catalog.descriptors().type_info(*context) else {
+            panic!("checked inference context");
+        };
+        assert_eq!(etas_code::CallableId::method(method.clone()), callable.id);
+        selected.push(method.clone());
     }
     assert_eq!(selected.len(), 2);
     assert_ne!(selected[0], selected[1]);

@@ -288,11 +288,18 @@ flow factory() -> (() -> unit ![Console.stdout_write]) ![] {
         assert_eq!(portable.unknown, summary(name).unknown);
     }
 
-    // Exercise source cursor analysis directly, before SDK query publication.
-    let parsed = etas_syntax::parse_program(etas_core::SourceFile::anonymous(
+    // Exercise cursor analysis with a source-owned standard declaration,
+    // including the Option and budget declarations required by the bootstrap.
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(
         r#"
 module std.collections;
+import std.option.Option;
+import std.option.Option.{Some, None};
+import std.runtime.limits.Iterations;
 public type Iter<Element> = { next: () -> Option<(Element, Iter<Element>)> ![] };
+impl Iter<T> {
+    public flow iter(self) -> Iter<T> ![] { return self; }
+}
 flow numbers<T>(value: T, start: i32) -> Iter<T> ![] {
     return Iter { next= () => match start == 0 {
         true => None,
@@ -316,32 +323,20 @@ flow total() -> i32 ![] {
 }
 "#,
     ));
-    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    let mut program = etas_hir::lower_program(&parsed.value);
-    program.source_standard_types = true;
-    let hir = etas_hir::HirRevision::try_new(program).unwrap();
-    let types = etas_types::check_program(&hir);
-    assert!(types.diagnostics.is_empty(), "{:?}", types.diagnostics);
-    let registry = etas_std::standard_registry();
-    let effects = etas_effects::RunEffectPipeline::run(etas_effects::EffectPipelineInput {
-        source_snapshots: &[],
-        residual_identity: None,
-        trace_monitor_projector: None,
-        external_implementations: &[],
-        frozen_calls: None,
-        hir: &hir,
-        types: &types,
-        std_registry: &registry,
-        dependency_metadata: None,
-        tool_bindings: &[],
-        external_summaries: &[],
-        external_trace_specs: &[],
-        external_artifact_anchors: &[],
-        reachable_items: None,
-    })
-    .unwrap()
-    .effects;
-    assert!(effects.diagnostics.is_empty(), "{:?}", effects.diagnostics);
+    for (index, source) in [
+        "module std.option; public enum Option<T> { Some(T), None, }",
+        "module std.runtime.budget; public type Money = { private amount: f64, private currency: string };",
+        "module std.runtime.time; public type Duration = { nanos: u64 };",
+    ].into_iter().enumerate() {
+        let mut source = SourceInput::anonymous(source);
+        source.id = etas_core::SourceId(index as u32 + 1);
+        input.sources.push(source);
+    }
+    let output = Frontend.check_standard_library_source(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let hir = &checked.hir;
+    let effects = &checked.effects;
     let total = hir
         .items
         .iter()
@@ -352,19 +347,18 @@ flow total() -> i32 ![] {
             _ => None,
         })
         .unwrap();
-    assert!(!effects.facts.iteration_call_sources.is_empty());
+    assert!(!effects.iteration_call_sources.is_empty());
     assert_eq!(
-        effects.facts.suspension[&etas_effects::EffectUnit::Item(total)],
+        effects.suspension[&etas_effects::EffectUnit::Item(total)],
         S::IMMEDIATE,
         "origins={:?}; units={:?}; calls={:?}",
-        effects.facts.iteration_call_sources,
+        effects.iteration_call_sources,
         effects
-            .facts
             .unit_effects
             .iter()
-            .map(|(unit, summary)| (unit, &summary.exits, effects.facts.suspension.get(unit)))
+            .map(|(unit, summary)| (unit, &summary.exits, effects.suspension.get(unit)))
             .collect::<Vec<_>>(),
-        effects.facts.native_call_targets,
+        effects.native_call_targets,
     );
 }
 

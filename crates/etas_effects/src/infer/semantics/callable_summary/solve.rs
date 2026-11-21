@@ -231,7 +231,10 @@ impl EffectSemantics<'_> {
                 }
             })
         };
-        let requests = instantiate_requests(&plan.template.handler_requests)?;
+        // A callback can introduce default behavior while its footprint is
+        // merged below. That behavior must capture the instantiated requests,
+        // rather than the template's implementation-local parameters.
+        summary.handler_requests = instantiate_requests(&plan.template.handler_requests)?;
         if let Some(behavior) = &mut summary.default_behavior {
             behavior.direct.handler_requests =
                 instantiate_requests(&behavior.direct.handler_requests)?;
@@ -268,7 +271,6 @@ impl EffectSemantics<'_> {
                 })?;
             }
         }
-        summary.handler_requests = requests;
         self.solve_callback_completion_with(&mut summary, &plan.type_bindings, |target, span| {
             plan.bindings
                 .get(&target)
