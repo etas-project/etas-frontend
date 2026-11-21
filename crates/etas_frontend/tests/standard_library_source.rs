@@ -570,7 +570,14 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
         );
     }
     for item in first.declarations.values() {
-        if first.types.item_signatures.contains_key(item) {
+        if matches!(
+            first.types.item_signatures.get(item),
+            Some(
+                etas_types::ItemSignature::Flow(_)
+                    | etas_types::ItemSignature::Tool(_)
+                    | etas_types::ItemSignature::Agent(_)
+            )
+        ) {
             if let etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
                 body: etas_hir::HirFlowBody::Runtime { role, span },
                 ..
