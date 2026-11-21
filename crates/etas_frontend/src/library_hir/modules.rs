@@ -410,26 +410,21 @@ impl LibraryHirImage {
             .interpreter_support
             .items
             .retain(|item, _| definitions.contains(item));
-        let owned_symbol = |symbol: &SymbolId| {
-            program
-                .symbols
-                .get(*symbol)
-                .and_then(|symbol| match &symbol.def {
-                    SymbolDef::Param { owner, .. } => Some(*owner),
-                    _ => symbol.defining_item,
-                })
-                .is_some_and(|item| definitions.contains(&item))
-        };
+        let symbols = definitions
+            .iter()
+            .filter_map(|item| program.items[*item].symbol())
+            .collect::<BTreeSet<_>>();
         effects
             .symbol_effects
-            .retain(|symbol, _| owned_symbol(symbol));
+            .retain(|symbol, _| symbols.contains(symbol));
         effects
             .requirements
             .symbols
-            .retain(|symbol, _| owned_symbol(symbol));
-        effects
-            .inferred_parameter_effects
-            .retain(|symbol, _| owned_symbol(symbol));
+            .retain(|symbol, _| symbols.contains(symbol));
+        effects.inferred_parameter_effects.retain(|symbol, _| {
+            matches!(program.symbols.get(*symbol).map(|symbol| &symbol.def),
+                Some(SymbolDef::Param { owner, .. }) if definitions.contains(owner))
+        });
         let closure = self.semantic_dependencies.closure(
             definitions
                 .iter()

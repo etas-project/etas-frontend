@@ -115,6 +115,9 @@ impl<'de> Deserialize<'de> for SharedTypeBase {
 
 impl SharedTypeBase {
     pub fn new(store: TypeStore) -> Self {
+        if let Some(base) = store.unchanged_base() {
+            return base.clone();
+        }
         let nominal_identities = store.nominal_identities();
         let parameter_identities = store.parameter_identities();
         let types = if store.base.is_none() {
@@ -158,6 +161,9 @@ impl SharedTypeBase {
             .map_err(TypeBaseBuildError::Interrupted)?;
         if store.len() > max_types {
             return Err(TypeBaseBuildError::TypeLimit { limit: max_types });
+        }
+        if let Some(base) = store.unchanged_base() {
+            return Ok(base.clone());
         }
         let mut types = Vec::with_capacity(store.len());
         let mut nominal_identities = BTreeMap::new();
@@ -329,6 +335,14 @@ fn identity_matches_type(identity: &etas_code::DefinitionKey, ty: &Type) -> bool
 impl TypeStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn unchanged_base(&self) -> Option<&SharedTypeBase> {
+        self.base.as_ref().filter(|_| {
+            self.types.is_empty()
+                && self.nominal_identities.is_empty()
+                && self.parameter_identities.is_empty()
+        })
     }
 
     pub fn with_base(base: SharedTypeBase) -> Self {
