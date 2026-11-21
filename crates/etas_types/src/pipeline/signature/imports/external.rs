@@ -21,25 +21,49 @@ use crate::{
     pipeline::context::TypePipelineContext,
 };
 
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
+pub struct ExternalBindingState {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    symbols: HashMap<(ExternalPackageKey, Vec<String>), SymbolTypeFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    scoped:
+        HashMap<(ExternalPackageKey, Vec<String>), crate::facts::concurrency::ScopedCallbackFact>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    actions: HashMap<(ExternalPackageKey, Vec<String>), crate::EffectActionSignature>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    trace_specs: HashMap<(ExternalPackageKey, Vec<String>), ()>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
+    spec_signatures: HashMap<(ExternalPackageKey, Vec<String>), crate::ExternalSpecSignatureInput>,
+}
+
 pub fn apply_external_signature_input(
     ctx: &mut TypePipelineContext<'_>,
     input: &ExternalSignatureInput,
 ) {
+    let Some(state) = prepare_external_signature_input(ctx, input) else {
+        return;
+    };
+    bind_external_signature_input(ctx, input, &state);
+    apply_external_spec_facts(ctx, input);
+}
+
+pub(super) fn prepare_external_signature_input(
+    ctx: &mut TypePipelineContext<'_>,
+    input: &ExternalSignatureInput,
+) -> Option<ExternalBindingState> {
+    let mut state = ExternalBindingState::default();
     specs::declare(ctx, input);
     if !types::prepare(ctx, input) {
-        return;
+        return None;
     }
     specs::prepare(ctx, input);
-    let mut symbols = HashMap::<(ExternalPackageKey, Vec<String>), SymbolTypeFact>::new();
-    let mut scoped = HashMap::<
-        (ExternalPackageKey, Vec<String>),
-        crate::facts::concurrency::ScopedCallbackFact,
-    >::new();
-    let mut actions =
-        HashMap::<(ExternalPackageKey, Vec<String>), crate::EffectActionSignature>::new();
-    let mut trace_specs = HashMap::<(ExternalPackageKey, Vec<String>), ()>::new();
-    let mut spec_signatures =
-        HashMap::<(ExternalPackageKey, Vec<String>), crate::ExternalSpecSignatureInput>::new();
+    let ExternalBindingState {
+        symbols,
+        scoped,
+        actions,
+        trace_specs,
+        spec_signatures,
+    } = &mut state;
 
     for metadata in &input.metadata {
         let Some(span) = package_binding_span(input, metadata.package) else {
@@ -315,6 +339,22 @@ pub fn apply_external_signature_input(
         }
     }
 
+    Some(state)
+}
+
+pub(super) fn bind_external_signature_input(
+    ctx: &mut TypePipelineContext<'_>,
+    input: &ExternalSignatureInput,
+    state: &ExternalBindingState,
+) {
+    let ExternalBindingState {
+        symbols,
+        scoped,
+        actions,
+        trace_specs,
+        spec_signatures,
+    } = state;
+    specs::bind_aliases(ctx, input);
     for binding in &input.symbol_bindings {
         if let Some(fact) = symbols
             .get(&(binding.package, binding.path.clone()))
@@ -456,10 +496,12 @@ pub fn apply_external_signature_input(
                 .insert(binding.symbol, signature);
         }
     }
-    apply_external_spec_facts(ctx, input);
 }
 
-fn apply_external_spec_facts(ctx: &mut TypePipelineContext<'_>, input: &ExternalSignatureInput) {
+pub(super) fn apply_external_spec_facts(
+    ctx: &mut TypePipelineContext<'_>,
+    input: &ExternalSignatureInput,
+) {
     for metadata in &input.metadata {
         let Some(package_span) = package_binding_span(input, metadata.package) else {
             continue;

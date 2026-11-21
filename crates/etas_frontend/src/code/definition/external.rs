@@ -119,21 +119,30 @@ impl DefinitionCatalog {
                 continue;
             }
             let graph = DescriptorGraph::new(set.graph.clone(), limits)?;
-            let snapshots = headers.snapshots.as_ref().map(|snapshots| {
-                snapshots
-                    .flows
-                    .iter()
-                    .chain(&snapshots.tools)
-                    .map(|snapshot| (&snapshot.identity, snapshot))
-                    .collect::<BTreeMap<_, _>>()
-            });
-            let method_snapshots = headers.snapshots.as_ref().map(|snapshots| {
-                snapshots
-                    .methods
-                    .iter()
-                    .map(|snapshot| (&snapshot.revision.definition, snapshot))
-                    .collect::<BTreeMap<_, _>>()
-            });
+            let snapshots = headers
+                .snapshots
+                .as_ref()
+                .filter(|_| !execution)
+                .map(|snapshots| {
+                    snapshots
+                        .flows
+                        .iter()
+                        .chain(&snapshots.tools)
+                        .map(|snapshot| (&snapshot.identity, snapshot))
+                        .collect::<BTreeMap<_, _>>()
+                });
+            let method_snapshots =
+                headers
+                    .snapshots
+                    .as_ref()
+                    .filter(|_| !execution)
+                    .map(|snapshots| {
+                        snapshots
+                            .methods
+                            .iter()
+                            .map(|snapshot| (&snapshot.revision.definition, snapshot))
+                            .collect::<BTreeMap<_, _>>()
+                    });
             let bodies = headers.bodies.as_ref().map(|bodies| {
                 bodies
                     .entries

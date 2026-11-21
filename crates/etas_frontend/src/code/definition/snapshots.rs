@@ -29,12 +29,12 @@ pub(super) fn export(
         && !checked.definition_sources.has_retained_bodies()
     {
         return Ok((
-            DefinitionSnapshots {
+            DefinitionSnapshots::new(etas_code::descriptor::SnapshotValues {
                 agents: Vec::new(),
                 flows: Vec::new(),
                 tools: Vec::new(),
                 methods: Vec::new(),
-            },
+            }),
             DefinitionBodies {
                 entries: Vec::new(),
             },
@@ -145,12 +145,12 @@ pub(super) fn export(
         });
     }
     Ok((
-        DefinitionSnapshots {
+        DefinitionSnapshots::new(etas_code::descriptor::SnapshotValues {
             agents,
             flows,
             tools,
             methods,
-        },
+        }),
         DefinitionBodies { entries },
     ))
 }

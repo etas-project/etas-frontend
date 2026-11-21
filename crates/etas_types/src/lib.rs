@@ -115,3 +115,7 @@ pub use pipeline::{
 pub use facts::dependencies::type_dependencies;
 
 pub use facts::dependencies::semantic_type_references;
+
+pub use pipeline::signature::imports::prepared::{
+    PreparedExternalSignatures, prepare as prepare_external_signatures,
+};

@@ -102,6 +102,17 @@ impl Hasher for TypeHash {
     }
 }
 
+impl Serialize for SharedTypeBase {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        TypeStore::with_base(self.clone()).serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for SharedTypeBase {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        TypeStore::deserialize(deserializer).map(Self::new)
+    }
+}
+
 impl SharedTypeBase {
     pub fn new(store: TypeStore) -> Self {
         let nominal_identities = store.nominal_identities();

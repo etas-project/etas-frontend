@@ -25,6 +25,7 @@ pub struct SignaturePipelineInput<'a> {
     pub source: SourceSignatureInput,
     pub std: StdSignatureInput,
     pub external: ExternalSignatureInput,
+    pub prepared_external: Option<std::sync::Arc<crate::PreparedExternalSignatures>>,
     pub reflection: ReflectionSignatureInput,
     pub annotation_validation: AnnotationValidationMode,
 }
@@ -45,6 +46,7 @@ impl<'a> SignaturePipelineInput<'a> {
             source: SourceSignatureInput::default(),
             std: StdSignatureInput::default(),
             external: ExternalSignatureInput::default(),
+            prepared_external: None,
             reflection: ReflectionSignatureInput::default(),
             annotation_validation: AnnotationValidationMode::Immediate,
         }
@@ -88,6 +90,8 @@ pub struct StdSymbolBindingInput {
     Debug,
     PartialEq,
     Eq,
+    PartialOrd,
+    Ord,
     Hash,
     serde::Serialize,
     serde::Deserialize,

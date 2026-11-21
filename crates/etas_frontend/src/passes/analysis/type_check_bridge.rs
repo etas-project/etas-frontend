@@ -38,10 +38,27 @@ pub(super) fn build_signature_pipeline_input<'a>(
         source: source_signature_input(hir),
         std: std_signature_input(context, hir),
         external: external_signature_input(context, hir, &mut diagnostics)?,
+        prepared_external: prepared_external(context),
         reflection: reflection::signature_input(context)?,
         annotation_validation: etas_types::AnnotationValidationMode::AfterTopLevelClassification,
     };
     Ok((input, diagnostics))
+}
+
+fn prepared_external(
+    context: &ProjectContext,
+) -> Option<std::sync::Arc<etas_types::PreparedExternalSignatures>> {
+    let library = context.standard_library_interface()?;
+    let prepared = library.prepared_external.as_ref()?;
+    let environment = context
+        .validated_external_environment
+        .as_ref()?
+        .environment();
+    let package = environment
+        .external_packages
+        .iter()
+        .find(|p| p.import_root == library.package.import_root)?;
+    (prepared.package == external_package_key(package.id)).then(|| prepared.clone())
 }
 
 fn external_signature_input(
@@ -92,7 +109,12 @@ fn external_signature_input(
         metadata: environment
             .external_public_metadata
             .iter()
-            .filter(|metadata| anchors.package_span(metadata.package).is_some())
+            .filter(|metadata| {
+                anchors.package_span(metadata.package).is_some()
+                    && !prepared_external(context).is_some_and(|cache| {
+                        cache.package == external_package_key(metadata.package)
+                    })
+            })
             .map(|metadata| {
                 if Some(metadata.package) == standard
                     && let Some(prepared) = context
@@ -100,6 +122,18 @@ fn external_signature_input(
                         .and_then(|library| library.prepared_signatures.as_ref())
                 {
                     let mut input = prepared.as_ref().clone();
+                    input.package = external_package_key(metadata.package);
+                    return Ok(input);
+                }
+                if Some(metadata.package) == standard
+                    && let Some(bytes) = context
+                        .standard_library_interface()
+                        .and_then(|library| library.signature_fallback.as_ref())
+                {
+                    let mut input: etas_types::ExternalPublicMetadataInput =
+                        ciborium::de::from_reader(bytes.as_slice()).map_err(|error| {
+                            crate::code::descriptor::ProjectionError::Invalid(error.to_string())
+                        })?;
                     input.package = external_package_key(metadata.package);
                     return Ok(input);
                 }
@@ -1136,6 +1170,17 @@ fn wildcard_import_name_counts(
 }
 
 impl crate::StandardLibraryInterface {
+    pub fn prepare_imported_signatures(
+        &self,
+        registry: std::sync::Arc<etas_std::StdRegistry>,
+    ) -> Result<etas_types::PreparedExternalSignatures, String> {
+        let mut environment = crate::ProjectEnvironmentInput::default();
+        self.append_environment(&mut environment);
+        let reflection = reflection::signature_input_for_environment(&registry, Some(&environment))
+            .map_err(|error| error.to_string())?;
+        etas_types::prepare_external_signatures(registry, self.prepare_signatures()?, reflection)
+    }
+
     /// Normalize complete source-owned signatures once, before installation.
     pub fn prepare_signatures(&self) -> Result<etas_types::ExternalPublicMetadataInput, String> {
         let mut environment = crate::ProjectEnvironmentInput::default();

@@ -1759,11 +1759,9 @@ impl CheckedProgramData {
         if checked == environment {
             return true;
         }
-        let Some(library) = self
-            .standard_library_interface
-            .as_ref()
-            .filter(|library| library.prepared_signatures.is_some())
-        else {
+        let Some(library) = self.standard_library_interface.as_ref().filter(|library| {
+            library.prepared_signatures.is_some() || library.prepared_external.is_some()
+        }) else {
             return false;
         };
         let mut declared = checked.clone();
@@ -1873,6 +1871,12 @@ pub struct StandardLibraryInterface {
     /// Normalized public signatures prepared by the installing compiler.
     #[serde(skip)]
     pub prepared_signatures: Option<Arc<etas_types::ExternalPublicMetadataInput>>,
+    /// Fully imported signatures and their shared type universe.
+    #[serde(skip)]
+    pub prepared_external: Option<Arc<etas_types::PreparedExternalSignatures>>,
+    /// Portable normalized signatures, decoded only for a different package slot.
+    #[serde(skip)]
+    pub signature_fallback: Option<Arc<Vec<u8>>>,
     #[serde(skip)]
     pub validation: StandardLibraryValidation,
     pub descriptors: Arc<etas_code::descriptor::DefinitionDescriptorSet>,

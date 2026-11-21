@@ -345,51 +345,6 @@ impl LibraryHirImage {
             .std_action_calls
             .retain(|id, _| nodes.expressions.contains(id));
         effects
-            .handled_body_requests
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .native_call_targets
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .source_call_arguments
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .dynamic_call_sources
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .iteration_call_sources
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .metadata_call_targets
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .generic_effect_rows
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .expr_effects
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .handler_values
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .handle_applications
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .performed_actions
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .try_captures
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .latent_effects
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .std_callable_values
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
-            .std_action_calls
-            .retain(|id, _| nodes.expressions.contains(id));
-        effects
             .task_calls
             .retain(|id, _| nodes.expressions.contains(id));
         effects
@@ -414,6 +369,15 @@ impl LibraryHirImage {
         };
         effects.unit_effects.retain(|unit, _| keep_unit(unit));
         effects.suspension.retain(|unit, _| keep_unit(unit));
+        let closure = self.semantic_dependencies.closure(
+            definitions
+                .iter()
+                .copied()
+                .map(SemanticDependency::Definition),
+        );
+        Arc::make_mut(&mut image.semantic_dependencies)
+            .edges
+            .retain(|node, _| closure.contains(node));
         image.program = Arc::new(program);
         image
     }
