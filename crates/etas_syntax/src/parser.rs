@@ -288,10 +288,10 @@ impl Parser<'_> {
             .eat_keyword(Keyword::Var)
             .map(|token| token.span);
         let name = self.name("expected parameter name");
-        if updating.is_some() && (name.text != "self" || !allow_receiver) {
+        if let Some(updating_span) = updating.filter(|_| name.text != "self" || !allow_receiver) {
             self.diagnostics.push(Diagnostic::syntax(
                 SyntaxDiagnosticCode::InvalidItem,
-                updating.unwrap().cover(name.span),
+                updating_span.cover(name.span),
                 "var self is only valid as the first parameter of an ordinary type method",
             ));
         }

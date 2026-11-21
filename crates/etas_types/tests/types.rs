@@ -675,6 +675,7 @@ fn type_facts_store_symbol_and_item_contracts() {
     facts.item_signatures.insert(
         etas_hir::HirItemId(0),
         etas_types::ItemSignature::Flow(FlowSignature {
+            parameter_interface: None,
             generic_params: Vec::new(),
             params: vec![record],
             output: string,

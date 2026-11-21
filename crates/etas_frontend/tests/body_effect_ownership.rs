@@ -77,9 +77,9 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             assert_eq!(facts.suspension[unit], global.suspension[unit]);
             let owner = match unit {
                 EffectUnit::Item(item) => *item,
-                EffectUnit::AnonymousFlow { owner, .. } | EffectUnit::HandlerArm { owner, .. } => {
-                    *owner
-                }
+                EffectUnit::ParameterDefault { owner, .. }
+                | EffectUnit::AnonymousFlow { owner, .. }
+                | EffectUnit::HandlerArm { owner, .. } => *owner,
             };
             assert_eq!(owner, body.owner);
             assert!(
@@ -139,7 +139,8 @@ fn assert_partition(output: &ProjectOutput) -> usize {
             .filter(|unit| {
                 let owner = match unit {
                     EffectUnit::Item(item) => item,
-                    EffectUnit::AnonymousFlow { owner, .. }
+                    EffectUnit::ParameterDefault { owner, .. }
+                    | EffectUnit::AnonymousFlow { owner, .. }
                     | EffectUnit::HandlerArm { owner, .. } => owner,
                 };
                 owners.contains(owner)

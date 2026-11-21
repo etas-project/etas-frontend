@@ -1980,10 +1980,10 @@ flow main() -> unit {
             _ => None,
         })
         .expect("top-level handler let should lower");
-    assert!(matches!(
-        hir.exprs[top_level_let.value],
-        HirExpr::Handler { .. }
-    ));
+    let initializer = top_level_let
+        .value
+        .expect("source handler let has an initializer");
+    assert!(matches!(hir.exprs[initializer], HirExpr::Handler { .. }));
 
     let symbol = hir
         .symbols
@@ -1995,11 +1995,11 @@ flow main() -> unit {
             item,
             initializer,
             ..
-        } if item == item_id && initializer == top_level_let.value
+        } if item == item_id && Some(initializer) == top_level_let.value
     ));
     assert_direct_reverse(&hir, HirNodeRef::Item(item_id));
     assert_direct_reverse(&hir, HirNodeRef::Symbol(top_level_let.symbol));
-    assert_direct_reverse(&hir, HirNodeRef::Expr(top_level_let.value));
+    assert_direct_reverse(&hir, HirNodeRef::Expr(initializer));
 }
 
 #[test]

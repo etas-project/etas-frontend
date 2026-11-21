@@ -398,6 +398,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             ],
         }],
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
+            scoped_callbacks: Vec::new(),
             package: ExternalPackageId(0),
             types: vec![ProjectExternalNamedSignatureInput {
                 generic_params: Vec::new(),
@@ -413,6 +414,8 @@ fn external_environment() -> ProjectEnvironmentInput {
             values: Vec::new(),
             enums: Vec::new(),
             flows: vec![ProjectExternalFlowSignatureInput {
+                definition: None,
+                parameter_defaults: Vec::new(),
                 generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "math".to_owned(), "add".to_owned()],
                 param_names: vec!["left".to_owned(), "right".to_owned()],
@@ -437,6 +440,7 @@ fn external_environment() -> ProjectEnvironmentInput {
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                definition: None,
                 residual_checks: vec![],
                 behavior: None,
                 handler_requests: None,
@@ -4981,11 +4985,14 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             }],
         }],
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
+            scoped_callbacks: Vec::new(),
             package: ExternalPackageId(0),
             types: Vec::new(),
             values: Vec::new(),
             enums: Vec::new(),
             flows: vec![ProjectExternalFlowSignatureInput {
+                definition: None,
+                parameter_defaults: Vec::new(),
                 generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
                 param_names: Vec::new(),
@@ -5007,6 +5014,7 @@ fn frontend_computes_runtime_source_requirements_from_reachable_external_call() 
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                definition: None,
                 residual_checks: vec![],
                 behavior: None,
                 handler_requests: None,
@@ -5194,6 +5202,7 @@ fn frontend_runtime_source_requirements_ignore_provider_bound_external_tool() {
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
             package: ExternalPackageId(0),
             tools: vec![ProjectExternalToolSignatureInput {
+                parameter_defaults: Vec::new(),
                 generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "host".to_owned(), "tool".to_owned()],
                 param_names: Vec::new(),
@@ -5586,6 +5595,7 @@ fn empty_external_public_metadata(
     package: ExternalPackageId,
 ) -> ProjectExternalPublicMetadataInput {
     ProjectExternalPublicMetadataInput {
+        scoped_callbacks: Vec::new(),
         package,
         types: Vec::new(),
         values: Vec::new(),
@@ -5612,6 +5622,8 @@ fn empty_external_public_metadata(
 
 fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
     ProjectExternalFlowSignatureInput {
+        definition: None,
+        parameter_defaults: Vec::new(),
         generic_params: Vec::new(),
         path: path.iter().map(|segment| (*segment).to_owned()).collect(),
         param_names: Vec::new(),
@@ -5624,6 +5636,7 @@ fn external_unit_flow(path: &[&str]) -> ProjectExternalFlowSignatureInput {
 
 fn empty_external_summary(path: &[&str]) -> ProjectExternalEffectSummaryInput {
     ProjectExternalEffectSummaryInput {
+        definition: None,
         residual_checks: vec![],
         behavior: None,
         handler_requests: None,
@@ -8672,6 +8685,8 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
         ..ProjectEnvironmentInput::default()
     };
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        definition: None,
+        parameter_defaults: Vec::new(),
         generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
         param_names: Vec::new(),
@@ -8688,6 +8703,8 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
             param_names: Vec::new(),
             generic_params: Vec::new(),
             callable: Some(ProjectExternalFlowSignatureInput {
+                definition: None,
+                parameter_defaults: Vec::new(),
                 generic_params: Vec::new(),
                 path: vec!["dep".to_owned(), "api".to_owned(), "Pure".to_owned()],
                 param_names: Vec::new(),
@@ -8746,6 +8763,7 @@ fn frontend_check_project_replays_external_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -8853,6 +8871,8 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         ..ProjectEnvironmentInput::default()
     };
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        definition: None,
+        parameter_defaults: Vec::new(),
         generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "api".to_owned(), "call".to_owned()],
         param_names: Vec::new(),
@@ -8902,6 +8922,7 @@ fn frontend_check_project_validates_external_trace_spec_conformance_metadata() {
         }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -9035,6 +9056,8 @@ fn frontend_check_project_rejects_effectful_external_flow_without_summary_metada
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "fetch".to_owned()],
             param_names: Vec::new(),
@@ -9098,6 +9121,8 @@ fn frontend_check_project_rejects_open_external_flow_without_summary_metadata() 
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: vec![ProjectExternalCallableGenericParamInput {
                 name: "E".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Effect,
@@ -9183,6 +9208,8 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            param_names: vec!["method".into(), "host".into()],
+            parameter_defaults: Vec::new(),
             default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
@@ -9208,6 +9235,8 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "request".to_owned()],
             param_names: vec!["method".to_owned(), "host".to_owned()],
@@ -9222,6 +9251,7 @@ fn frontend_check_project_specializes_external_summary_parameter_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -9346,6 +9376,8 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            param_names: Vec::new(),
+            parameter_defaults: Vec::new(),
             default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
@@ -9369,6 +9401,8 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: vec![ProjectExternalCallableGenericParamInput {
                 name: "R".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Type,
@@ -9388,6 +9422,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -9499,6 +9534,8 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: vec![ProjectExternalCallableGenericParamInput {
                 name: "E".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Effect,
@@ -9524,6 +9561,7 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -9634,6 +9672,7 @@ flow main() -> unit ![Console.stdout_write] {
                 .map(|child| count_stdout(child, stdout))
                 .sum(),
             etas_effects::ActionTraceDomain::Repeat(child)
+            | etas_effects::ActionTraceDomain::DefaultHandler { body: child, .. }
             | etas_effects::ActionTraceDomain::TaskStart { body: child, .. } => {
                 count_stdout(child, stdout)
             }
@@ -9684,6 +9723,8 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            param_names: Vec::new(),
+            parameter_defaults: Vec::new(),
             default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
@@ -9717,6 +9758,8 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: Vec::new(),
             path: vec![
                 "dep".to_owned(),
@@ -9732,6 +9775,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -9851,6 +9895,8 @@ fn frontend_check_project_does_not_realize_an_unused_external_function_argument(
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "run".to_owned()],
             param_names: vec!["callback".to_owned()],
@@ -9866,6 +9912,7 @@ fn frontend_check_project_does_not_realize_an_unused_external_function_argument(
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -9965,6 +10012,8 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: Vec::new(),
             path: vec![
                 "dep".to_owned(),
@@ -9984,6 +10033,7 @@ fn frontend_check_project_realizes_external_callback_latent_effects() {
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -10092,6 +10142,8 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .flows
         .push(ProjectExternalFlowSignatureInput {
+            definition: None,
+            parameter_defaults: Vec::new(),
             generic_params: Vec::new(),
             path: vec!["dep".to_owned(), "math".to_owned(), "run_latent".to_owned()],
             param_names: Vec::new(),
@@ -10103,6 +10155,7 @@ fn frontend_check_project_does_not_realize_unbound_external_latent_flow_metadata
     environment.external_public_metadata[0]
         .effect_summaries
         .push(ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -10224,6 +10277,8 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
         }),
     }];
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        definition: None,
+        parameter_defaults: Vec::new(),
         generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
         param_names: Vec::new(),
@@ -10238,6 +10293,7 @@ fn frontend_check_project_propagates_external_typed_error_metadata_by_full_path(
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -10360,6 +10416,8 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
         }),
     }];
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        definition: None,
+        parameter_defaults: Vec::new(),
         generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
         param_names: Vec::new(),
@@ -10374,6 +10432,7 @@ fn frontend_check_project_handles_external_typed_error_metadata_by_full_path() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -10494,6 +10553,8 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
         ty: None,
     }];
     environment.external_public_metadata[0].flows = vec![ProjectExternalFlowSignatureInput {
+        definition: None,
+        parameter_defaults: Vec::new(),
         generic_params: Vec::new(),
         path: vec!["dep".to_owned(), "http".to_owned(), "fail".to_owned()],
         param_names: Vec::new(),
@@ -10508,6 +10569,7 @@ fn frontend_check_project_rejects_short_external_typed_error_metadata() {
     }];
     environment.external_public_metadata[0].effect_summaries =
         vec![ProjectExternalEffectSummaryInput {
+            definition: None,
             residual_checks: vec![],
             behavior: None,
             handler_requests: None,
@@ -12268,6 +12330,8 @@ fn frontend_check_project_rejects_malformed_external_action_selector_metadata() 
     environment.external_public_metadata[0]
         .actions
         .push(ProjectExternalActionSignatureInput {
+            param_names: vec!["host".into()],
+            parameter_defaults: Vec::new(),
             default_handler_effects: None,
             path: vec![
                 "dep".to_owned(),
@@ -12429,6 +12493,8 @@ fn frontend_external_selector_names_are_kind_checked() {
         environment.external_public_metadata[0]
             .actions
             .push(ProjectExternalActionSignatureInput {
+                param_names: Vec::new(),
+                parameter_defaults: Vec::new(),
                 default_handler_effects: None,
                 path: vec![
                     "dep".into(),

@@ -146,7 +146,10 @@ let text: (string) -> string ![] = identity;
             "text" => etas_types::PrimitiveType::String,
             other => panic!("unexpected binding {other}"),
         };
-        let fact = &output.facts.generic_instantiations[&binding.value];
+        let initializer = binding
+            .value
+            .expect("source callable binding has an initializer");
+        let fact = &output.facts.generic_instantiations[&initializer];
         assert_eq!(fact.type_bindings.len(), 1);
         assert_eq!(
             output.store.get(fact.type_bindings[0].1),
@@ -154,7 +157,7 @@ let text: (string) -> string ![] = identity;
         );
         let etas_types::Type::Function(signature) = output
             .store
-            .get(output.facts.expr_types[&binding.value])
+            .get(output.facts.expr_types[&initializer])
             .unwrap()
         else {
             panic!("checked function reference");
