@@ -78,6 +78,14 @@ impl PreparedExternalSignatures {
         ctx: &mut crate::pipeline::context::TypePipelineContext<'_>,
         input: &ExternalSignatureInput,
     ) {
+        // Prelude binding runs against this caller's symbols. Keep the SDK's
+        // canonical source signatures rather than its registry bootstrap views.
+        ctx.signature_facts
+            .library_callable_signatures
+            .extend(self.facts.library_callable_signatures.clone());
+        ctx.signature_facts
+            .std_callable_signatures
+            .extend(self.facts.std_callable_signatures.clone());
         external::bind_external_signature_input(ctx, input, &self.bindings);
     }
 }
