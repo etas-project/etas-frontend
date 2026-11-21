@@ -31,14 +31,21 @@ pub(super) fn build_signature_pipeline_input<'a>(
         ));
     };
     let mut diagnostics = Vec::new();
+    let external = external_signature_input(context, hir, &mut diagnostics)?;
+    let prepared_external = prepared_external(context).filter(|prepared| {
+        external
+            .package_anchors
+            .iter()
+            .any(|(package, _)| *package == prepared.package)
+    });
     let input = etas_types::SignaturePipelineInput {
         program,
         view: Some(hir.view()),
         std_registry: context.std_registry.clone(),
         source: source_signature_input(hir),
         std: std_signature_input(context, hir),
-        external: external_signature_input(context, hir, &mut diagnostics)?,
-        prepared_external: prepared_external(context),
+        external,
+        prepared_external,
         reflection: reflection::signature_input(context)?,
         annotation_validation: etas_types::AnnotationValidationMode::AfterTopLevelClassification,
     };
