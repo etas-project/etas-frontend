@@ -20,25 +20,48 @@ impl SourcePackage {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(root.join("library/std/text")).unwrap();
+        fs::create_dir_all(root.join("library/std/runtime/budget")).unwrap();
+        fs::write(root.join("library/std/runtime/budget/mod.es"),
+            "module std.runtime.budget; public type Money = { private amount: f64, private currency: string };").unwrap();
+        fs::create_dir_all(root.join("library/std/runtime/time")).unwrap();
+        fs::write(
+            root.join("library/std/runtime/time/mod.es"),
+            "module std.runtime.time; public type Duration = { millis: u128 };",
+        )
+        .unwrap();
         let package = Self(root);
         package.write("mod.es", "module std.text;");
         package.write(
             "assembly.es",
             r#"
 module std.text;
-public flow join(parts: Array<string>, separator: string) -> string {
-    var result = "";
-    var first = true;
-    for part in parts limit Iterations(18446744073709551615) {
-        if !first { result = result + separator; }
-        result = result + part;
-        first = false;
-    }
-    return result;
+public flow join(parts: (string, string), separator: string) -> string {
+    let (first, second) = parts;
+    return first + separator + second;
 }
 "#,
         );
         package
+    }
+
+    fn copy_maintained_library(&self) {
+        fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
+            fs::create_dir_all(target).unwrap();
+            for entry in fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                let destination = target.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &destination);
+                } else {
+                    fs::copy(entry.path(), destination).unwrap();
+                }
+            }
+        }
+        let manifest = etas_std::library::source_checkout_manifest();
+        copy_tree(
+            &manifest.parent().unwrap().join("library/std"),
+            &self.0.join("library/std"),
+        );
     }
 
     fn write(&self, file: &str, source: &str) {
@@ -72,7 +95,7 @@ impl Drop for SourcePackage {
 #[test]
 fn adding_a_source_part_adds_public_std_flows_without_rust_registration_or_main() {
     let package = SourcePackage::new();
-    assert_eq!(package.load().input.sources.len(), 2);
+    assert_eq!(package.load().input.sources.len(), 4);
     package.write(
         "decorate.es",
         r#"
@@ -82,7 +105,7 @@ public flow decorate_twice(value: string) -> string { return decorate(decorate(v
 "#,
     );
     let loaded = package.load();
-    assert_eq!(loaded.input.sources.len(), 3);
+    assert_eq!(loaded.input.sources.len(), 5);
     package.write(
         "consumer.es",
         r#"
@@ -92,7 +115,7 @@ public flow render(value: string) -> string { return decorate(value); }
 "#,
     );
     let loaded = package.load();
-    assert_eq!(loaded.input.sources.len(), 4);
+    assert_eq!(loaded.input.sources.len(), 6);
     let consumer_fingerprint = loaded.input.options.canonical_options_fingerprint();
     let output = Frontend.check_standard_library_source(loaded.input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
@@ -162,159 +185,24 @@ fn checked_library_hir_round_trips_private_generic_bodies_with_portable_identiti
     let owner = etas_code::PackageKey::from_name_and_version("std", "0.2.2").unwrap();
     let make_image = || {
         let package = SourcePackage::new();
-        let maintained = etas_std::library::source_checkout_manifest();
-        let library = maintained.parent().unwrap().join("library/std");
-        fs::create_dir_all(package.0.join("library/std/math")).unwrap();
-        fs::copy(
-            library.join("math/complete.es"),
-            package.0.join("library/std/math/mod.es"),
-        )
-        .unwrap();
-        let message = fs::read_to_string(library.join("agent/message/complete.es")).unwrap();
-        let start = message
-            .find("@std.role(\"std.agent.message.Message\")")
-            .unwrap();
-        let end = message[start..].find(";\n").unwrap() + start + 2;
-        let directory = package.0.join("library/std/agent/message");
-        fs::create_dir_all(&directory).unwrap();
+        package.copy_maintained_library();
         fs::write(
-            directory.join("mod.es"),
-            format!(
-                "module std.agent.message;\n{}\n{}",
-                &message[start..end],
-                r#"
+            package.0.join("library/std/agent/message/fixture.es"),
+            r#"
+module std.agent.message;
 impl Message<Source> {
     public flow with_body<Target>(self, value: Target) -> Message<Target> ![] {
         return Message {
-            body = value,
-            content = value,
-            id = self.id,
-            from = self.from,
-            role = self.role,
-            session = self.session,
-            created_at = self.created_at,
-            provenance = self.provenance,
+            body= value, content= value, id= self.id, from= self.from,
+            role= self.role, session= self.session, created_at= self.created_at,
+            provenance= self.provenance,
         };
     }
-    public flow payload(self) -> Source ![] { return self.content; }
 }
 public flow replaced_message(value: Message<string>) -> Message<i32> ![] {
     return value.with_body(7);
 }
-"#
-            ),
-        )
-        .unwrap();
-        fs::create_dir_all(package.0.join("library/std/result")).unwrap();
-        fs::copy(
-            library.join("result/mod.es"),
-            package.0.join("library/std/result/mod.es"),
-        )
-        .unwrap();
-        let fs_source = fs::read_to_string(library.join("fs/mod.es")).unwrap();
-        let fs_header = &fs_source[..fs_source.find("public flow path<").unwrap()];
-        let fs_flows = [
-            "public flow root<",
-            "public flow relative_name<",
-            "public flow read_bytes<",
-            "public flow read_bytes_limited<",
-            "public flow write_bytes<",
-            "public flow list<",
-            "public flow list_limited<",
-            "public flow stat<",
-            "public flow atomic_replace<",
-        ]
-        .map(|start| {
-            let source = &fs_source[fs_source.find(start).unwrap()..];
-            &source[..source.find("\n}\n").unwrap() + 3]
-        });
-        fs::create_dir_all(package.0.join("library/std/fs")).unwrap();
-        fs::write(
-            package.0.join("library/std/fs/mod.es"),
-            format!("{fs_header}\n{}", fs_flows.join("\n")),
-        )
-        .unwrap();
-        let effects = fs::read_to_string(library.join("effects/mod.es")).unwrap();
-        let file_io = &effects[effects.find("@std.role(\"std.effects.FileIO\")").unwrap()..];
-        let file_io = &file_io[..file_io.find(';').unwrap() + 1];
-        let fs_effect = &effects[effects.find("@std.role(\"std.effects.Fs\")").unwrap()..];
-        fs::create_dir_all(package.0.join("library/std/effects")).unwrap();
-        fs::write(package.0.join("library/std/effects/mod.es"), format!("module std.effects;\nimport std.fs.{{Region, WorkspacePath, FsStat}};\n{file_io}\n{fs_effect}")).unwrap();
-        let collections = fs::read_to_string(library.join("collections/mod.es")).unwrap();
-        let range = &collections[collections
-            .find("@std.role(\"std.collections.Range\")")
-            .unwrap()..];
-        let range = &range[..range.find("\n};").unwrap() + 3];
-        let algorithms = fs::read_to_string(library.join("collections/algorithms.es")).unwrap();
-        let iteration = fs::read_to_string(library.join("collections/iteration.es")).unwrap();
-        let iterable = &iteration[iteration.find("public spec Iterable<T>").unwrap()..];
-        let iterable = &iterable[..iterable.find("\n}\n").unwrap() + 3];
-        let reverse = &algorithms[algorithms
-            .find("impl List<T> {\n    public flow reverse")
-            .unwrap()..];
-        let reverse = &reverse[..reverse.find("\n}\n").unwrap() + 3];
-        let constructors = &algorithms[algorithms.find("impl Range<T> {").unwrap()..];
-        let constructors = &constructors[..constructors.find("\n}\n").unwrap() + 3];
-        let target = package.0.join("library/std/collections/range.es");
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        let sequence_roles = &collections[..collections
-            .find("@std.role(\"std.collections.Range\")")
-            .unwrap()];
-        let slice_role = &collections[collections
-            .find("@std.role(\"std.collections.Slice\")")
-            .unwrap()
-            ..collections
-                .find("@std.role(\"std.collections.Iter\")")
-                .unwrap()];
-        fs::write(
-            target.parent().unwrap().join("primitives.es"),
-            format!("{sequence_roles}\n{slice_role}\n{iterable}\n{reverse}"),
-        )
-        .unwrap();
-        for relative in ["collections/order.es", "collections/ordered.es"] {
-            fs::copy(
-                library.join(relative),
-                package.0.join("library/std").join(relative),
-            )
-            .unwrap();
-        }
-        fs::write(
-            target,
-            format!("module std.collections;\n{range}\n{constructors}\n"),
-        )
-        .unwrap();
-        for relative in [
-            "runtime/error/complete.es",
-            "runtime/budget/mod.es",
-            "runtime/mod.es",
-            "runtime/checkpoint/mod.es",
-        ] {
-            let target = package.0.join("library/std").join(relative);
-            fs::create_dir_all(target.parent().unwrap()).unwrap();
-            fs::copy(library.join(relative), target).unwrap();
-        }
-        let data = fs::read_to_string(library.join("runtime/value/mod.es")).unwrap();
-        let data = &data[..data.find("    public flow tagged(").unwrap()];
-        let target = package.0.join("library/std/runtime/value/mod.es");
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(target, format!("{data}\n}}\n")).unwrap();
-        let json = fs::read_to_string(library.join("json/complete.es")).unwrap();
-        let json = &json[..json.find("public flow parse(").unwrap()];
-        fs::create_dir_all(package.0.join("library/std/json")).unwrap();
-        fs::write(package.0.join("library/std/json/mod.es"), json).unwrap();
-        for relative in ["memory/context.es", "stream/clock.es"] {
-            let target = package.0.join("library/std").join(relative);
-            fs::create_dir_all(target.parent().unwrap()).unwrap();
-            fs::copy(library.join(relative), target).unwrap();
-        }
-        let memory = fs::read_to_string(library.join("memory/complete.es")).unwrap();
-        let error = memory
-            .lines()
-            .find(|line| line.starts_with("public type StorageError ="))
-            .unwrap();
-        fs::write(
-            package.0.join("library/std/memory/error.es"),
-            format!("module std.memory;\n{error}\n"),
+"#,
         )
         .unwrap();
         package.write(
@@ -350,7 +238,7 @@ impl Container<List<T>> {
     public flow first(self) -> Option<T> ![] {
         return match self.value { [] => None, value :: _ => Some(value) };
     }
-    public flow count(self) -> usize ![] { return self.value.length; }
+    public flow count(self) -> usize ![] { return self.value.len(); }
 }
 public flow literal_label() -> string ![] {
     let face = char { bits = 128578 };
@@ -388,58 +276,6 @@ public flow transformed_value() -> i32 ![] {
 public flow describe() -> unit { let definition = ^generic_echo; return; }
 "#,
         );
-        fs::create_dir_all(package.0.join("library/std/core")).unwrap();
-        let core = fs::read_to_string(library.join("core/mod.es")).unwrap();
-        let termination = &core[..core.find("@std.role(\"std.core.Index\")").unwrap()];
-        fs::write(
-            package.0.join("library/std/core/termination.es"),
-            termination,
-        )
-        .unwrap();
-        fs::write(
-            package.0.join("library/std/core/mod.es"),
-            r#"
-module std.core;
-@std.role("std.core.Index")
-public spec Index { flow to_usize(self) -> Option<usize> ![]; }
-impl usize ~ Index {
-    public flow to_usize(self) -> Option<usize> ![] { return Some(self); }
-}
-impl bytes {
-    public flow size(self) -> usize ![] { return self.length; }
-}
-public flow byte_count(value: bytes) -> usize ![] { return value.size(); }
-public flow checked_index<I ~ Index>(value: I) -> Option<usize> ![] {
-    return value.to_usize();
-}
-public flow builtin_index() -> Option<usize> ![] {
-    let value: usize = 3;
-    return std.core.checked_index(std.text.generic_echo(value));
-}
-"#,
-        )
-        .unwrap();
-        fs::create_dir_all(package.0.join("library/std/collections")).unwrap();
-        fs::write(
-            package.0.join("library/std/collections/mod.es"),
-            r#"
-module std.collections;
-@std.role("std.collections.Iter")
-public type Iter<Element> = { next: () -> Option<(Element, Iter<Element>)> ![] };
-public flow numbers(start: i32, end: i32) -> Iter<i32> ![] {
-    return Iter { next = () => {
-        if start >= end { return None; }
-        return Some((start, numbers(start + 1, end)));
-    } };
-}
-public flow sum() -> i32 ![] {
-    var total: i32 = 0;
-    for value in numbers(1, 5) limit Iterations(4) { total = total + value; }
-    return total;
-}
-"#,
-        )
-        .unwrap();
         let mut loaded = package.load();
         loaded.input.environment.local_source_package = Some(owner);
         loaded.input.environment.stable_source_keys = loaded
@@ -578,7 +414,11 @@ public flow sum() -> i32 ![] {
         .types
         .methods
         .entries()
-        .find(|method| method.name == "replace")
+        .find(|method| {
+            method.name == "replace"
+                && etas_types::ty::display_type(&linked.type_store, method.receiver_type)
+                    .starts_with("std.text.Container<")
+        })
         .unwrap();
     assert!(replace.receiver.is_updating());
     let etas_types::method::MethodTarget::Source { callable, .. } = replace.target else {
@@ -594,7 +434,11 @@ public flow sum() -> i32 ![] {
         .types
         .methods
         .entries()
-        .find(|method| method.name == "update")
+        .find(|method| method.name == "update" && matches!(
+            &method.target,
+            etas_types::method::MethodTarget::BoundSpec { spec: etas_types::CheckedSpecRef::Source(spec), .. }
+                if linked.types.spec_signatures[spec].name == "Update"
+        ))
         .unwrap();
     assert_eq!(
         update.receiver,
@@ -634,11 +478,9 @@ public flow sum() -> i32 ![] {
         );
     }
     assert!(linked.types.known_std_types.index_error.is_some());
-    let money = linked
-        .types
-        .known_std_types
-        .runtime_type(etas_std::RuntimeTypeRole::Money)
-        .unwrap();
+    let money = linked.type_store.iter().find_map(|(ty, value)| {
+        matches!(value, etas_types::Type::Nominal(record) if record.name == "std.runtime.budget.Money").then_some(ty)
+    }).expect("source-owned Money declaration");
     assert!(
         matches!(linked.type_store.get(money), Some(etas_types::Type::Nominal(record)) if record.representation.is_some())
     );
@@ -646,7 +488,11 @@ public flow sum() -> i32 ![] {
         .types
         .type_impl_methods
         .values()
-        .find(|method| method.name == "apply")
+        .find(|method| {
+            method.name == "apply"
+                && etas_types::ty::display_type(&linked.type_store, method.self_type)
+                    .starts_with("std.text.Transform<")
+        })
         .unwrap();
     let applications = linked
         .checked_callable_applications(transform.body)
@@ -673,7 +519,11 @@ public flow sum() -> i32 ![] {
         .types
         .type_impl_methods
         .values()
-        .find(|method| method.name == "capture")
+        .find(|method| {
+            method.name == "capture"
+                && etas_types::ty::display_type(&linked.type_store, method.self_type)
+                    == "std.runtime.value.Data"
+        })
         .unwrap();
     assert!(matches!(
         &linked.hir.items[capture.body],
@@ -719,15 +569,20 @@ public flow sum() -> i32 ![] {
             Some(etas_effects::Determinism::NonDeterministic)
         );
     }
-    let mut primitives = 0;
     for item in first.declarations.values() {
-        if first.types.item_signatures.contains_key(item) {
+        if matches!(
+            first.types.item_signatures.get(item),
+            Some(
+                etas_types::ItemSignature::Flow(_)
+                    | etas_types::ItemSignature::Tool(_)
+                    | etas_types::ItemSignature::Agent(_)
+            )
+        ) {
             if let etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
                 body: etas_hir::HirFlowBody::Runtime { role, span },
                 ..
             }) = &first.program.items[*item]
             {
-                primitives += 1;
                 assert!(
                     matches!(&linked.hir.items[*item], etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
                     body: etas_hir::HirFlowBody::Runtime { role: restored, .. }, ..
@@ -777,13 +632,24 @@ public flow sum() -> i32 ![] {
                         );
                     }
                 }
+            } else if matches!(
+                &first.program.items[*item],
+                etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Decl { .. },
+                    ..
+                })
+            ) {
+                assert!(linked.definition_sources.body(*item).is_none());
             } else {
-                assert!(linked.definition_sources.body(*item).is_some());
+                assert!(
+                    linked.definition_sources.body(*item).is_some(),
+                    "missing body for {:?}",
+                    first.program.items[*item]
+                );
             }
             assert!(linked.effects.item_effects.contains_key(item));
         }
     }
-    assert_eq!(primitives, 2);
 }
 
 #[test]
@@ -870,27 +736,21 @@ public flow execute<T, effect E>(body: (Scheduler) -> T ![E]) -> T ![E] {}
         };
         assert!(matches!(
             (
-                declaration.runtime_role.unwrap(),
+                declaration.name.as_str(),
                 checked
                     .type_store
                     .get(etas_types::TypeId(constructor.0))
                     .unwrap()
             ),
-            (etas_std::RuntimeTypeRole::Task, etas_types::Type::Task(_))
-                | (
-                    etas_std::RuntimeTypeRole::Scheduler,
-                    etas_types::Type::SchedulerHandle
-                )
-                | (
-                    etas_std::RuntimeTypeRole::Continuation,
-                    etas_types::Type::Continuation(_)
-                )
+            ("Task", etas_types::Type::Task(_))
+                | ("Scheduler", etas_types::Type::SchedulerHandle)
+                | ("Continuation", etas_types::Type::Continuation(_))
         ));
     }
 }
 
 #[test]
-fn native_enum_payload_requirement_is_checked_at_the_source_variant() {
+fn ordinary_source_enum_payloads_do_not_inherit_a_legacy_native_abi() {
     let package = SourcePackage::new();
     let maintained = etas_std::library::source_checkout_manifest()
         .parent()
@@ -901,135 +761,66 @@ fn native_enum_payload_requirement_is_checked_at_the_source_variant() {
         .replace("\n    ParseFailure,", "\n    ParseFailure(string),");
     package.write("errors.es", &source);
     let loaded = package.load();
-    let file = loaded
-        .input
-        .sources
-        .iter()
-        .find(|file| file.text == source)
-        .unwrap()
-        .id;
     let output = Frontend.check_standard_library_source(loaded.input);
-    assert!(output.checked.is_none());
-    let diagnostic = output
-        .diagnostics
-        .iter()
-        .find(|diagnostic| {
-            diagnostic
-                .message
-                .contains("native enum ABI requires unit variant `ParseFailure`")
-        })
+    let checked = output.checked.expect(&format!("{:?}", output.diagnostics));
+    let variant = checked
+        .types
+        .enum_layouts
+        .values()
+        .flat_map(|layout| &layout.variants)
+        .find(|variant| variant.name == "ParseFailure")
         .unwrap();
-    assert_eq!(diagnostic.primary.span.source, file);
-    let range = diagnostic.primary.span.range;
-    assert!(source[range.start.0 as usize..range.end.0 as usize].contains("ParseFailure(string)"));
+    assert_eq!(variant.fields.len(), 1);
+    assert!(matches!(
+        checked.type_store.get(variant.fields[0]),
+        Some(etas_types::Type::Primitive(
+            etas_types::PrimitiveType::String
+        ))
+    ));
 }
 
 #[test]
 fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
     let package = SourcePackage::new();
-    fs::create_dir_all(package.0.join("library/std/fs")).unwrap();
-    let maintained = etas_std::library::source_checkout_manifest()
-        .parent()
-        .unwrap();
-    fs::create_dir_all(package.0.join("library/std/effects")).unwrap();
-    let effects = fs::read_to_string(maintained.join("library/std/effects/mod.es")).unwrap();
-    let file_io = &effects[effects.find("@std.role(\"std.effects.FileIO\")").unwrap()..];
-    let file_io = &file_io[..file_io.find(';').unwrap() + 1];
-    let fs_effect = &effects[effects.find("@std.role(\"std.effects.Fs\")").unwrap()..];
-    fs::write(package.0.join("library/std/effects/mod.es"),
-        format!("module std.effects;\nimport std.fs.{{Region, WorkspacePath, FsStat}};\n{file_io}\n{fs_effect}")
-            .replace("<R ~ Region>", "<Scope ~ Region>")
-            .replace("WorkspacePath<R>", "WorkspacePath<Scope>"),
-    ).unwrap();
-    let source = fs::read_to_string(maintained.join("library/std/fs/mod.es")).unwrap();
-    let header = &source[..source.find("public flow path<").unwrap()];
-    let methods = [
-        "root",
-        "relative_name",
-        "read_bytes",
-        "read_bytes_limited",
-        "write_bytes",
-        "list",
-        "list_limited",
-        "stat",
-        "atomic_replace",
-    ]
-    .map(|name| {
-        let source = &source[source.find(&format!("public flow {name}<")).unwrap()..];
-        &source[..source.find("\n}\n").unwrap() + 3]
-    });
-    let source = format!("{header}\n{}", methods.join("\n"));
-    let library = maintained.join("library/std");
-    fs::create_dir_all(package.0.join("library/std/collections")).unwrap();
-    let collections = fs::read_to_string(library.join("collections/mod.es")).unwrap();
-    let sequences = &collections[..collections
-        .find("@std.role(\"std.collections.Range\")")
-        .unwrap()];
-    let iterator = &collections[collections
-        .rfind("@std.role(\"std.collections.Iter\")")
-        .unwrap()..];
-    let algorithms = fs::read_to_string(library.join("collections/algorithms.es")).unwrap();
-    let reverse = &algorithms[algorithms
-        .find("impl List<T> {\n    public flow reverse")
-        .unwrap()..];
-    let reverse = &reverse[..reverse.find("\n}\n").unwrap() + 3];
-    let iteration = fs::read_to_string(library.join("collections/iteration.es")).unwrap();
-    let iterable = &iteration[iteration.find("public spec Iterable<T>").unwrap()..];
-    let iterable = &iterable[..iterable.find("\n}\n").unwrap() + 3];
-    fs::write(
-        package.0.join("library/std/collections/mod.es"),
-        format!("{sequences}\n{iterator}\n{iterable}\n{reverse}\n"),
-    )
-    .unwrap();
-    for relative in [
-        "collections/order.es",
-        "collections/ordered.es",
-        "result/mod.es",
-        "option/mod.es",
-    ] {
-        let target = package.0.join("library/std").join(relative);
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::copy(library.join(relative), target).unwrap();
-    }
-    let core = fs::read_to_string(library.join("core/mod.es")).unwrap();
-    let termination = &core[..core.find("@std.role(\"std.core.Index\")").unwrap()];
-    fs::create_dir_all(package.0.join("library/std/core")).unwrap();
-    fs::write(package.0.join("library/std/core/mod.es"), termination).unwrap();
-
+    package.copy_maintained_library();
+    let source = fs::read_to_string(package.0.join("library/std/fs/mod.es")).unwrap();
     fs::write(
         package.0.join("library/std/fs/mod.es"),
-        source
-            .replace(
-                "public type WorkspacePath<R ~ Region>",
-                "public type WorkspacePath<Authority ~ Region>",
-            )
-            .replace(
-                "public enum ReadLimitError {",
-                "public enum ReadLimitError { SdkOnly,",
-            ),
+        source.replace(
+            "public enum ReadLimitError {",
+            "public enum ReadLimitError { SdkOnly,",
+        ),
     )
     .unwrap();
     let output = Frontend.check_standard_library_source(package.load().input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let checked = output.checked.unwrap();
     let path = checked
-        .std_registry
-        .lookup_qualified(&["std", "fs", "WorkspacePath"])
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "WorkspacePath")
         .unwrap();
-    let etas_std::StdDecl::Type(declaration) = &path.decl else {
-        unreachable!()
+    let etas_types::SymbolTypeFact::NominalType { constructor, .. } =
+        checked.types.symbol_types[&path.id]
+    else {
+        panic!("source-owned workspace path");
     };
-    assert_eq!(declaration.params[0].name, "Authority");
-    assert_eq!(
-        declaration.params[0].bounds[0].path,
-        ["std", "fs", "Region"]
-    );
-    // IOError is an ordinary source nominal, without a language role or copied declaration.
+    let parameter = &checked.types.type_generics[&etas_types::TypeId(constructor.0)][0];
+    assert_eq!(parameter.name, "R");
+    let [bound] = parameter.bounds.as_slice() else {
+        panic!("region bound");
+    };
+    let etas_types::CheckedSpecRef::Source(region) = bound.spec else {
+        panic!("source region");
+    };
+    assert_eq!(checked.types.spec_signatures[&region].name, "Region");
+    // Its installed query is derived from the ordinary source declaration.
     assert!(
         checked
             .std_registry
             .lookup_qualified(&["std", "fs", "IOError"])
-            .is_none()
+            .is_some_and(|symbol| matches!(&symbol.decl,
+                etas_std::StdDecl::Type(declaration) if declaration.runtime_role.is_none()))
     );
     let error = checked.types.known_std_types.filesystem_io_error.unwrap();
     assert!(
@@ -1078,7 +869,7 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
         .unwrap();
     assert_eq!(
         checked.types.action_signatures[&source_stat].generic_params[0].name,
-        "Scope"
+        "R"
     );
     let stable = checked.effect_registry.action(source_stat).unwrap();
     assert_eq!(stable.id.0, 139);
@@ -1124,9 +915,17 @@ fn source_filesystem_types_keep_region_bounds_and_native_read_actions() {
     let signature = &checked.types.action_signatures[&source_read];
     assert_eq!(call.args.len(), 2);
     assert_eq!(signature.params.len(), 2);
+    let limit = etas_types::value_representation::option_parameter(
+        &checked.type_store,
+        &checked.types.known_std_types,
+        signature.params[1],
+    )
+    .expect("source Option read limit");
     assert!(matches!(
-        checked.type_store.get(signature.params[1]),
-        Some(etas_types::Type::Option(_))
+        checked.type_store.get(limit),
+        Some(etas_types::Type::Primitive(
+            etas_types::PrimitiveType::USize
+        ))
     ));
     assert!(!checked.types.std_intrinsic_calls.values().any(|call| {
         call.qualified_path

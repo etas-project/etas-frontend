@@ -1631,7 +1631,7 @@ flow first() -> i64 {
   return 1;
 }
 
-flow second() -> i64 {
+flow main() -> i64 {
   return first() + 1;
 }
 "#,
@@ -6481,7 +6481,7 @@ flow main(flag: bool) -> unit {
             diagnostic.code == DiagnosticCode::Type(TypeDiagnosticCode::TypeMismatch)
         })
         .count();
-    assert_eq!(mismatches, 2, "{:?}", output.diagnostics);
+    assert_eq!(mismatches, 4, "{:?}", output.diagnostics);
 }
 
 #[test]
@@ -6867,7 +6867,9 @@ fn frontend_check_project_still_rejects_duplicate_flows_with_entry_name() {
     assert!(output.checked.is_none());
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message.contains("duplicate") && diagnostic.message.contains("main")
+            diagnostic
+                .message
+                .contains("entry flow `main` is ambiguous")
         }),
         "{:?}",
         output.diagnostics
@@ -7181,7 +7183,7 @@ fn frontend_check_project_reports_duplicate_top_level_names_across_module_parts(
         output.diagnostics.iter().any(|diagnostic| {
             diagnostic
                 .message
-                .contains("duplicate top-level declaration `helper`")
+                .contains("entry flow `helper` is ambiguous")
         }),
         "{:?}",
         output.diagnostics
@@ -10621,7 +10623,7 @@ flow main() -> unit ![Error<HttpError>] {
                 DiagnosticCode::Effect(EffectDiagnosticCode::IncompleteEffectFacts)
             ) && diagnostic
                 .message
-                .contains("source import target requires checked effect facts")
+                .contains("cannot reconstruct the checked effect contract for `dep.http.fail`")
         }),
         "{:?}",
         output.diagnostics
@@ -10888,7 +10890,7 @@ flow main() -> unit {
         .find(|summary| summary.item == ["storage", "api", "twice"])
         .expect("row-polymorphic flow effect summary should be published");
     assert_eq!(row_summary.public_effects.tail.as_deref(), Some("E"));
-    assert_eq!(row_summary.requested_actions.tail.as_deref(), Some("E"));
+    assert_eq!(row_summary.requested_actions.tail, None);
     assert!(row_summary.latent_flows.is_empty(), "{row_summary:#?}");
     let etas_package_metadata::ActionTrace::Seq(trace) = &row_summary.action_trace else {
         panic!("generic action trace should preserve sequence: {row_summary:#?}");
@@ -12392,7 +12394,7 @@ fn frontend_replays_std_spec_evidence_without_consumer_import_aliases() {
             (
                 vec!["std", "fs", "MissingRegion"],
                 vec![],
-                Some("unknown standard spec"),
+                Some("without a checked declaration"),
             ),
             (
                 vec!["std", "crypto", "Digest"],

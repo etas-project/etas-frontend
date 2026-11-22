@@ -44,6 +44,7 @@ impl Pass<ProjectContext> for PrepareCandidateApplicationPass {
             .produces(ArtifactSet::from([
                 BOUND_CANDIDATE_APPLICATION,
                 TYPE_ENVIRONMENT,
+                SIGNATURE_FACTS,
             ]))
     }
 
@@ -113,6 +114,13 @@ impl Pass<ProjectContext> for PrepareCandidateApplicationPass {
         });
         match result {
             Ok(prepared) => {
+                // The checked extension owns new nominal/spec declarations as well
+                // as their type IDs. Keep the signature snapshot pinned to it when
+                // the final HIR revision rebuilds the effect registry.
+                let signatures = context.signature_types.as_mut().expect("signature facts");
+                signatures.facts = prepared.base.signature_facts().clone();
+                signatures.store =
+                    Arc::new(TypeStore::with_base(prepared.base.type_base().clone()));
                 context.type_environment = Some(prepared.base);
                 let Some(candidate) = context.candidate.as_mut() else {
                     return PassResult::failed(

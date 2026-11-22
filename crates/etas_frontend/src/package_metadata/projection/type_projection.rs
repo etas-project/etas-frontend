@@ -126,20 +126,7 @@ impl<'a> TypeProjection<'a> {
         let mut metadata = MetadataType::default();
         match ty_value {
             Type::Existential { bounds } => {
-                metadata.kind = MetadataTypeKind::Existential;
-                for bound in bounds {
-                    metadata.bounds.push(MetadataSpecBound {
-                        spec: (self.spec_path)(&bound.spec)?,
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| self.ty(*arg))
-                            .collect::<Result<_, _>>()?,
-                    });
-                }
-                metadata
-                    .bounds
-                    .sort_by(|left, right| left.spec.cmp(&right.spec));
+                self.existential_type(bounds, &mut metadata)?;
             }
             Type::Primitive(primitive) => {
                 metadata.kind = MetadataTypeKind::Primitive;
@@ -160,9 +147,7 @@ impl<'a> TypeProjection<'a> {
                 self.unary_type(MetadataTypeKind::List, *element, &mut metadata)?
             }
             Type::Map { key, value } => {
-                metadata.kind = MetadataTypeKind::Map;
-                metadata.children.push(self.ty(*key)?);
-                metadata.children.push(self.ty(*value)?);
+                self.children_type(MetadataTypeKind::Map, &[*key, *value], &mut metadata)?;
             }
             Type::Set(element) => {
                 self.unary_type(MetadataTypeKind::Set, *element, &mut metadata)?
@@ -177,37 +162,16 @@ impl<'a> TypeProjection<'a> {
                 self.unary_type(MetadataTypeKind::Option, *inner, &mut metadata)?
             }
             Type::Result { ok, err } => {
-                metadata.kind = MetadataTypeKind::Result;
-                metadata.children.push(self.ty(*ok)?);
-                metadata.children.push(self.ty(*err)?);
+                self.children_type(MetadataTypeKind::Result, &[*ok, *err], &mut metadata)?;
             }
             Type::Tuple(elements) => {
-                metadata.kind = MetadataTypeKind::Tuple;
-                metadata.children = elements
-                    .iter()
-                    .map(|element| self.ty(*element))
-                    .collect::<Result<Vec<_>, _>>()?;
+                self.children_type(MetadataTypeKind::Tuple, elements, &mut metadata)?;
             }
             Type::Function(flow) => {
-                metadata.kind = MetadataTypeKind::Function;
-                metadata.children = flow
-                    .input
-                    .iter()
-                    .map(|input| self.ty(*input))
-                    .collect::<Result<Vec<_>, _>>()?;
-                metadata.children.push(self.ty(flow.output)?);
-                metadata.effects = flow.effects.as_ref().map(|row| self.row(row)).transpose()?;
+                self.function_type(flow, &mut metadata)?;
             }
             Type::Handler(handler) => {
-                metadata.kind = MetadataTypeKind::Handler;
-                metadata.effects = Some(self.row(&handler.handled)?);
-                metadata.produced_effects = match &handler.produced {
-                    etas_types::HandlerProducedEffects::Infer => None,
-                    etas_types::HandlerProducedEffects::Explicit(row) => Some(self.row(row)?),
-                };
-                if let Some(result) = handler.result {
-                    metadata.children.push(self.ty(result)?);
-                }
+                self.handler_type(handler, &mut metadata)?;
             }
             Type::Enum(enum_ref) => {
                 metadata.kind = MetadataTypeKind::Named;
@@ -221,20 +185,20 @@ impl<'a> TypeProjection<'a> {
                 metadata.kind = MetadataTypeKind::Nominal;
                 metadata.path = nominal.name.split('.').map(str::to_owned).collect();
                 if let Some(representation) = nominal.representation {
-                    metadata.children.push(self.ty(representation)?);
+                    self.children_type(
+                        MetadataTypeKind::Nominal,
+                        &[representation],
+                        &mut metadata,
+                    )?;
                 }
             }
             Type::Applied { constructor, args } => {
                 metadata.kind = MetadataTypeKind::Applied;
                 metadata.path = applied_type_constructor_path(*constructor, store)?;
-                metadata.children = args
-                    .iter()
-                    .map(|arg| self.ty(*arg))
-                    .collect::<Result<Vec<_>, _>>()?;
+                self.children_type(MetadataTypeKind::Applied, args, &mut metadata)?;
             }
             Type::Trust { wrapper, inner } => {
-                metadata.kind = trust_wrapper_kind(*wrapper);
-                metadata.children.push(self.ty(*inner)?);
+                self.unary_type(trust_wrapper_kind(*wrapper), *inner, &mut metadata)?;
             }
             Type::Prompt => metadata.kind = MetadataTypeKind::Prompt,
             Type::PromptPart => metadata.kind = MetadataTypeKind::PromptPart,
@@ -245,9 +209,7 @@ impl<'a> TypeProjection<'a> {
                 self.unary_type(MetadataTypeKind::MemorySelection, *inner, &mut metadata)?
             }
             Type::Store { key, value } => {
-                metadata.kind = MetadataTypeKind::Store;
-                metadata.children.push(self.ty(*key)?);
-                metadata.children.push(self.ty(*value)?);
+                self.children_type(MetadataTypeKind::Store, &[*key, *value], &mut metadata)?;
             }
             Type::MemoryRegion(schema) => {
                 self.unary_type(MetadataTypeKind::MemoryRegion, *schema, &mut metadata)?
@@ -257,37 +219,27 @@ impl<'a> TypeProjection<'a> {
                 match handle {
                     ResourceHandleType::MemoryRegion { schema } => {
                         metadata.name = "MemoryRegion".to_owned();
-                        metadata.children.push(self.ty(*schema)?);
+                        self.unary_type(MetadataTypeKind::ResourceHandle, *schema, &mut metadata)?;
                     }
                     ResourceHandleType::ExternalTool { signature } => {
                         metadata.name = "ExternalTool".to_owned();
-                        metadata.children.push(self.ty(*signature)?);
+                        self.unary_type(
+                            MetadataTypeKind::ResourceHandle,
+                            *signature,
+                            &mut metadata,
+                        )?;
                     }
                     ResourceHandleType::Other { name, args } => {
                         metadata.name = name.clone();
-                        metadata.children =
-                            args.iter()
-                                .map(|arg| self.ty(*arg))
-                                .collect::<Result<Vec<_>, _>>()?;
+                        self.children_type(MetadataTypeKind::ResourceHandle, args, &mut metadata)?;
                     }
                 }
             }
             Type::Record(record) => {
-                metadata.kind = MetadataTypeKind::Record;
-                metadata.fields = record
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        Ok(MetadataTypeField {
-                            name: field.name.clone(),
-                            ty: self.ty(field.ty)?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, PackageMetadataError>>()?;
+                self.record_type(record, &mut metadata)?;
             }
             Type::Task(task) => {
-                metadata.kind = MetadataTypeKind::Task;
-                metadata.children.push(self.ty(task.output)?);
+                self.unary_type(MetadataTypeKind::Task, task.output, &mut metadata)?;
                 metadata.effects = Some(self.row(&task.effects)?);
             }
             Type::SchedulerHandle => {
@@ -300,7 +252,11 @@ impl<'a> TypeProjection<'a> {
             {
                 metadata.kind = MetadataTypeKind::Applied;
                 metadata.path = vec!["std".into(), "task".into(), "Continuation".into()];
-                metadata.children.push(self.ty(continuation.action_output)?);
+                self.unary_type(
+                    MetadataTypeKind::Applied,
+                    continuation.action_output,
+                    &mut metadata,
+                )?;
             }
             Type::AgentContext(context) => {
                 metadata.kind = MetadataTypeKind::AgentContext;
@@ -342,8 +298,92 @@ impl<'a> TypeProjection<'a> {
         inner: TypeId,
         metadata: &mut MetadataType,
     ) -> Result<(), PackageMetadataError> {
+        self.children_type(kind, &[inner], metadata)
+    }
+
+    // Keep recursive child construction out of the dispatcher's stack frame.
+    // Debug builds otherwise retain all match-arm temporaries at every level,
+    // exhausting the native stack before the metadata depth guard can run.
+    fn children_type(
+        &mut self,
+        kind: MetadataTypeKind,
+        children: &[TypeId],
+        metadata: &mut MetadataType,
+    ) -> Result<(), PackageMetadataError> {
         metadata.kind = kind;
-        metadata.children.push(self.ty(inner)?);
+        metadata.children = children
+            .iter()
+            .map(|child| self.ty(*child))
+            .collect::<Result<_, _>>()?;
+        Ok(())
+    }
+
+    fn existential_type(
+        &mut self,
+        bounds: &[etas_types::CheckedSpecBound],
+        metadata: &mut MetadataType,
+    ) -> Result<(), PackageMetadataError> {
+        metadata.kind = MetadataTypeKind::Existential;
+        for bound in bounds {
+            metadata.bounds.push(MetadataSpecBound {
+                spec: (self.spec_path)(&bound.spec)?,
+                args: bound
+                    .args
+                    .iter()
+                    .map(|arg| self.ty(*arg))
+                    .collect::<Result<_, _>>()?,
+            });
+        }
+        metadata
+            .bounds
+            .sort_by(|left, right| left.spec.cmp(&right.spec));
+        Ok(())
+    }
+
+    fn function_type(
+        &mut self,
+        flow: &etas_types::FlowType,
+        metadata: &mut MetadataType,
+    ) -> Result<(), PackageMetadataError> {
+        self.children_type(MetadataTypeKind::Function, &flow.input, metadata)?;
+        metadata.children.push(self.ty(flow.output)?);
+        metadata.effects = flow.effects.as_ref().map(|row| self.row(row)).transpose()?;
+        Ok(())
+    }
+
+    fn handler_type(
+        &mut self,
+        handler: &etas_types::HandlerType,
+        metadata: &mut MetadataType,
+    ) -> Result<(), PackageMetadataError> {
+        metadata.kind = MetadataTypeKind::Handler;
+        metadata.effects = Some(self.row(&handler.handled)?);
+        metadata.produced_effects = match &handler.produced {
+            etas_types::HandlerProducedEffects::Infer => None,
+            etas_types::HandlerProducedEffects::Explicit(row) => Some(self.row(row)?),
+        };
+        if let Some(result) = handler.result {
+            self.unary_type(MetadataTypeKind::Handler, result, metadata)?;
+        }
+        Ok(())
+    }
+
+    fn record_type(
+        &mut self,
+        record: &etas_types::RecordType,
+        metadata: &mut MetadataType,
+    ) -> Result<(), PackageMetadataError> {
+        metadata.kind = MetadataTypeKind::Record;
+        metadata.fields = record
+            .fields
+            .iter()
+            .map(|field| {
+                Ok(MetadataTypeField {
+                    name: field.name.clone(),
+                    ty: self.ty(field.ty)?,
+                })
+            })
+            .collect::<Result<_, PackageMetadataError>>()?;
         Ok(())
     }
 
