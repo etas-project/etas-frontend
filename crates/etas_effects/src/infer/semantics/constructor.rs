@@ -70,7 +70,9 @@ impl EffectSemantics<'_> {
             SymbolDef::EnumVariant { enum_item, variant_index } => {
                 matches!(self.hir.items.get(*enum_item), Some(HirItem::Enum(decl)) if decl.variants.get(*variant_index as usize).is_some_and(|variant| variant.symbol == symbol))
             }
-            SymbolDef::ExternalEnumVariant { .. } => self.types.facts
+            SymbolDef::ExternalEnumVariant { .. } | SymbolDef::ImportAlias {
+                origin: etas_hir::ImportAliasOrigin::StdEnumVariant { .. }, ..
+            } => self.types.facts
                 .enum_constructor(&self.types.store, definition).is_some(),
             SymbolDef::ImportAlias { path, .. } => self.std_registry.lookup_qualified(path).is_some_and(|symbol| {
                 (symbol.enum_owner.is_some()

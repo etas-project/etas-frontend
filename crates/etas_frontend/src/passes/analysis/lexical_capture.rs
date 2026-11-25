@@ -108,12 +108,18 @@ pub(crate) fn escape_diagnostics(
     let view = hir.view();
     let mut diagnostics = Vec::new();
     let origins = |expr| {
-        retained_bindings(hir, layouts, expr, |symbol| {
-            matches!(
-                types.symbol_types.get(&symbol),
-                Some(SymbolTypeFact::Local { mutable: true, .. })
-            )
-        })
+        retained_bindings(
+            hir,
+            layouts,
+            expr,
+            |_| None,
+            |symbol| {
+                matches!(
+                    types.symbol_types.get(&symbol),
+                    Some(SymbolTypeFact::Local { mutable: true, .. })
+                )
+            },
+        )
     };
     let declaration = |symbol| match hir.symbols.get(symbol).map(|symbol| &symbol.def) {
         Some(SymbolDef::Local { binding, .. }) => Some(*binding),
@@ -225,10 +231,11 @@ fn capture_activation(
     }
 }
 
-pub(super) fn retained_bindings(
+pub(super) fn retained_bindings<'a>(
     hir: &HirRevision,
     layouts: &CaptureLayouts,
     expr: etas_hir::HirExprId,
+    stored: impl Fn(etas_hir::SymbolId) -> Option<&'a std::collections::BTreeSet<etas_hir::SymbolId>>,
     retains: impl Fn(etas_hir::SymbolId) -> bool,
 ) -> HashSet<etas_hir::SymbolId> {
     use etas_hir::{HirFieldInit, HirStmt};
@@ -243,6 +250,10 @@ pub(super) fn retained_bindings(
     while let Some(value) = pending.pop() {
         match value {
             Value::Binding(symbol) if bindings.insert(symbol) => {
+                if let Some(origins) = stored(symbol) {
+                    retained.extend(origins.iter().copied());
+                    continue;
+                }
                 if let Some(SymbolDef::Local {
                     binding,
                     initializer: Some(value),

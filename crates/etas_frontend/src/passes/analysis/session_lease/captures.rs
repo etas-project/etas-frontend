@@ -74,7 +74,7 @@ impl<'a> LeaseCaptures<'a> {
                     .is_some_and(|item| owners.contains(item))
                 && let HirStmt::Let { pat, .. } | HirStmt::Var { pat, .. } = hir.stmts[binding]
                 && matches!(hir.pats[pat], HirPat::Binding { symbol: id, .. } if id == symbol.id)
-                && !self.retained(hir, value).is_empty()
+                && !self.retained(hir, value, &LeaseState::default()).is_empty()
             {
                 self.affine_symbols.insert(symbol.id);
             }
@@ -93,20 +93,37 @@ impl<'a> LeaseCaptures<'a> {
         });
     }
 
-    fn retained(&self, hir: &HirRevision, expr: HirExprId) -> HashSet<SymbolId> {
-        retained_bindings(hir, self.layouts, expr, |symbol| {
-            self.lease_bindings.contains(&symbol)
-        })
+    pub fn retained(
+        &self,
+        hir: &HirRevision,
+        expr: HirExprId,
+        state: &LeaseState,
+    ) -> HashSet<SymbolId> {
+        retained_bindings(
+            hir,
+            self.layouts,
+            expr,
+            |s| state.captured.get(&s),
+            |symbol| self.lease_bindings.contains(&symbol),
+        )
     }
 
-    pub fn is_affine_place(&self, hir: &HirProgram, expr: HirExprId) -> bool {
+    pub fn is_affine(&self, symbol: SymbolId, state: &LeaseState) -> bool {
+        self.lease_bindings.contains(&symbol)
+            || state.captured.get(&symbol).map_or_else(
+                || self.affine_symbols.contains(&symbol),
+                |origins| !origins.is_empty(),
+            )
+    }
+
+    pub fn is_affine_place(&self, hir: &HirProgram, expr: HirExprId, state: &LeaseState) -> bool {
         matches!(place_of(hir, expr), Some(Place { root: AliasTarget::Symbol(symbol), projections })
-            if projections.is_empty() && self.affine_symbols.contains(&symbol))
+            if projections.is_empty() && self.is_affine(symbol, state))
     }
 
-    pub fn check_return(&mut self, hir: &HirRevision, value: HirExprId) {
+    pub fn check_return(&mut self, hir: &HirRevision, value: HirExprId, state: &LeaseState) {
         if let Some(scope) = self.current
-            && self.retained(hir, value).iter().any(|origin| {
+            && self.retained(hir, value, state).iter().any(|origin| {
                 self.declarations
                     .get(origin)
                     .is_some_and(|decl| within(hir, scope, *decl))
@@ -122,9 +139,8 @@ impl<'a> LeaseCaptures<'a> {
         types: &TypeOutput,
         stmt: HirStmtId,
         target: HirExprId,
-        value: HirExprId,
-        typed_lease: bool,
         span: Span,
+        origins: &HashSet<SymbolId>,
     ) {
         let Some(Place {
             root: AliasTarget::Symbol(root),
@@ -133,16 +149,6 @@ impl<'a> LeaseCaptures<'a> {
         else {
             return;
         };
-        let mut origins = self.retained(hir, value);
-        if let Some(Place {
-            root: AliasTarget::Symbol(symbol),
-            ..
-        }) = place_of(hir, value)
-            && self.lease_bindings.contains(&symbol)
-            && typed_lease
-        {
-            origins.insert(symbol);
-        }
         if origins.is_empty() {
             return;
         }

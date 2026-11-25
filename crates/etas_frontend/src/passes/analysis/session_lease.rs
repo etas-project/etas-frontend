@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use etas_core::{Diagnostic, Span, TypeDiagnosticCode};
 use etas_hir::{
@@ -97,9 +97,9 @@ pub(super) fn check(
             }
             interpreter.semantics_mut().captures.enter_body(hir, body);
             if let Some(block) = interpreter.context().body_block(body) {
-                interpreter.block_control(block, Moved::new());
+                interpreter.block_control(block, LeaseState::default());
             } else if let Some(expr) = interpreter.context().body_root_expr(body) {
-                interpreter.expr_control(expr, Moved::new());
+                interpreter.expr_control(expr, LeaseState::default());
             }
         }
     }
@@ -139,7 +139,42 @@ fn is_with_lease(hir: &HirProgram, types: &TypeOutput, expr: HirExprId) -> bool 
         .is_some_and(|path| path == WITH_LEASE)
 }
 
-type Moved = BTreeSet<Place>;
+#[derive(Clone, Default)]
+struct LeaseState {
+    moved: BTreeSet<Place>,
+    // Include empty entries so an alias keeps the value it received even if
+    // the mutable binding it came from is reassigned later.
+    captured: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+}
+
+impl etas_utils::PartialOrder for LeaseState {
+    fn less_equal(&self, other: &Self) -> bool {
+        self.moved.is_subset(&other.moved)
+            && self.captured.iter().all(|(symbol, origins)| {
+                other
+                    .captured
+                    .get(symbol)
+                    .is_some_and(|set| origins.is_subset(set))
+            })
+    }
+}
+
+impl etas_utils::JoinSemiLattice for LeaseState {
+    fn bottom() -> Self {
+        Self::default()
+    }
+
+    fn join_assign(&mut self, other: &Self) -> bool {
+        if etas_utils::PartialOrder::less_equal(other, self) {
+            return false;
+        }
+        self.moved.extend(other.moved.iter().cloned());
+        for (symbol, origins) in &other.captured {
+            self.captured.entry(*symbol).or_default().extend(origins);
+        }
+        true
+    }
+}
 
 struct LeaseAnalysis<'a> {
     context: HirAnalysisContext,
@@ -258,16 +293,16 @@ impl LeaseAnalysis<'_> {
         result
     }
 
-    fn move_place(&mut self, place: Place, span: Span, state: &mut Moved) {
-        if state.iter().any(|moved| overlaps(moved, &place)) {
+    fn move_place(&mut self, place: Place, span: Span, state: &mut LeaseState) {
+        if state.moved.iter().any(|moved| overlaps(moved, &place)) {
             self.moved_uses.insert(span);
         }
-        state.insert(place);
+        state.moved.insert(place);
     }
 
-    fn restore_bindings(&self, state: &mut Moved, declared_here: impl Fn(&SymbolDef) -> bool) {
+    fn restore_bindings(&self, state: &mut LeaseState, declared_here: impl Fn(&SymbolDef) -> bool) {
         let hir = self.context.program();
-        state.retain(|place| {
+        state.moved.retain(|place| {
             let AliasTarget::Symbol(symbol) = place.root else {
                 return true;
             };
@@ -343,21 +378,25 @@ fn overlaps(a: &Place, b: &Place) -> bool {
 }
 
 impl HirAnalysisSemantics for LeaseAnalysis<'_> {
-    type Domain = Moved;
+    type Domain = LeaseState;
 
     fn analysis_context(&self) -> &HirAnalysisContext {
         &self.context
     }
 
-    fn incomplete_facts(&mut self, state: Moved) -> Moved {
+    fn incomplete_facts(&mut self, state: LeaseState) -> LeaseState {
         state
     }
 
-    fn after_expr_control(&mut self, expr: HirExprId, control: Control<Moved>) -> Control<Moved> {
+    fn after_expr_control(
+        &mut self,
+        expr: HirExprId,
+        control: Control<LeaseState>,
+    ) -> Control<LeaseState> {
         control.with_normal_processed(|state| Control::normal(self.after_expr(expr, state)))
     }
 
-    fn after_expr(&mut self, expr: HirExprId, mut state: Moved) -> Moved {
+    fn after_expr(&mut self, expr: HirExprId, mut state: LeaseState) -> LeaseState {
         let owned = self
             .types
             .facts
@@ -366,9 +405,9 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
             .is_some_and(|ty| self.contains_lease(*ty));
         let hir = self.context.revision();
         if Some(expr) == self.captures.tail {
-            self.captures.check_return(hir, expr);
+            self.captures.check_return(hir, expr, &state);
         }
-        if !owned && !self.captures.is_affine_place(hir, expr) {
+        if !owned && !self.captures.is_affine_place(hir, expr, &state) {
             return state;
         }
         let hir = self.context.program();
@@ -386,7 +425,7 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         state
     }
 
-    fn after_stmt(&mut self, stmt: HirStmtId, mut state: Moved) -> Moved {
+    fn after_stmt(&mut self, stmt: HirStmtId, mut state: LeaseState) -> LeaseState {
         let context = self.context.clone();
         let hir = context.program();
         match &hir.stmts[stmt] {
@@ -401,25 +440,44 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
                     .expr_types
                     .get(value)
                     .is_some_and(|ty| self.contains_lease(*ty));
+                let mut origins = self.captures.retained(context.revision(), *value, &state);
+                if typed_lease
+                    && let Some(Place {
+                        root: AliasTarget::Symbol(symbol),
+                        ..
+                    }) = place_of(hir, *value)
+                {
+                    origins.insert(symbol);
+                }
                 self.captures.check_store(
                     context.revision(),
                     self.types,
                     stmt,
                     *target,
-                    *value,
-                    typed_lease,
                     *span,
+                    &origins,
                 );
-                if let Some(place) = place_of(hir, *target)
-                    && !place.projections.contains(&Projection::Index)
-                {
-                    state.retain(|moved| {
-                        moved.root != place.root
-                            || !moved.projections.starts_with(&place.projections)
-                    });
+                if let Some(place) = place_of(hir, *target) {
+                    if let AliasTarget::Symbol(symbol) = place.root {
+                        if place.projections.is_empty() {
+                            state.captured.insert(symbol, origins.into_iter().collect());
+                        } else if !origins.is_empty() {
+                            state.captured.entry(symbol).or_default().extend(origins);
+                        }
+                    }
+                    if !place.projections.contains(&Projection::Index) {
+                        state.moved.retain(|moved| {
+                            moved.root != place.root
+                                || !moved.projections.starts_with(&place.projections)
+                        });
+                    }
                 }
             }
-            HirStmt::Let { .. } | HirStmt::Var { .. } => {
+            HirStmt::Let { pat, value, .. } | HirStmt::Var { pat, value, .. } => {
+                if let etas_hir::HirPat::Binding { symbol, .. } = hir.pats[*pat] {
+                    let origins = self.captures.retained(context.revision(), *value, &state);
+                    state.captured.insert(symbol, origins.into_iter().collect());
+                }
                 self.restore_bindings(
                     &mut state,
                     |def| matches!(def, SymbolDef::Local { binding, .. } if *binding == stmt),
@@ -430,9 +488,15 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         state
     }
 
-    fn return_value(&mut self, _: HirStmtId, value: Option<HirExprId>, state: Moved) -> Moved {
+    fn return_value(
+        &mut self,
+        _: HirStmtId,
+        value: Option<HirExprId>,
+        state: LeaseState,
+    ) -> LeaseState {
         if let Some(value) = value {
-            self.captures.check_return(self.context.revision(), value);
+            self.captures
+                .check_return(self.context.revision(), value, &state);
         }
         state
     }
@@ -442,8 +506,8 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         expr: HirExprId,
         _: HirExprId,
         _: etas_hir::HirPatId,
-        mut state: Moved,
-    ) -> Moved {
+        mut state: LeaseState,
+    ) -> LeaseState {
         use etas_hir::PatternBindingOwner;
         self.restore_bindings(&mut state, |def| {
             matches!(def, SymbolDef::PatternBinding { owner: PatternBindingOwner::MatchArm { expr: owner }, .. } if *owner == expr)
@@ -451,7 +515,7 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         state
     }
 
-    fn enter_block(&mut self, block: HirBlockId, mut state: Moved) -> Moved {
+    fn enter_block(&mut self, block: HirBlockId, mut state: LeaseState) -> LeaseState {
         use etas_hir::PatternBindingOwner;
         if let Some(HirOwner::Stmt(stmt)) = self.context.tree_index().block_owner.get(&block)
             && matches!(self.context.program().stmts[*stmt], HirStmt::For { body, .. } if body == block)
@@ -463,8 +527,13 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         state
     }
 
-    fn record_shorthand(&mut self, symbol: SymbolId, span: Span, mut state: Moved) -> Moved {
-        if self.captures.affine_symbols.contains(&symbol) {
+    fn record_shorthand(
+        &mut self,
+        symbol: SymbolId,
+        span: Span,
+        mut state: LeaseState,
+    ) -> LeaseState {
+        if self.captures.is_affine(symbol, &state) {
             self.move_place(Place::new(AliasTarget::Symbol(symbol)), span, &mut state);
         }
         state
@@ -477,8 +546,8 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         _: &[HirGenericArg],
         _: &[HirArg],
         _: Span,
-        state: Moved,
-    ) -> AnalysisStep<Moved> {
+        state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
 
@@ -487,34 +556,49 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         _: HirExprId,
         _: HirExprId,
         _: Span,
-        state: Moved,
-    ) -> AnalysisStep<Moved> {
+        state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
 
-    fn method_call(&mut self, _: HirExprId, _: Span, state: Moved) -> AnalysisStep<Moved> {
+    fn method_call(
+        &mut self,
+        _: HirExprId,
+        _: Span,
+        state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
-    fn stage_compose(&mut self, _: HirExprId, _: Span, state: Moved) -> AnalysisStep<Moved> {
+    fn stage_compose(
+        &mut self,
+        _: HirExprId,
+        _: Span,
+        state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
-    fn pipeline(&mut self, _: HirExprId, _: Span, state: Moved) -> AnalysisStep<Moved> {
+    fn pipeline(&mut self, _: HirExprId, _: Span, state: LeaseState) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
-    fn try_expr(&mut self, _: HirExprId, _: Span, state: Moved) -> AnalysisStep<Moved> {
+    fn try_expr(&mut self, _: HirExprId, _: Span, state: LeaseState) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
-    fn handle_expr(&mut self, _: HirExprId, _: Span, state: Moved) -> AnalysisStep<Moved> {
+    fn handle_expr(
+        &mut self,
+        _: HirExprId,
+        _: Span,
+        state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         AnalysisStep::handled(state)
     }
     fn lambda_boundary(
         &mut self,
         expr: HirExprId,
         span: Span,
-        mut state: Moved,
-    ) -> AnalysisStep<Moved> {
+        mut state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         for symbol in &self.captures.layouts[&expr].captures {
-            if self.captures.affine_symbols.contains(symbol) {
+            if self.captures.is_affine(*symbol, &state) {
                 self.move_place(Place::new(AliasTarget::Symbol(*symbol)), span, &mut state);
             }
         }
@@ -524,8 +608,8 @@ impl HirAnalysisSemantics for LeaseAnalysis<'_> {
         &mut self,
         expr: HirExprId,
         span: Span,
-        state: Moved,
-    ) -> AnalysisStep<Moved> {
+        state: LeaseState,
+    ) -> AnalysisStep<LeaseState> {
         self.lambda_boundary(expr, span, state)
     }
 }

@@ -95,8 +95,16 @@ impl EffectSemantics<'_> {
             return None;
         };
         let symbol = self.type_symbols.canonical_symbol(self.hir, symbol)?;
+        let definition = self.hir.symbols.get(symbol)?;
+        if let Some((_, _, variant)) = self
+            .types
+            .facts
+            .enum_constructor(&self.types.store, definition)
+        {
+            return Some(variant.name.clone());
+        }
         if self.checked_enum_constructor(symbol) {
-            return Some(self.hir.symbols.get(symbol)?.name.clone());
+            return Some(definition.name.clone());
         }
         let path = self.std_qualified_path_for_expr(callee)?;
         let constructor = self
