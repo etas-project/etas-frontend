@@ -774,7 +774,7 @@ pub(super) fn resource_scope_signature_matches(types: &TypeOutput, item: HirItem
     let [result, effects] = signature.generic_params.as_slice() else {
         return false;
     };
-    let [body_type] = signature.params.as_slice() else {
+    let Some((body_type, cleanup)) = signature.params.split_first() else {
         return false;
     };
     let Some(Type::Function(body)) = types.store.get(*body_type) else {
@@ -783,9 +783,33 @@ pub(super) fn resource_scope_signature_matches(types: &TypeOutput, item: HirItem
     let Some(Type::Applied { constructor, args }) = types.store.get(signature.output) else {
         return false;
     };
-    if !matches!(types.store.get(etas_types::TypeId(constructor.0)), Some(Type::Nominal(owner)) if matches!(owner.name.as_str(), "std.resource.ScopeReport" | "std.agent.session.LeaseScopeReport"))
-        || args != &[result.subject]
-    {
+    let Some(Type::Nominal(report)) = types.store.get(etas_types::TypeId(constructor.0)) else {
+        return false;
+    };
+    let Some(row) = signature.effects.as_ref() else {
+        return false;
+    };
+    let valid_cleanup = match (report.name.as_str(), cleanup) {
+        ("std.resource.ScopeReport", []) => row.effects.is_empty(),
+        ("std.agent.session.LeaseScopeReport", [release]) => {
+            let Some(Type::Function(callback)) = types.store.get(*release) else {
+                return false;
+            };
+            matches!(callback.input.as_slice(), [lease] if matches!(types.store.get(*lease), Some(Type::Nominal(n)) if n.name == "std.agent.session.SessionLease"))
+                && matches!(
+                    types.store.get(callback.output),
+                    Some(Type::Primitive(P::Unit))
+                )
+                && callback
+                    .effects
+                    .as_ref()
+                    .is_some_and(|cleanup| cleanup.tail.is_none() && cleanup.effects == row.effects)
+                && matches!(row.effects.as_slice(), [error] if error.name == "Error" &&
+                    matches!(error.args.as_slice(), [etas_types::EffectArgRef::Type(ty)] if storage_error_layout_matches(types, *ty)))
+        }
+        _ => false,
+    };
+    if !valid_cleanup || args != &[result.subject] {
         return false;
     }
     let Ok(Some(fields)) =
@@ -799,10 +823,11 @@ pub(super) fn resource_scope_signature_matches(types: &TypeOutput, item: HirItem
         && effects.bounds.is_empty()
         && body.input.is_empty()
         && body.output == result.subject
-        && body.effects.as_ref() == signature.effects.as_ref()
-        && signature.effects.as_ref().is_some_and(|row| {
-            row.effects.is_empty() && row.tail.as_deref() == Some(effects.name.as_str())
-        })
+        && row.tail.as_deref() == Some(effects.name.as_str())
+        && body
+            .effects
+            .as_ref()
+            .is_some_and(|body| body.effects.is_empty() && body.tail == row.tail)
         && signature
             .requested_actions
             .as_ref()

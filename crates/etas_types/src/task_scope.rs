@@ -32,32 +32,23 @@ pub(crate) fn infer(ctx: &mut TypePipelineContext<'_>) {
                 }
             )
         {
+            let resource = matches!(
+                flow.body,
+                HirFlowBody::Runtime {
+                    role: etas_std::StdExecutionRole::ResourceScope,
+                    ..
+                }
+            );
             facts.scoped_callbacks.insert(
                 flow.symbol,
                 ScopedCallbackFact {
-                    parameters: vec![if matches!(
-                        flow.body,
-                        HirFlowBody::Runtime {
-                            role: etas_std::StdExecutionRole::ResourceScope,
-                            ..
-                        }
-                    ) {
-                        0
+                    parameters: if resource {
+                        (0..flow.params.len() as u32).collect()
                     } else {
-                        1
-                    }],
-                    parameter_names: names(hir, &flow.params),
-                    resource_boundaries: if matches!(
-                        flow.body,
-                        HirFlowBody::Runtime {
-                            role: etas_std::StdExecutionRole::ResourceScope,
-                            ..
-                        }
-                    ) {
-                        vec![0]
-                    } else {
-                        Vec::new()
+                        vec![1]
                     },
+                    parameter_names: names(hir, &flow.params),
+                    resource_boundaries: if resource { vec![0] } else { Vec::new() },
                 },
             );
         }

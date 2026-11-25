@@ -220,6 +220,34 @@ impl InterproceduralSemantics for EffectSemantics<'_> {
                                 parameter: "body".into(),
                                 span,
                             };
+                            if *role == etas_std::StdExecutionRole::ResourceScope
+                                && let Some(&release) = flow.params.get(1)
+                            {
+                                // A scope invokes this callback after its body only when
+                                // acquisition or transfer left a confirmed live generation.
+                                let target = crate::ParameterCallTarget::Native(release);
+                                let parameter = self
+                                    .hir
+                                    .symbols
+                                    .get(release)
+                                    .expect("scope parameter")
+                                    .name
+                                    .clone();
+                                summary.handler_requests.union_assign(
+                                    &crate::RequestInstantiationSummary::parameter(
+                                        target,
+                                        parameter.clone(),
+                                        span,
+                                    ),
+                                );
+                                let mut cleanup = crate::ActionTraceDomain::Empty;
+                                cleanup.choice_assign(crate::ActionTraceDomain::ParameterCall {
+                                    target,
+                                    parameter,
+                                    span,
+                                });
+                                summary.action_trace.seq_assign(cleanup);
+                            }
                             let etas_types::ItemSignature::Flow(signature) =
                                 &self.types.facts.item_signatures[&item]
                             else {
