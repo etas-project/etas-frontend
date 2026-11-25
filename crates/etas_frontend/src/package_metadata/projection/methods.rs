@@ -94,7 +94,15 @@ impl ProjectMetadataProjection<'_> {
                     MethodReceiver::Associated => etas_package_metadata::MethodReceiver::Associated,
                     MethodReceiver::Component => etas_package_metadata::MethodReceiver::Component,
                 },
-                owner_params: self.callable_generic_params_metadata(&method.owner_params)?,
+                owner_params: self.callable_generic_params_metadata(
+                    self.checked
+                        .types
+                        .type_impl_methods
+                        .get(&symbol)
+                        .map_or(method.owner_params.as_slice(), |implementation| {
+                            implementation.owner_params.as_slice()
+                        }),
+                )?,
                 requirements: self.method_requirements(callable)?,
                 callable: callable_graph,
             };

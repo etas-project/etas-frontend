@@ -495,6 +495,7 @@ mod tests {
                 kind: SpecKind::TypeSpec,
                 param_names: vec!["T".into()],
                 generic_params: vec![CallableGenericParam {
+                    requires_copy: None,
                     kind: CallableGenericParamKind::Type,
                     name: "T".into(),
                     subject: external_parameter,
@@ -517,6 +518,7 @@ mod tests {
                 kind: SpecKind::TypeSpec,
                 param_names: vec!["U".into()],
                 generic_params: vec![CallableGenericParam {
+                    requires_copy: None,
                     kind: CallableGenericParamKind::Type,
                     name: "U".into(),
                     subject: family_parameter,
@@ -547,6 +549,7 @@ mod tests {
                     kind: ProjectExternalSpecKindInput::Type,
                     param_names: vec!["T".into()],
                     generic_params: vec![ProjectExternalCallableGenericParamInput {
+                        requires_copy: None,
                         name: "T".into(),
                         kind: ProjectExternalCallableGenericParamKindInput::Type,
                         bounds: vec![ProjectExternalSpecBoundInput {
@@ -566,6 +569,7 @@ mod tests {
                     kind: ProjectExternalSpecKindInput::Type,
                     param_names: vec!["U".into()],
                     generic_params: vec![ProjectExternalCallableGenericParamInput {
+                        requires_copy: None,
                         name: "U".into(),
                         kind: ProjectExternalCallableGenericParamKindInput::Type,
                         bounds: vec![],

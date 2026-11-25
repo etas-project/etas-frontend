@@ -77,7 +77,7 @@ impl Pass<ProjectContext> for FinalizeTypeFactsPass {
                     Ok(diagnostics) => context.diagnostics.extend(diagnostics),
                     Err(reason) => return PassResult::failed(reason),
                 }
-                match super::session_lease::check(hir, &output, &layouts) {
+                match super::session_lease::check(hir, &mut output, &layouts) {
                     Ok(diagnostics) => context.diagnostics.extend(diagnostics),
                     Err(reason) => return PassResult::failed(reason),
                 }

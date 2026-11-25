@@ -212,6 +212,8 @@ pub struct ExternalActionSignatureInput {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, etas_core::RetainedSize)]
 pub struct ExternalCallableGenericParamInput {
+    #[serde(default)]
+    pub requires_copy: Option<bool>,
     pub name: String,
     pub kind: ExternalCallableGenericParamKindInput,
     pub bounds: Vec<ExternalSpecBoundInput>,

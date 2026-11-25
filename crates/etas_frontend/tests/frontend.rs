@@ -9164,6 +9164,7 @@ fn frontend_check_project_rejects_open_external_flow_without_summary_metadata() 
             definition: None,
             parameter_defaults: Vec::new(),
             generic_params: vec![ProjectExternalCallableGenericParamInput {
+                requires_copy: None,
                 name: "E".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Effect,
                 bounds: Vec::new(),
@@ -9427,6 +9428,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
                 "read".to_owned(),
             ],
             generic_params: vec![ProjectExternalActionGenericParamInput {
+                requires_copy: None,
                 name: "R".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: Vec::new(),
@@ -9445,6 +9447,7 @@ fn frontend_check_project_specializes_external_summary_generic_actions() {
             definition: None,
             parameter_defaults: Vec::new(),
             generic_params: vec![ProjectExternalCallableGenericParamInput {
+                requires_copy: None,
                 name: "R".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: Vec::new(),
@@ -9579,6 +9582,7 @@ fn frontend_check_project_specializes_external_effect_row_generic_trace_template
             definition: None,
             parameter_defaults: Vec::new(),
             generic_params: vec![ProjectExternalCallableGenericParamInput {
+                requires_copy: None,
                 name: "E".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Effect,
                 bounds: Vec::new(),
@@ -9780,6 +9784,7 @@ fn frontend_check_project_replays_external_action_selector_defaults_from_metadat
                 "request".to_owned(),
             ],
             generic_params: vec![ProjectExternalActionGenericParamInput {
+                requires_copy: None,
                 name: "resource".to_owned(),
                 kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: Vec::new(),
@@ -12605,6 +12610,7 @@ fn frontend_external_selector_names_are_kind_checked() {
         (
             "E",
             vec![ProjectExternalActionGenericParamInput {
+                requires_copy: None,
                 name: "E".into(),
                 kind: ProjectExternalCallableGenericParamKindInput::Effect,
                 bounds: Vec::new(),
@@ -12633,6 +12639,7 @@ fn frontend_external_selector_names_are_kind_checked() {
         ProjectExternalActionArgKindInput::Type,
         "R",
         vec![ProjectExternalActionGenericParamInput {
+            requires_copy: None,
             name: "R".into(),
             kind: ProjectExternalCallableGenericParamKindInput::Type,
             bounds: Vec::new(),

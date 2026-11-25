@@ -225,6 +225,7 @@ fn external_spec_methods_are_checked_without_importing_the_spec_name() {
                 param_names: vec!["self".into(), "value".into()],
                 generic_params: vec![
                     crate::ExternalCallableGenericParamInput {
+                        requires_copy: None,
                         name: "T".into(),
                         kind: crate::ExternalCallableGenericParamKindInput::Type,
                         bounds: vec![crate::ExternalSpecBoundInput {
@@ -233,6 +234,7 @@ fn external_spec_methods_are_checked_without_importing_the_spec_name() {
                         }],
                     },
                     crate::ExternalCallableGenericParamInput {
+                        requires_copy: None,
                         name: "E".into(),
                         kind: crate::ExternalCallableGenericParamKindInput::Effect,
                         bounds: vec![],
@@ -306,6 +308,7 @@ fn external_aliases_resolve_forward_generic_nominals_in_every_declaration_order(
     generic
         .generic_params
         .push(crate::ExternalCallableGenericParamInput {
+            requires_copy: None,
             name: "T".into(),
             kind: crate::ExternalCallableGenericParamKindInput::Type,
             bounds: Vec::new(),
@@ -532,6 +535,7 @@ fn imported_record_and_action_keep_distinct_t_binders_and_instantiate_fields() {
     generic
         .generic_params
         .push(crate::ExternalCallableGenericParamInput {
+            requires_copy: None,
             name: "T".into(),
             kind: crate::ExternalCallableGenericParamKindInput::Type,
             bounds: vec![],
@@ -556,6 +560,7 @@ fn imported_record_and_action_keep_distinct_t_binders_and_instantiate_fields() {
                     path: vec!["dep".into(), "Supply".into(), "value".into()],
                     parameter_interface: vec![],
                     generic_params: vec![crate::ExternalCallableGenericParamInput {
+                        requires_copy: None,
                         name: "T".into(),
                         kind: crate::ExternalCallableGenericParamKindInput::Type,
                         bounds: vec![],

@@ -77,6 +77,8 @@ pub struct CallableSignature {
     Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
 )]
 pub struct CallableGenericParam {
+    #[serde(default)]
+    pub requires_copy: Option<bool>,
     pub kind: CallableGenericParamKind,
     pub name: String,
     pub subject: TypeId,

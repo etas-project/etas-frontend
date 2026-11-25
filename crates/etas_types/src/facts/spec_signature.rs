@@ -38,6 +38,7 @@ impl SpecSignature {
                     return None;
                 };
                 Some(CallableGenericParam {
+                    requires_copy: None,
                     name: name.clone(),
                     kind,
                     subject: *ty,

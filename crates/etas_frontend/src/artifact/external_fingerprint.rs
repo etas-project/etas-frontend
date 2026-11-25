@@ -164,6 +164,11 @@ impl Encoder {
                         GenericKind::Type => 0,
                         GenericKind::Effect => 1,
                     });
+                    self.byte(match generic.requires_copy {
+                        None => 0,
+                        Some(false) => 1,
+                        Some(true) => 2,
+                    });
                     self.number(generic.bounds.len());
                     tasks.extend(generic.bounds.iter().rev().map(Task::Bound));
                 }
@@ -1049,6 +1054,7 @@ mod tests {
             path: vec!["lib".into(), "Value".into()],
             visibility: "public".into(),
             generic_params: vec![Generic {
+                requires_copy: None,
                 name: "T".into(),
                 kind: GenericKind::Type,
                 bounds: vec![Bound {

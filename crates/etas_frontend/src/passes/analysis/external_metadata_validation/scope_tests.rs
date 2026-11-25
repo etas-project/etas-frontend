@@ -148,6 +148,7 @@ fn nested_callable_cannot_reinterpret_an_effect_parameter_as_a_type() {
         effects: HashSet::from(["E".into()]),
     };
     let params = vec![ProjectExternalCallableGenericParamInput {
+        requires_copy: None,
         name: "E".into(),
         kind: ProjectExternalCallableGenericParamKindInput::Type,
         bounds: vec![],
@@ -247,11 +248,13 @@ fn returned_callable_generic_positions_preserve_declaration_order_at_the_environ
             path: path.clone(),
             generic_params: vec![
                 ProjectExternalCallableGenericParamInput {
+                    requires_copy: None,
                     name: "E".into(),
                     kind: ProjectExternalCallableGenericParamKindInput::Effect,
                     bounds: vec![],
                 },
                 ProjectExternalCallableGenericParamInput {
+                    requires_copy: None,
                     name: "T".into(),
                     kind: ProjectExternalCallableGenericParamKindInput::Type,
                     bounds: vec![],

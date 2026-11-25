@@ -157,6 +157,7 @@ pub(crate) fn lower_external_scoped_generic_params(
                 });
             }
             generic_params.push(crate::CallableGenericParam {
+                requires_copy: param.requires_copy,
                 kind: match param.kind {
                     crate::ExternalCallableGenericParamKindInput::Type => {
                         crate::CallableGenericParamKind::Type

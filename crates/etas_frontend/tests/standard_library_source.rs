@@ -631,6 +631,7 @@ public flow describe() -> unit { let definition = ^generic_echo; return; }
                     etas_std::StdExecutionRole::Requeue
                     | etas_std::StdExecutionRole::Park
                     | etas_std::StdExecutionRole::ScopeEnter
+                    | etas_std::StdExecutionRole::ResourceScope
                     | etas_std::StdExecutionRole::TaskNextCompletion => {
                         assert_eq!(
                             suspension,

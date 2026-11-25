@@ -10,6 +10,7 @@ pub(super) fn parameters(
         .iter()
         .map(|parameter| {
             Ok(crate::ExternalCallableGenericParamInput {
+                requires_copy: parameter.requires_copy,
                 name: parameter.name.clone(),
                 kind: match parameter.kind {
                     GenericParamKind::Type => crate::ExternalCallableGenericParamKindInput::Type,

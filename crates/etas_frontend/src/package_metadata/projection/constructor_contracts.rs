@@ -55,6 +55,7 @@ impl ProjectMetadataProjection<'_> {
                     .get(*parameter)
                     .expect("declared constructor type parameter");
                 Ok(GenericParam {
+                    requires_copy: None,
                     name: symbol.name.clone(),
                     kind: if symbol.kind == etas_hir::SymbolKind::EffectParam {
                         GenericParamKind::Effect

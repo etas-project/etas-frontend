@@ -173,6 +173,7 @@ mod tests {
         local
             .generic_params
             .push(ProjectExternalCallableGenericParamInput {
+                requires_copy: None,
                 name: "R".into(),
                 kind: ProjectExternalCallableGenericParamKindInput::Type,
                 bounds: vec![ProjectExternalSpecBoundInput {

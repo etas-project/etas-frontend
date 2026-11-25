@@ -27,12 +27,16 @@ impl<'a> LeaseCaptures<'a> {
         }
     }
 
-    pub fn index(&mut self, hir: &HirRevision, types: &TypeOutput, bindings: HashSet<SymbolId>) {
+    pub fn track_bindings(&mut self, bindings: HashSet<SymbolId>) {
+        self.affine_symbols.clone_from(&bindings);
         self.lease_bindings = bindings;
+    }
+
+    pub fn index(&mut self, hir: &HirRevision, types: &TypeOutput, bindings: HashSet<SymbolId>) {
+        self.track_bindings(bindings);
         if self.lease_bindings.is_empty() {
             return;
         }
-        self.affine_symbols.clone_from(&self.lease_bindings);
         for scope in hir.scopes.iter() {
             self.declarations
                 .extend(scope.symbols.iter().map(|s| (*s, scope.id)));

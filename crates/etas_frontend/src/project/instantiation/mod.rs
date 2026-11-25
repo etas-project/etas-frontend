@@ -21,7 +21,7 @@ pub(crate) use prepare::{
     PreparedInstantiations, prepare, prepare_from_targets,
 };
 pub(crate) use rows::checked_row;
-pub(crate) use targets::direct_targets;
+pub(crate) use targets::{direct_targets, external_signature};
 
 #[derive(
     Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,

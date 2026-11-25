@@ -214,6 +214,7 @@ fn full_summary_substitution_preserves_requests_exits_defaults_requirements_and_
             }],
         }),
         exits: Some(CallableExitSummary {
+            receiver_projections: Default::default(),
             value_projections: Default::default(),
             handler_gaps: Default::default(),
             parameter_exits: vec![crate::ParameterExitFact {

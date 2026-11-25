@@ -744,6 +744,7 @@ pub(super) fn convert_external_generic_params(
     params
         .iter()
         .map(|param| etas_types::ExternalCallableGenericParamInput {
+            requires_copy: param.requires_copy,
             name: param.name.clone(),
             kind: match param.kind {
                 crate::ProjectExternalCallableGenericParamKindInput::Type => {

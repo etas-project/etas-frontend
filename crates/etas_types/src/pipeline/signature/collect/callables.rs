@@ -180,6 +180,7 @@ pub(super) fn callable_generic_params(
                 .cloned()
                 .unwrap_or_default();
             Some(CallableGenericParam {
+                requires_copy: None,
                 kind,
                 subject: ctx.interner.intern(Type::Named(NamedTypeRef {
                     source_parameter: Some(*param),

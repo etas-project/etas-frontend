@@ -234,6 +234,7 @@ fn a_wrong_kind_argument_is_not_an_open_template() {
     let signature = etas_types::CallableSignature {
         parameter_interface: None,
         generic_params: vec![etas_types::CallableGenericParam {
+            requires_copy: None,
             kind: etas_types::CallableGenericParamKind::Effect,
             name: "E".into(),
             subject: etas_types::TypeId(0),

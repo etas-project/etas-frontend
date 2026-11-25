@@ -97,6 +97,7 @@ fn binary_owner_binders_lower_and_solve_a_shadowing_method_chain() {
                         .map(|parameter| {
                             assert!(parameter.bounds.is_empty());
                             Param {
+                                requires_copy: None,
                                 name: parameter.name.clone(),
                                 kind: Kind::Type,
                                 bounds: vec![],

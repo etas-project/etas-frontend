@@ -425,6 +425,7 @@ mod tests {
             ..Default::default()
         };
         let parameter = CallableGenericParam {
+            requires_copy: None,
             name: "T".into(),
             subject: caller_param,
             kind: CallableGenericParamKind::Type,
@@ -474,6 +475,7 @@ mod tests {
         let metadata = ExternalTypeInput::Array(Box::new(ExternalTypeInput::Var("T".into())));
         for (subject, expected) in [(first, arrays[0]), (second, arrays[1])] {
             let param = CallableGenericParam {
+                requires_copy: None,
                 name: "T".into(),
                 subject,
                 kind: CallableGenericParamKind::Type,

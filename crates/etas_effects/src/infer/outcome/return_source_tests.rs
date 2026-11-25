@@ -149,6 +149,7 @@ fn known_callable_values_do_not_erase_unknown_control_or_supply_missing_values()
         gaps: BTreeSet::from([OutcomeAnalysisGap::ExternalCall(HirExprId(8))]),
         handler_gaps: Default::default(),
         parameter_exits: Vec::new(),
+        receiver_projections: Default::default(),
         value_projections: Default::default(),
     };
     summary.record(

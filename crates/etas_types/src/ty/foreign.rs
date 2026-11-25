@@ -202,6 +202,7 @@ pub fn relocate_foreign_type_graph(
                     bounds.push(crate::CheckedSpecBound { spec, args });
                 }
                 mapped.push(CallableGenericParam {
+                    requires_copy: param.requires_copy,
                     kind: param.kind,
                     name: param.name.clone(),
                     subject,
@@ -393,6 +394,7 @@ mod tests {
         facts.type_generics.insert(
             nominal,
             vec![CallableGenericParam {
+                requires_copy: None,
                 kind: CallableGenericParamKind::Type,
                 name: "T".into(),
                 subject: generic,

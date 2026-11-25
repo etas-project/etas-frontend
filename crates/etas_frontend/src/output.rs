@@ -1070,6 +1070,8 @@ pub struct ProjectExternalActionSignatureInput {
     Clone, Debug, PartialEq, Eq, etas_core::RetainedSize, serde::Serialize, serde::Deserialize,
 )]
 pub struct ProjectExternalCallableGenericParamInput {
+    #[serde(default)]
+    pub requires_copy: Option<bool>,
     pub name: String,
     pub kind: ProjectExternalCallableGenericParamKindInput,
     pub bounds: Vec<ProjectExternalSpecBoundInput>,

@@ -412,6 +412,7 @@ mod tests {
         facts.type_generics.insert(
             owner,
             vec![crate::CallableGenericParam {
+                requires_copy: None,
                 kind: crate::CallableGenericParamKind::Type,
                 name: "T".into(),
                 subject,

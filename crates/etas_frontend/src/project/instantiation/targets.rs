@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use etas_hir::{HirExpr, HirExprId, HirItemId, ResolveResult, SymbolDef};
 use etas_types::{TypeOutput, method::MethodTarget};
 
-pub(super) fn external_signature<'a>(
+pub(crate) fn external_signature<'a>(
     hir: &etas_hir::HirProgram,
     types: &'a TypeOutput,
     expr: HirExprId,

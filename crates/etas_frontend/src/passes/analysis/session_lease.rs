@@ -14,6 +14,7 @@ use etas_hir_analysis::intraprocedural::{
 use etas_types::{SymbolTypeFact, Type, TypeId, TypeOutput};
 
 mod captures;
+mod generic;
 use super::lexical_capture::CaptureLayouts;
 
 const LEASE: &str = "std.agent.session.SessionLease";
@@ -21,25 +22,19 @@ const WITH_LEASE: [&str; 4] = ["std", "agent", "session", "with_lease"];
 
 pub(super) fn check(
     hir: &HirRevision,
-    types: &TypeOutput,
+    types: &mut TypeOutput,
     layouts: &CaptureLayouts,
 ) -> Result<Vec<Diagnostic>, String> {
+    let applications = generic::applications(hir, types)?;
+    let mut diagnostics = generic::infer_copy_requirements(hir, types, layouts, &applications);
     let Some(lease) = types.facts.known_std_types.opaque_values.iter().copied().find(
         |ty| matches!(types.store.get(*ty), Some(Type::Nominal(nominal)) if nominal.name == LEASE),
     ) else {
-        return Ok(Vec::new());
+        return Ok(diagnostics);
     };
 
-    let mut analysis = LeaseAnalysis {
-        context: HirAnalysisContext::new(hir),
-        types,
-        lease,
-        contains: HashMap::new(),
-        moved_uses: HashSet::new(),
-        captures: captures::LeaseCaptures::new(layouts),
-    };
-    analysis.propagate_generic_bindings(hir)?;
-    let mut diagnostics = Vec::new();
+    let mut analysis = LeaseAnalysis::new(HirAnalysisContext::new(hir), types, lease, layouts);
+    analysis.propagate_generic_bindings(&applications);
     let mut owners = HashSet::new();
     for (expr, ty) in &types.facts.expr_types {
         if !analysis.contains_lease(*ty) {
@@ -83,25 +78,7 @@ pub(super) fn check(
     }
     let mut interpreter = HirAbstractInterpreter::new(analysis);
     for (item, _) in hir.items.iter().filter(|(item, _)| owners.contains(item)) {
-        for body in hir
-            .index()
-            .item_bodies
-            .get(&item)
-            .into_iter()
-            .flatten()
-            .copied()
-        {
-            // Match arms are already traversed with the scrutinee's state.
-            if matches!(body.kind, etas_hir::HirBodyKind::MatchArm { .. }) {
-                continue;
-            }
-            interpreter.semantics_mut().captures.enter_body(hir, body);
-            if let Some(block) = interpreter.context().body_block(body) {
-                interpreter.block_control(block, LeaseState::default());
-            } else if let Some(expr) = interpreter.context().body_root_expr(body) {
-                interpreter.expr_control(expr, LeaseState::default());
-            }
-        }
+        analyze_owner(hir, item, &mut interpreter);
     }
     let analysis = interpreter.into_semantics();
     diagnostics.extend(analysis.captures.escapes.into_iter().map(|span| Diagnostic::type_check(
@@ -119,6 +96,32 @@ pub(super) fn check(
         (span.source.0, span.range.start, span.range.end)
     });
     Ok(diagnostics)
+}
+
+fn analyze_owner(
+    hir: &HirRevision,
+    item: etas_hir::HirItemId,
+    interpreter: &mut HirAbstractInterpreter<LeaseAnalysis<'_>>,
+) {
+    for body in hir
+        .index()
+        .item_bodies
+        .get(&item)
+        .into_iter()
+        .flatten()
+        .copied()
+    {
+        // Match arms are already traversed with the scrutinee's state.
+        if matches!(body.kind, etas_hir::HirBodyKind::MatchArm { .. }) {
+            continue;
+        }
+        interpreter.semantics_mut().captures.enter_body(hir, body);
+        if let Some(block) = interpreter.context().body_block(body) {
+            interpreter.block_control(block, LeaseState::default());
+        } else if let Some(expr) = interpreter.context().body_root_expr(body) {
+            interpreter.expr_control(expr, LeaseState::default());
+        }
+    }
 }
 
 fn is_with_lease(hir: &HirProgram, types: &TypeOutput, expr: HirExprId) -> bool {
@@ -185,37 +188,30 @@ struct LeaseAnalysis<'a> {
     captures: captures::LeaseCaptures<'a>,
 }
 
-impl LeaseAnalysis<'_> {
+impl<'a> LeaseAnalysis<'a> {
+    fn new(
+        context: HirAnalysisContext,
+        types: &'a TypeOutput,
+        lease: TypeId,
+        layouts: &'a CaptureLayouts,
+    ) -> Self {
+        Self {
+            context,
+            types,
+            lease,
+            contains: HashMap::new(),
+            moved_uses: HashSet::new(),
+            captures: captures::LeaseCaptures::new(layouts),
+        }
+    }
+
     /// Type parameter subjects belong to their declaring callable. A wrapper
     /// may pass its own parameter on to another generic flow or method.
-    fn propagate_generic_bindings(&mut self, hir: &HirRevision) -> Result<(), String> {
-        use crate::project::instantiation::{direct_targets, signature};
-        let facts = &self.types.facts;
-        let mut edges = Vec::new();
-        for (site, targets) in direct_targets(hir, self.types)? {
-            let method = facts.selected_method(site);
-            let instantiation = method
-                .map(|m| &m.instantiation)
-                .or_else(|| facts.generic_instantiations.get(&site));
-            if let Some(method) = method {
-                edges.extend_from_slice(&method.owner_bindings);
-            }
-            let Some(instantiation) = instantiation else {
-                continue;
-            };
-            for item in targets {
-                let Some(declaration) = signature(facts, item) else {
-                    continue;
-                };
-                for (name, actual) in &instantiation.type_bindings {
-                    if let Some(param) = declaration.generic_params.iter().find(|p| {
-                        p.kind == etas_types::CallableGenericParamKind::Type && p.name == *name
-                    }) {
-                        edges.push((param.subject, *actual));
-                    }
-                }
-            }
-        }
+    fn propagate_generic_bindings(&mut self, applications: &[generic::Application]) {
+        let edges: Vec<_> = applications
+            .iter()
+            .filter_map(|use_| use_.local_binding())
+            .collect();
         loop {
             let new: HashSet<_> = edges
                 .iter()
@@ -231,7 +227,6 @@ impl LeaseAnalysis<'_> {
             self.contains
                 .extend(new.into_iter().map(|param| (param, true)));
         }
-        Ok(())
     }
 
     fn contains_lease(&mut self, root: TypeId) -> bool {

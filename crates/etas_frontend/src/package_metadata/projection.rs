@@ -550,6 +550,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(etas_package_metadata::GenericParam {
+                    requires_copy: None,
                     name: symbol.name.clone(),
                     kind: if symbol.kind == etas_hir::SymbolKind::EffectParam {
                         etas_package_metadata::GenericParamKind::Effect
@@ -842,6 +843,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                     }
                 }
                 Ok(etas_package_metadata::GenericParam {
+                    requires_copy: param.requires_copy,
                     name: param.name.clone(),
                     kind: match param.kind {
                         etas_types::CallableGenericParamKind::Type => {
@@ -988,6 +990,7 @@ impl<'a> ProjectMetadataProjection<'a> {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     Ok(etas_package_metadata::GenericParam {
+                        requires_copy: None,
                         name: symbol.name.clone(),
                         kind: if symbol.kind == etas_hir::SymbolKind::EffectParam {
                             etas_package_metadata::GenericParamKind::Effect

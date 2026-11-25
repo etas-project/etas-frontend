@@ -559,6 +559,7 @@ mod canonical_parameter_tests {
                 kind: crate::SpecKind::TypeSpec,
                 param_names: vec!["T".into()],
                 generic_params: vec![crate::CallableGenericParam {
+                    requires_copy: None,
                     kind: crate::CallableGenericParamKind::Type,
                     name: "T".into(),
                     subject: external_t,

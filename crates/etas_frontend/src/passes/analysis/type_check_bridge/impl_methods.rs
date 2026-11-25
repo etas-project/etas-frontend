@@ -19,6 +19,7 @@ pub(super) fn signature(
             .enumerate()
             .map(|(position, param)| {
                 Ok(etas_types::ExternalCallableGenericParamInput {
+                    requires_copy: param.requires_copy,
                     name: root
                         .generic_bindings
                         .iter()

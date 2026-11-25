@@ -260,6 +260,7 @@ pub(super) fn lower_std_generic_params(
     params
         .iter()
         .map(|param| CallableGenericParam {
+            requires_copy: None,
             kind: match param.kind {
                 StdGenericParamKind::Type => CallableGenericParamKind::Type,
                 StdGenericParamKind::EffectRow => CallableGenericParamKind::Effect,
