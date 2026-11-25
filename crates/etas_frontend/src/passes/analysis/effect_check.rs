@@ -558,6 +558,10 @@ impl RunEffectPipelinePass {
             Err(error) => return pipeline_failure(error),
         };
         let mut output = pipeline_output.effects;
+        match super::session_lease::returned_captures(&hir.hir, types, &output.facts) {
+            Ok(diagnostics) => output.diagnostics.extend(diagnostics),
+            Err(reason) => return PassResult::failed(reason),
+        }
         let residual_plans = pipeline_output.trace_specs.into_residual_plans();
         if !residual_plans.is_empty() {
             // Concrete actions are later projected with exactly the identities

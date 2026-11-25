@@ -216,11 +216,7 @@ impl EffectSemantics<'_> {
             },
         )?;
         let call = self
-            .capture_sites
-            .borrow()
-            .get(&invocation.application)
-            .copied()
-            .flatten()
+            .capture_site_expression(invocation.application)
             .ok_or_else(|| {
                 invalid("external method application has no checked expression identity")
             })?;

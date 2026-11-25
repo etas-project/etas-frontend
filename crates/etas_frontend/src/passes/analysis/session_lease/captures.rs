@@ -41,19 +41,7 @@ impl<'a> LeaseCaptures<'a> {
             self.declarations
                 .extend(scope.symbols.iter().map(|s| (*s, scope.id)));
         }
-        for (expr, node) in hir.exprs.iter() {
-            if let HirExpr::Call { args, .. } = node
-                && is_with_lease(hir, types, expr)
-                && let Some(arg) = args.iter().enumerate().find_map(|(index, arg)| match arg {
-                    HirArg::Named { name, value, .. } if name == "body" => Some(*value),
-                    HirArg::Positional(value) if index == 1 => Some(*value),
-                    _ => None,
-                })
-                && let Some((body, scope)) = callback(hir, arg)
-            {
-                self.callbacks.insert(body, scope);
-            }
-        }
+        self.callbacks.extend(lease_callbacks(hir, types));
         let owners: HashSet<_> = self
             .layouts
             .iter()
@@ -180,6 +168,136 @@ impl<'a> LeaseCaptures<'a> {
             self.escapes.insert(span);
         }
     }
+}
+
+fn lease_callbacks(
+    hir: &HirRevision,
+    types: &TypeOutput,
+) -> impl Iterator<Item = (HirBodyRef, ScopeId)> {
+    hir.exprs.iter().filter_map(|(expr, node)| {
+        let HirExpr::Call { args, .. } = node else {
+            return None;
+        };
+        if !is_with_lease(hir, types, expr) {
+            return None;
+        }
+        let arg = args.iter().enumerate().find_map(|(index, arg)| match arg {
+            HirArg::Named { name, value, .. } if name == "body" => Some(*value),
+            HirArg::Positional(value) if index == 1 => Some(*value),
+            _ => None,
+        })?;
+        callback(hir, arg)
+    })
+}
+
+/// The effect solver substitutes call arguments into returned callable origins,
+/// including those loaded from a dependency's checked package interface.
+pub(crate) fn returned_captures(
+    hir: &HirRevision,
+    types: &TypeOutput,
+    effects: &etas_effects::EffectFacts,
+) -> Result<Vec<Diagnostic>, String> {
+    use etas_effects::{
+        CallableOutcome, CallableReturnSource, EffectUnit, ProjectedReturnSources,
+        ReturnObservation,
+    };
+    let callbacks: HashMap<_, _> = lease_callbacks(hir, types).collect();
+    if callbacks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(lease) = lease_type(types) else {
+        return Ok(Vec::new());
+    };
+    let layouts = etas_hir_analysis::closures::analyze_runtime_captures(&hir.view())?;
+    let mut analysis = LeaseAnalysis::new(HirAnalysisContext::new(hir), types, lease, &layouts);
+    let mut declarations = HashMap::new();
+    for scope in hir.scopes.iter() {
+        for symbol in &scope.symbols {
+            if types
+                .facts
+                .symbol_types
+                .get(symbol)
+                .and_then(value_type)
+                .is_some_and(|ty| analysis.contains_lease(ty))
+            {
+                declarations.insert(*symbol, scope.id);
+            }
+        }
+    }
+    let mut escapes = HashSet::new();
+    for (unit, summary) in &effects.unit_effects {
+        let body = match *unit {
+            EffectUnit::AnonymousFlow { owner, value, .. } => {
+                HirBodyRef::new(owner, HirBodyKind::Lambda(value))
+            }
+            EffectUnit::Item(item) => {
+                let Some(body) = hir.index().item_body.get(&item) else {
+                    continue;
+                };
+                *body
+            }
+            _ => continue,
+        };
+        let (Some(scope), Some(exits)) = (callbacks.get(&body), summary.exits.as_ref()) else {
+            continue;
+        };
+        let sources = exits
+            .exits
+            .iter()
+            .filter_map(|exit| match &exit.outcome {
+                CallableOutcome::Returned {
+                    observation: ReturnObservation::CallableSources(sources),
+                    ..
+                } => Some(sources),
+                _ => None,
+            })
+            .chain(
+                exits
+                    .value_projections
+                    .values()
+                    .filter_map(|value| match value {
+                        ProjectedReturnSources::Known(sources) => Some(sources),
+                        ProjectedReturnSources::Unavailable => None,
+                    }),
+            )
+            .flatten();
+        for source in sources {
+            let (CallableReturnSource::AnonymousFlow(origin)
+            | CallableReturnSource::Captured { unit: origin, .. }) = source
+            else {
+                continue;
+            };
+            let EffectUnit::AnonymousFlow { value, .. } = *origin else {
+                continue;
+            };
+            let origins = retained_bindings(
+                hir,
+                &layouts,
+                value,
+                |_| None,
+                |symbol| {
+                    declarations
+                        .get(&symbol)
+                        .is_some_and(|decl| within(hir, *scope, *decl))
+                },
+            );
+            if !origins.is_empty() {
+                escapes.insert(hir.exprs[value].span(&hir.blocks));
+            }
+        }
+    }
+    let mut diagnostics: Vec<_> = escapes
+        .into_iter()
+        .map(|span| {
+            Diagnostic::type_check(
+                TypeDiagnosticCode::TypeMismatch,
+                span,
+                "returned callable retains the SessionLease beyond its owning with_lease scope",
+            )
+        })
+        .collect();
+    diagnostics.sort_by_key(|d| (d.primary.span.source.0, d.primary.span.range.start));
+    Ok(diagnostics)
 }
 
 fn callback(hir: &HirRevision, mut expr: HirExprId) -> Option<(HirBodyRef, ScopeId)> {

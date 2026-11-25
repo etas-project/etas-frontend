@@ -41,6 +41,14 @@ fn node_count(snapshot: &CallableEnvironment) -> usize {
             .sum::<usize>()
 }
 
+/// Lowering can produce multiple expressions at one source span. Retain their
+/// local ordinal so the same site resolves on every round of the solver.
+#[derive(Default)]
+pub(super) struct CaptureSites {
+    keys: std::collections::HashMap<HirExprId, CodeFingerprint>,
+    expressions: std::collections::HashMap<CodeFingerprint, HirExprId>,
+}
+
 impl EffectSemantics<'_> {
     pub(super) fn callable_invocation_context(id: CallableEnvironmentId) -> CodeFingerprint {
         CodeFingerprint::of_parts(
@@ -79,27 +87,37 @@ impl EffectSemantics<'_> {
         &self,
         expr: HirExprId,
     ) -> Result<CodeFingerprint, EffectSpecializationError> {
-        let span = self
-            .hir
-            .exprs
-            .get(expr)
-            .ok_or_else(|| invalid("capture site expression is missing"))?
-            .span(&self.hir.blocks);
-        let mut bytes = Vec::with_capacity(12);
-        bytes.extend_from_slice(&span.source.0.to_le_bytes());
-        bytes.extend_from_slice(&span.range.start.0.to_le_bytes());
-        bytes.extend_from_slice(&span.range.end.0.to_le_bytes());
-        let site = CodeFingerprint::of_bytes("etas.effects.callable-capture-site.v1", &bytes);
-        self.capture_sites
-            .borrow_mut()
-            .entry(site)
-            .and_modify(|previous| {
-                if *previous != Some(expr) {
-                    *previous = None;
-                }
-            })
-            .or_insert(Some(expr));
-        Ok(site)
+        self.capture_site_index()
+            .keys
+            .get(&expr)
+            .copied()
+            .ok_or_else(|| invalid("capture site expression is missing"))
+    }
+
+    pub(super) fn capture_site_expression(&self, site: CodeFingerprint) -> Option<HirExprId> {
+        self.capture_site_index().expressions.get(&site).copied()
+    }
+
+    fn capture_site_index(&self) -> &CaptureSites {
+        self.type_queries.capture_sites.get_or_init(|| {
+            let mut sites = CaptureSites::default();
+            let mut ordinals = std::collections::HashMap::<_, u32>::new();
+            for (expr, node) in self.hir.exprs.iter() {
+                let span = node.span(&self.hir.blocks);
+                let ordinal = ordinals.entry(span).or_default();
+                let mut bytes = [0u8; 16];
+                bytes[..4].copy_from_slice(&span.source.0.to_le_bytes());
+                bytes[4..8].copy_from_slice(&span.range.start.0.to_le_bytes());
+                bytes[8..12].copy_from_slice(&span.range.end.0.to_le_bytes());
+                bytes[12..].copy_from_slice(&ordinal.to_le_bytes());
+                let key =
+                    CodeFingerprint::of_bytes("etas.effects.callable-capture-site.v2", &bytes);
+                sites.keys.insert(expr, key);
+                sites.expressions.insert(key, expr);
+                *ordinal += 1;
+            }
+            sites
+        })
     }
 
     pub(crate) fn callable_environment(

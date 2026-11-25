@@ -16,6 +16,7 @@ use etas_types::{SymbolTypeFact, Type, TypeId, TypeOutput};
 mod captures;
 mod generic;
 use super::lexical_capture::CaptureLayouts;
+pub(super) use captures::returned_captures;
 
 const LEASE: &str = "std.agent.session.SessionLease";
 const WITH_LEASE: [&str; 4] = ["std", "agent", "session", "with_lease"];
@@ -27,9 +28,7 @@ pub(super) fn check(
 ) -> Result<Vec<Diagnostic>, String> {
     let applications = generic::applications(hir, types)?;
     let mut diagnostics = generic::infer_copy_requirements(hir, types, layouts, &applications);
-    let Some(lease) = types.facts.known_std_types.opaque_values.iter().copied().find(
-        |ty| matches!(types.store.get(*ty), Some(Type::Nominal(nominal)) if nominal.name == LEASE),
-    ) else {
+    let Some(lease) = lease_type(types) else {
         return Ok(diagnostics);
     };
 
@@ -96,6 +95,12 @@ pub(super) fn check(
         (span.source.0, span.range.start, span.range.end)
     });
     Ok(diagnostics)
+}
+
+fn lease_type(types: &TypeOutput) -> Option<TypeId> {
+    types.facts.known_std_types.opaque_values.iter().copied().find(
+        |ty| matches!(types.store.get(*ty), Some(Type::Nominal(nominal)) if nominal.name == LEASE),
+    )
 }
 
 fn analyze_owner(

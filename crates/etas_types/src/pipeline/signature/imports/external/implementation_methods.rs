@@ -12,14 +12,25 @@ pub(super) fn owner_parameters(
             .iter()
             .find(|method| &method.identity == identity)
             .ok_or("external implementation has no checked owner binder")?;
+        // A method's copy requirements describe its body. The impl shares
+        // only the declared binder across its methods.
+        let binders: Vec<_> = method
+            .owner_params
+            .iter()
+            .cloned()
+            .map(|mut param| {
+                param.requires_copy = None;
+                param
+            })
+            .collect();
         if let Some(previous) = &parameters {
-            if previous != &method.owner_params {
+            if previous != &binders {
                 return Err(
                     "external implementation methods have inconsistent owner binders".into(),
                 );
             }
         } else {
-            parameters = Some(method.owner_params.clone());
+            parameters = Some(binders);
         }
     }
     Ok(parameters.unwrap_or_default())

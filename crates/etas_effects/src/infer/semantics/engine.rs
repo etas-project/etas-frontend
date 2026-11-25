@@ -87,9 +87,6 @@ pub(crate) struct EffectSemantics<'a> {
         >,
     >,
     pub(crate) callable_environment_nodes: std::cell::Cell<usize>,
-    pub(super) capture_sites: std::cell::RefCell<
-        std::collections::BTreeMap<etas_code::CodeFingerprint, Option<HirExprId>>,
-    >,
     pub(crate) parameter_projections: std::cell::RefCell<
         std::sync::Arc<
             std::collections::BTreeMap<
@@ -287,7 +284,6 @@ impl<'a> EffectSemantics<'a> {
                     .sum(),
             ),
             callable_environments: std::cell::RefCell::new(callable_environments),
-            capture_sites: Default::default(),
             loop_traces: Default::default(),
             trace_equations: Default::default(),
             call_input_substitution: Default::default(),

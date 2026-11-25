@@ -1,5 +1,5 @@
 pub const FRONTEND_CACHE_NAMESPACE: &str = "frontend";
-pub const FRONTEND_ARTIFACT_SCHEMA_VERSION: u32 = 290;
+pub const FRONTEND_ARTIFACT_SCHEMA_VERSION: u32 = 291;
 
 #[derive(
     Clone,
