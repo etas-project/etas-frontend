@@ -11,6 +11,7 @@ use crate::{CheckedProgramData, code::definition::DefinitionCatalog};
 pub(super) struct Import<'a> {
     pub declaration: &'a MethodSignatureFact,
     pub identity: MethodId,
+    target_spec: etas_hir::SymbolId,
 }
 
 pub(super) fn select<'a>(
@@ -28,10 +29,10 @@ pub(super) fn select<'a>(
         .map(|symbol| {
             target
                 .native_spec_identity(&CheckedSpecRef::Source(*symbol))
-                .cloned()
+                .map(|identity| (identity.clone(), *symbol))
                 .map_err(|e| e.to_string())
         })
-        .collect::<Result<std::collections::HashSet<_>, _>>()?;
+        .collect::<Result<HashMap<_, _>, _>>()?;
     for declaration in program.types.methods.entries() {
         let MethodTarget::Source { callable, .. } = declaration.target else {
             continue;
@@ -61,13 +62,13 @@ pub(super) fn select<'a>(
                 .unwrap_or_else(|| spec.clone()),
             _ => spec.clone(),
         };
-        if !target_specs.contains(
+        let Some(&target_spec) = target_specs.get(
             catalog
                 .native_spec_identity(&canonical)
                 .map_err(|e| e.to_string())?,
-        ) {
+        ) else {
             continue;
-        }
+        };
         let identity = catalog
             .native_callables()
             .find_map(|(identity, item)| {
@@ -79,6 +80,7 @@ pub(super) fn select<'a>(
         selected.push(Import {
             declaration,
             identity,
+            target_spec,
         });
     }
     selected.sort_by(|a, b| a.identity.cmp(&b.identity));
@@ -183,7 +185,6 @@ pub(super) fn relocate(
         let MethodEvidence::Implementation { spec, .. } = &mut declaration.evidence else {
             unreachable!()
         };
-        let original_spec = spec.clone();
         *spec = specs
             .get(spec)
             .cloned()
@@ -201,47 +202,16 @@ pub(super) fn relocate(
                     .ok_or("caller method bound has no checked correspondence")?;
             }
         }
-        let required = match &original_spec {
-            CheckedSpecRef::Source(symbol) => source
-                .types
-                .spec_signatures
-                .get(symbol)
-                .map(|s| &s.methods)
-                .or_else(|| {
-                    source
-                        .types
-                        .external_specs
-                        .aliases
-                        .get(symbol)
-                        .and_then(|key| source.types.external_specs.signatures.get(key))
-                        .map(|s| &s.methods)
-                }),
-            CheckedSpecRef::External(key) => source
-                .types
-                .external_specs
-                .signatures
-                .get(key)
-                .map(|s| &s.methods),
-            _ => None,
-        };
-        if let CheckedSpecRef::Source(symbol) = spec {
-            let required = target
-                .types
-                .spec_signatures
-                .get(symbol)
-                .ok_or("SDK method spec declaration is missing")?;
-            declaration.spec_member = Some(
-                required
-                    .methods
-                    .iter()
-                    .find(|method| method.name == declaration.name)
-                    .ok_or("SDK spec has no matching checked member")?
-                    .identity
-                    .clone(),
-            );
-        } else if required.is_none() {
-            return Err("caller method has no checked member declaration".into());
-        }
+        let requirement = &target.types.spec_signatures[&import.target_spec];
+        declaration.spec_member = Some(
+            requirement
+                .methods
+                .iter()
+                .find(|method| method.name == declaration.name)
+                .ok_or("SDK spec has no matching checked member")?
+                .identity
+                .clone(),
+        );
         declaration.target = MethodTarget::External {
             identity: import.identity.clone(),
         };
