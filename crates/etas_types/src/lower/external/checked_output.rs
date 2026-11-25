@@ -231,7 +231,16 @@ impl<'a> CheckedExternalTypeResolver<'a> {
                 bounds: bounds
                     .iter()
                     .map(|bound| {
-                        let spec = if self
+                        let published_std = self
+                            .types
+                            .facts
+                            .external_specs
+                            .std_identities
+                            .keys()
+                            .find(|identity| identity.path == bound.spec);
+                        let spec = if let Some(identity) = published_std {
+                            crate::CheckedSpecRef::External(identity.clone())
+                        } else if self
                             .types
                             .facts
                             .std_spec_aliases
